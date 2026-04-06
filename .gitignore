@@ -1,0 +1,28 @@
+# Rust / Cargo
+target/
+Cargo.lock
+
+# Node / Vite
+src/node_modules/
+src/dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+
+# Tauri
+src-tauri/target/
+src-tauri/WixTools/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+*.swp
