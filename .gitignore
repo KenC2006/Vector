@@ -26,3 +26,4 @@ Thumbs.db
 # Editor
 .vscode/settings.json
 *.swp
+.claude
