@@ -233,9 +233,9 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg);
   text-transform: uppercase;
 }
 
-#sb-spacer { flex: 1; }
-
-#version { font-size: 10px; color: var(--text-dimmer); }
+#sb-spacer, #sb-spacer2 { flex: 1; }
+#sb-keys { font-size: 10px; color: var(--text-dimmer); }
+#version  { font-size: 10px; color: var(--text-dimmer); }
 
 /* ── Toast ───────────────────────────────────────────── */
 
@@ -297,106 +297,6 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg);
   background: #3a3a3e;
 }
 
-/* ── Kinematic Tree Panel ────────────────────────────── */
-
-#kinematic-tree {
-  padding: 4px 0;
-  user-select: none;
-  font-size: 12px;
-}
-
-.kt-node {
-  padding: 2px 10px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: background 0.1s, color 0.1s;
-  color: var(--text-dim);
-}
-
-.kt-node:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-}
-
-.kt-node.link {
-  color: #4ec9b0;
-  font-weight: 500;
-}
-
-.kt-node.joint {
-  color: #e5c07b;
-  padding-left: 30px;
-  font-size: 11px;
-}
-
-.kt-node.highlighted {
-  background: rgba(78, 201, 176, 0.15);
-  color: #4ec9b0;
-}
-
-.kt-toggle {
-  width: 12px;
-  height: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  color: var(--text-dimmer);
-  flex-shrink: 0;
-  user-select: none;
-  cursor: pointer;
-}
-
-.kt-toggle.collapsed::before {
-  content: '▶';
-}
-
-.kt-toggle.expanded::before {
-  content: '▼';
-}
-
-.kt-children {
-  display: none;
-}
-
-.kt-children.visible {
-  display: block;
-}
-
-/* ── Node Graph Overlay ──────────────────────────────── */
-
-#kinematic-graph-container {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  z-index: 20;
-  background: rgba(12, 12, 12, 0.92);
-}
-
-#kinematic-graph-canvas {
-  display: block;
-  cursor: default;
-}
-
-.kg-node {
-  position: absolute;
-  background: #1c1c1e;
-  border: 2px solid #4ec9b0;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 11px;
-  color: #4ec9b0;
-  font-weight: 500;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-  transition: all 0.2s;
-  z-index: 10;
-}
 
 .kg-node:hover {
   border-color: #ffff00;
@@ -679,31 +579,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg);
 .tb-item:hover .tb-item-meta { color: var(--text-dim); }
 .tb-item.selected .tb-item-meta { color: rgba(74,158,255,0.7); }
 
-/* ── Node hover tooltip ──────────────────────────────── */
-
-#node-tooltip {
-  position: fixed; z-index: 500;
-  background: var(--bg-2);
-  border: 1px solid rgba(78,201,176,0.35);
-  border-radius: 5px;
-  padding: 5px 11px;
-  font-size: 11px; font-family: var(--font);
-  color: var(--text-dim);
-  pointer-events: none;
-  opacity: 0; transition: opacity 0.12s;
-  white-space: nowrap;
-  display: flex; flex-direction: column; gap: 2px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-}
-#node-tooltip.visible { opacity: 1; }
-#node-tooltip strong { color: var(--green); font-weight: 600; font-size: 12px; }
-#node-tooltip span   { color: var(--text-dimmer); font-size: 10px; }
-
-/* -- Build Mode toggle button ---------------------------- */
-
-.vp-btn.build-toggle { gap: 5px; }
-.vp-btn.build-toggle span { font-size: 11px; }
-.vp-btn.build-toggle.active { color: #ff7b45; border-color: rgba(255,123,69,0.35); background: rgba(255,123,69,0.08); }
+/* -- Toolbox empty state --------------------------------- */
+.tb-empty { padding: 16px 12px; text-align: center; font-size: 11px; color: var(--text-dimmer); }
 
 /* -- Build sidebar panel --------------------------------- */
 
@@ -766,55 +643,6 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg);
 .ba-btn.danger        { border-color: rgba(244,67,54,0.3); color: #e57373; background: rgba(244,67,54,0.06); }
 .ba-btn.danger:hover  { background: rgba(244,67,54,0.14); }
 
-/* -- Connection dialog (modal) --------------------------- */
-
-.conn-dialog {
-  position: fixed; inset: 0; z-index: 9000;
-  background: rgba(0,0,0,0.55); backdrop-filter: blur(4px);
-  display: flex; align-items: center; justify-content: center;
-}
-.conn-dialog.hidden { display: none; }
-
-.conn-dialog-inner {
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 22px 26px 18px;
-  min-width: 340px; max-width: 420px;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.6);
-  display: flex; flex-direction: column; gap: 14px;
-}
-.conn-title    { font-size: 15px; font-weight: 700; color: var(--text); }
-.conn-subtitle { font-size: 11px; color: var(--text-dimmer); font-family: var(--mono); margin-top: -8px; }
-
-.conn-field   { display: flex; flex-direction: column; gap: 5px; }
-.conn-label   { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
-
-.conn-radio-group { display: flex; gap: 12px; }
-.conn-radio       { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
-.conn-radio input { accent-color: var(--accent); }
-
-.conn-limits-row { display: flex; align-items: center; gap: 8px; }
-.conn-lim-label  { font-size: 11px; color: var(--text-dimmer); }
-.conn-input {
-  width: 80px; padding: 4px 8px;
-  background: var(--bg-2); border: 1px solid var(--border);
-  border-radius: 4px; color: var(--text); font-size: 12px; font-family: var(--mono);
-}
-.conn-input:focus { border-color: rgba(74,158,255,0.4); outline: none; }
-
-.conn-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
-.conn-btn {
-  padding: 6px 18px; font-size: 12.5px; font-weight: 600;
-  border-radius: 6px; cursor: pointer; transition: background 0.12s;
-}
-.conn-btn.cancel  { background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text-dim); }
-.conn-btn.cancel:hover  { background: rgba(255,255,255,0.12); color: var(--text); }
-.conn-btn.confirm { background: var(--accent); border: none; color: #fff; }
-.conn-btn.confirm:hover { background: #6aafff; }
-
-/* Hide axis/limits when joint type = fixed */
-.conn-limits.hidden, .conn-axis.hidden { display: none; }
 
 /* -- Build hint overlay ---------------------------------- */
 

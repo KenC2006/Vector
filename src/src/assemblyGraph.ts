@@ -21,7 +21,8 @@ export interface PartInstance {
   definitionId: string
   params: ParamValues
   label: string           // user-editable name
-  dragOffset?: { x: number; y: number; z: number }  // world-space translation on top of connection transform
+  dragOffset?:   { x: number; y: number; z: number }        // world-space translation on top of connection transform
+  dragRotation?: { x: number; y: number; z: number; w: number } // local-space quaternion delta on top of connection rotation
 }
 
 export interface ConnectionEdge {
@@ -39,6 +40,7 @@ export type AssemblyEvent =
   | { type: 'params_changed';   instanceId: string }
   | { type: 'joint_changed';    connectionId: string }
   | { type: 'cleared' }
+  | { type: 'restored' }        // emitted after deserialize so renderer can rebuildAll
 
 type AssemblyListener = (event: AssemblyEvent) => void
 
@@ -282,14 +284,56 @@ export class AssemblyGraph {
     this.emit({ type: 'params_changed', instanceId })
   }
 
-  /**
-   * Remove the drag offset from a part, snapping it back to its connection-derived position.
-   */
+  /** Remove the drag offset from a part. */
   clearDragOffset(instanceId: string) {
     const inst = this.instances.get(instanceId)
     if (!inst) return
     delete inst.dragOffset
     this.emit({ type: 'params_changed', instanceId })
+  }
+
+  /**
+   * Set a local-space quaternion rotation delta on a part, applied on top of its
+   * connection-derived orientation.
+   */
+  setDragRotation(instanceId: string, q: { x: number; y: number; z: number; w: number }) {
+    const inst = this.instances.get(instanceId)
+    if (!inst) return
+    inst.dragRotation = { ...q }
+    this.emit({ type: 'params_changed', instanceId })
+  }
+
+  /** Remove the drag rotation delta. */
+  clearDragRotation(instanceId: string) {
+    const inst = this.instances.get(instanceId)
+    if (!inst) return
+    delete inst.dragRotation
+    this.emit({ type: 'params_changed', instanceId })
+  }
+
+  // ── Serialization (for undo/redo snapshots) ───────────────────────────────
+
+  serialize(): string {
+    return JSON.stringify({
+      instances:     [...this.instances.entries()],
+      connections:   [...this.connections.entries()],
+      childMap:      [...this.childMap.entries()],
+      parentConnMap: [...this.parentConnMap.entries()],
+      rootInstanceId: this.rootInstanceId,
+      _nextId:        this._nextId,
+    })
+  }
+
+  deserialize(json: string) {
+    const d = JSON.parse(json)
+    this.instances     = new Map(d.instances)
+    this.connections   = new Map(d.connections)
+    this.childMap      = new Map(d.childMap)
+    this.parentConnMap = new Map(d.parentConnMap)
+    this.rootInstanceId = d.rootInstanceId
+    this._nextId        = d._nextId
+    this.listeners = this.listeners // keep listeners intact
+    this.emit({ type: 'restored' })
   }
 
   /**

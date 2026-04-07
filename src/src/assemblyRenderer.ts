@@ -116,8 +116,12 @@ export class AssemblyRenderer {
   private meshMap     = new Map<string, THREE.Group>()
   // `${instanceId}:${interfaceId}` → ring mesh
   private ringMap     = new Map<string, THREE.Mesh>()
-  // userData on each mesh: { instanceId }
-  // userData on each ring: { instanceId, interfaceId }
+
+  // Thin lines showing parent→child connections
+  private connectionLines: THREE.Line[] = []
+  private readonly _connLineMat = new THREE.LineBasicMaterial({
+    color: 0x445566, transparent: true, opacity: 0.40, depthWrite: false,
+  })
 
   private graph: AssemblyGraph | null = null
   private unsubscribe: (() => void) | null = null
@@ -142,6 +146,7 @@ export class AssemblyRenderer {
         case 'params_changed':   this.rebuildInstance(ev.instanceId); break
         case 'joint_changed':    this.applyJointValue(ev.connectionId); break
         case 'cleared':          this.clear(); break
+        case 'restored':         this.rebuildAll(); break
       }
     })
     this.rebuildAll()
@@ -162,15 +167,38 @@ export class AssemblyRenderer {
     while (this.group.children.length) this.group.remove(this.group.children[0])
     this.meshMap.clear()
     this.ringMap.clear()
+    this.connectionLines = []
 
     this.graph.walk((inst, parentConn, _depth) => {
       this.addInstanceMesh(inst, parentConn)
     })
 
-    // Restore selection rings if still valid
-    if (this.selectedInstanceId && this.meshMap.has(this.selectedInstanceId)) {
+    // Draw parent→child lines
+    this._drawConnectionLines()
+
+    // Restore rings — all if pending, else just selected
+    if (this.pendingPartDefId) {
+      this._showAllCompatibleRings(this.pendingPartDefId)
+    } else if (this.selectedInstanceId && this.meshMap.has(this.selectedInstanceId)) {
       this.showInterfacesFor(this.selectedInstanceId)
     }
+  }
+
+  private _drawConnectionLines() {
+    if (!this.graph) return
+    this.graph.walk((inst, parentConn) => {
+      if (!parentConn) return
+      const pGrp = this.meshMap.get(parentConn.parentInstanceId)
+      const cGrp = this.meshMap.get(inst.instanceId)
+      if (!pGrp || !cGrp) return
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        pGrp.position.clone(), cGrp.position.clone(),
+      ])
+      const line = new THREE.Line(geo, this._connLineMat)
+      line.renderOrder = -1
+      this.group.add(line)
+      this.connectionLines.push(line)
+    })
   }
 
   // ── Per-instance mesh ─────────────────────────────────────────────────────
@@ -189,15 +217,22 @@ export class AssemblyRenderer {
     const worldMat = this.computeWorldMatrix(inst, parentConn)
     const worldPos = new THREE.Vector3().setFromMatrixPosition(worldMat)
 
-    // Apply any user drag offset on top of the connection-derived position
+    // Apply user drag offset (world-space translation)
     if (inst.dragOffset) {
       worldPos.x += inst.dragOffset.x
       worldPos.y += inst.dragOffset.y
       worldPos.z += inst.dragOffset.z
     }
 
+    // Apply user drag rotation (local-space delta quaternion)
+    const baseQuat = new THREE.Quaternion().setFromRotationMatrix(worldMat)
+    if (inst.dragRotation) {
+      const delta = new THREE.Quaternion(inst.dragRotation.x, inst.dragRotation.y, inst.dragRotation.z, inst.dragRotation.w)
+      baseQuat.multiply(delta)
+    }
+
     partGroup.position.copy(worldPos)
-    partGroup.quaternion.setFromRotationMatrix(worldMat)
+    partGroup.quaternion.copy(baseQuat)
 
     this.group.add(partGroup)
     this.meshMap.set(inst.instanceId, partGroup)
@@ -297,45 +332,7 @@ export class AssemblyRenderer {
   showInterfacesFor(instanceId: string) {
     this.hideAllRings()
     this.selectedInstanceId = instanceId
-
-    if (!this.graph) return
-    const inst = this.graph.getInstance(instanceId)
-    if (!inst) return
-    const def = getPartDef(inst.definitionId)
-    if (!def) return
-
-    const partGroup = this.meshMap.get(instanceId)
-    if (!partGroup) return
-
-    const occupied = this.graph.occupiedInterfaces(instanceId)
-
-    for (const iface of def.interfaces) {
-      const key  = `${instanceId}:${iface.id}`
-      const isOcc = occupied.has(iface.id)
-
-      let color = isOcc ? COL_OCCUPIED : COL_AVAILABLE
-      if (!isOcc && this.pendingPartDefId) {
-        const pendingDef = getPartDef(this.pendingPartDefId)
-        if (pendingDef) {
-          // Check if any pending interface is compatible
-          const hasCompat = pendingDef.interfaces.some(pi => interfacesCompatible(pi.type, iface.type))
-          color = hasCompat ? COL_COMPAT : COL_AVAILABLE
-        }
-      }
-
-      const ring = makeRingMesh(color)
-      const pos  = iface.localPosition(inst.params)
-      const norm = iface.localNormal(inst.params)
-
-      ring.position.copy(pos)
-      orientRingToNormal(ring, norm)
-      ring.userData.instanceId  = instanceId
-      ring.userData.interfaceId = iface.id
-      ring.userData.isRing      = true
-
-      partGroup.add(ring)
-      this.ringMap.set(key, ring)
-    }
+    this._showInterfacesInner(instanceId)
   }
 
   hideAllRings() {
@@ -345,7 +342,57 @@ export class AssemblyRenderer {
 
   setPendingPart(defId: string | null) {
     this.pendingPartDefId = defId
-    if (this.selectedInstanceId) this.showInterfacesFor(this.selectedInstanceId)
+    if (defId) {
+      // Show compatible rings on every part simultaneously
+      this._showAllCompatibleRings(defId)
+    } else if (this.selectedInstanceId) {
+      this.showInterfacesFor(this.selectedInstanceId)
+    } else {
+      this.hideAllRings()
+    }
+  }
+
+  /** Show interface rings on ALL assembly parts, coloured by compatibility with the pending part. */
+  private _showAllCompatibleRings(_defId: string) {
+    this.hideAllRings()
+    if (!this.graph) return
+    this.graph.walk((inst) => {
+      this._showInterfacesInner(inst.instanceId)
+    })
+  }
+
+  /** Inner ring-drawing shared by showInterfacesFor and _showAllCompatibleRings. */
+  private _showInterfacesInner(instanceId: string) {
+    if (!this.graph) return
+    const inst = this.graph.getInstance(instanceId)
+    if (!inst) return
+    const def = getPartDef(inst.definitionId)
+    if (!def) return
+    const partGroup = this.meshMap.get(instanceId)
+    if (!partGroup) return
+    const occupied = this.graph.occupiedInterfaces(instanceId)
+
+    for (const iface of def.interfaces) {
+      const key   = `${instanceId}:${iface.id}`
+      if (this.ringMap.has(key)) continue  // already drawn
+      const isOcc = occupied.has(iface.id)
+      let color   = isOcc ? COL_OCCUPIED : COL_AVAILABLE
+      if (!isOcc && this.pendingPartDefId) {
+        const pendingDef = getPartDef(this.pendingPartDefId)
+        if (pendingDef) {
+          const hasCompat = pendingDef.interfaces.some(pi => interfacesCompatible(pi.type, iface.type))
+          color = hasCompat ? COL_COMPAT : COL_AVAILABLE
+        }
+      }
+      const ring = makeRingMesh(color)
+      ring.position.copy(iface.localPosition(inst.params))
+      orientRingToNormal(ring, iface.localNormal(inst.params))
+      ring.userData.instanceId  = instanceId
+      ring.userData.interfaceId = iface.id
+      ring.userData.isRing      = true
+      partGroup.add(ring)
+      this.ringMap.set(key, ring)
+    }
   }
 
   highlightRing(instanceId: string, interfaceId: string) {
@@ -492,6 +539,18 @@ export class AssemblyRenderer {
     return new THREE.Vector3().setFromMatrixPosition(mat)
   }
 
+  /**
+   * Return the full 4×4 world matrix from connection transform alone
+   * (no dragOffset/dragRotation applied). Used to compute gizmo deltas.
+   */
+  getComputedWorldMatrix(instanceId: string): THREE.Matrix4 | null {
+    if (!this.graph) return null
+    const inst = this.graph.getInstance(instanceId)
+    if (!inst) return null
+    const parentConn = this.graph.getParentConnection(instanceId)
+    return this.computeWorldMatrix(inst, parentConn)
+  }
+
   getInterfaceWorldPosition(instanceId: string, interfaceId: string): THREE.Vector3 | null {
     if (!this.graph) return null
     const inst = this.graph.getInstance(instanceId)
@@ -533,7 +592,7 @@ export class AssemblyRenderer {
         depthWrite:  mat.depthWrite,
       })
       mat.transparent = true
-      mat.opacity     = 0.10
+      mat.opacity     = 0.40
       mat.depthWrite  = false
     })
   }

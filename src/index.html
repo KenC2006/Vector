@@ -8,7 +8,6 @@
   </head>
   <body>
     <div id="app">
-      <!-- Title bar -->
       <div id="titlebar">
         <span id="logo">VECTOR</span>
       </div>
@@ -16,14 +15,11 @@
       <div id="workspace">
         <!-- Activity bar -->
         <div id="activity-bar">
-          <div class="ab-btn" data-panel="kinematic" title="Kinematic Graph">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="16" r="2"/><line x1="7.5" y1="7.5" x2="10.5" y2="14.5"/><line x1="16.5" y1="7.5" x2="13.5" y2="14.5"/></svg>
-          </div>
-          <div class="ab-btn active" data-panel="build" title="Build Mode (B)">
+          <div class="ab-btn active" data-panel="build" title="Assembly (A)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><path d="M7 13V9a4 4 0 014-4h2" stroke-linecap="round"/></svg>
           </div>
-          <div class="ab-btn" data-panel="inspector" title="Inspector (I)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35" stroke-linecap="round"/><line x1="11" y1="8" x2="11" y2="14" stroke-linecap="round"/><line x1="8" y1="11" x2="14" y2="11" stroke-linecap="round"/></svg>
+          <div class="ab-btn" data-panel="inspector" title="Properties (I)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="18" x2="12" y2="18"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
           </div>
           <div class="ab-btn" data-panel="toolbox" title="Toolbox (T)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.77 3.77z" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -32,25 +28,19 @@
 
         <!-- Sidebar -->
         <div id="sidebar">
-          <!-- Kinematic Graph panel -->
-          <div class="sidebar-panel hidden" id="panel-kinematic">
-            <div class="sp-title">Kinematic Graph</div>
-            <div id="kinematic-tree" class="sb-section">
-              <!-- Tree will be inserted here by JS -->
-            </div>
-          </div>
 
-          <!-- Build panel -->
+          <!-- Assembly panel -->
           <div class="sidebar-panel" id="panel-build">
             <div class="sp-title">Assembly</div>
             <div class="build-stats" id="build-stats">
               <div class="bs-row"><span class="bs-label">Parts</span><span class="bs-val" id="bs-parts">0</span></div>
-              <div class="bs-row"><span class="bs-label">Total mass</span><span class="bs-val" id="bs-mass">0 g</span></div>
+              <div class="bs-row"><span class="bs-label">Mass</span><span class="bs-val" id="bs-mass">0 g</span></div>
               <div class="bs-row"><span class="bs-label">Joints</span><span class="bs-val" id="bs-joints">0</span></div>
             </div>
             <div class="build-empty" id="build-empty">
               <div class="be-icon">⊕</div>
-              <div class="be-label">Open the Toolbox and select a part, then click in the viewport to place it</div>
+              <div class="be-label">Open the Toolbox, pick a part, then click the viewport to place it</div>
+              <button class="ba-btn" id="btn-load-example" style="margin-top:10px">Load Example Robot</button>
             </div>
             <div id="build-tree" class="build-tree"></div>
             <div class="build-actions">
@@ -60,11 +50,11 @@
             </div>
           </div>
 
-          <!-- Inspector panel -->
+          <!-- Inspector / Properties panel -->
           <div class="sidebar-panel hidden" id="panel-inspector">
-            <div class="sp-title"><span id="insp-title">Inspector</span></div>
+            <div class="sp-title"><span id="insp-title">Properties</span></div>
             <div class="insp-body">
-              <div class="insp-empty">Click a robot part to inspect it</div>
+              <div class="insp-empty">Select a part to see its properties</div>
             </div>
           </div>
 
@@ -72,43 +62,31 @@
           <div class="sidebar-panel hidden" id="panel-toolbox">
             <div class="sp-title">Toolbox</div>
             <div class="tb-search-wrap">
-              <input type="text" id="toolbox-search" class="tb-search" placeholder="Search parts..." autocomplete="off" />
+              <input type="text" id="toolbox-search" class="tb-search" placeholder="Search parts…" autocomplete="off" />
             </div>
-            <div id="toolbox-hint" class="tb-hint">Select a node (●) then double-click a part to attach</div>
+            <div id="toolbox-hint" class="tb-hint">Click a part to select it, then click a glowing ring (○) to attach</div>
             <div id="toolbox-items" class="tb-items"></div>
           </div>
+
         </div>
 
-        <!-- Main area (viewport only) -->
+        <!-- Viewport -->
         <div id="main">
           <div id="viewport-panel">
             <div id="viewport-header">
-              <span id="viewport-label">3D Preview</span>
+              <span id="viewport-label">3D Builder</span>
               <div id="viewport-controls">
                 <button class="vp-btn active" id="toggle-axes" title="Axes (A)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 14L2 2M2 14L14 14M2 14L6 10" stroke-linecap="round"/></svg>
                 </button>
-                <button class="vp-btn active" id="toggle-com" title="Center of Mass (C)">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="3"/><path d="M8 2v3M8 11v3M2 8h3M11 8h3" stroke-linecap="round"/></svg>
-                </button>
-                <button class="vp-btn" id="toggle-wireframe" title="Wireframe (W)">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M2 8h12M8 2v12"/></svg>
-                </button>
-                <button class="vp-btn" id="toggle-grid" title="Grid">
+                <button class="vp-btn" id="toggle-grid" title="Grid (G)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="0.8"><path d="M2 5.3h12M2 8h12M2 10.7h12M5.3 2v12M8 2v12M10.7 2v12"/></svg>
                 </button>
-                <button class="vp-btn" id="toggle-graph" title="Node Graph (N)">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="3" cy="3" r="1.5"/><circle cx="13" cy="3" r="1.5"/><circle cx="8" cy="12" r="1.5"/><line x1="4" y1="3.5" x2="7" y2="11"/><line x1="12" y1="3.5" x2="9" y2="11"/></svg>
-                </button>
-                <button class="vp-btn" id="toggle-snap" title="Snap to grid — click to enable, click again to cycle sizes">
+                <button class="vp-btn" id="toggle-snap" title="Snap to Grid — click to enable, click again to cycle sizes">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="0.9"><circle cx="3" cy="3" r="0.9" fill="currentColor" stroke="none"/><circle cx="8" cy="3" r="0.9" fill="currentColor" stroke="none"/><circle cx="13" cy="3" r="0.9" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r="0.9" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none"/><circle cx="13" cy="8" r="0.9" fill="currentColor" stroke="none"/><circle cx="3" cy="13" r="0.9" fill="currentColor" stroke="none"/><circle cx="8" cy="13" r="0.9" fill="currentColor" stroke="none"/><circle cx="13" cy="13" r="0.9" fill="currentColor" stroke="none"/></svg>
                   <span id="snap-label">Snap</span>
                 </button>
                 <div class="vp-sep"></div>
-                <button class="vp-btn build-toggle" id="build-toggle" title="Build Mode (B)">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="9" width="5" height="5" rx="0.5"/><rect x="9" y="2" width="5" height="5" rx="0.5"/><path d="M4.5 9V6.5A2 2 0 016.5 4.5H9" stroke-linecap="round"/></svg>
-                  <span>Build</span>
-                </button>
                 <button class="vp-btn sim-toggle" id="sim-toggle">
                   <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M5 3l8 5-8 5V3z"/></svg>
                   <span>Simulate</span>
@@ -117,9 +95,9 @@
             </div>
             <canvas id="viewport"></canvas>
             <div id="sim-bar" class="hidden">
-              <button class="sim-btn active" id="sim-play" title="Play">&#9654;</button>
-              <button class="sim-btn" id="sim-pause" title="Pause">&#10074;&#10074;</button>
-              <button class="sim-btn" id="sim-reset" title="Reset">&#8634;</button>
+              <button class="sim-btn active" id="sim-play"  title="Play">&#9654;</button>
+              <button class="sim-btn"        id="sim-pause" title="Pause">&#10074;&#10074;</button>
+              <button class="sim-btn"        id="sim-reset" title="Reset">&#8634;</button>
               <div class="sim-sep"></div>
               <div id="sim-timeline"><div id="sim-progress"></div></div>
               <span id="sim-time">0.000s</span>
@@ -130,60 +108,22 @@
 
       <!-- Status bar -->
       <div id="statusbar">
-        <span id="mode-indicator">Demo</span>
+        <span id="mode-indicator">Build</span>
         <span id="sb-spacer"></span>
+        <span id="sb-keys">R rotate · V translate · Ctrl+Z undo</span>
+        <span id="sb-spacer2"></span>
         <span id="version">Vector v0.1.0</span>
       </div>
 
       <!-- Toast area -->
       <div id="toast-area"></div>
 
-      <!-- Connection dialog (build mode) -->
-      <div id="connection-dialog" class="conn-dialog hidden">
-        <div class="conn-dialog-inner">
-          <div class="conn-title">Connect Parts</div>
-          <div class="conn-subtitle" id="conn-subtitle">Part A → Part B</div>
-          <div class="conn-field">
-            <label class="conn-label">Joint Type</label>
-            <div class="conn-radio-group">
-              <label class="conn-radio"><input type="radio" name="joint-type" value="fixed" checked> Fixed</label>
-              <label class="conn-radio"><input type="radio" name="joint-type" value="revolute"> Revolute</label>
-              <label class="conn-radio"><input type="radio" name="joint-type" value="prismatic"> Prismatic</label>
-            </div>
-          </div>
-          <div class="conn-field" id="conn-axis-field">
-            <label class="conn-label">Rotation/Translation Axis</label>
-            <div class="conn-radio-group">
-              <label class="conn-radio"><input type="radio" name="joint-axis" value="x"> X</label>
-              <label class="conn-radio"><input type="radio" name="joint-axis" value="y" checked> Y</label>
-              <label class="conn-radio"><input type="radio" name="joint-axis" value="z"> Z</label>
-            </div>
-          </div>
-          <div class="conn-field conn-limits" id="conn-limits-field">
-            <label class="conn-label">Limits</label>
-            <div class="conn-limits-row">
-              <span class="conn-lim-label">Lower</span>
-              <input type="number" id="conn-lower" class="conn-input" value="-3.14159" step="0.1">
-              <span class="conn-lim-label">Upper</span>
-              <input type="number" id="conn-upper" class="conn-input" value="3.14159" step="0.1">
-            </div>
-          </div>
-          <div class="conn-actions">
-            <button class="conn-btn cancel" id="conn-cancel">Cancel</button>
-            <button class="conn-btn confirm" id="conn-confirm">Connect</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Build mode viewport hint overlay -->
+      <!-- Build viewport hint -->
       <div id="build-hint-overlay" class="build-hint-overlay hidden">
         <div class="bho-inner">
           <span id="build-hint-text">Select a part from the Toolbox, then click here to place it</span>
         </div>
       </div>
-
-      <!-- Node hover tooltip -->
-      <div id="node-tooltip"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
