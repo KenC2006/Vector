@@ -174,6 +174,16 @@ async fn parse_urdf(state: State<'_, AppState>, path: String) -> Result<serde_js
     process.send_rpc("parse_urdf", json!({ "path": path }), 1)
 }
 
+/// Validate a URDF file (structural, physics, actuator, mesh checks)
+#[tauri::command]
+async fn validate_urdf(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("validate_urdf", json!({ "path": path }), 1)
+}
+
 /// Load a robot model for simulation
 #[tauri::command]
 async fn sim_load(state: State<'_, AppState>, path: String) -> Result<String, String> {
@@ -272,6 +282,7 @@ pub fn run() {
             stop_core,
             ping_core,
             parse_urdf,
+            validate_urdf,
             sim_load,
             sim_step,
             sim_reset,

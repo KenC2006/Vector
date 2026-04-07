@@ -13,10 +13,21 @@
         <span id="logo">VECTOR</span>
         <div id="tab-bar">
           <div class="tab active" data-file="robot.urdf">
-            <span class="tab-dot"></span>robot.urdf<span class="tab-close">&times;</span>
+            <svg class="tab-icon tab-icon-xml" viewBox="0 0 16 16"><path d="M1 3.5l3.5 4.5L1 12.5M6 12.5h4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="tab-label">robot.urdf</span>
+            <span class="tab-modified" title="Modified"></span>
+            <span class="tab-close" title="Close">&times;</span>
           </div>
-          <div class="tab" data-file="presets.json">presets.json<span class="tab-close">&times;</span></div>
-          <div class="tab" data-file="config.yaml">config.yaml<span class="tab-close">&times;</span></div>
+          <div class="tab" data-file="presets.json">
+            <svg class="tab-icon tab-icon-json" viewBox="0 0 16 16"><path d="M4 2c-1.1 0-2 .9-2 2v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2M12 2c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+            <span class="tab-label">presets.json</span>
+            <span class="tab-close" title="Close">&times;</span>
+          </div>
+          <div class="tab" data-file="config.yaml">
+            <svg class="tab-icon tab-icon-yaml" viewBox="0 0 16 16"><path d="M2 3l3 5v5M14 3l-3 5v5M8 3v10" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+            <span class="tab-label">config.yaml</span>
+            <span class="tab-close" title="Close">&times;</span>
+          </div>
           <button class="tab-new" title="New file">+</button>
         </div>
         <div id="titlebar-right">
@@ -144,29 +155,12 @@
           <!-- Validation panel -->
           <div class="sidebar-panel hidden" id="panel-validation">
             <div class="sp-title">Validation</div>
-            <div class="sb-section">
-              <div class="val-group">
-                <div class="vg-title">Structural</div>
-                <div class="val-item pass">URDF schema valid</div>
-                <div class="val-item pass">No orphan links</div>
-                <div class="val-item pass">Tree structure OK</div>
-              </div>
-              <div class="val-group">
-                <div class="vg-title">Physics</div>
-                <div class="val-item pass">Inertia tensors plausible</div>
-                <div class="val-item warn">CoM near support edge</div>
-                <div class="val-item pass">No self-collision</div>
-              </div>
-              <div class="val-group">
-                <div class="vg-title">Actuators</div>
-                <div class="val-item pass">Joint limits within range</div>
-                <div class="val-item pass">Torque limits set</div>
-              </div>
-              <div class="val-group">
-                <div class="vg-title">Mesh</div>
-                <div class="val-item pass">All meshes referenced</div>
-                <div class="val-item info">Mesh watertight check skipped</div>
-              </div>
+            <div id="validation-summary" class="val-summary"></div>
+            <div id="validation-results" class="sb-section">
+              <div class="val-placeholder">Click "Run Checks" or open a URDF to validate</div>
+            </div>
+            <div class="val-actions">
+              <button id="btn-revalidate" class="val-btn">Run Checks</button>
             </div>
           </div>
 
@@ -184,18 +178,17 @@
           <div id="editor-panel">
             <div id="breadcrumbs">
               <span class="bc-item">simple_arm</span>
-              <span class="bc-sep">/</span>
+              <svg class="bc-chevron" viewBox="0 0 16 16" width="12" height="12"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
               <span class="bc-item active">robot.urdf</span>
             </div>
             <div id="editor-wrap">
-              <div id="line-numbers"></div>
-              <div id="editor-container">
-                <pre id="highlight-layer" aria-hidden="true"></pre>
-                <textarea id="editor" spellcheck="false" wrap="off"></textarea>
-              </div>
+              <div id="monaco-container"></div>
             </div>
           </div>
           <div id="resize-handle"></div>
+          <button id="expand-viewport-btn" title="Show 3D Preview (P)">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 3l6 5-6 5V3z" stroke-linecap="round" stroke-linejoin="round"/><line x1="13" y1="3" x2="13" y2="13" stroke-linecap="round"/></svg>
+          </button>
           <div id="viewport-panel">
             <div id="viewport-header">
               <span id="viewport-label">3D Preview</span>
@@ -219,6 +212,10 @@
                 <button class="vp-btn sim-toggle" id="sim-toggle">
                   <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M5 3l8 5-8 5V3z"/></svg>
                   <span>Simulate</span>
+                </button>
+                <div class="vp-sep"></div>
+                <button class="vp-btn" id="toggle-viewport" title="Close 3D Preview (P)">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round"/></svg>
                 </button>
               </div>
             </div>
@@ -265,19 +262,29 @@
 
       <!-- Status bar -->
       <div id="statusbar">
-        <span id="sb-branch">main</span>
-        <span class="sb-sep"></span>
-        <span id="cursor-pos">Ln 1, Col 1</span>
-        <span class="sb-sep"></span>
-        <span id="file-type">URDF</span>
-        <span class="sb-sep"></span>
-        <span id="encoding">UTF-8</span>
-        <span id="sb-spacer"></span>
-        <span id="val-summary">5 passed, 1 warning</span>
-        <span class="sb-sep"></span>
-        <span id="engine-badge">Claude Sonnet 4.6</span>
-        <span class="sb-sep"></span>
-        <span id="version">Vector v0.1.0</span>
+        <div id="sb-left">
+          <span class="sb-item sb-clickable" id="sb-branch">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M5 3.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM5 9.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM11 3.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM5 7v2.5M5 5v.5c0 1 .5 1.5 1.5 1.5h3c1 0 1.5-.5 1.5-1.5V5"/></svg>
+            main
+          </span>
+          <span class="sb-item" id="sb-errors">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><circle cx="8" cy="8" r="6"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#fff" stroke-width="1.2"/></svg>
+            <span id="error-count">0</span>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 2L1 14h14L8 2z"/><path d="M8 6v4M8 11.5v.5" stroke="#000" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <span id="warning-count">1</span>
+          </span>
+        </div>
+        <div id="sb-right">
+          <span class="sb-item sb-clickable" id="cursor-pos">Ln 1, Col 1</span>
+          <span class="sb-item sb-clickable" id="sb-spaces">Spaces: 2</span>
+          <span class="sb-item sb-clickable" id="encoding">UTF-8</span>
+          <span class="sb-item sb-clickable" id="sb-eol">LF</span>
+          <span class="sb-item sb-clickable" id="file-type">XML</span>
+          <span class="sb-item" id="engine-badge">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM6 5h4l-1 3h2l-4 5 1-3H6l2-5z"/></svg>
+            Claude Sonnet 4.6
+          </span>
+        </div>
       </div>
 
       <!-- Toast area -->

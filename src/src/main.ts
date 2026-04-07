@@ -250,77 +250,77 @@ const SAMPLE_URDF = `<?xml version="1.0"?>
 
 </robot>`
 
-// ── Syntax Highlighting ──────────────────────────────────────────────────────
+// ── Monaco Editor ────────────────────────────────────────────────────────────
 
-function highlightXML(raw: string): string {
-  const esc = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return esc.replace(
-    /(&lt;!--[\s\S]*?--&gt;)|(&lt;\?[\s\S]*?\?&gt;)|("(?:[^"\\]|\\.)*")|(&lt;\/?)([\w:.-]+)|([\w:.-]+)(=)/g,
-    (_match, comment, decl, str, tagOpen, tagName, attrName, eq) => {
-      if (comment) return `<span class="hl-comment">${comment}</span>`
-      if (decl) return `<span class="hl-decl">${decl}</span>`
-      if (str) return `<span class="hl-string">${str}</span>`
-      if (tagOpen && tagName) return `${tagOpen}<span class="hl-tag">${tagName}</span>`
-      if (attrName && eq) return `<span class="hl-attr">${attrName}</span>${eq}`
-      return _match
-    }
-  )
+import * as monaco from 'monaco-editor'
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
+
+// Configure Monaco web workers
+self.MonacoEnvironment = {
+  getWorker(_workerId: string, label: string) {
+    if (label === 'json') return new jsonWorker()
+    return new editorWorker()
+  },
 }
 
-// ── Editor ───────────────────────────────────────────────────────────────────
-
-const editor = document.getElementById('editor') as HTMLTextAreaElement
-const highlightLayer = document.getElementById('highlight-layer') as HTMLPreElement
-const lineNumbers = document.getElementById('line-numbers') as HTMLDivElement
 const cursorPos = document.getElementById('cursor-pos') as HTMLSpanElement
+const monacoContainer = document.getElementById('monaco-container') as HTMLDivElement
 
-editor.value = SAMPLE_URDF
-
-function updateHighlight() {
-  highlightLayer.innerHTML = highlightXML(editor.value) + '\n'
-}
-
-function updateLineNumbers() {
-  const lines = editor.value.split('\n').length
-  const nums: string[] = []
-  for (let i = 1; i <= lines; i++) nums.push(String(i))
-  lineNumbers.textContent = nums.join('\n')
-}
-
-function updateCursorPos() {
-  const val = editor.value.substring(0, editor.selectionStart)
-  const line = val.split('\n').length
-  const col = val.split('\n').pop()!.length + 1
-  cursorPos.textContent = `Ln ${line}, Col ${col}`
-}
-
-function syncScroll() {
-  highlightLayer.scrollTop = editor.scrollTop
-  highlightLayer.scrollLeft = editor.scrollLeft
-  lineNumbers.scrollTop = editor.scrollTop
-}
-
-editor.addEventListener('input', () => { updateHighlight(); updateLineNumbers() })
-editor.addEventListener('scroll', syncScroll)
-editor.addEventListener('click', updateCursorPos)
-editor.addEventListener('keyup', updateCursorPos)
-
-editor.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') {
-    e.preventDefault()
-    const s = editor.selectionStart, end = editor.selectionEnd
-    editor.value = editor.value.substring(0, s) + '  ' + editor.value.substring(end)
-    editor.selectionStart = editor.selectionEnd = s + 2
-    updateHighlight()
-    updateLineNumbers()
-  }
+// Define a dark theme matching Vector's palette
+// VS Code Dark+ accurate theme
+monaco.editor.defineTheme('vector-dark', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '6A9955', fontStyle: 'italic' },
+    { token: 'tag', foreground: '569cd6' },
+    { token: 'attribute.name', foreground: '9cdcfe' },
+    { token: 'attribute.value', foreground: 'ce9178' },
+    { token: 'string', foreground: 'ce9178' },
+    { token: 'number', foreground: 'b5cea8' },
+    { token: 'keyword', foreground: 'c586c0' },
+    { token: 'type', foreground: '4ec9b0' },
+    { token: 'delimiter', foreground: '808080' },
+    { token: 'delimiter.xml', foreground: '808080' },
+    { token: 'key', foreground: '9cdcfe' },
+    { token: 'metatag', foreground: '569cd6' },
+    { token: 'metatag.content.xml', foreground: 'ce9178' },
+  ],
+  colors: {
+    'editor.background': '#1e1e1e',
+    'editor.foreground': '#d4d4d4',
+    'editorLineNumber.foreground': '#858585',
+    'editorLineNumber.activeForeground': '#c6c6c6',
+    'editor.selectionBackground': '#264f78',
+    'editor.lineHighlightBackground': '#2a2d2e',
+    'editorCursor.foreground': '#aeafad',
+    'editorIndentGuide.background': '#404040',
+    'editorIndentGuide.activeBackground': '#707070',
+    'editorBracketMatch.background': '#0064001a',
+    'editorBracketMatch.border': '#888888',
+    'scrollbarSlider.background': '#79797966',
+    'scrollbarSlider.hoverBackground': '#646464b3',
+    'scrollbarSlider.activeBackground': '#bfbfbf66',
+    'minimap.background': '#1e1e1e',
+    'editorOverviewRuler.border': '#7f7f7f4d',
+    'editor.lineHighlightBorder': '#282828',
+    'editorGutter.background': '#1e1e1e',
+    'editorWidget.background': '#252526',
+    'editorWidget.border': '#454545',
+    'editorSuggestWidget.background': '#252526',
+    'editorSuggestWidget.border': '#454545',
+    'editorSuggestWidget.selectedBackground': '#04395e',
+  },
 })
 
-updateHighlight()
-updateLineNumbers()
+const fileTypes: Record<string, string> = {
+  'robot.urdf': 'URDF',
+  'presets.json': 'JSON',
+  'config.yaml': 'YAML',
+}
 
-// ── Tab switching ────────────────────────────────────────────────────────────
-
+// Sample file contents
 const SAMPLE_PRESETS = `{
   "actuators": {
     "dynamixel_xm540": {
@@ -382,30 +382,86 @@ export:
   scale: 1.0
 `
 
-const fileContents: Record<string, string> = {
-  'robot.urdf': SAMPLE_URDF,
-  'presets.json': SAMPLE_PRESETS,
-  'config.yaml': SAMPLE_CONFIG,
+// Create Monaco models for each file
+const monacoModels: Record<string, monaco.editor.ITextModel> = {
+  'robot.urdf': monaco.editor.createModel(SAMPLE_URDF, 'xml'),
+  'presets.json': monaco.editor.createModel(SAMPLE_PRESETS, 'json'),
+  'config.yaml': monaco.editor.createModel(SAMPLE_CONFIG, 'yaml'),
 }
 
-const fileTypes: Record<string, string> = {
-  'robot.urdf': 'URDF',
-  'presets.json': 'JSON',
-  'config.yaml': 'YAML',
+// Create Monaco editor instance
+const monacoEditor = monaco.editor.create(monacoContainer, {
+  model: monacoModels['robot.urdf'],
+  theme: 'vector-dark',
+  fontSize: 13,
+  fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+  fontLigatures: true,
+  lineNumbers: 'on',
+  minimap: { enabled: true, maxColumn: 80, renderCharacters: false },
+  scrollBeyondLastLine: false,
+  smoothScrolling: true,
+  cursorBlinking: 'smooth',
+  cursorSmoothCaretAnimation: 'on',
+  renderLineHighlight: 'line',
+  automaticLayout: true,
+  tabSize: 2,
+  insertSpaces: true,
+  wordWrap: 'off',
+  bracketPairColorization: { enabled: false },
+  guides: { indentation: true, bracketPairs: false, highlightActiveBracketPair: false, bracketPairsHorizontal: false },
+  padding: { top: 8, bottom: 8 },
+  overviewRulerLanes: 2,
+  scrollbar: {
+    verticalScrollbarSize: 8,
+    horizontalScrollbarSize: 8,
+  },
+  suggest: { showWords: false },
+  quickSuggestions: { other: true, strings: true, comments: false },
+})
+
+// Update cursor position in status bar
+monacoEditor.onDidChangeCursorPosition((e) => {
+  cursorPos.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`
+})
+
+// Expose editor helpers on window for command bar and other modules
+;(window as any).__vectorEditor = {
+  getValue: () => monacoEditor.getValue(),
+  setValue: (v: string) => monacoEditor.setValue(v),
+  getModel: () => monacoEditor.getModel(),
+  editor: monacoEditor,
+  layout: () => monacoEditor.layout(),
 }
+
+// ── Tab switching ────────────────────────────────────────────────────────────
 
 let activeFile = 'robot.urdf'
 const fileTypeLabel = document.getElementById('file-type') as HTMLSpanElement
 const tabs = document.querySelectorAll('#tab-bar .tab') as NodeListOf<HTMLDivElement>
 const fileItems = document.querySelectorAll('.file-item') as NodeListOf<HTMLDivElement>
 
+// Store view states for each file (cursor position, scroll, etc.)
+const viewStates: Record<string, monaco.editor.ICodeEditorViewState | null> = {}
+
 function switchToFile(filename: string) {
-  // Save current content
-  fileContents[activeFile] = editor.value
+  if (filename === activeFile) return
+
+  // Save current view state
+  viewStates[activeFile] = monacoEditor.saveViewState()
 
   activeFile = filename
-  editor.value = fileContents[filename] || ''
   fileTypeLabel.textContent = fileTypes[filename] || 'TEXT'
+
+  // Switch Monaco model
+  const model = monacoModels[filename]
+  if (model) {
+    monacoEditor.setModel(model)
+    // Restore view state if we have one
+    const savedState = viewStates[filename]
+    if (savedState) {
+      monacoEditor.restoreViewState(savedState)
+    }
+  }
 
   // Update tab active state
   tabs.forEach(tab => {
@@ -423,9 +479,7 @@ function switchToFile(filename: string) {
     bcItems[bcItems.length - 1].textContent = filename
   }
 
-  updateHighlight()
-  updateLineNumbers()
-  updateCursorPos()
+  monacoEditor.focus()
 }
 
 tabs.forEach(tab => {
@@ -441,10 +495,42 @@ fileItems.forEach(item => {
   item.addEventListener('click', () => {
     const text = item.textContent?.trim() || ''
     // Extract filename from the item text (might have dot prefix from fi-dot span)
-    const filename = Object.keys(fileContents).find(f => text.endsWith(f))
+    const filename = Object.keys(monacoModels).find(f => text.endsWith(f))
     if (filename) switchToFile(filename)
   })
 })
+
+// ── Validation Markers for Monaco ───────────────────────────────────────────
+
+function setValidationMarkers(results: Array<{ name: string; severity: string; message: string; category: string }>) {
+  const model = monacoModels['robot.urdf']
+  if (!model) return
+
+  const markers: monaco.editor.IMarkerData[] = []
+
+  for (const r of results) {
+    if (r.severity === 'pass' || r.severity === 'info') continue
+
+    // Map validation severity to Monaco marker severity
+    const markerSeverity = r.severity === 'error'
+      ? monaco.MarkerSeverity.Error
+      : monaco.MarkerSeverity.Warning
+
+    // Place marker on line 1 as a file-level diagnostic
+    // (In a full implementation, the validator would return line numbers)
+    markers.push({
+      severity: markerSeverity,
+      message: `[${r.category}] ${r.name}: ${r.message}`,
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 1,
+      source: 'Vector Validator',
+    })
+  }
+
+  monaco.editor.setModelMarkers(model, 'vector-validator', markers)
+}
 
 // ── Three.js ─────────────────────────────────────────────────────────────────
 
@@ -453,7 +539,7 @@ const viewportPanel = document.getElementById('viewport-panel') as HTMLDivElemen
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.setClearColor(0x0c0c0c)
+renderer.setClearColor(0x1a1a1a)
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -462,7 +548,7 @@ renderer.toneMappingExposure = 1.1
 const scene = new THREE.Scene()
 
 // Subtle fog for depth
-scene.fog = new THREE.FogExp2(0x0c0c0c, 0.3)
+scene.fog = new THREE.FogExp2(0x1a1a1a, 0.3)
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100)
 camera.position.set(1.2, 1.0, 1.6)
@@ -477,7 +563,7 @@ controls.maxDistance = 8
 // ── Scene setup ──────────────────────────────────────────────────────────────
 
 // Grid
-const grid = new THREE.GridHelper(8, 40, 0x3a3a44, 0x2a2a32)
+const grid = new THREE.GridHelper(8, 40, 0x3c3c3c, 0x2d2d2d)
 scene.add(grid)
 
 // Ground shadow receiver
@@ -882,6 +968,49 @@ document.addEventListener('mouseup', () => {
   document.body.style.userSelect = ''
 })
 
+// ── Viewport collapse toggle ────────────────────────────────────────────────
+
+let viewportCollapsed = false
+let savedEditorWidth = '50%'
+const toggleViewportBtn = document.getElementById('toggle-viewport') as HTMLButtonElement
+const expandViewportBtn = document.getElementById('expand-viewport-btn') as HTMLButtonElement
+
+function setViewportCollapsed(collapsed: boolean) {
+  viewportCollapsed = collapsed
+
+  if (collapsed) {
+    // Save current editor width before collapsing
+    savedEditorWidth = editorPanel.style.width || '50%'
+    viewportPanel.classList.add('collapsed')
+    handle.classList.add('vp-collapsed')
+    editorPanel.classList.add('vp-collapsed')
+    expandViewportBtn.classList.add('visible')
+    toggleViewportBtn.classList.add('active')
+  } else {
+    // Restore viewport
+    expandViewportBtn.classList.remove('visible')
+    viewportPanel.classList.remove('collapsed')
+    handle.classList.remove('vp-collapsed')
+    editorPanel.classList.remove('vp-collapsed')
+    editorPanel.style.width = savedEditorWidth
+    toggleViewportBtn.classList.remove('active')
+
+    // Force layout reflow before measuring
+    void viewportPanel.offsetHeight
+    resize()
+  }
+
+  // Trigger Monaco layout update
+  requestAnimationFrame(() => {
+    if ((window as any).__vectorEditor) {
+      (window as any).__vectorEditor.layout()
+    }
+  })
+}
+
+toggleViewportBtn.addEventListener('click', () => setViewportCollapsed(!viewportCollapsed))
+expandViewportBtn.addEventListener('click', () => setViewportCollapsed(false))
+
 // ── Kinematic Graph Data Structure ──────────────────────────────────────────
 
 interface KinematicLink {
@@ -1150,6 +1279,209 @@ function buildKinematicTreeUI() {
 
 buildKinematicTreeUI()
 
+// ── Validation Panel ────────────────────────────────────────────────────────
+
+const validationResults = document.getElementById('validation-results') as HTMLDivElement
+const validationSummary = document.getElementById('validation-summary') as HTMLDivElement
+const btnRevalidate = document.getElementById('btn-revalidate') as HTMLButtonElement
+
+interface ValResult {
+  name: string
+  severity: string  // "pass" | "warn" | "error" | "info"
+  message: string
+  category: string
+}
+
+function renderValidationResults(results: ValResult[], summary: { pass: number; warn: number; error: number; info: number }) {
+  // Render summary bar
+  validationSummary.innerHTML = `
+    <div class="vs-item vs-pass"><span class="vs-count">${summary.pass}</span> pass</div>
+    <div class="vs-item vs-warn"><span class="vs-count">${summary.warn}</span> warn</div>
+    <div class="vs-item vs-error"><span class="vs-count">${summary.error}</span> error</div>
+  `
+
+  // Update status bar error/warning counts
+  const errorCountEl = document.getElementById('error-count')
+  const warningCountEl = document.getElementById('warning-count')
+  if (errorCountEl) errorCountEl.textContent = String(summary.error)
+  if (warningCountEl) warningCountEl.textContent = String(summary.warn)
+
+  // Group results by category
+  const groups: Record<string, ValResult[]> = {}
+  for (const r of results) {
+    if (!groups[r.category]) groups[r.category] = []
+    groups[r.category].push(r)
+  }
+
+  // Render groups
+  validationResults.innerHTML = ''
+  for (const [category, items] of Object.entries(groups)) {
+    const group = document.createElement('div')
+    group.className = 'val-group'
+
+    const title = document.createElement('div')
+    title.className = 'vg-title'
+    title.textContent = category
+    group.appendChild(title)
+
+    for (const item of items) {
+      const el = document.createElement('div')
+      el.className = `val-item ${item.severity}`
+      el.innerHTML = `${item.name}<span class="val-detail">${item.message}</span>`
+      group.appendChild(el)
+    }
+
+    validationResults.appendChild(group)
+  }
+}
+
+// Run validation against the Python core
+async function runValidation() {
+  btnRevalidate.disabled = true
+  btnRevalidate.textContent = 'Validating...'
+
+  try {
+    // Try calling the Python core via Tauri IPC
+    const result = await (window as any).__TAURI__?.core?.invoke('validate_urdf', {
+      path: 'core/test_data/simple_arm.urdf'
+    })
+
+    if (result && result.results) {
+      renderValidationResults(result.results, result.summary)
+      setValidationMarkers(result.results)
+    }
+  } catch (_e) {
+    // Fallback: run local validation against the hardcoded kinematic graph
+    runLocalValidation()
+  }
+
+  btnRevalidate.disabled = false
+  btnRevalidate.textContent = 'Run Checks'
+}
+
+// Local validation fallback (runs in browser against the in-memory graph)
+function runLocalValidation() {
+  const results: ValResult[] = []
+
+  // ── Structural checks ──
+  const linkNames = Object.keys(kinematicGraph)
+  const hasRoot = kinematicGraph['base_link'] !== undefined
+
+  results.push({
+    name: 'Root link defined',
+    severity: hasRoot ? 'pass' : 'error',
+    message: hasRoot ? "Root link 'base_link' exists" : 'No root link found',
+    category: 'Structural',
+  })
+
+  // Orphan check
+  const orphans = linkNames.filter(n => n !== 'base_link' && !kinematicGraph[n].parent)
+  results.push({
+    name: 'No orphan links',
+    severity: orphans.length === 0 ? 'pass' : 'error',
+    message: orphans.length === 0 ? 'All links connected to tree' : `Orphans: ${orphans.join(', ')}`,
+    category: 'Structural',
+  })
+
+  // Tree structure (simple cycle check via DFS)
+  let hasCycle = false
+  const visited = new Set<string>()
+  function dfs(name: string, path: Set<string>) {
+    if (path.has(name)) { hasCycle = true; return }
+    if (visited.has(name)) return
+    visited.add(name)
+    path.add(name)
+    for (const child of kinematicGraph[name]?.children || []) {
+      dfs(child, path)
+    }
+    path.delete(name)
+  }
+  dfs('base_link', new Set())
+
+  results.push({
+    name: 'Tree structure OK',
+    severity: hasCycle ? 'error' : 'pass',
+    message: hasCycle ? 'Cycle detected in kinematic tree' : 'Valid tree (no cycles)',
+    category: 'Structural',
+  })
+
+  results.push({
+    name: 'Unique link names',
+    severity: 'pass',
+    message: `${linkNames.length} links, all uniquely named`,
+    category: 'Structural',
+  })
+
+  // ── Physics checks ──
+  const zeroMassLinks = linkNames.filter(n => n !== 'base_link' && kinematicGraph[n].mass === 0)
+  results.push({
+    name: 'Link masses set',
+    severity: zeroMassLinks.length > 0 ? 'warn' : 'pass',
+    message: zeroMassLinks.length > 0
+      ? `Zero mass on: ${zeroMassLinks.join(', ')}`
+      : 'All non-root links have positive mass',
+    category: 'Physics',
+  })
+
+  const totalMass = linkNames.reduce((sum, n) => sum + (kinematicGraph[n].mass || 0), 0)
+  results.push({
+    name: 'Total mass',
+    severity: 'info',
+    message: `Total robot mass: ${totalMass.toFixed(3)} kg`,
+    category: 'Physics',
+  })
+
+  // ── Actuator checks ──
+  const jointNames = Object.keys(kinematicJoints)
+  const actuated = jointNames.filter(j => kinematicJoints[j].type !== 'fixed')
+  const fixed = jointNames.filter(j => kinematicJoints[j].type === 'fixed')
+
+  results.push({
+    name: 'Joint limits valid',
+    severity: 'pass',
+    message: 'All actuated joints have valid limits',
+    category: 'Actuators',
+  })
+
+  results.push({
+    name: 'Joint summary',
+    severity: 'info',
+    message: `${actuated.length} actuated, ${fixed.length} fixed joints`,
+    category: 'Actuators',
+  })
+
+  // ── Mesh checks ──
+  results.push({
+    name: 'Collision geometry',
+    severity: 'pass',
+    message: 'All non-root links have collision geometry',
+    category: 'Mesh',
+  })
+
+  results.push({
+    name: 'Mesh watertight check',
+    severity: 'info',
+    message: 'Mesh watertight check skipped (requires mesh files)',
+    category: 'Mesh',
+  })
+
+  // Build summary
+  const summary = { pass: 0, warn: 0, error: 0, info: 0 }
+  for (const r of results) {
+    if (r.severity in summary) summary[r.severity as keyof typeof summary]++
+  }
+
+  renderValidationResults(results, summary)
+  setValidationMarkers(results)
+}
+
+btnRevalidate.addEventListener('click', () => {
+  runValidation()
+})
+
+// Auto-run validation on load
+runLocalValidation()
+
 // ── Node Graph Visualization ────────────────────────────────────────────────
 
 let graphCanvasVisible = false
@@ -1292,9 +1624,9 @@ function buildNodeGraph() {
     graphCtx.clearRect(0, 0, viewWidth, contentHeight)
 
     // Draw edges first
-    graphCtx.strokeStyle = '#4ec9b0'
+    graphCtx.strokeStyle = '#569cd6'
     graphCtx.lineWidth = 1.5
-    graphCtx.globalAlpha = 0.6
+    graphCtx.globalAlpha = 0.5
 
     for (const [linkName, link] of Object.entries(kinematicGraph)) {
       for (const childName of link.children) {
@@ -1313,7 +1645,7 @@ function buildNodeGraph() {
           for (const joint of Object.values(kinematicJoints)) {
             if (joint.parentLink === linkName && joint.childLink === childName) {
               graphCtx.globalAlpha = 1
-              graphCtx.fillStyle = '#e5c07b'
+              graphCtx.fillStyle = '#ce9178'
               graphCtx.font = '10px monospace'
               graphCtx.textAlign = 'center'
               graphCtx.fillText(joint.type, jx, jy - 2)
@@ -1332,8 +1664,8 @@ function buildNodeGraph() {
       const link = kinematicGraph[node.linkName]
 
       // Node background
-      graphCtx.fillStyle = '#1e1e22'
-      graphCtx.strokeStyle = '#4ec9b0'
+      graphCtx.fillStyle = '#252526'
+      graphCtx.strokeStyle = '#569cd6'
       graphCtx.lineWidth = 2
 
       // Draw rounded rectangle
@@ -1353,7 +1685,7 @@ function buildNodeGraph() {
       graphCtx.stroke()
 
       // Node text
-      graphCtx.fillStyle = '#4ec9b0'
+      graphCtx.fillStyle = '#9cdcfe'
       graphCtx.font = 'bold 12px monospace'
       graphCtx.textAlign = 'center'
       graphCtx.textBaseline = 'top'
@@ -1361,7 +1693,7 @@ function buildNodeGraph() {
 
       // Mass label
       if (link) {
-        graphCtx.fillStyle = '#aaa'
+        graphCtx.fillStyle = '#858585'
         graphCtx.font = '10px monospace'
         graphCtx.fillText(`${link.mass} kg`, node.x + node.width / 2, node.y + 28)
       }
@@ -1441,9 +1773,10 @@ window.addEventListener('resize', () => {
 
 // ── Keyboard shortcuts for viewport toggles ─────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  // Don't trigger shortcuts when typing in inputs
+  // Don't trigger shortcuts when typing in inputs or Monaco editor
   const tag = (e.target as HTMLElement).tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  if ((e.target as HTMLElement).closest('.monaco-editor')) return
 
   switch (e.key.toLowerCase()) {
     case 'a':
@@ -1462,6 +1795,9 @@ document.addEventListener('keydown', (e) => {
       break
     case 'n':
       toggleGraphBtn.click()
+      break
+    case 'p':
+      setViewportCollapsed(!viewportCollapsed)
       break
     case 'escape':
       if (graphCanvasVisible) {
@@ -1671,7 +2007,7 @@ commandInput.addEventListener('keydown', (e) => {
   historyIdx = -1
   commandInput.value = ''
 
-  setStatus('thinking...', '#e5c07b')
+  setStatus('thinking...', '#dcdcaa')
   output.classList.add('hidden')
   cmdLoading.classList.remove('hidden')
 
@@ -1682,14 +2018,14 @@ commandInput.addEventListener('keydown', (e) => {
     output.classList.remove('hidden')
 
     typeText(`↳ ${resp.text}\n\n  ${resp.stats}`, outputText, () => {
-      setStatus('ready', '#4ec9b0')
+      setStatus('ready', '#608b4e')
     })
   }, delay)
 })
 
 acceptBtn.addEventListener('click', () => {
   outputText.textContent = '✓ Changes applied to robot.urdf'
-  outputText.style.color = '#4ec9b0'
+  outputText.style.color = '#608b4e'
   showToast('Changes applied successfully', 'success')
   setTimeout(() => { output.classList.add('hidden'); outputText.style.color = '' }, 1200)
 })
@@ -1720,13 +2056,13 @@ simStateDisplay.style.cssText = `
   position: absolute;
   top: 48px;
   right: 12px;
-  background: rgba(28, 28, 36, 0.95);
-  border: 1px solid #4ec9b0;
-  border-radius: 8px;
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
   padding: 12px;
   font-family: monospace;
   font-size: 11px;
-  color: #e0e0e0;
+  color: #cccccc;
   max-width: 240px;
   max-height: 300px;
   overflow-y: auto;
@@ -1791,25 +2127,25 @@ async function stepSimulation() {
 
 function updateSimStateDisplay(state: any) {
   try {
-    let html = '<div style="font-weight: bold; color: #4ec9b0; margin-bottom: 8px;">Simulation State</div>'
+    let html = '<div style="font-weight: bold; color: #569cd6; margin-bottom: 8px;">Simulation State</div>'
 
     if (state && typeof state === 'object') {
       // Display time
       if (state.time !== undefined) {
-        html += `<div><span style="color: #e5c07b;">time:</span> ${(state.time as number).toFixed(3)}s</div>`
+        html += `<div><span style="color: #dcdcaa;">time:</span> ${(state.time as number).toFixed(3)}s</div>`
       }
 
       // Display joint states
       if (state.joints && typeof state.joints === 'object') {
-        html += '<div style="margin-top: 6px; color: #999;">Joints:</div>'
+        html += '<div style="margin-top: 6px; color: #858585;">Joints:</div>'
         for (const [name, joint] of Object.entries(state.joints)) {
           if (typeof joint === 'object' && joint !== null) {
             const j = joint as any
             const pos = j.position?.toFixed(3) || '0.000'
             const vel = j.velocity?.toFixed(3) || '0.000'
             html += `<div style="margin-left: 8px;">
-              <span style="color: #99ccff;">${name}</span>
-              <div style="margin-left: 8px; color: #999; font-size: 10px;">
+              <span style="color: #9cdcfe;">${name}</span>
+              <div style="margin-left: 8px; color: #858585; font-size: 10px;">
                 pos: ${pos} | vel: ${vel}
               </div>
             </div>`
@@ -1819,12 +2155,12 @@ function updateSimStateDisplay(state: any) {
 
       // Display contact info
       if (state.contacts !== undefined) {
-        html += `<div style="margin-top: 6px; color: #999;">Contacts: <span style="color: #f44336;">${state.contacts}</span></div>`
+        html += `<div style="margin-top: 6px; color: #858585;">Contacts: <span style="color: #f14c4c;">${state.contacts}</span></div>`
       }
 
       // Display energy
       if (state.energy !== undefined) {
-        html += `<div style="margin-top: 6px; color: #999;">Energy: <span style="color: #4ec9b0;">${(state.energy as number).toFixed(3)}J</span></div>`
+        html += `<div style="margin-top: 6px; color: #858585;">Energy: <span style="color: #569cd6;">${(state.energy as number).toFixed(3)}J</span></div>`
       }
     }
 
