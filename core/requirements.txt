@@ -1,0 +1,6 @@
+yourdfpy>=0.0.54
+networkx>=3.0
+numpy>=1.21.0
+lxml>=4.9.0
+mujoco>=3.5.0
+pillow>=9.0.0
