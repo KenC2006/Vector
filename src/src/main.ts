@@ -625,10 +625,15 @@ function handleBuildClick(e: { clientX: number; clientY: number }) {
         if (ph) { const s = snapGrid.snapToGrid(ph); assembly.setDragOffset(pid, s.x, 0, s.z) }
       }
       selectBuildPart(pid)
-      showToast(`Placed ${def.name}`, 'success')
-      updateBuildHint(null)
+      showToast(`Placed ${def.name} — now click a glowing ring to attach the next part`, 'success')
+      // Keep hint visible: user still needs to connect more parts
+      updateBuildHint(`Click a glowing ring (○) on ${def.name} to attach another part`)
     } else {
-      selectBuildPart(null)
+      // Deselect, but keep pending part active so rings stay visible
+      aRenderer.selectInstance(null)
+      aRenderer.clearXRay()
+      hideBuildInspector()
+      gizmo.detach()
     }
     return
   }
@@ -666,7 +671,8 @@ function handleBuildClick(e: { clientX: number; clientY: number }) {
       { type: compatIface.defaultJointType },
     )
     selectBuildPart(newId)
-    showToast(`Connected ${childDef.name} — adjust joint in Properties`, 'success')
+    showToast(`Connected ${childDef.name}`, 'success')
+    updateBuildHint(`${childDef.name} added — click another ring to keep building, or press Escape to finish`)
   }
 }
 
@@ -677,6 +683,10 @@ let _dragInstanceId: string | null    = null
 let _dragStartMouse                   = { x: 0, y: 0 }
 let _dragStartIntersection            = new THREE.Vector3()
 const _dragStartPositions             = new Map<string, THREE.Vector3>()
+
+// Track simple click on empty space (separate from the drag state machine)
+let _emptyClickPending   = false
+let _emptyClickPos       = { x: 0, y: 0 }
 
 function _collectSubtree(id: string): string[] {
   const ids: string[] = [id]
@@ -691,14 +701,18 @@ canvas.addEventListener('pointerdown', (e: PointerEvent) => {
 
   const hit = aRenderer.raycast(makeRaycaster(e))
 
-  // Only start drag machine in translate mode; rotate mode is handled by gizmo
   if (hit?.type === 'instance' && gizmo.getMode() === 'translate') {
+    // Hit a part — enter the drag/click state machine
     _dragState      = 'pressed'
     _dragInstanceId = hit.instanceId
     _dragStartMouse = { x: e.clientX, y: e.clientY }
     const ph = getPlaneHit(e)
     if (ph) _dragStartIntersection.copy(ph)
     e.stopPropagation()
+  } else if (hit?.type === 'interface' || !hit) {
+    // Hit a ring or empty space — track for a simple click (placement / ring connect / deselect)
+    _emptyClickPending = true
+    _emptyClickPos     = { x: e.clientX, y: e.clientY }
   }
 }, { capture: true })
 
@@ -766,10 +780,21 @@ canvas.addEventListener('pointermove', (e: PointerEvent) => {
 canvas.addEventListener('pointerup', (e: PointerEvent) => {
   if (e.button !== 0) return
 
+  // ── Part was clicked (no drag) ─────────────────────────────────────────────
   if (_dragState === 'pressed') {
     _dragState = 'idle'
     canvas.style.cursor = ''
+    _emptyClickPending = false
     handleBuildClick(e)
+    return
+  }
+
+  // ── Click on ring or empty space ───────────────────────────────────────────
+  if (_emptyClickPending) {
+    const dx = Math.abs(e.clientX - _emptyClickPos.x)
+    const dy = Math.abs(e.clientY - _emptyClickPos.y)
+    _emptyClickPending = false
+    if (dx < 6 && dy < 6) handleBuildClick(e)
     return
   }
 
@@ -839,8 +864,12 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (pendingDefId) {
       setPendingPart(null)
       clearToolboxSelection()
+      updateBuildHint(null)
     } else {
-      selectBuildPart(null)
+      aRenderer.selectInstance(null)
+      aRenderer.clearXRay()
+      hideBuildInspector()
+      gizmo.detach()
     }
     return
   }

@@ -428,7 +428,11 @@ export class AssemblyRenderer {
     this.hideAllRings()
     this.selectedInstanceId = instanceId
 
-    if (!instanceId) return
+    if (!instanceId) {
+      // Even with no selection, show rings on all parts if a pending part is active
+      if (this.pendingPartDefId) this._showAllCompatibleRings(this.pendingPartDefId)
+      return
+    }
 
     const grp = this.meshMap.get(instanceId)
     if (grp) {
@@ -439,7 +443,14 @@ export class AssemblyRenderer {
           mat.emissiveIntensity = 0.45
         }
       })
-      this.showInterfacesFor(instanceId)
+    }
+
+    // Always show rings on ALL parts when a pending part is waiting for connection;
+    // otherwise show rings only on the selected part.
+    if (this.pendingPartDefId) {
+      this._showAllCompatibleRings(this.pendingPartDefId)
+    } else {
+      this._showInterfacesInner(instanceId)
     }
   }
 
