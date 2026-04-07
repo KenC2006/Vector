@@ -210,8 +210,19 @@ export class AssemblyRenderer {
     const partGroup = def.buildMesh(inst.params)
     partGroup.name = `part_${inst.instanceId}`
     partGroup.userData.instanceId = inst.instanceId
-    // Mark all child meshes with the instanceId too (for raycasting)
-    partGroup.traverse(obj => { if (obj instanceof THREE.Mesh) obj.userData.instanceId = inst.instanceId })
+
+    // Clone every mesh material so instances never share material objects.
+    // Without this, applyXRay / selectInstance mutations bleed across all parts
+    // that use the same library-level singleton material (e.g. two servos both
+    // using `servoBody`) and make the entire scene go transparent or black.
+    partGroup.traverse(obj => {
+      if (obj instanceof THREE.Mesh) {
+        obj.userData.instanceId = inst.instanceId
+        if (obj.material) {
+          obj.material = (obj.material as THREE.Material).clone()
+        }
+      }
+    })
 
     // Compute world transform
     const worldMat = this.computeWorldMatrix(inst, parentConn)
@@ -418,8 +429,9 @@ export class AssemblyRenderer {
     if (this.selectedInstanceId) {
       const old = this.meshMap.get(this.selectedInstanceId)
       if (old) old.traverse(o => {
-        if (o instanceof THREE.Mesh) {
+        if (o instanceof THREE.Mesh && !o.userData.isRing) {
           const mat = o.material as THREE.MeshStandardMaterial
+          mat.emissive.setHex(mat.userData._baseEmissiveHex ?? 0x000000)
           mat.emissiveIntensity = mat.userData._baseEmissive ?? 0
         }
       })
@@ -439,8 +451,14 @@ export class AssemblyRenderer {
       grp.traverse(o => {
         if (o instanceof THREE.Mesh && !o.userData.isRing) {
           const mat = o.material as THREE.MeshStandardMaterial
-          if (!('_baseEmissive' in mat.userData)) mat.userData._baseEmissive = mat.emissiveIntensity
-          mat.emissiveIntensity = 0.45
+          // Save original emissive state once (materials are cloned per-instance so this is safe)
+          if (!('_baseEmissive' in mat.userData)) {
+            mat.userData._baseEmissive    = mat.emissiveIntensity
+            mat.userData._baseEmissiveHex = mat.emissive.getHex()
+          }
+          // Apply a visible blue-white selection tint
+          mat.emissive.setHex(0x224488)
+          mat.emissiveIntensity = 0.8
         }
       })
     }
