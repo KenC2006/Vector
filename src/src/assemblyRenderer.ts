@@ -1,70 +1,54 @@
 import * as THREE from 'three'
-import type { AssemblyGraph, ConnectionEdge, PartInstance } from './assemblyGraph'
+import type { AssemblyGraph, PartInstance, ConnectionEdge } from './assemblyGraph'
 import { getPartDef, interfacesCompatible } from './partLibrary'
-import type { ParamValues, RobotPartDefinition } from './partLibrary'
+import type { ParamValues } from './partLibrary'
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Interface ring colours ────────────────────────────────────────────────────
 
-const RING_RADIUS      = 0.012
-const RING_TUBE        = 0.0018
-const RING_SEG_MAJOR   = 18
-const RING_SEG_MINOR   = 6
+const COL_AVAILABLE = 0x44aaff
+const COL_COMPAT    = 0x44ffaa
+const COL_OCCUPIED  = 0x555566
 
-const COL_AVAILABLE = 0x00d4ff  // teal
-const COL_OCCUPIED  = 0xff6633  // orange
-const COL_SELECTED  = 0x44ff88  // green
-const COL_COMPAT    = 0xffee00  // yellow — compatible with pending part
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function makeMat(color: number, opacity = 1) {
-  return new THREE.MeshStandardMaterial({
-    color, roughness: 0.3, metalness: 0.6,
-    transparent: opacity < 1, opacity,
-    emissive: color, emissiveIntensity: 0.25,
-  })
-}
-
-const ringGeo = new THREE.TorusGeometry(RING_RADIUS, RING_TUBE, RING_SEG_MINOR, RING_SEG_MAJOR)
+// ── Ring geometry helper ──────────────────────────────────────────────────────
 
 function makeRingMesh(color: number): THREE.Mesh {
-  const m = new THREE.Mesh(ringGeo, makeMat(color))
-  m.castShadow = false; m.receiveShadow = false
+  const geo = new THREE.TorusGeometry(0.018, 0.003, 6, 20)
+  const mat = new THREE.MeshStandardMaterial({
+    color, emissive: color, emissiveIntensity: 0.6,
+    roughness: 0.3, metalness: 0.0,
+    transparent: true, opacity: 0.9, depthWrite: false,
+  })
+  const m = new THREE.Mesh(geo, mat)
+  m.userData.isRing = true
   return m
 }
 
-/**
- * Orient a ring so its face (torus axis) aligns with the given normal vector.
- * A torus by default has its axis along +Y.
- */
-function orientRingToNormal(ring: THREE.Object3D, normal: THREE.Vector3) {
+function orientRingToNormal(ring: THREE.Mesh, normal: THREE.Vector3) {
   const up = new THREE.Vector3(0, 1, 0)
   const n  = normal.clone().normalize()
-  if (Math.abs(n.dot(up)) > 0.9999) {
-    ring.quaternion.setFromAxisAngle(new THREE.Vector3(1,0,0), n.y < 0 ? Math.PI : 0)
+  if (Math.abs(n.dot(up)) > 0.999) {
+    ring.rotation.x = n.y > 0 ? 0 : Math.PI
   } else {
-    ring.quaternion.setFromUnitVectors(up, n)
+    const q = new THREE.Quaternion().setFromUnitVectors(up, n)
+    ring.quaternion.copy(q)
   }
 }
 
-// ── Connection transform math ─────────────────────────────────────────────────
+// ── Connection transform ──────────────────────────────────────────────────────
 
-/**
- * Compute the transform of child relative to parent so that:
- *   childIface (on child, in child local space) snaps face-to-face with parentIface (on parent).
- *
- * Returns a THREE.Matrix4 representing the child's local transform IN PARENT SPACE.
- */
 export function computeConnectionTransform(
-  parentDef: RobotPartDefinition,
+  parentDef: ReturnType<typeof getPartDef>,
   parentParams: ParamValues,
   parentIfaceId: string,
-  childDef: RobotPartDefinition,
+  childDef: ReturnType<typeof getPartDef>,
   childParams: ParamValues,
   childIfaceId: string,
 ): THREE.Matrix4 {
-  const pIface = parentDef.interfaces.find(i => i.id === parentIfaceId)!
-  const cIface = childDef.interfaces.find(i => i.id === childIfaceId)!
+  if (!parentDef || !childDef) return new THREE.Matrix4()
+
+  const pIface = parentDef.interfaces.find(i => i.id === parentIfaceId)
+  const cIface = childDef.interfaces.find(i => i.id === childIfaceId)
+  if (!pIface || !cIface) return new THREE.Matrix4()
 
   const pPos    = pIface.localPosition(parentParams)
   const pNormal = pIface.localNormal(parentParams).normalize()
@@ -72,84 +56,72 @@ export function computeConnectionTransform(
   const cPos    = cIface.localPosition(childParams)
   const cNormal = cIface.localNormal(childParams).normalize()
 
-  // Target: child's interface normal should face OPPOSITE to parent's normal
+  // Align child interface normal to opposite of parent interface normal
   const targetNormal = pNormal.clone().negate()
+  const sourceNormal = cNormal.clone()
 
-  // Quaternion rotating cNormal → targetNormal
-  let q = new THREE.Quaternion()
-  if (cNormal.dot(targetNormal) < -0.9999) {
-    // 180° flip — pick an arbitrary perpendicular axis
+  let rot: THREE.Quaternion
+  const dot = sourceNormal.dot(targetNormal)
+  if (dot < -0.9999) {
     const perp = new THREE.Vector3(1, 0, 0)
-    if (Math.abs(cNormal.dot(perp)) > 0.9) perp.set(0, 1, 0)
-    perp.cross(cNormal).normalize()
-    q.setFromAxisAngle(perp, Math.PI)
+    if (Math.abs(sourceNormal.dot(perp)) > 0.9) perp.set(0, 1, 0)
+    const axis = perp.cross(sourceNormal).normalize()
+    rot = new THREE.Quaternion().setFromAxisAngle(axis, Math.PI)
   } else {
-    q.setFromUnitVectors(cNormal, targetNormal)
+    rot = new THREE.Quaternion().setFromUnitVectors(sourceNormal, targetNormal)
   }
 
-  // Rotate child interface position
-  const rotatedCPos = cPos.clone().applyQuaternion(q)
+  // Child position in parent space: parent interface pos – rotated child interface pos
+  const rotatedChildPos = cPos.clone().applyQuaternion(rot)
+  const childOrigin     = pPos.clone().sub(rotatedChildPos)
 
-  // Child's position so that its interface aligns with parent's interface
-  const childLocalPos = pPos.clone().sub(rotatedCPos)
-
-  // Build matrix
-  const mat = new THREE.Matrix4()
-  mat.compose(childLocalPos, q, new THREE.Vector3(1, 1, 1))
-  return mat
+  return new THREE.Matrix4().compose(childOrigin, rot, new THREE.Vector3(1, 1, 1))
 }
+
+// ── HitResult ─────────────────────────────────────────────────────────────────
+
+export type HitResult =
+  | { type: 'instance';  instanceId: string; interfaceId?: undefined }
+  | { type: 'interface'; instanceId: string; interfaceId: string }
 
 // ── AssemblyRenderer ──────────────────────────────────────────────────────────
 
-export interface HitResult {
-  type: 'instance' | 'interface'
-  instanceId: string
-  interfaceId?: string
-}
-
 export class AssemblyRenderer {
-  /** Root THREE group added to the scene */
   readonly group = new THREE.Group()
-  group_name = 'assembly_root'
-
-  // instanceId → the part's mesh group (positioned in world space, child of this.group)
-  private meshMap     = new Map<string, THREE.Group>()
-  // `${instanceId}:${interfaceId}` → ring mesh
-  private ringMap     = new Map<string, THREE.Mesh>()
-
-  // Thin lines showing parent→child connections
-  private connectionLines: THREE.Line[] = []
-  private readonly _connLineMat = new THREE.LineBasicMaterial({
-    color: 0x445566, transparent: true, opacity: 0.40, depthWrite: false,
-  })
 
   private graph: AssemblyGraph | null = null
   private unsubscribe: (() => void) | null = null
 
+  private meshMap = new Map<string, THREE.Group>()   // instanceId → part group
+  private ringMap = new Map<string, THREE.Mesh>()    // "instanceId:ifaceId" → ring mesh
+  private connectionLines: THREE.Line[] = []
+
   private selectedInstanceId: string | null = null
-  private pendingPartDefId: string | null = null   // toolbox selection waiting for connection
+  private pendingPartDefId:   string | null = null
+
+  private ghostGroup: THREE.Group | null = null
+
+  private readonly _connLineMat = new THREE.LineBasicMaterial({ color: 0x4488aa, transparent: true, opacity: 0.5 })
 
   constructor(scene: THREE.Scene) {
     scene.add(this.group)
-    this.group.name = 'assembly_root'
   }
 
-  // ── Graph binding ─────────────────────────────────────────────────────────
+  // ── Bind / Unbind ─────────────────────────────────────────────────────────
 
   bind(graph: AssemblyGraph) {
-    this.unsubscribe?.()
+    this.unbind()
     this.graph = graph
     this.unsubscribe = graph.on(ev => {
       switch (ev.type) {
-        case 'instance_added':   this.rebuildAll(); break
-        case 'instance_removed': this.rebuildAll(); break
+        case 'instance_added':   this.rebuildAll();               break
+        case 'instance_removed': this.rebuildAll();               break
         case 'params_changed':   this.rebuildInstance(ev.instanceId); break
         case 'joint_changed':    this.applyJointValue(ev.connectionId); break
-        case 'cleared':          this.clear(); break
-        case 'restored':         this.rebuildAll(); break
+        case 'cleared':          this.clear();                    break
+        case 'restored':         this.rebuildAll();               break
       }
     })
-    this.rebuildAll()
   }
 
   unbind() {
@@ -163,42 +135,28 @@ export class AssemblyRenderer {
   rebuildAll() {
     if (!this.graph) return
 
-    // Clear scene children but keep the group itself
     while (this.group.children.length) this.group.remove(this.group.children[0])
     this.meshMap.clear()
     this.ringMap.clear()
     this.connectionLines = []
 
-    this.graph.walk((inst, parentConn, _depth) => {
+    this.graph.walk((inst, parentConn) => {
       this.addInstanceMesh(inst, parentConn)
     })
 
-    // Draw parent→child lines
     this._drawConnectionLines()
 
-    // Restore rings — all if pending, else just selected
+    // Restore rings
     if (this.pendingPartDefId) {
       this._showAllCompatibleRings(this.pendingPartDefId)
     } else if (this.selectedInstanceId && this.meshMap.has(this.selectedInstanceId)) {
-      this.showInterfacesFor(this.selectedInstanceId)
+      this._showInterfacesInner(this.selectedInstanceId)
     }
-  }
 
-  private _drawConnectionLines() {
-    if (!this.graph) return
-    this.graph.walk((inst, parentConn) => {
-      if (!parentConn) return
-      const pGrp = this.meshMap.get(parentConn.parentInstanceId)
-      const cGrp = this.meshMap.get(inst.instanceId)
-      if (!pGrp || !cGrp) return
-      const geo = new THREE.BufferGeometry().setFromPoints([
-        pGrp.position.clone(), cGrp.position.clone(),
-      ])
-      const line = new THREE.Line(geo, this._connLineMat)
-      line.renderOrder = -1
-      this.group.add(line)
-      this.connectionLines.push(line)
-    })
+    // Restore selection highlight
+    if (this.selectedInstanceId) {
+      this._applyHighlight(this.selectedInstanceId)
+    }
   }
 
   // ── Per-instance mesh ─────────────────────────────────────────────────────
@@ -212,77 +170,51 @@ export class AssemblyRenderer {
     partGroup.userData.instanceId = inst.instanceId
 
     // Clone every mesh material so instances never share material objects.
-    // Without this, applyXRay / selectInstance mutations bleed across all parts
-    // that use the same library-level singleton material (e.g. two servos both
-    // using `servoBody`) and make the entire scene go transparent or black.
+    // Shared materials cause selection / visibility changes to bleed across parts.
     partGroup.traverse(obj => {
       if (obj instanceof THREE.Mesh) {
         obj.userData.instanceId = inst.instanceId
-        if (obj.material) {
-          obj.material = (obj.material as THREE.Material).clone()
-        }
+        if (obj.material) obj.material = (obj.material as THREE.Material).clone()
       }
     })
 
-    // Compute world transform
-    const worldMat = this.computeWorldMatrix(inst, parentConn)
-    const worldPos = new THREE.Vector3().setFromMatrixPosition(worldMat)
-
-    // Apply user drag offset (world-space translation)
-    if (inst.dragOffset) {
-      worldPos.x += inst.dragOffset.x
-      worldPos.y += inst.dragOffset.y
-      worldPos.z += inst.dragOffset.z
-    }
-
-    // Apply user drag rotation (local-space delta quaternion)
-    const baseQuat = new THREE.Quaternion().setFromRotationMatrix(worldMat)
-    if (inst.dragRotation) {
-      const delta = new THREE.Quaternion(inst.dragRotation.x, inst.dragRotation.y, inst.dragRotation.z, inst.dragRotation.w)
-      baseQuat.multiply(delta)
-    }
-
-    partGroup.position.copy(worldPos)
-    partGroup.quaternion.copy(baseQuat)
+    const worldMat = this._computeWorldMatrix(inst, parentConn)
+    partGroup.position.setFromMatrixPosition(worldMat)
+    partGroup.quaternion.setFromRotationMatrix(worldMat)
 
     this.group.add(partGroup)
     this.meshMap.set(inst.instanceId, partGroup)
   }
 
-  private computeWorldMatrix(inst: PartInstance, parentConn: ConnectionEdge | undefined): THREE.Matrix4 {
-    if (!parentConn) return new THREE.Matrix4() // root stays at identity
+  private _computeWorldMatrix(inst: PartInstance, parentConn: ConnectionEdge | undefined): THREE.Matrix4 {
+    if (!parentConn || !this.graph) return new THREE.Matrix4()
 
     const parentGroup = this.meshMap.get(parentConn.parentInstanceId)
     if (!parentGroup) return new THREE.Matrix4()
 
-    const parentWorldMat = new THREE.Matrix4()
-    parentWorldMat.compose(parentGroup.position, parentGroup.quaternion, parentGroup.scale)
+    const parentWorldMat = new THREE.Matrix4().compose(parentGroup.position, parentGroup.quaternion, parentGroup.scale)
 
-    const parentDef   = getPartDef(this.graph!.getInstance(parentConn.parentInstanceId)!.definitionId)!
-    const parentParams = this.graph!.getInstance(parentConn.parentInstanceId)!.params
-    const childDef    = getPartDef(inst.definitionId)!
+    const parentInst   = this.graph.getInstance(parentConn.parentInstanceId)!
+    const parentDef    = getPartDef(parentInst.definitionId)!
+    const childDef     = getPartDef(inst.definitionId)!
 
     const localMat = computeConnectionTransform(
-      parentDef, parentParams, parentConn.parentInterfaceId,
-      childDef,  inst.params,  parentConn.childInterfaceId,
+      parentDef, parentInst.params, parentConn.parentInterfaceId,
+      childDef,  inst.params,       parentConn.childInterfaceId,
     )
-
     return parentWorldMat.clone().multiply(localMat)
   }
 
   // ── Param-only rebuild ────────────────────────────────────────────────────
 
   private rebuildInstance(instanceId: string) {
-    // Remove old mesh
     const old = this.meshMap.get(instanceId)
     if (old) this.group.remove(old)
     this.meshMap.delete(instanceId)
 
-    // Remove old rings for this instance
     for (const key of [...this.ringMap.keys()]) {
       if (key.startsWith(instanceId + ':')) {
-        const ring = this.ringMap.get(key)!
-        ring.parent?.remove(ring)
+        this.ringMap.get(key)!.parent?.remove(this.ringMap.get(key)!)
         this.ringMap.delete(key)
       }
     }
@@ -293,17 +225,34 @@ export class AssemblyRenderer {
     const parentConn = this.graph.getParentConnection(instanceId)
     this.addInstanceMesh(inst, parentConn)
 
-    // Rebuild subtree because child positions depend on parent params
+    if (instanceId === this.selectedInstanceId) {
+      this._applyHighlight(instanceId)
+      this._showInterfacesInner(instanceId)
+    }
+
     for (const conn of this.graph.getChildConnections(instanceId)) {
       this.rebuildInstance(conn.childInstanceId)
     }
-
-    if (this.selectedInstanceId === instanceId) {
-      this.showInterfacesFor(instanceId)
-    }
   }
 
-  // ── Joint value animation ─────────────────────────────────────────────────
+  // ── Connection lines ──────────────────────────────────────────────────────
+
+  private _drawConnectionLines() {
+    if (!this.graph) return
+    this.graph.walk((inst, parentConn) => {
+      if (!parentConn) return
+      const pGrp = this.meshMap.get(parentConn.parentInstanceId)
+      const cGrp = this.meshMap.get(inst.instanceId)
+      if (!pGrp || !cGrp) return
+      const geo  = new THREE.BufferGeometry().setFromPoints([pGrp.position.clone(), cGrp.position.clone()])
+      const line = new THREE.Line(geo, this._connLineMat)
+      line.renderOrder = -1
+      this.group.add(line)
+      this.connectionLines.push(line)
+    })
+  }
+
+  // ── Joint animation ───────────────────────────────────────────────────────
 
   private applyJointValue(connectionId: string) {
     if (!this.graph) return
@@ -311,28 +260,20 @@ export class AssemblyRenderer {
     if (!conn) return
     const childGroup = this.meshMap.get(conn.childInstanceId)
     if (!childGroup) return
-
     const joint = conn.joint
     if (joint.type === 'fixed' || joint.value === undefined) return
-
     const inst       = this.graph.getInstance(conn.childInstanceId)!
     const parentConn = this.graph.getParentConnection(conn.childInstanceId)
-    const baseMat    = this.computeWorldMatrix(inst, parentConn)
-
+    const baseMat    = this._computeWorldMatrix(inst, parentConn)
     if (joint.type === 'revolute') {
-      const axis    = new THREE.Vector3(...joint.axis).normalize()
-      const rotMat  = new THREE.Matrix4().makeRotationAxis(axis, joint.value)
-      baseMat.multiply(rotMat)
+      const axis   = new THREE.Vector3(...joint.axis).normalize()
+      baseMat.multiply(new THREE.Matrix4().makeRotationAxis(axis, joint.value))
     } else if (joint.type === 'prismatic') {
-      const axis    = new THREE.Vector3(...joint.axis).normalize()
-      const transMat = new THREE.Matrix4().makeTranslation(axis.x * joint.value, axis.y * joint.value, axis.z * joint.value)
-      baseMat.multiply(transMat)
+      const axis   = new THREE.Vector3(...joint.axis).normalize()
+      baseMat.multiply(new THREE.Matrix4().makeTranslation(axis.x * joint.value, axis.y * joint.value, axis.z * joint.value))
     }
-
     childGroup.position.setFromMatrixPosition(baseMat)
     childGroup.quaternion.setFromRotationMatrix(baseMat)
-
-    // Children need to follow
     for (const c of this.graph.getChildConnections(conn.childInstanceId)) {
       this.rebuildInstance(c.childInstanceId)
     }
@@ -342,7 +283,6 @@ export class AssemblyRenderer {
 
   showInterfacesFor(instanceId: string) {
     this.hideAllRings()
-    this.selectedInstanceId = instanceId
     this._showInterfacesInner(instanceId)
   }
 
@@ -354,7 +294,6 @@ export class AssemblyRenderer {
   setPendingPart(defId: string | null) {
     this.pendingPartDefId = defId
     if (defId) {
-      // Show compatible rings on every part simultaneously
       this._showAllCompatibleRings(defId)
     } else if (this.selectedInstanceId) {
       this.showInterfacesFor(this.selectedInstanceId)
@@ -363,16 +302,12 @@ export class AssemblyRenderer {
     }
   }
 
-  /** Show interface rings on ALL assembly parts, coloured by compatibility with the pending part. */
   private _showAllCompatibleRings(_defId: string) {
     this.hideAllRings()
     if (!this.graph) return
-    this.graph.walk((inst) => {
-      this._showInterfacesInner(inst.instanceId)
-    })
+    this.graph.walk(inst => this._showInterfacesInner(inst.instanceId))
   }
 
-  /** Inner ring-drawing shared by showInterfacesFor and _showAllCompatibleRings. */
   private _showInterfacesInner(instanceId: string) {
     if (!this.graph) return
     const inst = this.graph.getInstance(instanceId)
@@ -385,7 +320,7 @@ export class AssemblyRenderer {
 
     for (const iface of def.interfaces) {
       const key   = `${instanceId}:${iface.id}`
-      if (this.ringMap.has(key)) continue  // already drawn
+      if (this.ringMap.has(key)) continue
       const isOcc = occupied.has(iface.id)
       let color   = isOcc ? COL_OCCUPIED : COL_AVAILABLE
       if (!isOcc && this.pendingPartDefId) {
@@ -406,65 +341,24 @@ export class AssemblyRenderer {
     }
   }
 
-  highlightRing(instanceId: string, interfaceId: string) {
-    const key  = `${instanceId}:${interfaceId}`
-    const ring = this.ringMap.get(key)
-    if (ring) (ring.material as THREE.MeshStandardMaterial).color.setHex(COL_SELECTED)
-  }
-
-  unhighlightRing(instanceId: string, interfaceId: string) {
-    const key  = `${instanceId}:${interfaceId}`
-    const ring = this.ringMap.get(key)
-    if (!ring) return
-    const inst      = this.graph?.getInstance(instanceId)
-    const occupied  = inst ? this.graph!.occupiedInterfaces(instanceId) : new Set<string>()
-    const isOcc     = occupied.has(interfaceId)
-    ;(ring.material as THREE.MeshStandardMaterial).color.setHex(isOcc ? COL_OCCUPIED : COL_AVAILABLE)
-  }
-
-  // ── Selection ─────────────────────────────────────────────────────────────
+  // ── Selection highlight ───────────────────────────────────────────────────
 
   selectInstance(instanceId: string | null) {
-    // Clear emissive on previously selected
+    // Remove highlight from previously selected
     if (this.selectedInstanceId) {
-      const old = this.meshMap.get(this.selectedInstanceId)
-      if (old) old.traverse(o => {
-        if (o instanceof THREE.Mesh && !o.userData.isRing) {
-          const mat = o.material as THREE.MeshStandardMaterial
-          mat.emissive.setHex(mat.userData._baseEmissiveHex ?? 0x000000)
-          mat.emissiveIntensity = mat.userData._baseEmissive ?? 0
-        }
-      })
+      this._clearHighlight(this.selectedInstanceId)
     }
 
     this.hideAllRings()
     this.selectedInstanceId = instanceId
 
     if (!instanceId) {
-      // Even with no selection, show rings on all parts if a pending part is active
       if (this.pendingPartDefId) this._showAllCompatibleRings(this.pendingPartDefId)
       return
     }
 
-    const grp = this.meshMap.get(instanceId)
-    if (grp) {
-      grp.traverse(o => {
-        if (o instanceof THREE.Mesh && !o.userData.isRing) {
-          const mat = o.material as THREE.MeshStandardMaterial
-          // Save original emissive state once (materials are cloned per-instance so this is safe)
-          if (!('_baseEmissive' in mat.userData)) {
-            mat.userData._baseEmissive    = mat.emissiveIntensity
-            mat.userData._baseEmissiveHex = mat.emissive.getHex()
-          }
-          // Apply a visible blue-white selection tint
-          mat.emissive.setHex(0x224488)
-          mat.emissiveIntensity = 0.8
-        }
-      })
-    }
+    this._applyHighlight(instanceId)
 
-    // Always show rings on ALL parts when a pending part is waiting for connection;
-    // otherwise show rings only on the selected part.
     if (this.pendingPartDefId) {
       this._showAllCompatibleRings(this.pendingPartDefId)
     } else {
@@ -472,49 +366,63 @@ export class AssemblyRenderer {
     }
   }
 
+  private _applyHighlight(instanceId: string) {
+    const grp = this.meshMap.get(instanceId)
+    if (!grp) return
+    grp.traverse(o => {
+      if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
+      const mat = o.material as THREE.MeshStandardMaterial
+      if (!('_origEmissiveHex' in mat.userData)) {
+        mat.userData._origEmissiveHex       = mat.emissive.getHex()
+        mat.userData._origEmissiveIntensity = mat.emissiveIntensity
+      }
+      mat.emissive.setHex(0x224488)
+      mat.emissiveIntensity = 0.9
+    })
+  }
+
+  private _clearHighlight(instanceId: string) {
+    const grp = this.meshMap.get(instanceId)
+    if (!grp) return
+    grp.traverse(o => {
+      if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
+      const mat = o.material as THREE.MeshStandardMaterial
+      mat.emissive.setHex(mat.userData._origEmissiveHex       ?? 0x000000)
+      mat.emissiveIntensity =          mat.userData._origEmissiveIntensity ?? 0
+    })
+  }
+
   getSelectedInstanceId() { return this.selectedInstanceId }
 
   // ── Raycasting ────────────────────────────────────────────────────────────
 
-  /**
-   * Returns the first hit object (instance or interface ring) under the raycaster.
-   */
   raycast(raycaster: THREE.Raycaster): HitResult | null {
     const targets: THREE.Object3D[] = []
     this.group.traverse(o => { if (o instanceof THREE.Mesh) targets.push(o) })
     const hits = raycaster.intersectObjects(targets, false)
 
-    // Rings get priority
-    for (const hit of hits) {
-      if (hit.object.userData.isRing) {
-        return {
-          type: 'interface',
-          instanceId:  hit.object.userData.instanceId,
-          interfaceId: hit.object.userData.interfaceId,
-        }
+    // Rings take priority
+    for (const h of hits) {
+      if (h.object.userData.isRing) {
+        return { type: 'interface', instanceId: h.object.userData.instanceId, interfaceId: h.object.userData.interfaceId }
       }
     }
-
-    for (const hit of hits) {
-      if (hit.object.userData.instanceId) {
-        return { type: 'instance', instanceId: hit.object.userData.instanceId }
+    for (const h of hits) {
+      if (h.object.userData.instanceId) {
+        return { type: 'instance', instanceId: h.object.userData.instanceId }
       }
     }
-
     return null
   }
 
   // ── Ghost preview ─────────────────────────────────────────────────────────
 
-  private ghostGroup: THREE.Group | null = null
-
   showGhostAt(defId: string, params: ParamValues, parentInstanceId: string, parentIfaceId: string, childIfaceId: string) {
     this.clearGhost()
     if (!this.graph) return
-
-    const def    = getPartDef(defId)
-    const pInst  = this.graph.getInstance(parentInstanceId)
-    const pDef   = pInst ? getPartDef(pInst.definitionId) : null
+    const def   = getPartDef(defId)
+    const pInst = this.graph.getInstance(parentInstanceId)
+    const pDef  = pInst ? getPartDef(pInst.definitionId) : null
     if (!def || !pInst || !pDef) return
 
     const ghost = def.buildMesh(params)
@@ -522,112 +430,40 @@ export class AssemblyRenderer {
       if (o instanceof THREE.Mesh) {
         const mat = (o.material as THREE.MeshStandardMaterial).clone()
         mat.transparent = true
-        mat.opacity = 0.45
-        mat.depthWrite = false
+        mat.opacity     = 0.40
+        mat.depthWrite  = false
         o.material = mat
       }
     })
 
-    const pPartGroup = this.meshMap.get(parentInstanceId)
-    if (!pPartGroup) return
-
-    const pWorldMat = new THREE.Matrix4().compose(pPartGroup.position, pPartGroup.quaternion, pPartGroup.scale)
+    const pGrp     = this.meshMap.get(parentInstanceId)
+    if (!pGrp) return
+    const pWorldMat = new THREE.Matrix4().compose(pGrp.position, pGrp.quaternion, pGrp.scale)
     const localMat  = computeConnectionTransform(pDef, pInst.params, parentIfaceId, def, params, childIfaceId)
     const worldMat  = pWorldMat.clone().multiply(localMat)
 
     ghost.position.setFromMatrixPosition(worldMat)
     ghost.quaternion.setFromRotationMatrix(worldMat)
-
     this.group.add(ghost)
     this.ghostGroup = ghost
   }
 
   clearGhost() {
-    if (this.ghostGroup) {
-      this.group.remove(this.ghostGroup)
-      this.ghostGroup = null
-    }
+    if (this.ghostGroup) { this.group.remove(this.ghostGroup); this.ghostGroup = null }
   }
 
-  // ── Scene queries ─────────────────────────────────────────────────────────
+  // ── Queries ───────────────────────────────────────────────────────────────
 
   getMeshGroup(instanceId: string): THREE.Group | undefined {
     return this.meshMap.get(instanceId)
   }
 
-  /**
-   * Return the world position a part WOULD sit at from its connection transform alone,
-   * ignoring any dragOffset. Used when computing the cumulative offset to commit.
-   */
-  getComputedWorldPosition(instanceId: string): THREE.Vector3 | null {
-    if (!this.graph) return null
-    const inst = this.graph.getInstance(instanceId)
-    if (!inst) return null
-    const parentConn = this.graph.getParentConnection(instanceId)
-    const mat = this.computeWorldMatrix(inst, parentConn)
-    return new THREE.Vector3().setFromMatrixPosition(mat)
-  }
-
-  /**
-   * Return the full 4×4 world matrix from connection transform alone
-   * (no dragOffset/dragRotation applied). Used to compute gizmo deltas.
-   */
-  getComputedWorldMatrix(instanceId: string): THREE.Matrix4 | null {
-    if (!this.graph) return null
-    const inst = this.graph.getInstance(instanceId)
-    if (!inst) return null
-    const parentConn = this.graph.getParentConnection(instanceId)
-    return this.computeWorldMatrix(inst, parentConn)
-  }
-
-  getInterfaceWorldPosition(instanceId: string, interfaceId: string): THREE.Vector3 | null {
-    if (!this.graph) return null
-    const inst = this.graph.getInstance(instanceId)
-    if (!inst) return null
-    const def = getPartDef(inst.definitionId)
-    if (!def) return null
-    const iface = def.interfaces.find(i => i.id === interfaceId)
-    if (!iface) return null
-
-    const grp = this.meshMap.get(instanceId)
-    if (!grp) return null
-
-    const localPos = iface.localPosition(inst.params)
-    return localPos.clone().applyMatrix4(
-      new THREE.Matrix4().compose(grp.position, grp.quaternion, grp.scale)
-    )
-  }
-
-  // xray removed — parts are always fully visible; selection is shown via emissive outline
-
-  // ── Visibility ────────────────────────────────────────────────────────────
-
-  private hiddenInstances = new Set<string>()
-
-  setInstanceVisible(instanceId: string, visible: boolean) {
-    const grp = this.meshMap.get(instanceId)
-    if (!grp) return
-    grp.visible = visible
-    if (visible) this.hiddenInstances.delete(instanceId)
-    else         this.hiddenInstances.add(instanceId)
-  }
-
-  isInstanceVisible(instanceId: string): boolean {
-    return !this.hiddenInstances.has(instanceId)
-  }
-
-  // ── Bounding box ──────────────────────────────────────────────────────────
-
-  /** World-space axis-aligned bounding box of the part's mesh group. */
   getBoundingBox(instanceId: string): THREE.Box3 | null {
     const grp = this.meshMap.get(instanceId)
     if (!grp) return null
     const box = new THREE.Box3()
     grp.traverse(o => {
-      if (o instanceof THREE.Mesh && !o.userData.isRing) {
-        const meshBox = new THREE.Box3().setFromObject(o)
-        box.union(meshBox)
-      }
+      if (o instanceof THREE.Mesh && !o.userData.isRing) box.union(new THREE.Box3().setFromObject(o))
     })
     return box.isEmpty() ? null : box
   }
@@ -638,7 +474,7 @@ export class AssemblyRenderer {
     while (this.group.children.length) this.group.remove(this.group.children[0])
     this.meshMap.clear()
     this.ringMap.clear()
-    this.hiddenInstances.clear()
+    this.connectionLines = []
     this.ghostGroup = null
     this.selectedInstanceId = null
   }
