@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from model.urdf_parser import parse_urdf
 from model.kinematic_graph import KinematicGraph
+from validation.validator import validate_kinematic_graph
 
 # Lazy import MuJoCo — it may not be installed
 _MuJoCoSimulator = None
@@ -43,6 +44,7 @@ class JSONRPCServer:
             "sim_set_control": self.handle_sim_set_control,
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
+            "validate_urdf": self.handle_validate_urdf,
         }
 
     def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,6 +71,40 @@ class JSONRPCServer:
             raise ValueError(f"File not found: {e}")
         except Exception as e:
             raise ValueError(f"Failed to parse URDF: {e}")
+
+    def handle_validate_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse a URDF file and run validation checks.
+
+        Params:
+            path (str): Path to the URDF file.
+
+        Returns:
+            Dict with 'results' list and 'summary' counts.
+        """
+        if "path" not in params:
+            raise ValueError("Missing required parameter: path")
+
+        path = params["path"]
+        if not isinstance(path, str):
+            raise ValueError("Parameter 'path' must be a string")
+
+        try:
+            kg = parse_urdf(path)
+            results = validate_kinematic_graph(kg)
+
+            # Build summary counts
+            summary = {"pass": 0, "warn": 0, "error": 0, "info": 0}
+            for r in results:
+                sev = r.get("severity", "info")
+                if sev in summary:
+                    summary[sev] += 1
+
+            return {"results": results, "summary": summary}
+        except FileNotFoundError as e:
+            raise ValueError(f"File not found: {e}")
+        except Exception as e:
+            raise ValueError(f"Validation failed: {e}")
 
     def handle_ping(self, params: Dict[str, Any]) -> str:
         """
