@@ -2,17 +2,17 @@ import * as THREE from 'three'
 
 // ── Shared materials ─────────────────────────────────────────────────────────
 
-const aluminum = new THREE.MeshStandardMaterial({ color: 0xa8aabc, roughness: 0.28, metalness: 0.75 })
-const steel     = new THREE.MeshStandardMaterial({ color: 0x2a2e38, roughness: 0.40, metalness: 0.80 })
-const servoBody = new THREE.MeshStandardMaterial({ color: 0x181820, roughness: 0.50, metalness: 0.60 })
-const servoHorn = new THREE.MeshStandardMaterial({ color: 0xff7b45, roughness: 0.40, metalness: 0.30, emissive: 0x221000 })
-const sensorShell = new THREE.MeshStandardMaterial({ color: 0x121218, roughness: 0.55, metalness: 0.25 })
-const lensMat   = new THREE.MeshStandardMaterial({ color: 0x0a1a33, roughness: 0.08, metalness: 0.05, transparent: true, opacity: 0.88 })
-const pcb       = new THREE.MeshStandardMaterial({ color: 0x112211, roughness: 0.70, metalness: 0.10 })
-const rubber    = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.95, metalness: 0.00 })
-const battery   = new THREE.MeshStandardMaterial({ color: 0x18182a, roughness: 0.50, metalness: 0.15 })
-const accent    = new THREE.MeshStandardMaterial({ color: 0x4a9eff, roughness: 0.35, metalness: 0.50, emissive: 0x001133 })
-const gripMat   = new THREE.MeshStandardMaterial({ color: 0x2a6dd9, roughness: 0.35, metalness: 0.50 })
+const aluminum    = new THREE.MeshStandardMaterial({ color: 0xc4c8dc, roughness: 0.25, metalness: 0.80 })
+const steel       = new THREE.MeshStandardMaterial({ color: 0x5a6478, roughness: 0.38, metalness: 0.85 })
+const servoBody   = new THREE.MeshStandardMaterial({ color: 0x364566, roughness: 0.48, metalness: 0.65 })
+const servoHorn   = new THREE.MeshStandardMaterial({ color: 0xff8c55, roughness: 0.38, metalness: 0.25, emissive: 0x331500, emissiveIntensity: 0.4 })
+const sensorShell = new THREE.MeshStandardMaterial({ color: 0x1e3050, roughness: 0.52, metalness: 0.30 })
+const lensMat     = new THREE.MeshStandardMaterial({ color: 0x3399ff, roughness: 0.06, metalness: 0.05, transparent: true, opacity: 0.80 })
+const pcb         = new THREE.MeshStandardMaterial({ color: 0x1a3a1a, roughness: 0.65, metalness: 0.15 })
+const rubber      = new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.95, metalness: 0.00 })
+const battery     = new THREE.MeshStandardMaterial({ color: 0x1e2d4a, roughness: 0.48, metalness: 0.20 })
+const accent      = new THREE.MeshStandardMaterial({ color: 0x4da6ff, roughness: 0.30, metalness: 0.45, emissive: 0x002244, emissiveIntensity: 0.5 })
+const gripMat     = new THREE.MeshStandardMaterial({ color: 0x3377ee, roughness: 0.32, metalness: 0.55 })
 
 function cloneMat(m: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial { return m.clone() as THREE.MeshStandardMaterial }
 

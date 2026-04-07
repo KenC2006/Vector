@@ -20,14 +20,14 @@ const viewportPanel = document.getElementById('viewport-panel') as HTMLDivElemen
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.setClearColor(0x0c0c0c)
+renderer.setClearColor(0x111827)
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type    = THREE.PCFSoftShadowMap
 renderer.toneMapping       = THREE.ACESFilmicToneMapping
-renderer.toneMappingExposure = 1.1
+renderer.toneMappingExposure = 1.25
 
 const scene = new THREE.Scene()
-scene.fog   = new THREE.FogExp2(0x0c0c0c, 0.3)
+scene.fog   = new THREE.FogExp2(0x111827, 0.06)
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100)
 camera.position.set(1.2, 1.0, 1.6)
@@ -40,7 +40,7 @@ controls.minDistance = 0.3
 controls.maxDistance = 8
 
 // Ground + grid + axes
-const grid = new THREE.GridHelper(8, 40, 0x3a3a44, 0x2a2a32)
+const grid = new THREE.GridHelper(8, 40, 0x2a3040, 0x1e2535)
 scene.add(grid)
 
 const groundMesh = new THREE.Mesh(
@@ -54,10 +54,10 @@ scene.add(groundMesh)
 const originAxes = new THREE.AxesHelper(0.5)
 scene.add(originAxes)
 
-// Lights
-scene.add(new THREE.AmbientLight(0xc8cce0, 0.4))
+// Lights — generous ambient so parts are always legible on a dark background
+scene.add(new THREE.AmbientLight(0xccd4e8, 1.1))
 
-const keyLight = new THREE.DirectionalLight(0xffffff, 1.2)
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.6)
 keyLight.position.set(3, 6, 4)
 keyLight.castShadow = true
 keyLight.shadow.mapSize.set(2048, 2048)
@@ -70,11 +70,11 @@ keyLight.shadow.camera.bottom = -3
 keyLight.shadow.bias          = -0.0005
 scene.add(keyLight)
 
-const fillLight = new THREE.DirectionalLight(0x6688cc, 0.4)
+const fillLight = new THREE.DirectionalLight(0x88aadd, 0.7)
 fillLight.position.set(-3, 2, -2)
 scene.add(fillLight)
 
-const rimLight = new THREE.DirectionalLight(0x8888ff, 0.25)
+const rimLight = new THREE.DirectionalLight(0xaabbff, 0.45)
 rimLight.position.set(0, 0.5, -4)
 scene.add(rimLight)
 
@@ -394,16 +394,12 @@ function selectBuildPart(instanceId: string | null) {
   if (!instanceId) {
     gizmo.detach()
     hideBuildInspector()
-    aRenderer.clearXRay()
     return
   }
 
   // Attach gizmo
   const grp = aRenderer.getMeshGroup(instanceId)
   if (grp) gizmo.attach(grp)
-
-  // X-ray other parts
-  aRenderer.applyXRay(instanceId)
 
   // Open properties panel
   if (assembly.getInstance(instanceId)) {
@@ -425,7 +421,7 @@ function deleteBuildPart(instanceId: string) {
 
   gizmo.detach()
   hideBuildInspector()
-  aRenderer.clearXRay()
+  
   history.record()
   assembly.removePart(instanceId)
   refreshBuildPanel()
@@ -629,11 +625,7 @@ function handleBuildClick(e: { clientX: number; clientY: number }) {
       // Keep hint visible: user still needs to connect more parts
       updateBuildHint(`Click a glowing ring (○) on ${def.name} to attach another part`)
     } else {
-      // Deselect, but keep pending part active so rings stay visible
-      aRenderer.selectInstance(null)
-      aRenderer.clearXRay()
-      hideBuildInspector()
-      gizmo.detach()
+      selectBuildPart(null)
     }
     return
   }
@@ -701,16 +693,22 @@ canvas.addEventListener('pointerdown', (e: PointerEvent) => {
 
   const hit = aRenderer.raycast(makeRaycaster(e))
 
-  if (hit?.type === 'instance' && gizmo.getMode() === 'translate') {
-    // Hit a part — enter the drag/click state machine
-    _dragState      = 'pressed'
-    _dragInstanceId = hit.instanceId
-    _dragStartMouse = { x: e.clientX, y: e.clientY }
-    const ph = getPlaneHit(e)
-    if (ph) _dragStartIntersection.copy(ph)
-    e.stopPropagation()
-  } else if (hit?.type === 'interface' || !hit) {
-    // Hit a ring or empty space — track for a simple click (placement / ring connect / deselect)
+  if (hit?.type === 'instance') {
+    if (gizmo.getMode() === 'translate') {
+      // Enter drag/click state machine in translate mode
+      _dragState      = 'pressed'
+      _dragInstanceId = hit.instanceId
+      _dragStartMouse = { x: e.clientX, y: e.clientY }
+      const ph = getPlaneHit(e)
+      if (ph) _dragStartIntersection.copy(ph)
+      e.stopPropagation()
+    } else {
+      // Rotate mode — treat as a simple click (no dragging)
+      _emptyClickPending = true
+      _emptyClickPos     = { x: e.clientX, y: e.clientY }
+    }
+  } else {
+    // Ring or empty space — track for placement / ring-connect / deselect
     _emptyClickPending = true
     _emptyClickPos     = { x: e.clientX, y: e.clientY }
   }
@@ -842,7 +840,7 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (history.undo()) {
       const selId = aRenderer.getSelectedInstanceId()
       if (selId && !assembly.getInstance(selId)) {
-        gizmo.detach(); hideBuildInspector(); aRenderer.clearXRay()
+        gizmo.detach(); hideBuildInspector(); 
       } else if (selId) {
         const g = aRenderer.getMeshGroup(selId); if (g) gizmo.attach(g)
       }
@@ -866,10 +864,7 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
       clearToolboxSelection()
       updateBuildHint(null)
     } else {
-      aRenderer.selectInstance(null)
-      aRenderer.clearXRay()
-      hideBuildInspector()
-      gizmo.detach()
+      selectBuildPart(null)
     }
     return
   }
@@ -981,7 +976,7 @@ document.getElementById('btn-clear-assembly')?.addEventListener('click', () => {
   if (!confirm('Clear the entire assembly?')) return
   gizmo.detach()
   hideBuildInspector()
-  aRenderer.clearXRay()
+  
   history.record()
   assembly.clear()
   clearToolboxSelection()

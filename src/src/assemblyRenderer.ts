@@ -598,48 +598,7 @@ export class AssemblyRenderer {
     )
   }
 
-  // ── X-Ray isolation ───────────────────────────────────────────────────────
-
-  /** Saved state before x-ray was applied. Key = mesh uuid. */
-  private xrayState = new Map<string, { transparent: boolean; opacity: number; depthWrite: boolean }>()
-
-  /**
-   * Fade every part except selectedId to near-transparent so the selected part
-   * stands out clearly. Call clearXRay() to restore.
-   */
-  applyXRay(selectedId: string) {
-    this.clearXRay()   // idempotent — reset before re-applying
-    this.group.traverse(o => {
-      if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
-      const isSel = o.userData.instanceId === selectedId
-      if (isSel) return  // leave selected part untouched
-
-      const mat = o.material as THREE.MeshStandardMaterial
-      this.xrayState.set(o.uuid, {
-        transparent: mat.transparent,
-        opacity:     mat.opacity,
-        depthWrite:  mat.depthWrite,
-      })
-      mat.transparent = true
-      mat.opacity     = 0.40
-      mat.depthWrite  = false
-    })
-  }
-
-  /** Restore all part materials to their state before applyXRay. */
-  clearXRay() {
-    if (this.xrayState.size === 0) return
-    this.group.traverse(o => {
-      if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
-      const saved = this.xrayState.get(o.uuid)
-      if (!saved) return
-      const mat = o.material as THREE.MeshStandardMaterial
-      mat.transparent = saved.transparent
-      mat.opacity     = saved.opacity
-      mat.depthWrite  = saved.depthWrite
-    })
-    this.xrayState.clear()
-  }
+  // xray removed — parts are always fully visible; selection is shown via emissive outline
 
   // ── Visibility ────────────────────────────────────────────────────────────
 
@@ -679,7 +638,6 @@ export class AssemblyRenderer {
     while (this.group.children.length) this.group.remove(this.group.children[0])
     this.meshMap.clear()
     this.ringMap.clear()
-    this.xrayState.clear()
     this.hiddenInstances.clear()
     this.ghostGroup = null
     this.selectedInstanceId = null
