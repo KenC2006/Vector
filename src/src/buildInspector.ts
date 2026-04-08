@@ -21,11 +21,11 @@ let _callbacks: BuildInspectorCallbacks | null = null
 let _currentInstanceId: string | null = null
 
 const CAT_COLOR: Record<string, string> = {
-  actuator: '#ff7b45', structural: '#8888bb', sensor: '#3d9bff',
-  electrical: '#ffcc00', end_effector: '#2a6dd9',
+  structure: '#8f98ab', joints: '#ff8a4a', links: '#4fa7ff',
+  feet: '#7cd37c', mounts: '#b98cff',
 }
 const CAT_ICON: Record<string, string> = {
-  actuator: '⚙', structural: '⬡', sensor: '◉', electrical: '⚡', end_effector: '✊',
+  structure: '▦', joints: '⟲', links: '⎯', feet: '◔', mounts: '⊞',
 }
 const JOINT_TYPE_LABEL: Record<string, string> = {
   fixed: 'Fixed', revolute: 'Revolute', prismatic: 'Prismatic',

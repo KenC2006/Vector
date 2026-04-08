@@ -22,7 +22,7 @@ export interface PartInstance {
   params: ParamValues
   label: string           // user-editable name
   dragOffset?:   { x: number; y: number; z: number }        // world-space translation on top of connection transform
-  dragRotation?: { x: number; y: number; z: number; w: number } // local-space quaternion delta on top of connection rotation
+  dragRotation?: { x: number; y: number; z: number; w: number } // world-space quaternion delta on top of connection rotation
 }
 
 export interface ConnectionEdge {
@@ -360,6 +360,77 @@ export class AssemblyGraph {
   setLabel(instanceId: string, label: string) {
     const inst = this.instances.get(instanceId)
     if (inst) inst.label = label
+  }
+
+  /** Check if `candidateDescendantId` is in the subtree rooted at `ancestorId`. */
+  isDescendantOf(candidateDescendantId: string, ancestorId: string): boolean {
+    return this.collectSubtree(ancestorId).includes(candidateDescendantId)
+  }
+
+  /**
+   * Reparent a non-root part under a new parent interface.
+   * Clears any drag offset on the part.  Returns true on success.
+   */
+  reparent(
+    instanceId: string,
+    newParentId: string,
+    parentIfaceId: string,
+    childIfaceId: string,
+    joint?: Partial<JointConfig>,
+  ): boolean {
+    // Cannot reparent root
+    if (instanceId === this.rootInstanceId) return false
+    // Cycle check — target must not be a descendant of the dragged part
+    if (this.isDescendantOf(newParentId, instanceId)) return false
+    // Must exist
+    const inst = this.instances.get(instanceId)
+    if (!inst) return false
+
+    // ── Remove old parent connection ────────────────────────────────────────
+    const oldConnId = this.parentConnMap.get(instanceId)
+    if (oldConnId) {
+      const oldConn = this.connections.get(oldConnId)!
+      const siblings = this.childMap.get(oldConn.parentInstanceId) ?? []
+      this.childMap.set(oldConn.parentInstanceId, siblings.filter(id => id !== oldConnId))
+      this.connections.delete(oldConnId)
+      this.parentConnMap.delete(instanceId)
+    }
+
+    // ── Create new parent connection ────────────────────────────────────────
+    const def = getPartDef(inst.definitionId)!
+    const cIface = def.interfaces.find(i => i.id === childIfaceId)!
+    const connectionId = this.newId('conn')
+    const jointConfig: JointConfig = {
+      type:     joint?.type     ?? cIface.defaultJointType,
+      axis:     joint?.axis     ?? cIface.localAxis(inst.params).toArray() as [number, number, number],
+      lower:    joint?.lower    ?? (cIface.defaultJointType === 'revolute' ? -3.14159 : 0),
+      upper:    joint?.upper    ?? (cIface.defaultJointType === 'revolute' ?  3.14159 : 0),
+      effort:   joint?.effort   ?? 10,
+      velocity: joint?.velocity ?? 2,
+      damping:  joint?.damping  ?? 0.3,
+      friction: joint?.friction ?? 0.05,
+      value:    0,
+    }
+    const conn: ConnectionEdge = {
+      connectionId,
+      parentInstanceId:  newParentId,
+      parentInterfaceId: parentIfaceId,
+      childInstanceId:   instanceId,
+      childInterfaceId:  childIfaceId,
+      joint: jointConfig,
+    }
+    this.connections.set(connectionId, conn)
+    const siblings = this.childMap.get(newParentId) ?? []
+    siblings.push(connectionId)
+    this.childMap.set(newParentId, siblings)
+    this.parentConnMap.set(instanceId, connectionId)
+
+    // Clear drag offset — connection transform now handles positioning
+    delete inst.dragOffset
+    delete inst.dragRotation
+
+    this.emit({ type: 'instance_added', instanceId })
+    return true
   }
 
   clear() {

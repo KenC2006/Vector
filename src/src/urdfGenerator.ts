@@ -131,11 +131,11 @@ export function generateURDF(graph: AssemblyGraph, opts: URDFGenOptions = {}): s
 
 function categoryColor(cat: string): string {
   switch (cat) {
-    case 'actuator':    return '0.10 0.12 0.14 1'
-    case 'structural':  return '0.63 0.65 0.73 1'
-    case 'sensor':      return '0.07 0.07 0.13 1'
-    case 'electrical':  return '0.08 0.09 0.16 1'
-    case 'end_effector':return '0.16 0.42 0.85 1'
+    case 'structure': return '0.63 0.65 0.73 1'
+    case 'joints':    return '0.82 0.47 0.24 1'
+    case 'links':     return '0.31 0.66 0.95 1'
+    case 'feet':      return '0.28 0.66 0.32 1'
+    case 'mounts':    return '0.66 0.52 0.88 1'
     default:            return '0.50 0.50 0.50 1'
   }
 }

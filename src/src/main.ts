@@ -1,6 +1,7 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { AssemblyGraph } from './assemblyGraph'
 import { AssemblyRenderer } from './assemblyRenderer'
 import { AssemblyHistory } from './history'
@@ -35,7 +36,37 @@ controls.target.set(0, 0.3, 0)
 controls.minDistance = 0.2
 controls.maxDistance = 8
 
-// Ground / grid / axes
+// ── Transform gizmo (move tool) ───────────────────────────────────────────────
+
+const gizmo = new TransformControls(camera, canvas)
+gizmo.setMode('translate')
+gizmo.setSpace('world')
+gizmo.setSize(0.8)
+// TransformControls is not an Object3D — add the helper root (see three.js docs).
+scene.add(gizmo.getHelper())
+
+// Disable orbit while dragging the gizmo, re-enable after
+gizmo.addEventListener('dragging-changed', (event: any) => {
+  controls.enabled = !event.value
+  if (event.value) {
+    // Drag started — show all interface nodes
+    if (selectedId) aRenderer.beginDrag(selectedId)
+  } else {
+    // Drag ended — snap-connect or commit offset
+    commitGizmoDrag()
+    aRenderer.endDrag()
+  }
+})
+
+// Live snap preview + collision feedback while gizmo is dragging
+gizmo.addEventListener('objectChange', () => {
+  if (!selectedId) return
+  aRenderer.updateDragPreview(selectedId, 0.08)
+  const collisions = aRenderer.checkCollisions(selectedId)
+  aRenderer.highlightCollisions(collisions)
+})
+
+// ── Ground / grid / axes ──────────────────────────────────────────────────────
 const grid = new THREE.GridHelper(8, 40, 0x2a3040, 0x1e2535)
 scene.add(grid)
 
@@ -174,16 +205,129 @@ function focusOn(instanceId: string) {
 let pendingDefId: string | null = null   // part selected in toolbox, waiting to be placed/connected
 let selectedId:   string | null = null   // currently selected instance
 
+// Gizmo drag tracking
+let _gizmoBasePos  = new THREE.Vector3()     // group position when gizmo attached
+let _gizmoBaseQuat = new THREE.Quaternion()  // group quaternion when gizmo attached
+
+function syncGizmoForMode() {
+  // Build mode (pending part) and move mode (gizmo) are mutually exclusive.
+  const inBuildMode = !!pendingDefId
+  gizmo.enabled = !inBuildMode
+  if (inBuildMode) {
+    gizmo.detach()
+    return
+  }
+  if (selectedId) {
+    const grp = aRenderer.getMeshGroup(selectedId)
+    if (grp) {
+      gizmo.attach(grp)
+      _gizmoBasePos.copy(grp.position)
+      _gizmoBaseQuat.copy(grp.quaternion)
+    } else {
+      gizmo.detach()
+    }
+  } else {
+    gizmo.detach()
+  }
+}
+
+function commitGizmoDrag() {
+  if (!selectedId) return
+  const grp = aRenderer.getMeshGroup(selectedId)
+  if (!grp) return
+
+  const inst = assembly.getInstance(selectedId)
+
+  // Compute deltas for both position and rotation
+  const deltaPos  = grp.position.clone().sub(_gizmoBasePos)
+  const deltaQuat = grp.quaternion.clone().multiply(_gizmoBaseQuat.clone().invert())
+
+  const posMoved = deltaPos.lengthSq() > 1e-10
+  const rotMoved = 1 - Math.abs(deltaQuat.dot(new THREE.Quaternion())) > 1e-8
+
+  if (!posMoved && !rotMoved) return  // nothing changed, skip
+
+  // Detach BEFORE rebuild: TransformControls requires the object to stay in the scene
+  // graph. rebuildInstance() removes the mesh — if gizmo still references it, the mesh
+  // becomes parent=null (orphaned), stops rendering, and the controls spam console errors.
+  gizmo.detach()
+
+  history.record()
+
+  // ── Commit position delta ────────────────────────────────────────────────
+  if (posMoved) {
+    const prev = inst?.dragOffset ?? { x: 0, y: 0, z: 0 }
+    assembly.setDragOffset(
+      selectedId,
+      prev.x + deltaPos.x,
+      prev.y + deltaPos.y,
+      prev.z + deltaPos.z,
+    )
+  }
+
+  // ── Commit rotation delta ────────────────────────────────────────────────
+  if (rotMoved) {
+    const prev = inst?.dragRotation ?? { x: 0, y: 0, z: 0, w: 1 }
+    const prevQuat = new THREE.Quaternion(prev.x, prev.y, prev.z, prev.w)
+    let newQuat: THREE.Quaternion
+    if (gizmo.space === 'world') {
+      // World-space: premultiply  →  result = delta * prev
+      newQuat = deltaQuat.clone().multiply(prevQuat)
+    } else {
+      // Local-space: postmultiply →  result = prev * delta
+      newQuat = prevQuat.clone().multiply(deltaQuat)
+    }
+    newQuat.normalize()
+    assembly.setDragRotation(selectedId, {
+      x: newQuat.x, y: newQuat.y, z: newQuat.z, w: newQuat.w,
+    })
+  }
+
+  // ── Snap-to-connect: check if an interface is close to a compatible target ──
+  const snap = aRenderer.findSnapTarget(selectedId, 0.08)
+  if (snap) {
+    const childDef  = getPartDef(inst!.definitionId)
+    const cIface    = childDef?.interfaces.find(i => i.id === snap.draggedIfaceId)
+    const ok = assembly.reparent(
+      selectedId,
+      snap.targetInstanceId,
+      snap.targetIfaceId,
+      snap.draggedIfaceId,
+      { type: cIface?.defaultJointType ?? 'fixed' },
+    )
+    if (ok) {
+      showToast('Snapped & connected', 'success')
+      refreshBuildPanel()
+    }
+  }
+
+  const newGrp = aRenderer.getMeshGroup(selectedId)
+  if (newGrp) {
+    gizmo.attach(newGrp)
+    _gizmoBasePos.copy(newGrp.position)
+    _gizmoBaseQuat.copy(newGrp.quaternion)
+  }
+}
+
 /** Select a part (or deselect with null). Updates inspector + panel. */
 function select(instanceId: string | null) {
   selectedId = instanceId
   aRenderer.selectInstance(instanceId)
 
   if (instanceId && assembly.getInstance(instanceId)) {
+    if (!pendingDefId) {
+      const grp = aRenderer.getMeshGroup(instanceId)
+      if (grp) {
+        gizmo.attach(grp)
+        _gizmoBasePos.copy(grp.position)
+        _gizmoBaseQuat.copy(grp.quaternion)
+      }
+    }
     showBuildInspectorFor(instanceId)
     switchToPanel('inspector')
-    focusOn(instanceId)
+    // No automatic camera recenter here; use `F` to focus explicitly.
   } else {
+    gizmo.detach()
     hideBuildInspector()
   }
   refreshBuildPanel()
@@ -193,6 +337,7 @@ function select(instanceId: string | null) {
 function setPending(defId: string | null) {
   pendingDefId = defId
   aRenderer.setPendingPart(defId)
+  syncGizmoForMode()
   if (!defId) { updateHint(null); return }
 
   const def = getPartDef(defId)
@@ -208,7 +353,12 @@ function deletePart(instanceId: string) {
   const inst  = assembly.getInstance(instanceId)
   const label = inst?.label ?? instanceId
   if (!confirm(`Remove "${label}"?`)) return
-  if (selectedId === instanceId) select(null)
+  if (selectedId === instanceId) {
+    gizmo.detach()
+    selectedId = null
+    aRenderer.selectInstance(null)
+    hideBuildInspector()
+  }
   history.record()
   assembly.removePart(instanceId)
   refreshBuildPanel()
@@ -304,12 +454,23 @@ function makeRaycaster(e: { clientX: number; clientY: number }): THREE.Raycaster
 
 let _downX = 0
 let _downY = 0
+let _downOnGizmo = false   // was the pointerdown over a gizmo handle?
 
-canvas.addEventListener('pointerdown', e => { _downX = e.clientX; _downY = e.clientY })
+canvas.addEventListener('pointerdown', e => {
+  _downX = e.clientX
+  _downY = e.clientY
+  if (pendingDefId) {
+    _downOnGizmo = false
+    return
+  }
+  // gizmo.axis is non-null when the cursor is hovering over a handle
+  _downOnGizmo = (gizmo.object !== undefined && gizmo.axis !== null)
+})
 
 canvas.addEventListener('click', (e: MouseEvent) => {
-  // If the pointer moved more than 5 px since pointerdown → it was a drag, not a click
+  // Ignore drags (pointer moved > 5 px) and gizmo handle interactions
   if (Math.abs(e.clientX - _downX) > 5 || Math.abs(e.clientY - _downY) > 5) return
+  if (_downOnGizmo) return
 
   const hit = aRenderer.raycast(makeRaycaster(e))
 
@@ -329,8 +490,42 @@ canvas.addEventListener('click', (e: MouseEvent) => {
     return
   }
 
-  // ── Part body click → select ──────────────────────────────────────────────
+  // ── Part body click ───────────────────────────────────────────────────────
   if (hit.type === 'instance') {
+    // If a part is pending, treat clicking the body as a "snap to nearest
+    // compatible node on this part" instead of requiring a pixel-perfect ring hit.
+    if (pendingDefId) {
+      const childDef   = getPartDef(pendingDefId)
+      const parentInst = assembly.getInstance(hit.instanceId)
+      const parentDef  = parentInst ? getPartDef(parentInst.definitionId) : null
+
+      if (childDef && parentDef && parentInst) {
+        // Pick the first compatible, unoccupied interface on this instance.
+        const occupied = assembly.occupiedInterfaces(hit.instanceId)
+        const pIface = parentDef.interfaces.find(iface => {
+          if (occupied.has(iface.id)) return false
+          return childDef.interfaces.some(ci => interfacesCompatible(ci.type, iface.type))
+        })
+
+        if (pIface) {
+          const cIface = childDef.interfaces.find(ci => interfacesCompatible(ci.type, pIface.type))!
+
+          aRenderer.clearGhost()
+          history.record()
+          const newId = assembly.addPart(
+            pendingDefId, defaultParams(childDef),
+            hit.instanceId, pIface.id, cIface.id,
+            { type: cIface.defaultJointType },
+          )
+          select(newId)
+          showToast(`Connected ${childDef.name}`, 'success')
+          updateHint(`Click another part or ring (○) to keep building, or Escape to stop`)
+          return
+        }
+      }
+    }
+
+    // No pending part or no compatible node → just select the instance.
     select(hit.instanceId)
     return
   }
@@ -453,6 +648,22 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
 
   if (key === 't') { switchToPanel('toolbox');   return }
   if (key === 'i') { switchToPanel('inspector'); return }
+
+  // R — toggle gizmo translate / rotate mode
+  if (key === 'r' && selectedId && gizmo.object) {
+    const nextMode = gizmo.mode === 'translate' ? 'rotate' : 'translate'
+    gizmo.setMode(nextMode)
+    showToast(`Gizmo: ${nextMode}`, 'info')
+    return
+  }
+
+  // W — toggle gizmo world / local space
+  if (key === 'w' && selectedId && gizmo.object) {
+    const nextSpace = gizmo.space === 'world' ? 'local' : 'world'
+    gizmo.setSpace(nextSpace)
+    showToast(`Gizmo: ${nextSpace}`, 'info')
+    return
+  }
 })
 
 // ── Activity bar ──────────────────────────────────────────────────────────────
@@ -507,20 +718,27 @@ document.getElementById('btn-clear-assembly')?.addEventListener('click', () => {
 // ── Example assembly ──────────────────────────────────────────────────────────
 
 document.getElementById('btn-load-example')?.addEventListener('click', () => {
-  const servoDef = getPartDef('servo')
-  const tubeDef  = getPartDef('tube')
-  if (!servoDef) { showToast('Parts not found', 'warning'); return }
+  const hingeDef = getPartDef('joint.hinge.block')
+  const linkDef  = getPartDef('link.arm.single')
+  const footDef  = getPartDef('foot.pad.basic')
+  if (!hingeDef || !linkDef) { showToast('Parts not found', 'warning'); return }
   history.record()
   assembly.clear()
-  const rootId   = assembly.addRoot('servo', defaultParams(servoDef), 'Base Servo')
-  if (tubeDef) {
-    const tubeId   = assembly.addPart('tube', defaultParams(tubeDef),   rootId,  'output_horn',    'tube_end_top', { type: 'revolute' }, 'Link Tube')
-    const servo2Id = assembly.addPart('servo', defaultParams(servoDef), tubeId,  'tube_end_bot',   'mount_bottom',  { type: 'fixed' },   'End Servo')
-    select(servo2Id)
+  const rootId = assembly.addRoot('joint.hinge.block', defaultParams(hingeDef), 'Hip Joint')
+  const legId  = assembly.addPart(
+    'link.arm.single', defaultParams(linkDef),
+    rootId, 'axle_out', 'root', { type: 'revolute' }, 'Upper Leg',
+  )
+  if (footDef) {
+    const footId = assembly.addPart(
+      'foot.pad.basic', defaultParams(footDef),
+      legId, 'tip', 'mount', { type: 'fixed' }, 'Foot Pad',
+    )
+    select(footId)
   } else {
-    select(rootId)
+    select(legId)
   }
-  showToast('Example robot loaded', 'success')
+  showToast('Example mechanical assembly loaded', 'success')
 })
 
 // ── Simulate (stub) ───────────────────────────────────────────────────────────

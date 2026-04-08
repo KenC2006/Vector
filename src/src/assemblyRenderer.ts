@@ -3,35 +3,27 @@ import type { AssemblyGraph, PartInstance, ConnectionEdge } from './assemblyGrap
 import { getPartDef, interfacesCompatible } from './partLibrary'
 import type { ParamValues } from './partLibrary'
 
-// ── Interface ring colours ────────────────────────────────────────────────────
+// ── Interface node colours ───────────────────────────────────────────────────
 
 const COL_AVAILABLE = 0x44aaff
 const COL_COMPAT    = 0x44ffaa
 const COL_OCCUPIED  = 0x555566
+const COL_SNAP      = 0x66ffcc   // highlight when a snap target is active
+const COL_COLLISION = 0xff4444   // red tint on colliding parts
 
-// ── Ring geometry helper ──────────────────────────────────────────────────────
+// ── Shared cube geometry (reused for every node) ─────────────────────────────
 
-function makeRingMesh(color: number): THREE.Mesh {
-  const geo = new THREE.TorusGeometry(0.018, 0.003, 6, 20)
+const _nodeGeo = new THREE.BoxGeometry(0.018, 0.018, 0.018)
+
+function makeNodeMesh(color: number): THREE.Mesh {
   const mat = new THREE.MeshStandardMaterial({
-    color, emissive: color, emissiveIntensity: 0.6,
-    roughness: 0.3, metalness: 0.0,
-    transparent: true, opacity: 0.9, depthWrite: false,
+    color, emissive: color, emissiveIntensity: 0.7,
+    roughness: 0.25, metalness: 0.0,
+    transparent: true, opacity: 0.92, depthWrite: false,
   })
-  const m = new THREE.Mesh(geo, mat)
-  m.userData.isRing = true
+  const m = new THREE.Mesh(_nodeGeo, mat)
+  m.userData.isRing = true   // keep flag name for raycasting compat
   return m
-}
-
-function orientRingToNormal(ring: THREE.Mesh, normal: THREE.Vector3) {
-  const up = new THREE.Vector3(0, 1, 0)
-  const n  = normal.clone().normalize()
-  if (Math.abs(n.dot(up)) > 0.999) {
-    ring.rotation.x = n.y > 0 ? 0 : Math.PI
-  } else {
-    const q = new THREE.Quaternion().setFromUnitVectors(up, n)
-    ring.quaternion.copy(q)
-  }
 }
 
 // ── Connection transform ──────────────────────────────────────────────────────
@@ -100,6 +92,9 @@ export class AssemblyRenderer {
   private pendingPartDefId:   string | null = null
 
   private ghostGroup: THREE.Group | null = null
+
+  /** Ghost shown during gizmo drag to preview where the part would snap */
+  private snapGhostGroup: THREE.Group | null = null
 
   private readonly _connLineMat = new THREE.LineBasicMaterial({ color: 0x4488aa, transparent: true, opacity: 0.5 })
 
@@ -181,6 +176,23 @@ export class AssemblyRenderer {
     const worldMat = this._computeWorldMatrix(inst, parentConn)
     partGroup.position.setFromMatrixPosition(worldMat)
     partGroup.quaternion.setFromRotationMatrix(worldMat)
+
+    // Apply user-controlled world-space rotation (from gizmo rotate mode)
+    if (inst.dragRotation) {
+      const dq = new THREE.Quaternion(
+        inst.dragRotation.x, inst.dragRotation.y,
+        inst.dragRotation.z, inst.dragRotation.w,
+      )
+      // premultiply = world-space rotation on top of connection orientation
+      partGroup.quaternion.premultiply(dq)
+    }
+
+    // Apply user-controlled world-space offset (from gizmo translate mode)
+    if (inst.dragOffset) {
+      partGroup.position.x += inst.dragOffset.x
+      partGroup.position.y += inst.dragOffset.y
+      partGroup.position.z += inst.dragOffset.z
+    }
 
     this.group.add(partGroup)
     this.meshMap.set(inst.instanceId, partGroup)
@@ -330,14 +342,13 @@ export class AssemblyRenderer {
           color = hasCompat ? COL_COMPAT : COL_AVAILABLE
         }
       }
-      const ring = makeRingMesh(color)
-      ring.position.copy(iface.localPosition(inst.params))
-      orientRingToNormal(ring, iface.localNormal(inst.params))
-      ring.userData.instanceId  = instanceId
-      ring.userData.interfaceId = iface.id
-      ring.userData.isRing      = true
-      partGroup.add(ring)
-      this.ringMap.set(key, ring)
+      const node = makeNodeMesh(color)
+      node.position.copy(iface.localPosition(inst.params))
+      node.userData.instanceId  = instanceId
+      node.userData.interfaceId = iface.id
+      node.userData.isRing      = true
+      partGroup.add(node)
+      this.ringMap.set(key, node)
     }
   }
 
@@ -452,6 +463,266 @@ export class AssemblyRenderer {
     if (this.ghostGroup) { this.group.remove(this.ghostGroup); this.ghostGroup = null }
   }
 
+  // ── Drag-mode: show all nodes + live snap ghost ────────────────────────────
+
+  /** Call when gizmo drag starts — shows interface nodes on every part. */
+  beginDrag(_instanceId: string) {
+    this._showAllNodes()
+  }
+
+  /**
+   * Call continuously while gizmo is dragging.
+   * Checks for snap targets and shows a translucent ghost preview at the
+   * would-be snap position. Returns the snap target (or null).
+   */
+  updateDragPreview(draggedInstanceId: string, threshold = 0.08) {
+    this.clearSnapGhost()
+    this._resetAllNodeColors()
+
+    const snap = this.findSnapTarget(draggedInstanceId, threshold)
+    if (!snap || !this.graph) return snap
+
+    // Highlight the target node with snap colour
+    const targetKey = `${snap.targetInstanceId}:${snap.targetIfaceId}`
+    const targetNode = this.ringMap.get(targetKey)
+    if (targetNode) {
+      const mat = targetNode.material as THREE.MeshStandardMaterial
+      mat.color.setHex(COL_SNAP)
+      mat.emissive.setHex(COL_SNAP)
+    }
+
+    // Build a translucent ghost showing where the part would end up after snap
+    const draggedInst = this.graph.getInstance(draggedInstanceId)
+    if (!draggedInst) return snap
+    const draggedDef = getPartDef(draggedInst.definitionId)
+    if (!draggedDef) return snap
+
+    const targetInst = this.graph.getInstance(snap.targetInstanceId)
+    const targetDef  = targetInst ? getPartDef(targetInst.definitionId) : null
+    const targetGrp  = this.meshMap.get(snap.targetInstanceId)
+    if (!targetInst || !targetDef || !targetGrp) return snap
+
+    const ghost = draggedDef.buildMesh(draggedInst.params)
+    ghost.traverse(o => {
+      if (o instanceof THREE.Mesh) {
+        const mat = (o.material as THREE.MeshStandardMaterial).clone()
+        mat.transparent = true
+        mat.opacity     = 0.30
+        mat.depthWrite  = false
+        mat.color.setHex(0x44aaff)
+        mat.emissive.setHex(0x224466)
+        mat.emissiveIntensity = 0.6
+        o.material = mat
+      }
+    })
+
+    const pWorldMat = new THREE.Matrix4().compose(targetGrp.position, targetGrp.quaternion, targetGrp.scale)
+    const localMat  = computeConnectionTransform(
+      targetDef, targetInst.params, snap.targetIfaceId,
+      draggedDef, draggedInst.params, snap.draggedIfaceId,
+    )
+    const worldMat = pWorldMat.clone().multiply(localMat)
+    ghost.position.setFromMatrixPosition(worldMat)
+    ghost.quaternion.setFromRotationMatrix(worldMat)
+    this.group.add(ghost)
+    this.snapGhostGroup = ghost
+
+    return snap
+  }
+
+  /** Call when gizmo drag ends — hide nodes and snap ghost. */
+  endDrag() {
+    this.clearSnapGhost()
+    this.clearCollisionHighlights()
+    // Restore normal node visibility (selected instance only, or pending, etc.)
+    this.hideAllRings()
+    if (this.pendingPartDefId) {
+      this._showAllCompatibleRings(this.pendingPartDefId)
+    } else if (this.selectedInstanceId && this.meshMap.has(this.selectedInstanceId)) {
+      this._showInterfacesInner(this.selectedInstanceId)
+    }
+  }
+
+  clearSnapGhost() {
+    if (this.snapGhostGroup) {
+      this.group.remove(this.snapGhostGroup)
+      this.snapGhostGroup = null
+    }
+  }
+
+  /** Show nodes on ALL parts (used during drag). */
+  private _showAllNodes() {
+    this.hideAllRings()
+    if (!this.graph) return
+    this.graph.walk(inst => this._showInterfacesInner(inst.instanceId))
+  }
+
+  /** Reset all visible nodes back to their default colour. */
+  private _resetAllNodeColors() {
+    if (!this.graph) return
+    for (const [key, node] of this.ringMap) {
+      const [instanceId, ifaceId] = key.split(':')
+      const inst = this.graph.getInstance(instanceId)
+      if (!inst) continue
+      const def = getPartDef(inst.definitionId)
+      if (!def) continue
+      const occupied = this.graph.occupiedInterfaces(instanceId)
+      const isOcc    = occupied.has(ifaceId)
+      const color    = isOcc ? COL_OCCUPIED : COL_AVAILABLE
+      const mat = node.material as THREE.MeshStandardMaterial
+      mat.color.setHex(color)
+      mat.emissive.setHex(color)
+    }
+  }
+
+  // ── Snap detection ─────────────────────────────────────────────────────────
+
+  /**
+   * Find the best interface-to-interface snap target for a dragged part.
+   * Returns null if nothing is within `threshold` distance.
+   */
+  findSnapTarget(draggedInstanceId: string, threshold = 0.08): {
+    draggedIfaceId:  string
+    targetInstanceId: string
+    targetIfaceId:   string
+    distance:        number
+  } | null {
+    if (!this.graph) return null
+
+    const draggedInst = this.graph.getInstance(draggedInstanceId)
+    if (!draggedInst) return null
+    const draggedDef = getPartDef(draggedInst.definitionId)
+    if (!draggedDef) return null
+    const draggedGroup = this.meshMap.get(draggedInstanceId)
+    if (!draggedGroup) return null
+
+    // Force fresh world matrix — gizmo modifies position/quaternion directly
+    // but matrixWorld may be stale between render frames
+    draggedGroup.updateMatrixWorld(true)
+
+    // Interfaces occupied by children of the dragged part (these can't be used)
+    const childConns = this.graph.getChildConnections(draggedInstanceId)
+    const occupiedByChildren = new Set(childConns.map(c => c.parentInterfaceId))
+
+    // Build world positions for every eligible interface on the dragged part.
+    // The child-interface currently connecting it to its parent IS eligible
+    // because a reparent will free it.
+    const draggedIfaces = draggedDef.interfaces
+      .filter(iface => !occupiedByChildren.has(iface.id))
+      .map(iface => ({
+        iface,
+        worldPos: draggedGroup.localToWorld(iface.localPosition(draggedInst.params).clone()),
+      }))
+
+    // If the dragged part has a parent, that parent's interface will be freed
+    // by reparent — so don't count it as occupied on the target side.
+    const currentParentConn = this.graph.getParentConnection(draggedInstanceId)
+
+    let best: { draggedIfaceId: string; targetInstanceId: string; targetIfaceId: string; distance: number } | null = null
+
+    this.graph.walk(inst => {
+      if (inst.instanceId === draggedInstanceId) return
+      // Skip descendants of dragged part (would create a cycle)
+      if (this.graph!.isDescendantOf(inst.instanceId, draggedInstanceId)) return
+
+      const def = getPartDef(inst.definitionId)
+      if (!def) return
+      const grp = this.meshMap.get(inst.instanceId)
+      if (!grp) return
+
+      grp.updateMatrixWorld(true)
+      const occupied = this.graph!.occupiedInterfaces(inst.instanceId)
+
+      // The interface on the current parent that connects the dragged part
+      // will be freed by reparent, so treat it as available.
+      const freedIfaceId = (currentParentConn && currentParentConn.parentInstanceId === inst.instanceId)
+        ? currentParentConn.parentInterfaceId
+        : null
+
+      for (const tIface of def.interfaces) {
+        if (occupied.has(tIface.id) && tIface.id !== freedIfaceId) continue
+        const tWorld = grp.localToWorld(tIface.localPosition(inst.params).clone())
+
+        for (const { iface: dIface, worldPos: dWorld } of draggedIfaces) {
+          if (!interfacesCompatible(dIface.type, tIface.type)) continue
+          const dist = dWorld.distanceTo(tWorld)
+          if (dist < threshold && (!best || dist < best.distance)) {
+            best = {
+              draggedIfaceId:  dIface.id,
+              targetInstanceId: inst.instanceId,
+              targetIfaceId:   tIface.id,
+              distance:        dist,
+            }
+          }
+        }
+      }
+    })
+
+    return best
+  }
+
+  // ── Collision detection (AABB) ──────────────────────────────────────────────
+
+  private _collisionHighlighted = new Set<string>()
+
+  /** Return IDs of parts whose AABB overlaps the dragged part. */
+  checkCollisions(draggedInstanceId: string): string[] {
+    const draggedBox = this.getBoundingBox(draggedInstanceId)
+    if (!draggedBox || !this.graph) return []
+
+    const collisions: string[] = []
+    this.graph.walk(inst => {
+      if (inst.instanceId === draggedInstanceId) return
+      if (this.graph!.isDescendantOf(inst.instanceId, draggedInstanceId)) return
+      const box = this.getBoundingBox(inst.instanceId)
+      if (box && draggedBox.intersectsBox(box)) {
+        collisions.push(inst.instanceId)
+      }
+    })
+    return collisions
+  }
+
+  /** Tint the given parts red to signal collision. */
+  highlightCollisions(ids: string[]) {
+    // Clear previous collision highlights
+    this.clearCollisionHighlights()
+
+    for (const id of ids) {
+      const grp = this.meshMap.get(id)
+      if (!grp) continue
+      this._collisionHighlighted.add(id)
+      grp.traverse(o => {
+        if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
+        const mat = o.material as THREE.MeshStandardMaterial
+        if (!('_preCollisionEmissiveHex' in mat.userData)) {
+          mat.userData._preCollisionEmissiveHex       = mat.emissive.getHex()
+          mat.userData._preCollisionEmissiveIntensity = mat.emissiveIntensity
+        }
+        mat.emissive.setHex(COL_COLLISION)
+        mat.emissiveIntensity = 0.8
+      })
+    }
+  }
+
+  /** Remove red collision tint from all previously highlighted parts. */
+  clearCollisionHighlights() {
+    for (const id of this._collisionHighlighted) {
+      const grp = this.meshMap.get(id)
+      if (!grp) continue
+      grp.traverse(o => {
+        if (!(o instanceof THREE.Mesh) || o.userData.isRing) return
+        const mat = o.material as THREE.MeshStandardMaterial
+        if ('_preCollisionEmissiveHex' in mat.userData) {
+          mat.emissive.setHex(mat.userData._preCollisionEmissiveHex)
+          mat.emissiveIntensity = mat.userData._preCollisionEmissiveIntensity
+          delete mat.userData._preCollisionEmissiveHex
+          delete mat.userData._preCollisionEmissiveIntensity
+        }
+      })
+    }
+    this._collisionHighlighted.clear()
+  }
+
   // ── Queries ───────────────────────────────────────────────────────────────
 
   getMeshGroup(instanceId: string): THREE.Group | undefined {
@@ -476,6 +747,7 @@ export class AssemblyRenderer {
     this.ringMap.clear()
     this.connectionLines = []
     this.ghostGroup = null
+    this.snapGhostGroup = null
     this.selectedInstanceId = null
   }
 
