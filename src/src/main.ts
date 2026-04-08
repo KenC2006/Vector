@@ -1,6 +1,27 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { invoke } from '@tauri-apps/api/core'
+
+// Wait for Tauri IPC bridge to be ready (injected async by Tauri)
+function waitForTauri(timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      resolve()
+      return
+    }
+    const start = Date.now()
+    const interval = setInterval(() => {
+      if ((window as any).__TAURI_INTERNALS__) {
+        clearInterval(interval)
+        resolve()
+      } else if (Date.now() - start > timeoutMs) {
+        clearInterval(interval)
+        reject(new Error('Tauri IPC not available — are you running inside cargo tauri dev?'))
+      }
+    }, 50)
+  })
+}
 
 // ── Sample URDF ──────────────────────────────────────────────────────────────
 
@@ -417,6 +438,164 @@ const monacoEditor = monaco.editor.create(monacoContainer, {
   },
   suggest: { showWords: false },
   quickSuggestions: { other: true, strings: true, comments: false },
+  inlineSuggest: { enabled: true },
+})
+
+// ── Inline AI Completions (Cursor-style Ghost Text) ──────────────────────────
+
+// State for managing completion requests
+let inlineCompletionSettings = {
+  enabled: true,
+  debounceMs: 500,
+}
+
+// lastCompletionRequestId removed — using timestamp-based dedup instead
+let completionInFlight = false
+let lastCompletionTimestamp = 0
+
+// Simple delay — NOT tied to Monaco's cancellation token
+function delayMs(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// Safe invoke that ensures Tauri IPC is ready before calling.
+// Monaco's async pipeline can fire before __TAURI_INTERNALS__ is injected.
+async function safeInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  await waitForTauri()
+  return invoke(cmd, args) as Promise<T>
+}
+
+// Invoke with a timeout — rejects if the call takes too long
+function invokeWithTimeout<T>(cmd: string, args: Record<string, unknown>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    safeInvoke<T>(cmd, args),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${cmd} timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ])
+}
+
+// Register inline completions provider for XML (URDF files)
+monaco.languages.registerInlineCompletionsProvider('xml', {
+  async provideInlineCompletions(
+    model: monaco.editor.ITextModel,
+    position: monaco.Position,
+    _context: monaco.languages.InlineCompletionContext,
+    _token: monaco.CancellationToken
+  ): Promise<monaco.languages.InlineCompletions> {
+    if (!inlineCompletionSettings.enabled || !coreAvailable) {
+      return { items: [] }
+    }
+
+    // Skip if a completion request is already in-flight
+    if (completionInFlight) {
+      return { items: [] }
+    }
+
+    // Record when this request started — used for debounce deduplication
+    const requestTime = Date.now()
+    lastCompletionTimestamp = requestTime
+
+    // Debounce — wait for user to stop typing.
+    // NOT tied to Monaco's cancellation token, which fires too aggressively.
+    await delayMs(inlineCompletionSettings.debounceMs)
+
+    // If a newer request came in during the debounce, bail out
+    if (lastCompletionTimestamp !== requestTime) {
+      return { items: [] }
+    }
+
+    // Snapshot the editor state at request time
+    const urdfContent = model.getValue()
+    const cursorLine = position.lineNumber
+    const cursorColumn = position.column
+    const lines = urdfContent.split('\n')
+    const currentLine = lines[cursorLine - 1] || ''
+    const textBeforeCursor = currentLine.slice(0, cursorColumn - 1)
+
+    // Don't request completions on empty/whitespace-only lines
+    if (!textBeforeCursor.trim() && cursorColumn <= 1) {
+      return { items: [] }
+    }
+
+    try {
+      completionInFlight = true
+      console.log(`[Completions] Requesting at L${cursorLine}:${cursorColumn} "${textBeforeCursor.trim().slice(-40)}"`)
+
+      const completion = await invokeWithTimeout<string>('ai_complete', {
+        urdfContent,
+        cursorLine,
+        cursorColumn,
+        prefix: textBeforeCursor,
+      }, 10000)
+
+      completionInFlight = false
+
+      if (!completion || !completion.trim()) {
+        console.log('[Completions] Empty response')
+        return { items: [] }
+      }
+
+      // Truncate to first 4 lines if too long
+      let result = completion
+      const resultLines = result.split('\n')
+      if (resultLines.length > 4) {
+        result = resultLines.slice(0, 4).join('\n')
+        console.log(`[Completions] Truncated ${resultLines.length} → 4 lines`)
+      }
+
+      console.log('[Completions] ✓ Got:', JSON.stringify(result.slice(0, 80)))
+
+      return {
+        items: [{
+          insertText: result,
+          range: new monaco.Range(cursorLine, cursorColumn, cursorLine, cursorColumn),
+        }]
+      }
+    } catch (error) {
+      completionInFlight = false
+      if (String(error).includes('timed out')) {
+        console.log('[Completions] Timed out')
+      } else {
+        console.warn('[Completions] Error:', error)
+      }
+      return { items: [] }
+    }
+  },
+  disposeInlineCompletions() {
+    // no-op
+  },
+} as monaco.languages.InlineCompletionsProvider)
+
+// Setup toggle button for inline completions
+const inlineCompletionToggle = document.getElementById('inline-completion-toggle') as HTMLSpanElement
+if (inlineCompletionToggle) {
+  inlineCompletionToggle.addEventListener('click', () => {
+    inlineCompletionSettings.enabled = !inlineCompletionSettings.enabled
+
+    // Update visual state
+    if (inlineCompletionSettings.enabled) {
+      inlineCompletionToggle.style.opacity = '1'
+      inlineCompletionToggle.style.color = '#4ec9b0'
+      inlineCompletionToggle.title = 'Inline AI completions: enabled (Ctrl+Shift+I)'
+      showToast('Inline completions enabled', 'success')
+    } else {
+      inlineCompletionToggle.style.opacity = '0.5'
+      inlineCompletionToggle.style.color = '#858585'
+      inlineCompletionToggle.title = 'Inline AI completions: disabled (Ctrl+Shift+I)'
+      showToast('Inline completions disabled', 'info')
+    }
+  })
+}
+
+// Keyboard shortcut: Ctrl+Shift+I to toggle inline completions
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'I') {
+    e.preventDefault()
+    if (inlineCompletionToggle) {
+      inlineCompletionToggle.click()
+    }
+  }
 })
 
 // Update cursor position in status bar
@@ -424,14 +603,24 @@ monacoEditor.onDidChangeCursorPosition((e) => {
   cursorPos.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`
 })
 
-// Expose editor helpers on window for command bar and other modules
-;(window as any).__vectorEditor = {
-  getValue: () => monacoEditor.getValue(),
-  setValue: (v: string) => monacoEditor.setValue(v),
-  getModel: () => monacoEditor.getModel(),
-  editor: monacoEditor,
-  layout: () => monacoEditor.layout(),
-}
+// Debounced validation on editor content changes
+let validationDebounceTimer: ReturnType<typeof setTimeout> | null = null
+monacoEditor.onDidChangeModelContent(() => {
+  // Only validate URDF files
+  if (activeFile !== 'robot.urdf') return
+
+  // Clear existing timer
+  if (validationDebounceTimer) clearTimeout(validationDebounceTimer)
+
+  // Set new timer to run local validation after 1 second of inactivity
+  // Uses client-side only to avoid blocking the Mutex that AI completions need
+  validationDebounceTimer = setTimeout(() => {
+    runLocalValidation()
+  }, 1000)
+})
+
+// Expose the actual Monaco editor instance on window for inline diff and other modules
+;(window as any).__vectorEditor = monacoEditor
 
 // ── Tab switching ────────────────────────────────────────────────────────────
 
@@ -480,6 +669,11 @@ function switchToFile(filename: string) {
   }
 
   monacoEditor.focus()
+
+  // Run local validation when switching to URDF file (avoids blocking Mutex)
+  if (filename === 'robot.urdf') {
+    runLocalValidation()
+  }
 }
 
 tabs.forEach(tab => {
@@ -502,7 +696,7 @@ fileItems.forEach(item => {
 
 // ── Validation Markers for Monaco ───────────────────────────────────────────
 
-function setValidationMarkers(results: Array<{ name: string; severity: string; message: string; category: string }>) {
+function setValidationMarkers(results: Array<{ name: string; severity: string; message: string; category: string; line?: number; column?: number }>) {
   const model = monacoModels['robot.urdf']
   if (!model) return
 
@@ -516,15 +710,17 @@ function setValidationMarkers(results: Array<{ name: string; severity: string; m
       ? monaco.MarkerSeverity.Error
       : monaco.MarkerSeverity.Warning
 
-    // Place marker on line 1 as a file-level diagnostic
-    // (In a full implementation, the validator would return line numbers)
+    // Use provided line/column or default to line 1
+    const lineNumber = r.line || 1
+    const column = r.column || 1
+
     markers.push({
       severity: markerSeverity,
       message: `[${r.category}] ${r.name}: ${r.message}`,
-      startLineNumber: 1,
-      startColumn: 1,
-      endLineNumber: 1,
-      endColumn: 1,
+      startLineNumber: lineNumber,
+      startColumn: column,
+      endLineNumber: lineNumber,
+      endColumn: Math.max(column + 1, column + (r.name.length || 10)),
       source: 'Vector Validator',
     })
   }
@@ -605,150 +801,271 @@ scene.add(rimLight)
 
 // ── Materials ────────────────────────────────────────────────────────────────
 
-const steelMat = new THREE.MeshStandardMaterial({
-  color: 0x2a2e38, roughness: 0.4, metalness: 0.7,
-})
-const armMat = new THREE.MeshStandardMaterial({
-  color: 0x2a6dd9, roughness: 0.35, metalness: 0.5,
-})
-const servoMat = new THREE.MeshStandardMaterial({
-  color: 0x1a1a22, roughness: 0.5, metalness: 0.6,
-})
-const gripperMat = new THREE.MeshStandardMaterial({
-  color: 0x3a7ae8, roughness: 0.3, metalness: 0.5,
-})
-const jointAccentMat = new THREE.MeshStandardMaterial({
-  color: 0xff7b45, roughness: 0.4, metalness: 0.3, emissive: 0x331500,
-})
 const comMat = new THREE.MeshStandardMaterial({
   color: 0xe5c07b, roughness: 0.3, metalness: 0.2, emissive: 0x665500,
 })
 const wireMat = new THREE.MeshBasicMaterial({
   color: 0x4a9eff, wireframe: true, transparent: true, opacity: 0.12,
 })
+const defaultMat = new THREE.MeshStandardMaterial({
+  color: 0x888888, roughness: 0.4, metalness: 0.5,
+})
 
-// ── Build robot (hierarchical) ───────────────────────────────────────────────
+// ── URDF Parser ─────────────────────────────────────────────────────────────
+
+interface ParsedRobot {
+  group: THREE.Group
+  joints: Map<string, { group: THREE.Group; axis: THREE.Vector3; type: string }>
+  linkGroups: Map<string, THREE.Group>
+  vertexCount: number
+  faceCount: number
+  linkCount: number
+  jointCount: number
+}
+
+interface URDFLink {
+  name: string
+  mass: number
+  comPos: THREE.Vector3
+  geometry: THREE.Group
+}
+
+interface URDFJoint {
+  name: string
+  type: string
+  parentLink: string
+  childLink: string
+  axis: THREE.Vector3
+  origin: { pos: THREE.Vector3; rot: THREE.Quaternion }
+}
+
+function parseURDFToScene(urdfXml: string): ParsedRobot {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(urdfXml, 'application/xml')
+
+  if (doc.documentElement.nodeName === 'parsererror') {
+    console.error('URDF parse error')
+    throw new Error('Invalid URDF XML')
+  }
+
+  const robot = new THREE.Group()
+  const linkGroups = new Map<string, THREE.Group>()
+  const joints = new Map<string, { group: THREE.Group; axis: THREE.Vector3; type: string }>()
+  const linkData = new Map<string, URDFLink>()
+  const jointData: URDFJoint[] = []
+  const childLinkSet = new Set<string>()
+
+  // Parse all links
+  const linkElements = doc.querySelectorAll('link')
+  for (const linkEl of linkElements) {
+    const linkName = linkEl.getAttribute('name') || ''
+    const geometryGroup = new THREE.Group()
+    let mass = 0
+    let comPos = new THREE.Vector3()
+
+    // Parse mass
+    const inertialEl = linkEl.querySelector('inertial')
+    if (inertialEl) {
+      const massEl = inertialEl.querySelector('mass')
+      if (massEl) {
+        mass = parseFloat(massEl.getAttribute('value') || '0')
+      }
+      const originEl = inertialEl.querySelector('origin')
+      if (originEl) {
+        const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
+        comPos = new THREE.Vector3(xyz[0], xyz[1], xyz[2])
+      }
+    }
+
+    // Parse visual geometry
+    const visualEl = linkEl.querySelector('visual')
+    if (visualEl) {
+      const geomEl = visualEl.querySelector('geometry')
+      if (geomEl) {
+        let geom: THREE.BufferGeometry | null = null
+        let mat = defaultMat
+
+        // Get material color if specified
+        const matEl = visualEl.querySelector('material')
+        if (matEl) {
+          const colorEl = matEl.querySelector('color')
+          if (colorEl) {
+            const rgba = (colorEl.getAttribute('rgba') || '0.5 0.5 0.5 1').split(/\s+/).map(parseFloat)
+            const color = new THREE.Color(rgba[0], rgba[1], rgba[2])
+            mat = new THREE.MeshStandardMaterial({
+              color,
+              roughness: 0.4,
+              metalness: 0.5,
+            })
+          }
+        }
+
+        // Parse geometry type
+        const cylinderEl = geomEl.querySelector('cylinder')
+        if (cylinderEl) {
+          const r = parseFloat(cylinderEl.getAttribute('radius') || '0.05')
+          const l = parseFloat(cylinderEl.getAttribute('length') || '0.1')
+          geom = new THREE.CylinderGeometry(r, r, l, 32)
+          // Three.js cylinders are Y-aligned; rotate to Z-aligned for URDF convention
+          const mesh = new THREE.Mesh(geom, mat)
+          mesh.rotation.x = Math.PI / 2
+          geometryGroup.add(mesh)
+        } else {
+          const boxEl = geomEl.querySelector('box')
+          if (boxEl) {
+            const size = (boxEl.getAttribute('size') || '0.1 0.1 0.1').split(/\s+/).map(parseFloat)
+            geom = new THREE.BoxGeometry(size[0], size[1], size[2])
+            const mesh = new THREE.Mesh(geom, mat)
+            geometryGroup.add(mesh)
+          } else {
+            const sphereEl = geomEl.querySelector('sphere')
+            if (sphereEl) {
+              const r = parseFloat(sphereEl.getAttribute('radius') || '0.05')
+              geom = new THREE.SphereGeometry(r, 24, 24)
+              const mesh = new THREE.Mesh(geom, mat)
+              geometryGroup.add(mesh)
+            } else {
+              // Mesh placeholder
+              const placeholderGeom = new THREE.SphereGeometry(0.02, 16, 16)
+              const mesh = new THREE.Mesh(placeholderGeom, mat)
+              geometryGroup.add(mesh)
+            }
+          }
+        }
+
+        // Apply visual origin transform
+        const visOriginEl = visualEl.querySelector('origin')
+        if (visOriginEl) {
+          const xyz = (visOriginEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
+          const rpy = (visOriginEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
+          geometryGroup.position.set(xyz[0], xyz[1], xyz[2])
+          const euler = new THREE.Euler(rpy[0], rpy[1], rpy[2], 'ZYX')
+          geometryGroup.quaternion.setFromEuler(euler)
+        }
+      }
+    }
+
+    // Add shadow properties and finalize geometry
+    geometryGroup.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.castShadow = true
+        child.receiveShadow = true
+      }
+    })
+
+    const linkGroup = new THREE.Group()
+    linkGroup.add(geometryGroup)
+    linkGroups.set(linkName, linkGroup)
+    linkData.set(linkName, { name: linkName, mass, comPos, geometry: linkGroup })
+  }
+
+  // Parse all joints
+  const jointElements = doc.querySelectorAll('joint')
+  for (const jointEl of jointElements) {
+    const jointName = jointEl.getAttribute('name') || ''
+    const jointType = jointEl.getAttribute('type') || ''
+
+    const parentEl = jointEl.querySelector('parent')
+    const childEl = jointEl.querySelector('child')
+    const parentLink = parentEl?.getAttribute('link') || ''
+    const childLink = childEl?.getAttribute('link') || ''
+
+    if (parentLink && childLink) {
+      childLinkSet.add(childLink)
+
+      let axisVec = new THREE.Vector3(0, 0, 1)
+      const axisEl = jointEl.querySelector('axis')
+      if (axisEl) {
+        const xyz = (axisEl.getAttribute('xyz') || '0 0 1').split(/\s+/).map(parseFloat)
+        axisVec = new THREE.Vector3(xyz[0], xyz[1], xyz[2]).normalize()
+      }
+
+      let pos = new THREE.Vector3()
+      let rot = new THREE.Quaternion()
+      const originEl = jointEl.querySelector('origin')
+      if (originEl) {
+        const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
+        const rpy = (originEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
+        pos = new THREE.Vector3(xyz[0], xyz[1], xyz[2])
+        const euler = new THREE.Euler(rpy[0], rpy[1], rpy[2], 'ZYX')
+        rot.setFromEuler(euler)
+      }
+
+      jointData.push({
+        name: jointName,
+        type: jointType,
+        parentLink,
+        childLink,
+        axis: axisVec,
+        origin: { pos, rot },
+      })
+    }
+  }
+
+  // Build hierarchy
+  const rootLinkName = Array.from(linkData.keys()).find((name) => !childLinkSet.has(name)) || 'base_link'
+  const rootLinkGroup = linkGroups.get(rootLinkName)
+  if (rootLinkGroup) {
+    robot.add(rootLinkGroup)
+  }
+
+  function attachChildren(parentLinkName: string, parentGroup: THREE.Group) {
+    for (const joint of jointData) {
+      if (joint.parentLink === parentLinkName) {
+        const childLinkName = joint.childLink
+        const childLinkGroup = linkGroups.get(childLinkName)
+        if (childLinkGroup) {
+          const pivotGroup = new THREE.Group()
+          pivotGroup.position.copy(joint.origin.pos)
+          pivotGroup.quaternion.copy(joint.origin.rot)
+          pivotGroup.add(childLinkGroup)
+          parentGroup.add(pivotGroup)
+
+          joints.set(joint.name, { group: pivotGroup, axis: joint.axis, type: joint.type })
+
+          attachChildren(childLinkName, childLinkGroup)
+        }
+      }
+    }
+  }
+
+  attachChildren(rootLinkName, rootLinkGroup || robot)
+
+  // Count meshes
+  let vertexCount = 0
+  let faceCount = 0
+  robot.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.geometry) {
+      const posAttr = child.geometry.getAttribute('position')
+      if (posAttr) {
+        vertexCount += posAttr.count
+      }
+      if (child.geometry.getIndex()) {
+        faceCount += child.geometry.getIndex()!.count / 3
+      }
+    }
+  })
+
+  return {
+    group: robot,
+    joints,
+    linkGroups,
+    vertexCount,
+    faceCount,
+    linkCount: linkData.size,
+    jointCount: jointData.length,
+  }
+}
+
+// ── Build robot from URDF ───────────────────────────────────────────────────
 
 const robot = new THREE.Group()
 scene.add(robot)
 
-function makeShadowed(mesh: THREE.Mesh) {
-  mesh.castShadow = true
-  mesh.receiveShadow = true
-  return mesh
-}
-
-// Base
-const baseGroup = new THREE.Group()
-robot.add(baseGroup)
-
-const basePlate = makeShadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.16, 0.05, 48), steelMat))
-basePlate.position.y = 0.025
-baseGroup.add(basePlate)
-
-// Base ring accent
-const baseRing = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.005, 8, 48), jointAccentMat)
-baseRing.rotation.x = Math.PI / 2
-baseRing.position.y = 0.05
-baseGroup.add(baseRing)
-
-// Shoulder pivot (rotates around Y via shoulder_pan)
-const shoulderPivot = new THREE.Group()
-shoulderPivot.position.y = 0.05
-baseGroup.add(shoulderPivot)
-
-// Shoulder servo housing
-const shoulderServo = makeShadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.055, 24), servoMat))
-shoulderServo.position.y = 0.0275
-shoulderPivot.add(shoulderServo)
-
-// Shoulder joint ring
-const shoulderRing = new THREE.Mesh(new THREE.TorusGeometry(0.038, 0.004, 8, 24), jointAccentMat)
-shoulderRing.rotation.x = Math.PI / 2
-shoulderRing.position.y = 0.02
-shoulderPivot.add(shoulderRing)
-
-// Upper arm pivot (rotates around X for shoulder_lift)
-const upperArmPivot = new THREE.Group()
-upperArmPivot.position.y = 0.055
-shoulderPivot.add(upperArmPivot)
-
-// Upper arm
-const upperArmMesh = makeShadowed(new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.35, 0.065), armMat))
-upperArmMesh.position.y = 0.175
-upperArmPivot.add(upperArmMesh)
-
-// Edge highlight strips on upper arm
-const stripGeo = new THREE.BoxGeometry(0.002, 0.35, 0.067)
-const stripMat = new THREE.MeshBasicMaterial({ color: 0x4a9eff, transparent: true, opacity: 0.15 })
-const stripL = new THREE.Mesh(stripGeo, stripMat)
-stripL.position.set(-0.033, 0.175, 0)
-upperArmPivot.add(stripL)
-const stripR = new THREE.Mesh(stripGeo, stripMat)
-stripR.position.set(0.033, 0.175, 0)
-upperArmPivot.add(stripR)
-
-// Elbow pivot
-const elbowPivot = new THREE.Group()
-elbowPivot.position.y = 0.35
-upperArmPivot.add(elbowPivot)
-
-// Elbow servo
-const elbowServo = makeShadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.05, 24), servoMat))
-elbowServo.position.y = 0.025
-elbowPivot.add(elbowServo)
-
-const elbowRing = new THREE.Mesh(new THREE.TorusGeometry(0.033, 0.004, 8, 24), jointAccentMat)
-elbowRing.rotation.x = Math.PI / 2
-elbowRing.position.y = 0.015
-elbowPivot.add(elbowRing)
-
-// Forearm
-const forearmPivot = new THREE.Group()
-forearmPivot.position.y = 0.05
-elbowPivot.add(forearmPivot)
-
-const forearmMesh = makeShadowed(new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.28, 0.055), armMat))
-forearmMesh.position.y = 0.14
-forearmPivot.add(forearmMesh)
-
-// Forearm strips
-const fstripGeo = new THREE.BoxGeometry(0.002, 0.28, 0.057)
-const fstripL = new THREE.Mesh(fstripGeo, stripMat)
-fstripL.position.set(-0.028, 0.14, 0)
-forearmPivot.add(fstripL)
-const fstripR = new THREE.Mesh(fstripGeo, stripMat)
-fstripR.position.set(0.028, 0.14, 0)
-forearmPivot.add(fstripR)
-
-// Wrist
-const wrist = makeShadowed(new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 16), servoMat))
-wrist.position.y = 0.28
-forearmPivot.add(wrist)
-
-// Gripper base
-const gripperBase = makeShadowed(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.025, 0.035), steelMat))
-gripperBase.position.y = 0.305
-forearmPivot.add(gripperBase)
-
-// Fingers
-const fingerGeo = new THREE.BoxGeometry(0.008, 0.055, 0.025)
-const fingerL = makeShadowed(new THREE.Mesh(fingerGeo, gripperMat))
-fingerL.position.set(-0.022, 0.34, 0)
-forearmPivot.add(fingerL)
-
-const fingerR = makeShadowed(new THREE.Mesh(fingerGeo, gripperMat))
-fingerR.position.set(0.022, 0.34, 0)
-forearmPivot.add(fingerR)
-
-// Finger tips (accent)
-const tipGeo = new THREE.BoxGeometry(0.01, 0.008, 0.027)
-const tipL = new THREE.Mesh(tipGeo, jointAccentMat)
-tipL.position.set(-0.022, 0.37, 0)
-forearmPivot.add(tipL)
-const tipR = new THREE.Mesh(tipGeo, jointAccentMat)
-tipR.position.set(0.022, 0.37, 0)
-forearmPivot.add(tipR)
+let parsedRobot = parseURDFToScene(SAMPLE_URDF)
+// URDF uses Z-up, Three.js uses Y-up: rotate the entire robot -90° around X
+parsedRobot.group.rotation.x = -Math.PI / 2
+robot.add(parsedRobot.group)
 
 // ── Wireframe overlay ────────────────────────────────────────────────────────
 
@@ -772,7 +1089,6 @@ function addJointAxis(parent: THREE.Object3D, dir: THREE.Vector3, color: number)
   const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 })
   const line = new THREE.Line(geo, mat)
   parent.add(line)
-  axisVisuals.children // just to reference
 
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(0.05, 0.002, 8, 32),
@@ -784,37 +1100,76 @@ function addJointAxis(parent: THREE.Object3D, dir: THREE.Vector3, color: number)
   parent.add(ring)
 }
 
-addJointAxis(shoulderPivot, new THREE.Vector3(0, 0, 1), 0x4a9eff)  // shoulder pan: Z
-addJointAxis(upperArmPivot, new THREE.Vector3(0, 1, 0), 0x4ec9b0)  // shoulder lift: Y
-addJointAxis(elbowPivot, new THREE.Vector3(0, 1, 0), 0x4ec9b0)     // elbow: Y
+// Add joint axis visuals for parsed joints
+const axisColors = [0x4a9eff, 0x4ec9b0, 0xf48771, 0xce9178]
+let colorIdx = 0
+for (const [, jointInfo] of parsedRobot.joints) {
+  const color = axisColors[colorIdx++ % axisColors.length]
+  addJointAxis(jointInfo.group, jointInfo.axis, color)
+}
+
+// ── Build kinematic graph data (needed before CoM marker) ───────────────────
+
+let { kinematicGraph, kinematicJoints } = buildKinematicGraphFromURDF(SAMPLE_URDF)
 
 // ── CoM marker ───────────────────────────────────────────────────────────────
 
 const comGroup = new THREE.Group()
 robot.add(comGroup)
 
-const totalMass = 1.2 + 0.18 + 0.4 + 0.12 + 0.25 + 0.08 + 0.06 + 0.04
-const comY = (1.2*0.025 + 0.18*0.08 + 0.4*0.28 + 0.12*0.46 + 0.25*0.55 + 0.08*0.7 + 0.06*0.72 + 0.04*0.75) / totalMass
+function updateComMarker() {
+  // Clear existing markers
+  comGroup.clear()
 
-const comMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), comMat)
-comMarker.position.set(0, comY, 0)
-comGroup.add(comMarker)
+  // Calculate total mass and weighted CoM position from parsed links
+  let totalMass = 0
+  let comX = 0, comY = 0, comZ = 0
 
-const comLinePts = [new THREE.Vector3(0, comY, 0), new THREE.Vector3(0, 0, 0)]
-const comLineGeo = new THREE.BufferGeometry().setFromPoints(comLinePts)
-const comLineMat = new THREE.LineDashedMaterial({ color: 0xe5c07b, dashSize: 0.02, gapSize: 0.01, transparent: true, opacity: 0.7 })
-const comLine = new THREE.Line(comLineGeo, comLineMat)
-comLine.computeLineDistances()
-comGroup.add(comLine)
+  for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
+    // Get mass from kinematicGraph
+    const link = kinematicGraph[linkName]
+    if (link) {
+      const mass = link.mass
+      totalMass += mass
 
-// CoM label ring
-const comRingGround = new THREE.Mesh(
-  new THREE.RingGeometry(0.035, 0.045, 24),
-  new THREE.MeshBasicMaterial({ color: 0xe5c07b, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
-)
-comRingGround.rotation.x = -Math.PI / 2
-comRingGround.position.y = 0.001
-comGroup.add(comRingGround)
+      // Get world position of link
+      const worldPos = new THREE.Vector3()
+      linkGroup.getWorldPosition(worldPos)
+
+      comX += mass * worldPos.x
+      comY += mass * worldPos.y
+      comZ += mass * worldPos.z
+    }
+  }
+
+  if (totalMass > 0) {
+    comX /= totalMass
+    comY /= totalMass
+    comZ /= totalMass
+  }
+
+  const comMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), comMat)
+  comMarker.position.set(comX, comY, comZ)
+  comGroup.add(comMarker)
+
+  const comLinePts = [new THREE.Vector3(comX, comY, comZ), new THREE.Vector3(comX, 0, comZ)]
+  const comLineGeo = new THREE.BufferGeometry().setFromPoints(comLinePts)
+  const comLineMat = new THREE.LineDashedMaterial({ color: 0xe5c07b, dashSize: 0.02, gapSize: 0.01, transparent: true, opacity: 0.7 })
+  const comLine = new THREE.Line(comLineGeo, comLineMat)
+  comLine.computeLineDistances()
+  comGroup.add(comLine)
+
+  // CoM label ring
+  const comRingGround = new THREE.Mesh(
+    new THREE.RingGeometry(0.035, 0.045, 24),
+    new THREE.MeshBasicMaterial({ color: 0xe5c07b, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+  )
+  comRingGround.rotation.x = -Math.PI / 2
+  comRingGround.position.set(comX, 0.001, comZ)
+  comGroup.add(comRingGround)
+}
+
+updateComMarker()
 
 // ── Viewport controls ────────────────────────────────────────────────────────
 
@@ -859,7 +1214,7 @@ const simPause = document.getElementById('sim-pause') as HTMLButtonElement
 const simReset = document.getElementById('sim-reset') as HTMLButtonElement
 const simProgress = document.getElementById('sim-progress') as HTMLDivElement
 const simTimeEl = document.getElementById('sim-time') as HTMLSpanElement
-const viewportLabel = document.getElementById('viewport-label') as HTMLSpanElement
+const viewportLabel = document.querySelector('.vp-tab[data-view="3d"]') as HTMLButtonElement
 
 let simRunning = false
 let simActive = false
@@ -873,6 +1228,22 @@ function updateSimUI() {
   simTimeEl.textContent = simTime.toFixed(3) + 's'
   simProgress.style.width = `${Math.min((simTime / 10) * 100, 100)}%`
 }
+
+// ── Update viewport info ────────────────────────────────────────────────────
+
+function updateViewportInfo() {
+  const viVerts = document.getElementById('vi-verts')
+  const viFaces = document.getElementById('vi-faces')
+  const viLinks = document.getElementById('vi-links')
+  const viJoints = document.getElementById('vi-joints')
+
+  if (viVerts) viVerts.textContent = `Verts: ${parsedRobot.vertexCount.toLocaleString()}`
+  if (viFaces) viFaces.textContent = `Faces: ${parsedRobot.faceCount.toLocaleString()}`
+  if (viLinks) viLinks.textContent = `Links: ${parsedRobot.linkCount}`
+  if (viJoints) viJoints.textContent = `Joints: ${parsedRobot.jointCount}`
+}
+
+updateViewportInfo()
 
 // ── Resize ───────────────────────────────────────────────────────────────────
 
@@ -893,26 +1264,37 @@ window.addEventListener('resize', resize)
 
 let wireframeBuilt = false
 
+function rebuildWireframes() {
+  wireframeGroup.clear()
+  wireframeBuilt = false
+
+  robot.traverse(child => {
+    if (child instanceof THREE.Mesh && child.material !== wireMat && child.material !== defaultMat && child.geometry) {
+      const clone = new THREE.Mesh(child.geometry, wireMat)
+      child.getWorldPosition(clone.position)
+      child.getWorldQuaternion(clone.quaternion)
+      wireframeGroup.add(clone)
+    }
+  })
+  wireframeBuilt = true
+}
+
 function animate() {
   requestAnimationFrame(animate)
 
   // Build wireframes once
   if (!wireframeBuilt) {
-    wireframeBuilt = true
-    robot.traverse(child => {
-      if (child instanceof THREE.Mesh && child.material !== wireMat && child.geometry) {
-        const clone = new THREE.Mesh(child.geometry, wireMat)
-        child.getWorldPosition(clone.position)
-        child.getWorldQuaternion(clone.quaternion)
-        wireframeGroup.add(clone)
-      }
-    })
+    rebuildWireframes()
   }
 
   controls.update()
 
-  // CoM diamond gentle spin
-  comMarker.rotation.y += 0.01
+  // CoM marker spin
+  for (const marker of comGroup.children) {
+    if (marker instanceof THREE.Mesh) {
+      marker.rotation.y += 0.01
+    }
+  }
 
   // Sim animation
   if (simRunning) {
@@ -920,17 +1302,26 @@ function animate() {
     updateSimUI()
     const t = simTime
 
-    // Smooth sinusoidal motion across joints
-    shoulderPivot.rotation.y = Math.sin(t * 0.8) * 0.6
-    upperArmPivot.rotation.x = Math.sin(t * 0.6 + 0.5) * 0.3 - 0.2
-    elbowPivot.rotation.x = Math.sin(t * 1.2) * 0.5 + 0.3
+    // Animate revolute joints with smooth sinusoidal motion
+    const jointMotion: Record<string, number> = {
+      'shoulder_pan': Math.sin(t * 0.8) * 0.6,
+      'shoulder_lift': Math.sin(t * 0.6 + 0.5) * 0.3 - 0.2,
+      'elbow': Math.sin(t * 1.2) * 0.5 + 0.3,
+      'finger_left_joint': Math.sin(t * 2) * 0.5 + 0.5,
+      'finger_right_joint': Math.sin(t * 2) * 0.5 + 0.5,
+    }
 
-    // Gripper open/close cycle
-    const grip = Math.sin(t * 2) * 0.5 + 0.5 // 0 to 1
-    fingerL.position.x = -0.022 - grip * 0.012
-    fingerR.position.x = 0.022 + grip * 0.012
-    tipL.position.x = fingerL.position.x
-    tipR.position.x = fingerR.position.x
+    // Apply motion to parsed joints
+    for (const [jointName, motion] of Object.entries(jointMotion)) {
+      const jointInfo = parsedRobot.joints.get(jointName)
+      if (jointInfo) {
+        const axis = jointInfo.axis
+        // Create rotation based on axis direction
+        const quat = new THREE.Quaternion()
+        quat.setFromAxisAngle(axis, motion)
+        jointInfo.group.quaternion.copy(quat)
+      }
+    }
   }
 
   renderer.render(scene, camera)
@@ -964,6 +1355,38 @@ document.addEventListener('mouseup', () => {
   if (!dragging) return
   dragging = false
   handle.classList.remove('dragging')
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+})
+
+// ── Sidebar resize ──────────────────────────────────────────────────────────
+const sidebar = document.getElementById('sidebar') as HTMLDivElement
+const sidebarHandle = document.getElementById('sidebar-resize-handle') as HTMLDivElement
+let sidebarDragging = false
+
+sidebarHandle.addEventListener('mousedown', (e) => {
+  sidebarDragging = true
+  sidebarHandle.classList.add('dragging')
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  e.preventDefault()
+})
+
+document.addEventListener('mousemove', (e) => {
+  if (!sidebarDragging) return
+  // Subtract the activity bar width (48px) from the mouse X
+  const activityBar = document.getElementById('activity-bar')!
+  const abWidth = activityBar.getBoundingClientRect().width
+  const newWidth = e.clientX - abWidth
+  const clamped = Math.min(Math.max(newWidth, 140), 500)
+  sidebar.style.width = clamped + 'px'
+  resize()
+})
+
+document.addEventListener('mouseup', () => {
+  if (!sidebarDragging) return
+  sidebarDragging = false
+  sidebarHandle.classList.remove('dragging')
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
 })
@@ -1028,168 +1451,275 @@ interface KinematicJoint {
   childLink: string
 }
 
-// Define the robot kinematic structure based on SAMPLE_URDF
-const kinematicGraph: Record<string, KinematicLink> = {
-  'base_link': {
-    name: 'base_link',
-    mass: 1.2,
-    children: ['shoulder_link'],
-  },
-  'shoulder_link': {
-    name: 'shoulder_link',
-    mass: 0.18,
-    parent: 'base_link',
-    children: ['upper_arm'],
-  },
-  'upper_arm': {
-    name: 'upper_arm',
-    mass: 0.4,
-    parent: 'shoulder_link',
-    children: ['elbow_link'],
-  },
-  'elbow_link': {
-    name: 'elbow_link',
-    mass: 0.12,
-    parent: 'upper_arm',
-    children: ['forearm'],
-  },
-  'forearm': {
-    name: 'forearm',
-    mass: 0.25,
-    parent: 'elbow_link',
-    children: ['wrist'],
-  },
-  'wrist': {
-    name: 'wrist',
-    mass: 0.08,
-    parent: 'forearm',
-    children: ['gripper_base'],
-  },
-  'gripper_base': {
-    name: 'gripper_base',
-    mass: 0.06,
-    parent: 'wrist',
-    children: ['finger_left', 'finger_right'],
-  },
-  'finger_left': {
-    name: 'finger_left',
-    mass: 0.02,
-    parent: 'gripper_base',
-    children: [],
-  },
-  'finger_right': {
-    name: 'finger_right',
-    mass: 0.02,
-    parent: 'gripper_base',
-    children: [],
-  },
-}
+// Build kinematic graph from parsed URDF
+function buildKinematicGraphFromURDF(urdfXml: string): {
+  kinematicGraph: Record<string, KinematicLink>
+  kinematicJoints: Record<string, KinematicJoint>
+} {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(urdfXml, 'application/xml')
 
-const kinematicJoints: Record<string, KinematicJoint> = {
-  'shoulder_pan': {
-    name: 'shoulder_pan',
-    type: 'revolute',
-    axis: 'Z',
-    parentLink: 'base_link',
-    childLink: 'shoulder_link',
-  },
-  'shoulder_lift': {
-    name: 'shoulder_lift',
-    type: 'revolute',
-    axis: 'Y',
-    parentLink: 'shoulder_link',
-    childLink: 'upper_arm',
-  },
-  'elbow': {
-    name: 'elbow',
-    type: 'revolute',
-    axis: 'Y',
-    parentLink: 'upper_arm',
-    childLink: 'elbow_link',
-  },
-  'forearm_attach': {
-    name: 'forearm_attach',
-    type: 'fixed',
-    axis: '--',
-    parentLink: 'elbow_link',
-    childLink: 'forearm',
-  },
-  'wrist_attach': {
-    name: 'wrist_attach',
-    type: 'fixed',
-    axis: '--',
-    parentLink: 'forearm',
-    childLink: 'wrist',
-  },
-  'gripper_attach': {
-    name: 'gripper_attach',
-    type: 'fixed',
-    axis: '--',
-    parentLink: 'wrist',
-    childLink: 'gripper_base',
-  },
-  'finger_left_joint': {
-    name: 'finger_left_joint',
-    type: 'prismatic',
-    axis: 'X',
-    parentLink: 'gripper_base',
-    childLink: 'finger_left',
-  },
-  'finger_right_joint': {
-    name: 'finger_right_joint',
-    type: 'prismatic',
-    axis: 'X',
-    parentLink: 'gripper_base',
-    childLink: 'finger_right',
-  },
-}
+  const kinematicGraph: Record<string, KinematicLink> = {}
+  const kinematicJoints: Record<string, KinematicJoint> = {}
+  const childLinkSet = new Set<string>()
 
-// Mapping from link names to Three.js meshes for highlighting
-const meshMap: Record<string, THREE.Mesh | THREE.Group> = {
-  'base_link': basePlate,
-  'shoulder_link': shoulderServo,
-  'upper_arm': upperArmMesh,
-  'elbow_link': elbowServo,
-  'forearm': forearmMesh,
-  'wrist': wrist,
-  'gripper_base': gripperBase,
-  'finger_left': fingerL,
-  'finger_right': fingerR,
-}
+  // Parse all links
+  const linkElements = doc.querySelectorAll('link')
+  for (const linkEl of linkElements) {
+    const linkName = linkEl.getAttribute('name') || ''
+    let mass = 0
 
-let currentHighlightedMesh: THREE.Mesh | THREE.Group | null = null
+    const inertialEl = linkEl.querySelector('inertial')
+    if (inertialEl) {
+      const massEl = inertialEl.querySelector('mass')
+      if (massEl) {
+        mass = parseFloat(massEl.getAttribute('value') || '0')
+      }
+    }
 
-function highlightMesh(linkName: string) {
-  // Clear previous highlight
-  if (currentHighlightedMesh) {
-    if (currentHighlightedMesh instanceof THREE.Mesh) {
-      const mat = currentHighlightedMesh.material as THREE.MeshStandardMaterial
-      if (mat && mat.emissive) mat.emissive.setHex(0x000000)
+    kinematicGraph[linkName] = {
+      name: linkName,
+      mass,
+      children: [],
     }
   }
 
-  // Apply new highlight
-  const mesh = meshMap[linkName]
-  if (mesh instanceof THREE.Mesh) {
+  // Parse all joints
+  const jointElements = doc.querySelectorAll('joint')
+  for (const jointEl of jointElements) {
+    const jointName = jointEl.getAttribute('name') || ''
+    const jointType = jointEl.getAttribute('type') || ''
+
+    const parentEl = jointEl.querySelector('parent')
+    const childEl = jointEl.querySelector('child')
+    const parentLink = parentEl?.getAttribute('link') || ''
+    const childLink = childEl?.getAttribute('link') || ''
+
+    if (parentLink && childLink) {
+      childLinkSet.add(childLink)
+
+      let axis = '--'
+      const axisEl = jointEl.querySelector('axis')
+      if (axisEl) {
+        const xyz = (axisEl.getAttribute('xyz') || '0 0 1').split(/\s+/).map(parseFloat)
+        if (Math.abs(xyz[0]) > 0.5) axis = 'X'
+        else if (Math.abs(xyz[1]) > 0.5) axis = 'Y'
+        else if (Math.abs(xyz[2]) > 0.5) axis = 'Z'
+      }
+
+      kinematicJoints[jointName] = {
+        name: jointName,
+        type: jointType,
+        axis,
+        parentLink,
+        childLink,
+      }
+
+      // Add child to parent's children list
+      if (kinematicGraph[parentLink]) {
+        kinematicGraph[parentLink].children.push(childLink)
+      }
+    }
+  }
+
+  // Set parent links and identify root
+  for (const [linkName, link] of Object.entries(kinematicGraph)) {
+    if (childLinkSet.has(linkName)) {
+      // Find parent
+      for (const joint of Object.values(kinematicJoints)) {
+        if (joint.childLink === linkName) {
+          link.parent = joint.parentLink
+          break
+        }
+      }
+    }
+  }
+
+  return { kinematicGraph, kinematicJoints }
+}
+
+// ── Build Kinematic Context for AI ──────────────────────────────────────────────
+// Generates a structured text summary of the robot's kinematic structure
+// to send to Claude for better context-aware edits
+
+function buildKinematicContext(): string {
+  const robotName = 'simple_arm' // TODO: Extract from URDF
+  const links = Object.values(kinematicGraph)
+  const joints = Object.values(kinematicJoints)
+
+  let context = `Robot: ${robotName}\n`
+  context += `Links (${links.length}): `
+
+  // List all links with mass
+  const linkSummary = links.map((l) => {
+    const geometry = parsedRobot.linkGroups.get(l.name)
+    let geomType = 'unknown'
+    if (geometry) {
+      geometry.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          const geom = child.geometry
+          if (geom instanceof THREE.BoxGeometry) geomType = 'box'
+          else if (geom instanceof THREE.CylinderGeometry) geomType = 'cylinder'
+          else if (geom instanceof THREE.SphereGeometry) geomType = 'sphere'
+        }
+      })
+    }
+    return `${l.name} (${l.mass}kg, ${geomType})`
+  }).join(', ')
+  context += linkSummary + '\n'
+
+  context += `Joints (${joints.length}): `
+
+  // List all joints with type and axis
+  const jointSummary = joints.map((j) => {
+    return `${j.name} [${j.type}, axis ${j.axis}, ${j.parentLink}→${j.childLink}]`
+  }).join(', ')
+  context += jointSummary + '\n'
+
+  // Build kinematic chain
+  context += 'Chain: '
+  const rootLink = links.find((l) => !l.parent) || links[0]
+
+  function buildChain(linkName: string): string {
+    const link = kinematicGraph[linkName]
+    if (!link || link.children.length === 0) return linkName
+
+    let result = linkName
+    for (const childName of link.children) {
+      // Find joint connecting to this child
+      const joint = Object.values(kinematicJoints).find(
+        (j) => j.parentLink === linkName && j.childLink === childName
+      )
+      if (joint) {
+        result += ` → [${joint.name}] → ${buildChain(childName)}`
+      }
+    }
+    return result
+  }
+
+  context += buildChain(rootLink?.name || 'base_link') + '\n'
+
+  return context
+}
+
+let currentHighlightedMeshes: THREE.Mesh[] = []
+
+function highlightMesh(linkName: string) {
+  // Clear previous highlights
+  for (const mesh of currentHighlightedMeshes) {
     const mat = mesh.material as THREE.MeshStandardMaterial
-    if (mat && mat.emissive) mat.emissive.setHex(0x334400)
-    currentHighlightedMesh = mesh
+    if (mat && mat.emissive) mat.emissive.setHex(0x000000)
+  }
+  currentHighlightedMeshes = []
+
+  // Apply new highlight
+  const linkGroup = parsedRobot.linkGroups.get(linkName)
+  if (linkGroup) {
+    linkGroup.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const mat = child.material as THREE.MeshStandardMaterial
+        if (mat && mat.emissive) {
+          mat.emissive.setHex(0x334400)
+          currentHighlightedMeshes.push(child)
+        }
+      }
+    })
   }
 }
 
 function clearHighlight() {
-  if (currentHighlightedMesh && currentHighlightedMesh instanceof THREE.Mesh) {
-    const mat = currentHighlightedMesh.material as THREE.MeshStandardMaterial
+  for (const mesh of currentHighlightedMeshes) {
+    const mat = mesh.material as THREE.MeshStandardMaterial
     if (mat && mat.emissive) mat.emissive.setHex(0x000000)
   }
-  currentHighlightedMesh = null
+  currentHighlightedMeshes = []
+}
+
+// ── Live URDF re-parsing ────────────────────────────────────────────────────
+
+let reparseTimeout: number | null = null
+
+function reparseURDF() {
+  try {
+    const urdfContent = monacoEditor.getValue()
+    const newParsed = parseURDFToScene(urdfContent)
+    const newKinematicData = buildKinematicGraphFromURDF(urdfContent)
+
+    // Clear old robot geometry
+    robot.remove(parsedRobot.group)
+    wireframeGroup.clear()
+    axisVisuals.clear()
+
+    // Update parsed data
+    parsedRobot = newParsed
+    kinematicGraph = newKinematicData.kinematicGraph
+    kinematicJoints = newKinematicData.kinematicJoints
+
+    // Add new geometry with Z-up → Y-up rotation
+    parsedRobot.group.rotation.x = -Math.PI / 2
+    robot.add(parsedRobot.group)
+
+    // Rebuild axis visuals
+    const axisColors = [0x4a9eff, 0x4ec9b0, 0xf48771, 0xce9178]
+    let colorIdx = 0
+    for (const [, jointInfo] of parsedRobot.joints) {
+      const color = axisColors[colorIdx++ % axisColors.length]
+      addJointAxis(jointInfo.group, jointInfo.axis, color)
+    }
+
+    // Update CoM marker
+    updateComMarker()
+
+    // Rebuild wireframes
+    rebuildWireframes()
+
+    // Update viewport info
+    updateViewportInfo()
+
+    // Rebuild kinematic tree
+    buildKinematicTreeUI()
+
+    console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
+  } catch (e) {
+    console.error('[URDF] Parse error:', e)
+    // Keep old geometry on parse error
+  }
+}
+
+// Listen for editor changes and debounce
+if (monacoModels['robot.urdf']) {
+  monacoModels['robot.urdf'].onDidChangeContent(() => {
+    if (reparseTimeout !== null) clearTimeout(reparseTimeout)
+    reparseTimeout = window.setTimeout(() => {
+      reparseURDF()
+      reparseTimeout = null
+    }, 500)
+  })
 }
 
 // ── Build Kinematic Tree UI ──────────────────────────────────────────────────
+// Populates the kinematic tree with links, joints, masses, and geometry types
 
 function buildKinematicTreeUI() {
   const treeContainer = document.getElementById('kinematic-tree')!
   treeContainer.innerHTML = ''
+
+  // Helper to get geometry type for a link
+  function getGeometryType(linkName: string): string {
+    const linkGroup = parsedRobot.linkGroups.get(linkName)
+    if (!linkGroup) return 'unknown'
+
+    let geomType = 'unknown'
+    linkGroup.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const geom = child.geometry
+        if (geom instanceof THREE.BoxGeometry) geomType = 'box'
+        else if (geom instanceof THREE.CylinderGeometry) geomType = 'cylinder'
+        else if (geom instanceof THREE.SphereGeometry) geomType = 'sphere'
+      }
+    })
+    return geomType
+  }
 
   function buildNode(linkName: string, depth: number = 0) {
     const link = kinematicGraph[linkName]
@@ -1204,8 +1734,12 @@ function buildKinematicTreeUI() {
     toggleEl.className = `kt-toggle ${hasChildren ? 'expanded' : ''}`
     if (!hasChildren) toggleEl.style.opacity = '0'
 
+    // Extract geometry type
+    const geomType = getGeometryType(linkName)
+
     const labelEl = document.createElement('span')
-    labelEl.textContent = `${link.name} (${link.mass} kg)`
+    labelEl.textContent = `${link.name} (${link.mass}kg, ${geomType})`
+    labelEl.title = `Link: ${link.name}\nMass: ${link.mass}kg\nGeometry: ${geomType}`
 
     nodeEl.appendChild(toggleEl)
     nodeEl.appendChild(labelEl)
@@ -1290,6 +1824,8 @@ interface ValResult {
   severity: string  // "pass" | "warn" | "error" | "info"
   message: string
   category: string
+  line?: number
+  column?: number
 }
 
 function renderValidationResults(results: ValResult[], summary: { pass: number; warn: number; error: number; info: number }) {
@@ -1327,7 +1863,41 @@ function renderValidationResults(results: ValResult[], summary: { pass: number; 
     for (const item of items) {
       const el = document.createElement('div')
       el.className = `val-item ${item.severity}`
-      el.innerHTML = `${item.name}<span class="val-detail">${item.message}</span>`
+      el.style.cursor = 'pointer'
+
+      const contentEl = document.createElement('div')
+      contentEl.style.display = 'flex'
+      contentEl.style.justifyContent = 'space-between'
+      contentEl.style.alignItems = 'flex-start'
+      contentEl.style.gap = '8px'
+
+      const textEl = document.createElement('div')
+      textEl.style.flex = '1'
+      textEl.innerHTML = `<div>${item.name}</div><span class="val-detail">${item.message}</span>`
+
+      const lineEl = document.createElement('div')
+      lineEl.style.fontSize = '11px'
+      lineEl.style.opacity = '0.6'
+      lineEl.style.whiteSpace = 'nowrap'
+      lineEl.textContent = item.line ? `Ln ${item.line}` : ''
+
+      contentEl.appendChild(textEl)
+      if (item.line) contentEl.appendChild(lineEl)
+
+      el.appendChild(contentEl)
+
+      // Make clickable to jump to line
+      if (item.line) {
+        el.addEventListener('click', () => {
+          const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+          if (editor) {
+            editor.revealLineInCenter(item.line!)
+            editor.setPosition({ lineNumber: item.line!, column: item.column || 1 })
+            editor.focus()
+          }
+        })
+      }
+
       group.appendChild(el)
     }
 
@@ -1335,20 +1905,38 @@ function renderValidationResults(results: ValResult[], summary: { pass: number; 
   }
 }
 
-// Run validation against the Python core
+// Run client-side XML validation first, then call Python backend for full validation
 async function runValidation() {
   btnRevalidate.disabled = true
   btnRevalidate.textContent = 'Validating...'
 
   try {
-    // Try calling the Python core via Tauri IPC
-    const result = await (window as any).__TAURI__?.core?.invoke('validate_urdf', {
-      path: 'core/test_data/simple_arm.urdf'
-    })
+    const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+    const urdfContent = editor?.getValue() || ''
 
-    if (result && result.results) {
-      renderValidationResults(result.results, result.summary)
-      setValidationMarkers(result.results)
+    // First: client-side XML validation
+    const xmlErrors = validateXMLStructure(urdfContent)
+
+    if (xmlErrors.length > 0) {
+      // If XML is malformed, show only XML errors
+      const summary = { pass: 0, warn: 0, error: xmlErrors.length, info: 0 }
+      renderValidationResults(xmlErrors, summary)
+      setValidationMarkers(xmlErrors)
+    } else {
+      // XML is valid, try full validation from Python backend
+      try {
+        const result = await invoke('validate_urdf_content', {
+          urdf_content: urdfContent
+        })
+
+        if (result && (result as any).results) {
+          renderValidationResults((result as any).results, (result as any).summary)
+          setValidationMarkers((result as any).results)
+        }
+      } catch (_e) {
+        // Python backend failed or not available, use local validation
+        runLocalValidation()
+      }
     }
   } catch (_e) {
     // Fallback: run local validation against the hardcoded kinematic graph
@@ -1357,6 +1945,144 @@ async function runValidation() {
 
   btnRevalidate.disabled = false
   btnRevalidate.textContent = 'Run Checks'
+}
+
+// Client-side XML structure validation using DOMParser
+function validateXMLStructure(content: string): ValResult[] {
+  const errors: ValResult[] = []
+
+  const parser = new DOMParser()
+  const xmlDoc = parser.parseFromString(content, 'text/xml')
+
+  // Check for parse errors
+  if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+    const parserError = xmlDoc.getElementsByTagName('parsererror')[0]
+    const errorText = parserError.textContent || 'Unknown XML parse error'
+    errors.push({
+      name: 'XML Parse Error',
+      severity: 'error',
+      message: errorText,
+      category: 'Structural',
+    })
+    return errors
+  }
+
+  // Check root element is 'robot'
+  if (xmlDoc.documentElement.tagName !== 'robot') {
+    errors.push({
+      name: 'Invalid root element',
+      severity: 'error',
+      message: `Expected root element <robot>, got <${xmlDoc.documentElement.tagName}>`,
+      category: 'Structural',
+    })
+    return errors
+  }
+
+  // Check required attributes on robot
+  const robotName = xmlDoc.documentElement.getAttribute('name')
+  if (!robotName) {
+    errors.push({
+      name: 'Robot missing name',
+      severity: 'error',
+      message: 'Root <robot> element must have a "name" attribute',
+      category: 'Structural',
+    })
+  }
+
+  // Check for at least one link
+  const links = xmlDoc.getElementsByTagName('link')
+  if (links.length === 0) {
+    errors.push({
+      name: 'No links defined',
+      severity: 'error',
+      message: 'URDF must contain at least one <link> element',
+      category: 'Structural',
+    })
+    return errors
+  }
+
+  // Build set of link names for joint validation
+  const linkNames = new Set<string>()
+  for (let i = 0; i < links.length; i++) {
+    const name = links[i].getAttribute('name')
+    if (name) {
+      if (linkNames.has(name)) {
+        errors.push({
+          name: 'Duplicate link name',
+          severity: 'error',
+          message: `Link "${name}" is defined multiple times`,
+          category: 'Structural',
+        })
+      }
+      linkNames.add(name)
+    }
+  }
+
+  // Check joints reference valid links
+  const joints = xmlDoc.getElementsByTagName('joint')
+  const jointNames = new Set<string>()
+  for (let i = 0; i < joints.length; i++) {
+    const joint = joints[i]
+    const jointName = joint.getAttribute('name')
+
+    if (jointName) {
+      if (jointNames.has(jointName)) {
+        errors.push({
+          name: 'Duplicate joint name',
+          severity: 'error',
+          message: `Joint "${jointName}" is defined multiple times`,
+          category: 'Structural',
+        })
+      }
+      jointNames.add(jointName)
+    }
+
+    const parent = joint.querySelector('parent')
+    const child = joint.querySelector('child')
+
+    if (!parent || !child) {
+      errors.push({
+        name: `Joint ${jointName || 'unknown'} missing parent/child`,
+        severity: 'error',
+        message: 'Joint must have both <parent> and <child> elements',
+        category: 'Structural',
+      })
+      continue
+    }
+
+    const parentLink = parent.getAttribute('link')
+    const childLink = child.getAttribute('link')
+
+    if (!parentLink || !linkNames.has(parentLink)) {
+      errors.push({
+        name: `Invalid parent link in joint ${jointName || 'unknown'}`,
+        severity: 'error',
+        message: `Parent link "${parentLink}" is not defined`,
+        category: 'Structural',
+      })
+    }
+
+    if (!childLink || !linkNames.has(childLink)) {
+      errors.push({
+        name: `Invalid child link in joint ${jointName || 'unknown'}`,
+        severity: 'error',
+        message: `Child link "${childLink}" is not defined`,
+        category: 'Structural',
+      })
+    }
+  }
+
+  // If no errors found, return pass message
+  if (errors.length === 0) {
+    errors.push({
+      name: 'XML structure valid',
+      severity: 'pass',
+      message: `${links.length} links, ${joints.length} joints`,
+      category: 'Structural',
+    })
+  }
+
+  return errors
 }
 
 // Local validation fallback (runs in browser against the in-memory graph)
@@ -1773,6 +2499,29 @@ window.addEventListener('resize', () => {
 
 // ── Keyboard shortcuts for viewport toggles ─────────────────────────────────
 document.addEventListener('keydown', (e) => {
+  // File I/O shortcuts (work even in editor)
+  const isMacCtrl = (e.metaKey || e.ctrlKey)
+  if (isMacCtrl && e.key === 's') {
+    e.preventDefault()
+    if (e.shiftKey) {
+      saveFileAs()
+    } else {
+      saveCurrentFile()
+    }
+    return
+  }
+  if (isMacCtrl && e.key === 'o') {
+    e.preventDefault()
+    openFileDialog()
+    return
+  }
+  if (isMacCtrl && e.shiftKey && e.key === 'G') {
+    e.preventDefault()
+    const gitBtn = document.querySelector('.ab-btn[data-panel="git"]') as HTMLElement | null
+    if (gitBtn) gitBtn.click()
+    return
+  }
+
   // Don't trigger shortcuts when typing in inputs or Monaco editor
   const tag = (e.target as HTMLElement).tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -1810,6 +2559,279 @@ document.addEventListener('keydown', (e) => {
   }
 })
 
+// ── Git Source Control Panel ────────────────────────────────────────────────
+
+interface GitStatus {
+  staged: Array<{ path: string; status: string }>
+  unstaged: Array<{ path: string; status: string }>
+}
+
+const gitBranchEl = document.getElementById('git-branch') as HTMLSpanElement | null
+const gitStatusEl = document.getElementById('git-status') as HTMLDivElement | null
+const gitMessageInput = document.getElementById('git-message-input') as HTMLTextAreaElement | null
+const gitCommitBtn = document.getElementById('git-commit-btn') as HTMLButtonElement | null
+const gitRefreshBtn = document.getElementById('git-refresh-btn') as HTMLButtonElement | null
+const gitPushBtn = document.getElementById('git-push-btn') as HTMLButtonElement | null
+const gitPullBtn = document.getElementById('git-pull-btn') as HTMLButtonElement | null
+
+async function refreshGitStatus() {
+  if (!gitStatusEl || !gitBranchEl) return
+
+  try {
+    gitRefreshBtn!.disabled = true
+
+    // Get branch name
+    try {
+      const branch = await invoke('git_branch') as string
+      gitBranchEl.textContent = branch
+    } catch (_e) {
+      gitBranchEl.textContent = 'unknown'
+    }
+
+    // Get status
+    try {
+      const status = await invoke('git_status') as GitStatus
+
+      gitStatusEl.innerHTML = ''
+
+      const hasChanges = status.staged.length > 0 || status.unstaged.length > 0
+
+      if (!hasChanges) {
+        const emptyEl = document.createElement('div')
+        emptyEl.className = 'git-no-changes'
+        emptyEl.innerHTML = '<svg viewBox="0 0 16 16" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1"><polyline points="12 4 6 10 3 7"/></svg><div>No changes</div>'
+        gitStatusEl.appendChild(emptyEl)
+      } else {
+        // Staged section
+        if (status.staged.length > 0) {
+          renderGitSection('Staged Changes', status.staged, 'staged')
+        }
+
+        // Unstaged section
+        if (status.unstaged.length > 0) {
+          renderGitSection('Changes', status.unstaged, 'unstaged')
+        }
+      }
+    } catch (e) {
+      gitStatusEl.innerHTML = '<div class="git-no-repo">Not a git repository</div>'
+    }
+  } finally {
+    gitRefreshBtn!.disabled = false
+  }
+}
+
+function renderGitSection(title: string, files: Array<{ path: string; status: string }>, sectionType: 'staged' | 'unstaged') {
+  if (!gitStatusEl) return
+
+  const section = document.createElement('div')
+  section.className = 'git-section'
+
+  const header = document.createElement('div')
+  header.className = 'git-section-header'
+  header.innerHTML = `<span class="arrow">▾</span><span>${title}</span><span class="git-section-count">${files.length}</span>`
+
+  const filesContainer = document.createElement('div')
+  filesContainer.className = 'git-files'
+
+  for (const file of files) {
+    // Split path into basename and directory
+    const parts = file.path.replace(/\\/g, '/').split('/')
+    const basename = parts.pop() || file.path
+    const dir = parts.join('/')
+
+    const fileEl = document.createElement('div')
+    fileEl.className = 'git-file-item'
+    fileEl.setAttribute('data-status', file.status)
+    fileEl.title = file.path
+
+    // File icon (small document icon)
+    const iconEl = document.createElement('span')
+    iconEl.className = 'git-file-icon'
+    iconEl.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4 2h5l3 3v9H4V2z" stroke-linejoin="round"/><path d="M9 2v3h3" stroke-linejoin="round"/></svg>'
+
+    // File name area (basename + dir)
+    const nameArea = document.createElement('div')
+    nameArea.className = 'git-file-name'
+    const baseEl = document.createElement('span')
+    baseEl.className = 'git-file-basename'
+    baseEl.textContent = basename
+    nameArea.appendChild(baseEl)
+    if (dir) {
+      const dirEl = document.createElement('span')
+      dirEl.className = 'git-file-dir'
+      dirEl.textContent = dir
+      nameArea.appendChild(dirEl)
+    }
+
+    // Action buttons
+    const actions = document.createElement('div')
+    actions.className = 'git-file-actions'
+
+    if (sectionType === 'unstaged') {
+      // Stage button (+)
+      const stageBtn = document.createElement('button')
+      stageBtn.className = 'git-action-btn'
+      stageBtn.title = 'Stage Changes'
+      stageBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>'
+      stageBtn.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        await gitStageFile(file.path)
+      })
+      actions.appendChild(stageBtn)
+
+      // Discard button (undo arrow)
+      if (file.status === 'modified') {
+        const discardBtn = document.createElement('button')
+        discardBtn.className = 'git-action-btn'
+        discardBtn.title = 'Discard Changes'
+        discardBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8a5 5 0 0 1 9.5-1.5M13 3v3.5H9.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        discardBtn.addEventListener('click', async (e) => {
+          e.stopPropagation()
+          if (confirm(`Discard changes to ${file.path}?`)) {
+            await gitDiscardFile(file.path)
+          }
+        })
+        actions.appendChild(discardBtn)
+      }
+    } else {
+      // Unstage button (-)
+      const unstageBtn = document.createElement('button')
+      unstageBtn.className = 'git-action-btn'
+      unstageBtn.title = 'Unstage Changes'
+      unstageBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="8" x2="13" y2="8"/></svg>'
+      unstageBtn.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        await gitUnstageFile(file.path)
+      })
+      actions.appendChild(unstageBtn)
+    }
+
+    // Status letter badge (M, A, D, U, R) — goes on the far right like VS Code
+    const statusBadge = document.createElement('span')
+    statusBadge.className = `git-file-status ${file.status}`
+    const statusLetters: Record<string, string> = {
+      modified: 'M', added: 'A', deleted: 'D', renamed: 'R',
+      untracked: 'U', unmerged: '!', copied: 'C'
+    }
+    statusBadge.textContent = statusLetters[file.status] || file.status[0].toUpperCase()
+
+    fileEl.appendChild(iconEl)
+    fileEl.appendChild(nameArea)
+    fileEl.appendChild(actions)
+    fileEl.appendChild(statusBadge)
+    filesContainer.appendChild(fileEl)
+  }
+
+  // Toggle on header click
+  header.addEventListener('click', () => {
+    filesContainer.classList.toggle('hidden')
+    const arrow = header.querySelector('.arrow')!
+    if (header.classList.toggle('collapsed')) {
+      arrow.textContent = '▸'
+    } else {
+      arrow.textContent = '▾'
+    }
+  })
+
+  section.appendChild(header)
+  section.appendChild(filesContainer)
+  gitStatusEl.appendChild(section)
+}
+
+async function gitStageFile(path: string) {
+  try {
+    await invoke('git_stage', { filePath: path })
+    refreshGitStatus()
+  } catch (e) {
+    showToast(`Failed to stage: ${e}`, 'error')
+  }
+}
+
+async function gitUnstageFile(path: string) {
+  try {
+    await invoke('git_unstage', { filePath: path })
+    refreshGitStatus()
+  } catch (e) {
+    showToast(`Failed to unstage: ${e}`, 'error')
+  }
+}
+
+async function gitDiscardFile(path: string) {
+  try {
+    await invoke('git_discard', { filePath: path })
+    refreshGitStatus()
+  } catch (e) {
+    showToast(`Failed to discard: ${e}`, 'error')
+  }
+}
+
+if (gitCommitBtn) {
+  gitCommitBtn.addEventListener('click', async () => {
+    const message = gitMessageInput?.value.trim()
+    if (!message) {
+      showToast('Please enter a commit message', 'warning')
+      return
+    }
+
+    try {
+      gitCommitBtn.disabled = true
+      await invoke('git_commit', { message })
+      showToast('Committed successfully', 'success')
+      if (gitMessageInput) gitMessageInput.value = ''
+      refreshGitStatus()
+    } catch (e) {
+      showToast(`Commit failed: ${e}`, 'error')
+    } finally {
+      gitCommitBtn.disabled = false
+    }
+  })
+}
+
+if (gitMessageInput) {
+  gitMessageInput.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault()
+      gitCommitBtn?.click()
+    }
+  })
+}
+
+if (gitRefreshBtn) {
+  gitRefreshBtn.addEventListener('click', () => {
+    refreshGitStatus()
+  })
+}
+
+if (gitPushBtn) {
+  gitPushBtn.addEventListener('click', async () => {
+    try {
+      gitPushBtn.disabled = true
+      await invoke('git_push')
+      showToast('Push completed', 'success')
+      refreshGitStatus()
+    } catch (e) {
+      showToast(`Push failed: ${e}`, 'error')
+    } finally {
+      gitPushBtn.disabled = false
+    }
+  })
+}
+
+if (gitPullBtn) {
+  gitPullBtn.addEventListener('click', async () => {
+    try {
+      gitPullBtn.disabled = true
+      await invoke('git_pull')
+      showToast('Pull completed', 'success')
+      refreshGitStatus()
+    } catch (e) {
+      showToast(`Pull failed: ${e}`, 'error')
+    } finally {
+      gitPullBtn.disabled = false
+    }
+  })
+}
+
 // ── Activity bar ─────────────────────────────────────────────────────────────
 
 const panels: Record<string, HTMLElement> = {
@@ -1817,6 +2839,7 @@ const panels: Record<string, HTMLElement> = {
   presets: document.getElementById('panel-presets')!,
   validation: document.getElementById('panel-validation')!,
   kinematic: document.getElementById('panel-kinematic')!,
+  git: document.getElementById('panel-git')!,
 }
 
 document.querySelectorAll('.ab-btn').forEach(btn => {
@@ -1828,7 +2851,13 @@ document.querySelectorAll('.ab-btn').forEach(btn => {
     Object.values(panels).forEach(p => p.classList.add('hidden'))
     if (!wasActive) {
       btn.classList.add('active')
-      if (panels[panel]) panels[panel].classList.remove('hidden')
+      if (panels[panel]) {
+        panels[panel].classList.remove('hidden')
+        // Auto-refresh git status when opening the git panel
+        if (panel === 'git') {
+          refreshGitStatus()
+        }
+      }
     }
   })
 })
@@ -1847,14 +2876,29 @@ document.querySelectorAll('.sb-header').forEach(header => {
   })
 })
 
-// Preset click → populate command bar
+// Preset click → populate viewport chat input
 document.querySelectorAll('.preset-item').forEach(item => {
   item.addEventListener('click', () => {
     const name = (item as HTMLElement).dataset.preset!
-    commandInput.value = `add ${name.replace(/-/g, ' ')} to the robot`
-    commandInput.focus()
+    const vcIn = document.getElementById('vc-input') as HTMLTextAreaElement | null
+    if (vcIn) {
+      vcIn.value = `add ${name.replace(/-/g, ' ')} to the robot`
+      switchViewportView('chat')
+      vcIn.focus()
+    }
   })
 })
+
+// ── File I/O Buttons ─────────────────────────────────────────────────────────
+const btnOpenFile = document.getElementById('btn-open-file') as HTMLButtonElement | null
+const btnSaveFile = document.getElementById('btn-save-file') as HTMLButtonElement | null
+
+if (btnOpenFile) {
+  btnOpenFile.addEventListener('click', openFileDialog)
+}
+if (btnSaveFile) {
+  btnSaveFile.addEventListener('click', saveCurrentFile)
+}
 
 // ── Toast notifications ──────────────────────────────────────────────────────
 
@@ -1871,110 +2915,10 @@ function showToast(message: string, type: 'success' | 'warning' | 'error' | 'inf
   }, 3000)
 }
 
-// ── Command bar ──────────────────────────────────────────────────────────────
-
-const commandInput = document.getElementById('command-input') as HTMLInputElement
-const output = document.getElementById('command-output') as HTMLDivElement
-const outputText = document.getElementById('output-text') as HTMLDivElement
-const cmdLoading = document.getElementById('cmd-loading') as HTMLDivElement
-const acceptBtn = document.querySelector('.action-btn.accept') as HTMLButtonElement
-const rejectBtn = document.querySelector('.action-btn.reject') as HTMLButtonElement
+// ── Status badge ─────────────────────────────────────────────────────────────
 const statusText = document.getElementById('status-text') as HTMLSpanElement
 const statusDot = document.getElementById('status-dot') as HTMLSpanElement
 const statusBadge = document.getElementById('status-badge') as HTMLDivElement
-
-// Command history
-const cmdHistory: string[] = []
-let historyIdx = -1
-
-// Ctrl+K shortcut
-document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault()
-    commandInput.focus()
-  }
-})
-
-const RESPONSES: Record<string, { text: string; stats: string }> = {
-  'leg': {
-    text: `Added left_leg and right_leg subtrees at base_link.
-Hip joints: revolute, ±90°, 50 Nm (matched to torso mass).
-Knee joints: revolute, 0–120°, 30 Nm.
-Ankle joints: revolute, ±30°, 15 Nm.`,
-    stats: '+6 links  +6 joints  +18 params',
-  },
-  'arm': {
-    text: `Extended forearm length from 280mm → 380mm.
-Updated inertia tensor for new mass distribution.
-Elbow torque limit adjusted: 1.5 Nm → 2.1 Nm.
-CoM shifted +28mm — still within support polygon.`,
-    stats: '0 links  0 joints  +4 params modified',
-  },
-  'camera': {
-    text: `Added depth_camera link at wrist (RealSense D435 preset).
-Fixed joint, facing forward, 10° downward tilt.
-FOV: 87° × 58°, range: 0.1–10m.
-Added <sensor> element with plugin reference.`,
-    stats: '+1 link  +1 joint  +1 sensor',
-  },
-  'gripper': {
-    text: `Replaced current parallel jaw with 3-finger adaptive gripper.
-Robotiq-style design, 60N grip force, 120mm max opening.
-Added 6 joints (2 per finger) with coupled motion.`,
-    stats: '+6 links  +6 joints  replaced 2 existing',
-  },
-  'mirror': {
-    text: `Mirrored right_arm subtree → left_arm.
-All joint axes reflected across YZ plane.
-Preserved torque limits and inertia tensors.
-Auto-generated collision avoidance constraints.`,
-    stats: '+5 links  +4 joints  created',
-  },
-  'stiffen': {
-    text: `Increased joint damping coefficients:
-shoulder_pan: 0.5 → 2.0 Nm·s/rad
-shoulder_lift: 0.7 → 2.5 Nm·s/rad
-elbow: 0.3 → 1.5 Nm·s/rad
-This should reduce oscillation in sim.`,
-    stats: '3 joints modified',
-  },
-  'quadruped': {
-    text: `Generated quadruped base structure (MIT Mini Cheetah-style).
-12-DOF: 3 joints per leg (hip, thigh, knee).
-Total mass: 9.2 kg. Standing height: 350mm.
-Actuators: T-Motor AK80-9 (18 Nm) on all joints.`,
-    stats: '+13 links  +12 joints  new robot',
-  },
-}
-
-function getResponse(cmd: string): { text: string; stats: string } {
-  const lower = cmd.toLowerCase()
-  for (const [key, resp] of Object.entries(RESPONSES)) {
-    if (lower.includes(key)) return resp
-  }
-  return {
-    text: `Analyzed: "${cmd}"
-Computed kinematic graph diff.
-2 nodes modified, 0 added, 0 removed.
-All validation checks passed.`,
-    stats: '2 params modified',
-  }
-}
-
-function typeText(text: string, el: HTMLDivElement, cb?: () => void) {
-  el.textContent = ''
-  el.classList.add('typing-cursor')
-  let i = 0
-  const interval = setInterval(() => {
-    el.textContent += text[i]
-    i++
-    if (i >= text.length) {
-      clearInterval(interval)
-      el.classList.remove('typing-cursor')
-      if (cb) cb()
-    }
-  }, 8)
-}
 
 function setStatus(text: string, color: string) {
   statusText.textContent = text
@@ -1984,69 +2928,496 @@ function setStatus(text: string, color: string) {
   statusBadge.style.background = color + '15'
 }
 
-commandInput.addEventListener('keydown', (e) => {
-  // History navigation
-  if (e.key === 'ArrowUp' && cmdHistory.length > 0) {
-    e.preventDefault()
-    if (historyIdx < cmdHistory.length - 1) historyIdx++
-    commandInput.value = cmdHistory[cmdHistory.length - 1 - historyIdx]
-    return
-  }
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    if (historyIdx > 0) { historyIdx--; commandInput.value = cmdHistory[cmdHistory.length - 1 - historyIdx] }
-    else { historyIdx = -1; commandInput.value = '' }
-    return
-  }
-
-  if (e.key !== 'Enter') return
-  const cmd = commandInput.value.trim()
-  if (!cmd) return
-
-  cmdHistory.push(cmd)
-  historyIdx = -1
-  commandInput.value = ''
-
-  setStatus('thinking...', '#dcdcaa')
-  output.classList.add('hidden')
-  cmdLoading.classList.remove('hidden')
-
-  const delay = 600 + Math.random() * 800
-  setTimeout(() => {
-    cmdLoading.classList.add('hidden')
-    const resp = getResponse(cmd)
-    output.classList.remove('hidden')
-
-    typeText(`↳ ${resp.text}\n\n  ${resp.stats}`, outputText, () => {
-      setStatus('ready', '#608b4e')
-    })
-  }, delay)
-})
-
-acceptBtn.addEventListener('click', () => {
-  outputText.textContent = '✓ Changes applied to robot.urdf'
-  outputText.style.color = '#608b4e'
-  showToast('Changes applied successfully', 'success')
-  setTimeout(() => { output.classList.add('hidden'); outputText.style.color = '' }, 1200)
-})
-
-rejectBtn.addEventListener('click', () => {
-  outputText.textContent = '✗ Changes discarded.'
-  outputText.style.color = '#f44336'
-  showToast('Changes discarded', 'warning')
-  setTimeout(() => { output.classList.add('hidden'); outputText.style.color = '' }, 800)
-})
-
 // ── Init toast ───────────────────────────────────────────────────────────────
-setTimeout(() => showToast('Loaded robot.urdf — 9 links, 7 joints', 'success'), 500)
+setTimeout(() => showToast(`Loaded robot.urdf — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success'), 500)
 setTimeout(() => showToast('Validation: 5 passed, 1 warning (CoM near edge)', 'warning'), 1200)
 
+// ── Auto-start Python core ──────────────────────────────────────────────────
+// @ts-ignore — used for future feature gating
+let coreAvailable = false
+;(async () => {
+  console.log('[Core] Waiting for Tauri IPC...')
+  try {
+    await waitForTauri()
+    console.log('[Core] Starting Python core process...')
+    await invokeWithTimeout('start_core', {}, 15000)
+    coreAvailable = true
+    console.log('[Core] ✓ Python core started successfully — AI features available')
+  } catch (e) {
+    const msg = String(e).toLowerCase()
+    if (msg.includes('already running') || msg.includes('already started')) {
+      coreAvailable = true
+      console.log('[Core] ✓ Python core already running')
+    } else {
+      console.error('[Core] ✗ Could not start Python core:', e)
+      console.error('[Core] AI completions and edits will not work.')
+      console.error('[Core] Check: Is Python installed? Run: python --version or python3 --version')
+    }
+  }
+})()
+
+// ── AI Utility Functions (used by viewport chat) ────────────────────────────
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function computeSimpleDiff(oldText: string, newText: string): { added: string[], removed: string[] } {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const added: string[] = []
+  const removed: string[] = []
+
+  const oldSet = new Set(oldLines.map(l => l.trim()))
+  const newSet = new Set(newLines.map(l => l.trim()))
+
+  for (const line of oldLines) {
+    if (!newSet.has(line.trim()) && line.trim()) removed.push(line)
+  }
+  for (const line of newLines) {
+    if (!oldSet.has(line.trim()) && line.trim()) added.push(line)
+  }
+
+  return { added, removed }
+}
+
+
+// ── Viewport Tab Switching (3D Preview / AI Chat) ────────────────────────────
+const viewportCanvas = document.getElementById('viewport') as HTMLCanvasElement
+const viewportChat = document.getElementById('viewport-chat')!
+const vcMessages = document.getElementById('vc-messages')!
+const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
+const vcSend = document.getElementById('vc-send') as HTMLButtonElement
+const viewportTabs = document.querySelectorAll('.vp-tab')
+// @ts-ignore — read by external debug tools
+let activeViewportView: '3d' | 'chat' = '3d'
+
+// Add initial system message to viewport chat
+vcMessages.innerHTML = `<div class="ai-msg system">
+  <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
+</div>`
+
+function switchViewportView(view: '3d' | 'chat') {
+  activeViewportView = view
+  viewportTabs.forEach(tab => {
+    tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view)
+  })
+  if (view === '3d') {
+    viewportCanvas.style.display = ''
+    viewportChat.classList.add('hidden')
+    document.getElementById('viewport-info')!.style.display = ''
+    resize()
+  } else {
+    viewportCanvas.style.display = 'none'
+    viewportChat.classList.remove('hidden')
+    document.getElementById('viewport-info')!.style.display = 'none'
+    vcInput.focus()
+  }
+}
+
+viewportTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    switchViewportView((tab as HTMLElement).dataset.view as '3d' | 'chat')
+  })
+})
+
+// Shared function to add message to viewport chat
+function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, extras?: {
+  diff?: { added: string[], removed: string[] },
+  newUrdf?: string,
+}) {
+  const msg = document.createElement('div')
+  msg.className = `ai-msg ${role}`
+
+  if (role === 'user') {
+    msg.innerHTML = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
+  } else if (role === 'assistant') {
+    let html = `<div class="ai-msg-content">${content}</div>`
+
+    if (extras?.diff && (extras.diff.added.length > 0 || extras.diff.removed.length > 0)) {
+      html += `<div class="ai-msg-diff">
+        <div class="ai-msg-diff-header">
+          <span>robot.urdf</span>
+          <span>${extras.diff.added.length} added, ${extras.diff.removed.length} removed</span>
+        </div>`
+      for (const line of extras.diff.removed) {
+        html += `<div class="ai-diff-line removed">${escapeHtml(line)}</div>`
+      }
+      for (const line of extras.diff.added) {
+        html += `<div class="ai-diff-line added">${escapeHtml(line)}</div>`
+      }
+      html += `</div>`
+    }
+
+    if (extras?.newUrdf) {
+      const msgId = 'vc-msg-' + Date.now()
+      activeChatActionsId = msgId
+      html += `<div class="ai-msg-actions" id="${msgId}">
+        <button class="ai-accept" data-action="accept">Apply Changes</button>
+        <button class="ai-reject" data-action="reject">Dismiss</button>
+      </div>`
+      msg.innerHTML = html
+
+      setTimeout(() => {
+        const actions = document.getElementById(msgId)
+        if (!actions) return
+        const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement
+        const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement
+
+        acceptBtn.addEventListener('click', () => {
+          activeChatActionsId = null  // prevent syncChatActions from double-updating
+          acceptInlineDiff()
+          acceptBtn.textContent = '✓ Applied'
+          acceptBtn.className = 'ai-applied'
+          rejectBtn.style.display = 'none'
+        })
+
+        rejectBtn.addEventListener('click', () => {
+          activeChatActionsId = null  // prevent syncChatActions from double-updating
+          dismissInlineDiff()
+          rejectBtn.textContent = '✗ Dismissed'
+          rejectBtn.className = 'ai-rejected'
+          acceptBtn.style.display = 'none'
+        })
+      }, 0)
+    } else {
+      msg.innerHTML = html
+    }
+  } else {
+    msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
+  }
+
+  vcMessages.appendChild(msg)
+  vcMessages.scrollTop = vcMessages.scrollHeight
+  return msg
+}
+
+function addVCThinking(): HTMLElement {
+  const msg = document.createElement('div')
+  msg.className = 'ai-msg assistant'
+  msg.innerHTML = `<div class="ai-thinking">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span>Thinking...</span>
+  </div>`
+  vcMessages.appendChild(msg)
+  vcMessages.scrollTop = vcMessages.scrollHeight
+  return msg
+}
+
+// ── Inline Diff in Monaco ────────────────────────────────────────────────────
+let inlineDiffCollection: monaco.editor.IEditorDecorationsCollection | null = null
+let inlineDiffWidget: HTMLElement | null = null
+let pendingOldText: string | null = null
+let activeChatActionsId: string | null = null  // tracks the chat message's Accept/Dismiss buttons
+
+function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+  if (!editor) return
+
+  // Store old text so Dismiss can revert
+  pendingOldText = oldText
+
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+
+  // Find which lines in the new text differ from old
+  const maxLen = Math.max(oldLines.length, newLines.length)
+  const changedLines: number[] = []
+
+  for (let i = 0; i < maxLen; i++) {
+    const oldLine = i < oldLines.length ? oldLines[i] : undefined
+    const newLine = i < newLines.length ? newLines[i] : undefined
+    if (oldLine !== newLine && newLine !== undefined) {
+      changedLines.push(i + 1) // Monaco is 1-indexed
+    }
+  }
+
+  // Show the new content in the editor as a preview
+  editor.setValue(newText)
+
+  // Build decorations for changed/added lines (green highlight)
+  const decorations: monaco.editor.IModelDeltaDecoration[] = changedLines.map(lineNum => ({
+    range: new monaco.Range(lineNum, 1, lineNum, 1),
+    options: {
+      isWholeLine: true,
+      className: 'inline-diff-added',
+      linesDecorationsClassName: 'inline-diff-gutter-added',
+    }
+  }))
+
+  // Use createDecorationsCollection (Monaco 0.36+, replaces deprecated deltaDecorations)
+  if (inlineDiffCollection) {
+    inlineDiffCollection.clear()
+  }
+  inlineDiffCollection = editor.createDecorationsCollection(decorations)
+
+  // Show floating accept/dismiss bar at top of editor
+  if (inlineDiffWidget) inlineDiffWidget.remove()
+  const bar = document.createElement('div')
+  bar.className = 'inline-diff-bar'
+  bar.innerHTML = `
+    <span class="idb-label">${changedLines.length} lines changed</span>
+    <button class="idb-accept">✓ Accept</button>
+    <button class="idb-dismiss">✗ Dismiss</button>
+  `
+  const editorEl = document.getElementById('monaco-container')!
+  const rect = editorEl.getBoundingClientRect()
+  bar.style.top = (rect.top + 8) + 'px'
+  bar.style.right = (window.innerWidth - rect.right + 20) + 'px'
+  document.body.appendChild(bar)
+  inlineDiffWidget = bar
+
+  bar.querySelector('.idb-accept')!.addEventListener('click', () => acceptInlineDiff())
+  bar.querySelector('.idb-dismiss')!.addEventListener('click', () => dismissInlineDiff())
+
+  // Scroll to the first changed line
+  if (changedLines.length > 0) {
+    editor.revealLineInCenter(changedLines[0])
+  }
+}
+
+function acceptInlineDiff() {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+  clearInlineDiff()
+  pendingOldText = null
+  showToast('Changes accepted', 'success')
+
+  // Sync chat buttons to show "Applied"
+  syncChatActions('accept')
+
+  // Sync the 3D viewport with the accepted URDF
+  if (editor) {
+    const newVal = editor.getValue()
+    if (typeof (window as any).__vectorParseAndRender === 'function') {
+      (window as any).__vectorParseAndRender(newVal)
+    }
+
+    // Run local validation on the accepted changes (avoids blocking Mutex)
+    runLocalValidation()
+  }
+}
+
+function dismissInlineDiff() {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+  if (editor && pendingOldText !== null) {
+    editor.setValue(pendingOldText)
+  }
+  clearInlineDiff()
+  pendingOldText = null
+  showToast('Changes dismissed', 'info')
+
+  // Sync chat buttons to show "Dismissed"
+  syncChatActions('dismiss')
+}
+
+/** Update the chat Apply/Dismiss buttons to reflect the action taken (from editor bar or chat) */
+function syncChatActions(action: 'accept' | 'dismiss') {
+  if (!activeChatActionsId) return
+  const actions = document.getElementById(activeChatActionsId)
+  if (!actions) return
+  const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement | null
+  const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement | null
+  if (action === 'accept') {
+    if (acceptBtn) { acceptBtn.textContent = '✓ Applied'; acceptBtn.className = 'ai-applied' }
+    if (rejectBtn) { rejectBtn.style.display = 'none' }
+  } else {
+    if (rejectBtn) { rejectBtn.textContent = '✗ Dismissed'; rejectBtn.className = 'ai-rejected' }
+    if (acceptBtn) { acceptBtn.style.display = 'none' }
+  }
+  activeChatActionsId = null
+}
+
+function clearInlineDiff() {
+  if (inlineDiffCollection) {
+    inlineDiffCollection.clear()
+    inlineDiffCollection = null
+  }
+  if (inlineDiffWidget) {
+    inlineDiffWidget.remove()
+    inlineDiffWidget = null
+  }
+}
+
+// ── Viewport Chat Send ───────────────────────────────────────────────────────
+async function sendVCMessage(prompt: string) {
+  if (!prompt.trim()) return
+
+  addVCMessage('user', prompt)
+
+  vcInput.value = ''
+  vcInput.style.height = 'auto'
+  vcSend.disabled = true
+  setStatus('thinking', '#569cd6')
+
+  const thinking = addVCThinking()
+
+  try {
+    const editor = (window as any).__vectorEditor
+    const currentUrdf = editor?.getValue() || ''
+    const kinematicContext = buildKinematicContext()
+
+    const result = await invoke('ai_edit', {
+      prompt: prompt,
+      urdfContent: currentUrdf,
+      kinematicContext: kinematicContext,
+    }) as { explanation: string; new_urdf: string; stats: string }
+
+    thinking.remove()
+
+    const diff = computeSimpleDiff(currentUrdf, result.new_urdf)
+
+    // Add to viewport chat with diff
+    addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+      diff,
+      newUrdf: result.new_urdf,
+    })
+
+    // Show inline diff in Monaco editor
+    showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+
+  } catch (err) {
+    thinking.remove()
+    console.warn('[VC] Backend error:', err)
+    const errorMsg = `<span style="color:#f85149;">Error: ${escapeHtml(String(err).slice(0, 150))}</span>`
+    addVCMessage('assistant', errorMsg)
+  } finally {
+    vcSend.disabled = false
+    setStatus('ready', '#608b4e')
+  }
+}
+
+vcInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendVCMessage(vcInput.value)
+  }
+})
+
+vcSend.addEventListener('click', () => sendVCMessage(vcInput.value))
+
+vcInput.addEventListener('input', () => {
+  vcInput.style.height = 'auto'
+  vcInput.style.height = Math.min(vcInput.scrollHeight, 120) + 'px'
+})
+
+// Ctrl+L now switches to viewport chat
+document.removeEventListener('keydown', () => {}) // cleanup
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'l') {
+    e.preventDefault()
+    switchViewportView('chat')
+    vcInput.focus()
+  }
+})
+
 // ── Simulation Mode Integration ──────────────────────────────────────────────
-import { invoke } from '@tauri-apps/api/core'
+
+// ── File I/O System ──────────────────────────────────────────────────────────
+let currentFilePath: string | null = null
+
+async function openFileDialog() {
+  try {
+    const path = await invoke<string | null>('open_file_dialog')
+    if (!path) return
+
+    const content = await invoke<string>('open_file', { path })
+    currentFilePath = path
+
+    // Update editor
+    const filename = path.split(/[\\/]/).pop() || 'untitled'
+    monacoEditor.setValue(content)
+
+    // Switch to the robot.urdf tab or create a new one
+    switchToFile('robot.urdf')
+
+    // Update title
+    document.title = `Vector — ${filename}`
+
+    // Parse and render using the same logic as reparseURDF
+    try {
+      const newParsed = parseURDFToScene(content)
+      const newKinematicData = buildKinematicGraphFromURDF(content)
+
+      // Clear old robot geometry
+      robot.remove(parsedRobot.group)
+      wireframeGroup.clear()
+      axisVisuals.clear()
+
+      // Update parsed data
+      parsedRobot = newParsed
+      kinematicGraph = newKinematicData.kinematicGraph
+      kinematicJoints = newKinematicData.kinematicJoints
+
+      // Add new geometry with Z-up → Y-up rotation
+      parsedRobot.group.rotation.x = -Math.PI / 2
+      robot.add(parsedRobot.group)
+
+      // Rebuild axis visuals
+      const axisColors = [0x4a9eff, 0x4ec9b0, 0xf48771, 0xce9178]
+      let colorIdx = 0
+      for (const [, jointInfo] of parsedRobot.joints) {
+        const color = axisColors[colorIdx++ % axisColors.length]
+        addJointAxis(jointInfo.group, jointInfo.axis, color)
+      }
+
+      // Update CoM marker
+      updateComMarker()
+
+      // Rebuild wireframes
+      rebuildWireframes()
+
+      // Update viewport info
+      updateViewportInfo()
+
+      showToast(`Loaded ${filename} — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success')
+    } catch (parseErr) {
+      showToast(`Warning: Could not parse URDF: ${parseErr}`, 'warning')
+    }
+  } catch (err) {
+    showToast(`Error opening file: ${err}`, 'error')
+  }
+}
+
+async function saveCurrentFile() {
+  try {
+    const content = monacoEditor.getValue()
+
+    if (!currentFilePath) {
+      // No path yet, open save dialog
+      const path = await invoke<string | null>('save_file_dialog', { default_name: 'robot.urdf' })
+      if (!path) return
+      currentFilePath = path
+    }
+
+    await invoke('save_file', { path: currentFilePath, content })
+    const filename = currentFilePath.split(/[\\/]/).pop() || 'robot.urdf'
+    showToast(`Saved ${filename}`, 'success')
+    document.title = `Vector — ${filename}`
+  } catch (err) {
+    showToast(`Error saving file: ${err}`, 'error')
+  }
+}
+
+async function saveFileAs() {
+  try {
+    const content = monacoEditor.getValue()
+    const path = await invoke<string | null>('save_file_dialog', { default_name: currentFilePath?.split(/[\\/]/).pop() || 'robot.urdf' })
+    if (!path) return
+
+    await invoke('save_file', { path, content })
+    currentFilePath = path
+    const filename = path.split(/[\\/]/).pop() || 'robot.urdf'
+    showToast(`Saved ${filename}`, 'success')
+    document.title = `Vector — ${filename}`
+  } catch (err) {
+    showToast(`Error saving file: ${err}`, 'error')
+  }
+}
 
 // Simulation state
 let simCoreRunning = false
 let simStepIntervalId: number | null = null
+// Store original joint poses before sim so we can restore on exit
+const originalJointPoses = new Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion }>()
 
 // Joint state display
 const simStateDisplay = document.createElement('div')
@@ -2075,21 +3446,37 @@ viewportPanel.appendChild(simStateDisplay)
 async function initializeSimulation() {
   try {
     console.log('[Sim] Initializing simulation core...')
-    await invoke('start_core')
+    // Try to start core — if already running, that's fine
+    try {
+      await invoke('start_core')
+      console.log('[Sim] Core started successfully')
+    } catch (coreErr) {
+      const msg = String(coreErr).toLowerCase()
+      if (msg.includes('already running') || msg.includes('already started')) {
+        console.log('[Sim] Core already running, continuing...')
+      } else {
+        throw coreErr // Re-throw if it's a different error
+      }
+    }
     simCoreRunning = true
-    console.log('[Sim] Core started successfully')
 
     console.log('[Sim] Loading robot model...')
-    await invoke('sim_load', { path: 'core/test_data/simple_arm.urdf' })
-    console.log('[Sim] Robot model loaded')
+    try {
+      await invoke('sim_load', { path: 'core/test_data/simple_arm.urdf' })
+      console.log('[Sim] Robot model loaded')
+    } catch (loadErr) {
+      console.warn('[Sim] Could not load model (sim features limited):', loadErr)
+    }
 
     console.log('[Sim] Getting initial state...')
-    const initialState = await invoke('sim_get_state')
-    console.log('[Sim] Initial state:', initialState)
-
-    // Show state display
-    simStateDisplay.style.display = 'block'
-    updateSimStateDisplay(initialState)
+    try {
+      const initialState = await invoke('sim_get_state')
+      console.log('[Sim] Initial state:', initialState)
+      simStateDisplay.style.display = 'block'
+      updateSimStateDisplay(initialState)
+    } catch (stateErr) {
+      console.warn('[Sim] Could not get initial state:', stateErr)
+    }
   } catch (error) {
     console.error('[Sim] Error initializing simulation:', error)
     showToast(`Simulation error: ${String(error)}`, 'error')
@@ -2176,30 +3563,15 @@ function updateRobotFromSimState(state: any) {
 
     const joints = state.joints as any
 
-    // Update shoulder pan (Z rotation)
-    if (joints.shoulder_pan?.position !== undefined) {
-      shoulderPivot.rotation.y = joints.shoulder_pan.position
-    }
-
-    // Update shoulder lift (X rotation)
-    if (joints.shoulder_lift?.position !== undefined) {
-      upperArmPivot.rotation.x = joints.shoulder_lift.position
-    }
-
-    // Update elbow (X rotation)
-    if (joints.elbow?.position !== undefined) {
-      elbowPivot.rotation.x = joints.elbow.position
-    }
-
-    // Update gripper fingers
-    if (joints.finger_left_joint?.position !== undefined) {
-      fingerL.position.x = -0.022 + joints.finger_left_joint.position
-      tipL.position.x = fingerL.position.x
-    }
-
-    if (joints.finger_right_joint?.position !== undefined) {
-      fingerR.position.x = 0.022 + joints.finger_right_joint.position
-      tipR.position.x = fingerR.position.x
+    // Update parsed joints from simulation state
+    for (const [jointName, jointInfo] of parsedRobot.joints) {
+      if (joints[jointName]?.position !== undefined) {
+        const position = joints[jointName].position as number
+        // Create rotation based on axis
+        const quat = new THREE.Quaternion()
+        quat.setFromAxisAngle(jointInfo.axis, position)
+        jointInfo.group.quaternion.copy(quat)
+      }
     }
   } catch (e) {
     console.error('[Sim] Error updating robot from state:', e)
@@ -2212,10 +3584,17 @@ simToggle.addEventListener('click', async () => {
   simBar.classList.toggle('hidden', !simActive)
   simToggle.classList.toggle('running', simActive)
   simToggle.querySelector('span')!.textContent = simActive ? 'Exit Sim' : 'Simulate'
-  viewportLabel.textContent = simActive ? 'Simulation — MuJoCo' : '3D Preview'
+  viewportLabel.textContent = simActive ? 'Simulation' : '3D Preview'
 
   if (simActive) {
-    // Enter simulation mode
+    // Enter simulation mode — save original joint poses first
+    originalJointPoses.clear()
+    for (const [jointName, jointInfo] of parsedRobot.joints) {
+      originalJointPoses.set(jointName, {
+        position: jointInfo.group.position.clone(),
+        quaternion: jointInfo.group.quaternion.clone()
+      })
+    }
     try {
       await initializeSimulation()
       showToast('Entered simulation mode (MuJoCo)', 'success')
@@ -2232,12 +3611,18 @@ simToggle.addEventListener('click', async () => {
     simTime = 0
     await shutdownSimulation()
 
-    // Reset pose
-    shoulderPivot.rotation.y = 0
-    upperArmPivot.rotation.x = 0
-    elbowPivot.rotation.x = 0
-    fingerL.position.x = -0.022
-    fingerR.position.x = 0.022
+    // Restore original joint poses (don't zero them — that destroys URDF offsets)
+    for (const [jointName, jointInfo] of parsedRobot.joints) {
+      const original = originalJointPoses.get(jointName)
+      if (original) {
+        jointInfo.group.position.copy(original.position)
+        jointInfo.group.quaternion.copy(original.quaternion)
+      } else {
+        // Fallback: only reset rotation, never zero position
+        jointInfo.group.quaternion.identity()
+      }
+    }
+    originalJointPoses.clear()
     updateSimUI()
     showToast('Exited simulation mode', 'info')
   }

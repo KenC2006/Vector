@@ -84,13 +84,65 @@ def test_server():
             print("  ✗ No response\n")
             return False
 
-        # Test 3: method not found
-        print("Test 3: method not found")
+        # Test 3: validate_urdf_content with valid URDF string
+        print("Test 3: validate_urdf_content")
+        urdf_content = """<?xml version="1.0"?>
+<robot name="test_robot">
+  <link name="base_link">
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="link1">
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1.0"/>
+  </joint>
+</robot>"""
+
+        validate_request = {
+            "jsonrpc": "2.0",
+            "method": "validate_urdf_content",
+            "params": {
+                "urdf_content": urdf_content,
+            },
+            "id": 3,
+        }
+        server_process.stdin.write(json.dumps(validate_request) + "\n")
+        server_process.stdin.flush()
+
+        response = server_process.stdout.readline()
+        if response:
+            response_data = json.loads(response)
+            result = response_data.get("result", {})
+            results = result.get("results", [])
+            summary = result.get("summary", {})
+            print(f"  Results: {len(results)} checks")
+            print(f"  Summary: {summary}")
+            if "results" in result and "summary" in result:
+                print("  ✓ PASS\n")
+            else:
+                print("  ✗ FAIL\n")
+                return False
+        else:
+            print("  ✗ No response\n")
+            return False
+
+        # Test 4: method not found
+        print("Test 4: method not found")
         bad_request = {
             "jsonrpc": "2.0",
             "method": "nonexistent",
             "params": {},
-            "id": 3,
+            "id": 4,
         }
         server_process.stdin.write(json.dumps(bad_request) + "\n")
         server_process.stdin.flush()

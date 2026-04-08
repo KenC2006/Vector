@@ -147,7 +147,11 @@ class KinematicGraph:
                 mass=link_dict.get("mass", 0.0),
                 inertia=inertia,
                 visual_mesh=link_dict.get("visual_mesh"),
+                visual_geometry=link_dict.get("visual_geometry"),
+                visual_origin=link_dict.get("visual_origin"),
+                material=link_dict.get("material"),
                 collision_geometry=link_dict.get("collision_geometry"),
+                collision_origin=link_dict.get("collision_origin"),
             )
             kg.add_link(link_data)
 
