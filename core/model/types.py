@@ -27,7 +27,11 @@ class LinkData:
     mass: float = 0.0
     inertia: Optional[Inertia] = None
     visual_mesh: Optional[str] = None  # Path to visual mesh (STL/DAE/etc)
+    visual_geometry: Optional[Dict] = None  # Geometry dict: {"type": "box"|"cylinder"|"sphere"|"mesh", "params": {...}}
+    visual_origin: Optional[Dict] = None  # {"xyz": [x,y,z], "rpy": [r,p,y]}
+    material: Optional[Dict] = None  # {"name": str, "color": [r,g,b,a]}
     collision_geometry: Optional[Dict] = None  # Geometry dict: {"type": "box"|"cylinder"|"sphere", "params": {...}}
+    collision_origin: Optional[Dict] = None  # {"xyz": [x,y,z], "rpy": [r,p,y]}
 
     def to_dict(self) -> Dict:
         data = {
@@ -35,7 +39,11 @@ class LinkData:
             "mass": self.mass,
             "inertia": self.inertia.to_dict() if self.inertia else None,
             "visual_mesh": self.visual_mesh,
+            "visual_geometry": self.visual_geometry,
+            "visual_origin": self.visual_origin,
+            "material": self.material,
             "collision_geometry": self.collision_geometry,
+            "collision_origin": self.collision_origin,
         }
         return data
 

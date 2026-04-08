@@ -3,6 +3,8 @@ URDF parser using yourdfpy to build a kinematic graph.
 """
 from typing import Optional, Dict, Tuple, Any
 import os
+import tempfile
+import numpy as np
 from .kinematic_graph import KinematicGraph
 from .types import LinkData, JointData, Inertia, Limits
 
@@ -123,6 +125,41 @@ def _extract_origin(origin_elem: Any) -> Tuple[Tuple[float, float, float], Tuple
         return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
 
 
+def _matrix_to_rpy(matrix: Any) -> Tuple[float, float, float]:
+    """
+    Convert a 4x4 transformation matrix rotation part to roll, pitch, yaw (ZYX Euler angles).
+    Returns (roll, pitch, yaw) in radians.
+    """
+    try:
+        if matrix is None:
+            return (0.0, 0.0, 0.0)
+
+        # Extract 3x3 rotation matrix from 4x4 transformation
+        R = matrix[:3, :3]
+
+        # Use numpy to convert rotation matrix to Euler angles (ZYX)
+        # sin(pitch) = -R[2, 0]
+        sin_pitch = -R[2, 0]
+        sin_pitch = np.clip(sin_pitch, -1.0, 1.0)
+
+        pitch = np.arcsin(sin_pitch)
+
+        # cos(pitch) calculations
+        cos_pitch = np.cos(pitch)
+
+        if abs(cos_pitch) > 1e-6:
+            roll = np.arctan2(R[2, 1] / cos_pitch, R[2, 2] / cos_pitch)
+            yaw = np.arctan2(R[1, 0] / cos_pitch, R[0, 0] / cos_pitch)
+        else:
+            # Gimbal lock case
+            roll = 0.0
+            yaw = np.arctan2(-R[0, 1], R[1, 1])
+
+        return (float(roll), float(pitch), float(yaw))
+    except (AttributeError, ValueError, TypeError, IndexError):
+        return (0.0, 0.0, 0.0)
+
+
 def parse_urdf(file_path: str) -> KinematicGraph:
     """
     Parse a URDF file and build a kinematic graph.
@@ -167,25 +204,56 @@ def parse_urdf(file_path: str) -> KinematicGraph:
             mass = float(getattr(inertial, "mass", 0.0))
             inertia = _extract_inertia(getattr(inertial, "inertia", None))
 
-        # Extract collision geometry (prefer collision, fall back to visual)
-        collision_geom = None
-        if link.collisions:
-            # link.collisions is a list
-            if len(link.collisions) > 0:
-                collision_geom = _extract_geometry(link.collisions[0].geometry)
-
-        # Extract visual mesh path
+        # Extract visual geometry and origin
+        visual_geom = None
         visual_mesh = None
-        if link.visuals:
-            if len(link.visuals) > 0:
-                visual_mesh = _extract_mesh_path(link.visuals[0])
+        visual_ori = None
+        material = None
+        if link.visuals and len(link.visuals) > 0:
+            visual = link.visuals[0]
+            visual_geom = _extract_geometry(visual.geometry)
+            visual_mesh = _extract_mesh_path(visual)
+
+            # Extract visual origin
+            if hasattr(visual, "origin") and visual.origin is not None:
+                xyz, rpy = _extract_origin(visual.origin)
+                visual_ori = {"xyz": list(xyz), "rpy": list(rpy)}
+
+            # Extract material
+            if hasattr(visual, "material") and visual.material is not None:
+                mat = visual.material
+                mat_dict = {"name": getattr(mat, "name", "default")}
+                if hasattr(mat, "color"):
+                    try:
+                        color = getattr(mat, "color", None)
+                        if color is not None:
+                            mat_dict["color"] = list(color) if hasattr(color, "__iter__") else [0.8, 0.8, 0.8, 1.0]
+                    except (TypeError, ValueError):
+                        pass
+                material = mat_dict
+
+        # Extract collision geometry and origin
+        collision_geom = None
+        collision_ori = None
+        if link.collisions and len(link.collisions) > 0:
+            collision = link.collisions[0]
+            collision_geom = _extract_geometry(collision.geometry)
+
+            # Extract collision origin
+            if hasattr(collision, "origin") and collision.origin is not None:
+                xyz, rpy = _extract_origin(collision.origin)
+                collision_ori = {"xyz": list(xyz), "rpy": list(rpy)}
 
         link_data = LinkData(
             name=link.name,
             mass=mass,
             inertia=inertia,
             visual_mesh=visual_mesh,
+            visual_geometry=visual_geom,
+            visual_origin=visual_ori,
+            material=material,
             collision_geometry=collision_geom,
+            collision_origin=collision_ori,
         )
         kg.add_link(link_data)
 
@@ -224,9 +292,8 @@ def parse_urdf(file_path: str) -> KinematicGraph:
             try:
                 # origin is a 4x4 transformation matrix
                 origin_xyz = tuple(float(x) for x in joint.origin[:3, 3])
-                # For RPY, we'd need to decompose the rotation matrix
-                # For simplicity, set to zero (could be enhanced)
-                origin_rpy = (0.0, 0.0, 0.0)
+                # Decompose rotation matrix to RPY
+                origin_rpy = _matrix_to_rpy(joint.origin)
             except (ValueError, TypeError, IndexError):
                 pass
 
@@ -264,3 +331,40 @@ def parse_urdf(file_path: str) -> KinematicGraph:
         kg.add_joint(joint_data)
 
     return kg
+
+
+def parse_urdf_string(xml_content: str) -> KinematicGraph:
+    """
+    Parse a URDF from an XML string and build a kinematic graph.
+
+    Args:
+        xml_content: The URDF XML content as a string.
+
+    Returns:
+        KinematicGraph: The parsed robot model.
+
+    Raises:
+        ValueError: If the URDF is invalid.
+    """
+    try:
+        import yourdfpy
+    except ImportError:
+        raise ImportError("yourdfpy not installed. Run: pip install yourdfpy")
+
+    try:
+        # Write the XML content to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.urdf', delete=False) as f:
+            f.write(xml_content)
+            temp_path = f.name
+
+        try:
+            # Parse using the regular parse_urdf function
+            return parse_urdf(temp_path)
+        finally:
+            # Clean up the temporary file
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+    except Exception as e:
+        raise ValueError(f"Failed to parse URDF string: {e}")

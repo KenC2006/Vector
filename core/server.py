@@ -14,9 +14,46 @@ import os
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from model.urdf_parser import parse_urdf
-from model.kinematic_graph import KinematicGraph
-from validation.validator import validate_kinematic_graph
+# Auto-load .env file from project root (if python-dotenv is installed)
+try:
+    from dotenv import load_dotenv
+    # Walk up from core/ to project root to find .env
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _env_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path)
+        print(f"Loaded .env from {_env_path}", file=sys.stderr)
+    else:
+        # Also check current working directory
+        if os.path.exists('.env'):
+            load_dotenv('.env')
+            print("Loaded .env from cwd", file=sys.stderr)
+except ImportError:
+    # dotenv not installed — env vars must be set manually
+    pass
+
+# Lazy imports — these modules may have missing dependencies (networkx, etc.)
+_parse_urdf = None
+_parse_urdf_string = None
+_KinematicGraph = None
+_serialize_to_urdf = None
+_validate_kinematic_graph = None
+_model_import_error = None
+
+try:
+    from model.urdf_parser import parse_urdf, parse_urdf_string
+    from model.kinematic_graph import KinematicGraph
+    from model.urdf_serializer import serialize_to_urdf
+    from validation.validator import validate_kinematic_graph
+    _parse_urdf = parse_urdf
+    _parse_urdf_string = parse_urdf_string
+    _KinematicGraph = KinematicGraph
+    _serialize_to_urdf = serialize_to_urdf
+    _validate_kinematic_graph = validate_kinematic_graph
+except ImportError as e:
+    _model_import_error = str(e)
+    print(f"Warning: Model modules not fully available: {e}", file=sys.stderr)
+    print(f"  Install missing deps: pip install networkx", file=sys.stderr)
 
 # Lazy import MuJoCo — it may not be installed
 _MuJoCoSimulator = None
@@ -27,6 +64,20 @@ try:
 except ImportError as e:
     _mujoco_import_error = str(e)
     print(f"Warning: MuJoCo not available: {e}", file=sys.stderr)
+
+# Lazy import AI client — anthropic may not be installed
+_generate_edit = None
+_generate_completion = None
+_ai_import_error = None
+
+try:
+    from ai.claude_client import generate_edit as _generate_edit, generate_completion as _generate_completion
+except ImportError as e:
+    _ai_import_error = str(e)
+    print(f"Warning: AI client not available: {e}", file=sys.stderr)
+
+# Always-available local completion engine (no external dependencies)
+from ai.local_completions import generate_local_completion as _generate_local_completion
 
 
 class JSONRPCServer:
@@ -45,6 +96,9 @@ class JSONRPCServer:
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
             "validate_urdf": self.handle_validate_urdf,
+            "validate_urdf_content": self.handle_validate_urdf_content,
+            "ai_edit": self.handle_ai_edit,
+            "ai_complete": self.handle_ai_complete,
         }
 
     def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -64,8 +118,11 @@ class JSONRPCServer:
         if not isinstance(path, str):
             raise ValueError("Parameter 'path' must be a string")
 
+        if _parse_urdf is None:
+            raise ValueError(f"Model modules not available: {_model_import_error}")
+
         try:
-            kg = parse_urdf(path)
+            kg = _parse_urdf(path)
             return kg.to_json()
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
@@ -89,9 +146,12 @@ class JSONRPCServer:
         if not isinstance(path, str):
             raise ValueError("Parameter 'path' must be a string")
 
+        if _parse_urdf is None or _validate_kinematic_graph is None:
+            raise ValueError(f"Model modules not available: {_model_import_error}")
+
         try:
-            kg = parse_urdf(path)
-            results = validate_kinematic_graph(kg)
+            kg = _parse_urdf(path)
+            results = _validate_kinematic_graph(kg)
 
             # Build summary counts
             summary = {"pass": 0, "warn": 0, "error": 0, "info": 0}
@@ -105,6 +165,59 @@ class JSONRPCServer:
             raise ValueError(f"File not found: {e}")
         except Exception as e:
             raise ValueError(f"Validation failed: {e}")
+
+    def handle_validate_urdf_content(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate URDF content from a string (not a file path).
+        Used by the frontend editor to validate as-you-type.
+
+        Params:
+            urdf_content (str): URDF XML as a string.
+
+        Returns:
+            Dict with 'results' list and 'summary' counts.
+        """
+        if "urdf_content" not in params:
+            raise ValueError("Missing required parameter: urdf_content")
+
+        urdf_content = params["urdf_content"]
+        if not isinstance(urdf_content, str):
+            raise ValueError("Parameter 'urdf_content' must be a string")
+
+        if _parse_urdf_string is None or _validate_kinematic_graph is None:
+            return {
+                "results": [{
+                    "name": "Dependencies Missing",
+                    "severity": "warn",
+                    "message": f"Model modules not available: {_model_import_error}. Install: pip install networkx",
+                    "category": "Setup"
+                }],
+                "summary": {"pass": 0, "warn": 1, "error": 0, "info": 0}
+            }
+
+        try:
+            kg = _parse_urdf_string(urdf_content)
+            results = _validate_kinematic_graph(kg)
+
+            # Build summary counts
+            summary = {"pass": 0, "warn": 0, "error": 0, "info": 0}
+            for r in results:
+                sev = r.get("severity", "info")
+                if sev in summary:
+                    summary[sev] += 1
+
+            return {"results": results, "summary": summary}
+        except Exception as e:
+            # If parsing fails, return a parse error
+            return {
+                "results": [{
+                    "name": "URDF Parse Error",
+                    "severity": "error",
+                    "message": str(e),
+                    "category": "Structural"
+                }],
+                "summary": {"pass": 0, "warn": 0, "error": 1, "info": 0}
+            }
 
     def handle_ping(self, params: Dict[str, Any]) -> str:
         """
@@ -250,6 +363,114 @@ class JSONRPCServer:
         except Exception as e:
             raise ValueError(f"Failed to render frame: {e}")
 
+    def handle_ai_edit(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Use Claude AI to generate a robot model edit from natural language.
+
+        Params:
+            prompt (str): User's natural language edit request.
+            urdf_content (str): Current URDF XML as string.
+            kinematic_context (str, optional): Structured text summary of robot structure from frontend.
+
+        Returns:
+            Dict with "explanation", "new_urdf", and "stats".
+        """
+        if _generate_edit is None:
+            raise ValueError(
+                f"Claude AI not installed. Run: pip install anthropic\n"
+                f"Error: {_ai_import_error}"
+            )
+
+        if "prompt" not in params or "urdf_content" not in params:
+            raise ValueError("Missing required parameters: prompt, urdf_content")
+
+        prompt = params["prompt"]
+        urdf_content = params["urdf_content"]
+        kinematic_context = params.get("kinematic_context", None)
+
+        if not isinstance(prompt, str):
+            raise ValueError("Parameter 'prompt' must be a string")
+        if not isinstance(urdf_content, str):
+            raise ValueError("Parameter 'urdf_content' must be a string")
+
+        try:
+            # Try to parse URDF to get kinematic graph for extra context
+            # But don't fail if parsing doesn't work — Claude can work with raw XML
+            kg_json = {}
+            try:
+                if _parse_urdf_string is not None:
+                    kg = _parse_urdf_string(urdf_content)
+                    kg_json = kg.to_json()
+            except Exception as parse_err:
+                print(f"[ai_edit] URDF pre-parse skipped: {parse_err}", file=sys.stderr)
+
+            # Call Claude to generate edit with optional frontend context
+            result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context)
+
+            return {
+                "explanation": result.get("explanation", "Edit applied"),
+                "new_urdf": result.get("new_urdf", urdf_content),
+                "stats": result.get("stats", "Edit complete"),
+            }
+        except Exception as e:
+            raise ValueError(f"AI edit failed: {e}")
+
+    def handle_ai_complete(self, params: Dict[str, Any]) -> str:
+        """
+        Generate inline completions for URDF/XML editing.
+        Uses Claude API if available, falls back to local pattern-based completions.
+
+        Params:
+            urdf_content (str): Current URDF XML as string.
+            cursor_line (int): Current cursor line (1-indexed).
+            cursor_column (int): Current cursor column (1-indexed).
+            prefix (str): Optional prefix context (e.g., recent characters typed).
+
+        Returns:
+            Completion text string (the text to insert at cursor).
+        """
+        if "urdf_content" not in params:
+            raise ValueError("Missing required parameter: urdf_content")
+
+        urdf_content = params["urdf_content"]
+        cursor_line = params.get("cursor_line", 1)
+        cursor_column = params.get("cursor_column", 1)
+        prefix = params.get("prefix", "")
+
+        if not isinstance(urdf_content, str):
+            raise ValueError("Parameter 'urdf_content' must be a string")
+        if not isinstance(cursor_line, int) or not isinstance(cursor_column, int):
+            raise ValueError("Parameters 'cursor_line' and 'cursor_column' must be integers")
+
+        print(f"[server] ai_complete: line={cursor_line}, col={cursor_column}", file=sys.stderr)
+
+        # Try Claude API first, fall back to local completions
+        if _generate_completion is not None:
+            try:
+                completion = _generate_completion(
+                    urdf_content,
+                    cursor_line,
+                    cursor_column,
+                    prefix
+                )
+                print(f"[server] ai_complete (claude): got {len(completion)} chars", file=sys.stderr)
+                return completion
+            except Exception as e:
+                print(f"[server] Claude failed, falling back to local: {e}", file=sys.stderr)
+
+        # Local pattern-based fallback
+        try:
+            completion = _generate_local_completion(
+                urdf_content, cursor_line, cursor_column, prefix
+            )
+            if completion:
+                print(f"[server] ai_complete (local): got {len(completion)} chars", file=sys.stderr)
+                return completion
+            return ""
+        except Exception as e:
+            print(f"[server] local completion error: {e}", file=sys.stderr)
+            return ""
+
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Process a single JSON-RPC 2.0 request.
@@ -326,6 +547,13 @@ class JSONRPCServer:
         Main server loop.
         Reads line-delimited JSON from stdin, writes responses to stdout.
         """
+        # Force UTF-8 on Windows (default is often cp1252)
+        if sys.platform == 'win32':
+            import io
+            sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
         while True:
             try:
                 line = sys.stdin.readline()
@@ -349,7 +577,7 @@ class JSONRPCServer:
                         },
                         "id": None,
                     }
-                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
                     sys.stdout.flush()
                     continue
 
@@ -358,7 +586,7 @@ class JSONRPCServer:
 
                 # Write response (skip for notifications)
                 if response is not None:
-                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
                     sys.stdout.flush()
 
             except KeyboardInterrupt:

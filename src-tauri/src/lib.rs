@@ -3,6 +3,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Child, Stdio};
 use std::sync::Mutex;
 use tauri::State;
+use std::fs;
+use tauri_plugin_dialog::DialogExt;
 
 /// Find the project root directory (where core/ lives)
 fn find_project_root() -> std::path::PathBuf {
@@ -41,15 +43,29 @@ impl CoreProcess {
     fn spawn() -> Result<Self, String> {
         let project_root = find_project_root();
 
+        // Try "python" first, then "python3" as fallback (macOS/Linux often only have python3)
         let mut child = Command::new("python")
             .arg("-m")
             .arg("core.server")
+            .env("PYTHONUTF8", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .current_dir(&project_root)
             .spawn()
-            .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
+            .or_else(|_| {
+                eprintln!("[Core] 'python' not found, trying 'python3'...");
+                Command::new("python3")
+                    .arg("-m")
+                    .arg("core.server")
+                    .env("PYTHONUTF8", "1")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .current_dir(&project_root)
+                    .spawn()
+            })
+            .map_err(|e| format!("Failed to spawn Python process (tried 'python' and 'python3'): {}", e))?;
 
         let stdin = std::io::BufWriter::new(
             child
@@ -72,8 +88,22 @@ impl CoreProcess {
         })
     }
 
+    /// Check if the child process is still alive
+    fn is_alive(&mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) => false,  // Process has exited
+            Ok(None) => true,      // Still running
+            Err(_) => false,       // Error checking — assume dead
+        }
+    }
+
     /// Send a JSON-RPC request and read the response
     fn send_rpc(&mut self, method: &str, params: serde_json::Value, id: u32) -> Result<serde_json::Value, String> {
+        // Check if the Python process is still alive
+        if !self.is_alive() {
+            return Err("Python core process has exited unexpectedly".to_string());
+        }
+
         let request = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -99,12 +129,32 @@ impl CoreProcess {
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
         if response_line.is_empty() {
-            return Err("No response from Python process".to_string());
+            return Err("No response from Python process (process may have crashed)".to_string());
+        }
+
+        // Skip any non-JSON lines (e.g., Python print() output that leaked to stdout)
+        // Keep reading until we get a valid JSON-RPC response
+        let mut attempts = 0;
+        while attempts < 10 {
+            let trimmed = response_line.trim();
+            if trimmed.starts_with('{') {
+                break;
+            }
+            // Not JSON — this is a stray print() from Python, skip it
+            eprintln!("[send_rpc] Skipping non-JSON line from Python: {}", trimmed);
+            response_line.clear();
+            self.stdout
+                .read_line(&mut response_line)
+                .map_err(|e| format!("Failed to read response: {}", e))?;
+            if response_line.is_empty() {
+                return Err("No response from Python process after skipping non-JSON output".to_string());
+            }
+            attempts += 1;
         }
 
         // Parse response
         let response: serde_json::Value = serde_json::from_str(&response_line)
-            .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+            .map_err(|e| format!("Failed to parse response JSON: {} — raw: {}", e, response_line.trim()))?;
 
         // Extract result or error
         if let Some(result) = response.get("result") {
@@ -127,6 +177,9 @@ async fn start_core(state: State<'_, AppState>) -> Result<String, String> {
     }
 
     let mut process = CoreProcess::spawn()?;
+
+    // Give Python a moment to initialize (import modules, load .env)
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Verify the process is actually running with a ping
     match process.send_rpc("ping", json!({}), 0) {
@@ -182,6 +235,16 @@ async fn validate_urdf(state: State<'_, AppState>, path: String) -> Result<serde
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
     process.send_rpc("validate_urdf", json!({ "path": path }), 1)
+}
+
+/// Validate URDF content from a string (for real-time editor validation)
+#[tauri::command]
+async fn validate_urdf_content(state: State<'_, AppState>, urdf_content: String) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("validate_urdf_content", json!({ "urdf_content": urdf_content }), 1)
 }
 
 /// Load a robot model for simulation
@@ -261,6 +324,361 @@ async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Opti
     }
 }
 
+/// Use Claude AI to generate a robot model edit from natural language
+#[tauri::command]
+async fn ai_edit(state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("ai_edit", json!({
+        "prompt": prompt,
+        "urdf_content": urdf_content,
+        "kinematic_context": kinematic_context
+    }), 1)
+}
+
+/// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing
+#[tauri::command]
+async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_line: u32, cursor_column: u32, prefix: String) -> Result<String, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    let result = process.send_rpc("ai_complete", json!({
+        "urdf_content": urdf_content,
+        "cursor_line": cursor_line,
+        "cursor_column": cursor_column,
+        "prefix": prefix
+    }), 1)?;
+
+    // Extract the completion text from the result
+    if let Some(completion) = result.as_str() {
+        Ok(completion.to_string())
+    } else {
+        Ok(format!("{:?}", result))
+    }
+}
+
+/// Save file to disk
+#[tauri::command]
+async fn save_file(path: String, content: String) -> Result<String, String> {
+    fs::write(&path, &content)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(path)
+}
+
+/// Read file from disk
+#[tauri::command]
+async fn open_file(path: String) -> Result<String, String> {
+    fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+/// Open file dialog and return selected file path
+#[tauri::command]
+async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path: Option<tauri_plugin_dialog::FilePath> = app
+        .dialog()
+        .file()
+        .add_filter("Robot Files", &["urdf", "mjcf", "sdf", "xml"])
+        .add_filter("All Files", &["*"])
+        .blocking_pick_file();
+
+    Ok(path.map(|p| p.to_string()))
+}
+
+/// Save file dialog and return selected save path
+#[tauri::command]
+async fn save_file_dialog(app: tauri::AppHandle, default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("URDF Files", &["urdf"])
+        .add_filter("MJCF Files", &["mjcf"])
+        .add_filter("SDF Files", &["sdf"])
+        .add_filter("XML Files", &["xml"])
+        .add_filter("All Files", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let path: Option<tauri_plugin_dialog::FilePath> = dialog.blocking_save_file();
+
+    Ok(path.map(|p| p.to_string()))
+}
+
+/// Get recent files from app storage
+#[tauri::command]
+async fn get_recent_files() -> Result<Vec<String>, String> {
+    // For now, return empty list. In a full implementation, this would read from
+    // a JSON file in app data directory (app.path().app_data_dir())
+    Ok(vec![])
+}
+
+// ── Git Commands ─────────────────────────────────────────────────────────────
+
+/// Get the git repo root directory
+fn git_repo_root() -> std::path::PathBuf {
+    // Try `git rev-parse --show-toplevel` first for accuracy
+    if let Ok(output) = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&find_project_root())
+        .output()
+    {
+        if output.status.success() {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !root.is_empty() {
+                return std::path::PathBuf::from(root);
+            }
+        }
+    }
+    find_project_root()
+}
+
+/// Get current git branch
+#[tauri::command]
+async fn git_branch() -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Not a git repository".to_string());
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if branch.is_empty() { "HEAD".to_string() } else { branch })
+}
+
+/// Get git status as structured data
+#[tauri::command]
+async fn git_status() -> Result<serde_json::Value, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Not a git repository".to_string());
+    }
+
+    let status_text = String::from_utf8_lossy(&output.stdout);
+    let mut staged = vec![];
+    let mut unstaged = vec![];
+
+    for line in status_text.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+
+        let index_char = line.as_bytes()[0] as char;
+        let work_char = line.as_bytes()[1] as char;
+        let file_path = line[3..].to_string();
+
+        // Staged: index char is not ' ' and not '?'
+        if index_char != ' ' && index_char != '?' {
+            staged.push(json!({
+                "path": file_path.clone(),
+                "status": match index_char {
+                    'M' => "modified",
+                    'A' => "added",
+                    'D' => "deleted",
+                    'R' => "renamed",
+                    'U' => "unmerged",
+                    _ => "modified"
+                }
+            }));
+        }
+
+        // Unstaged: work char is not ' ', or untracked (??)
+        if work_char != ' ' || index_char == '?' {
+            unstaged.push(json!({
+                "path": file_path,
+                "status": if index_char == '?' { "untracked" } else {
+                    match work_char {
+                        'M' => "modified",
+                        'D' => "deleted",
+                        _ => "modified"
+                    }
+                }
+            }));
+        }
+    }
+
+    Ok(json!({
+        "staged": staged,
+        "unstaged": unstaged
+    }))
+}
+
+/// Get git diff for a specific file
+#[tauri::command]
+async fn git_diff(file_path: String) -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["diff", &file_path])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to execute git diff: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Stage a file
+#[tauri::command]
+async fn git_stage(file_path: String) -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["add", &file_path])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to stage: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to stage: {}", err));
+    }
+
+    Ok(format!("Staged: {}", file_path))
+}
+
+/// Unstage a file
+#[tauri::command]
+async fn git_unstage(file_path: String) -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["reset", "HEAD", &file_path])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to unstage: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to unstage: {}", err));
+    }
+
+    Ok(format!("Unstaged: {}", file_path))
+}
+
+/// Discard changes to a file
+#[tauri::command]
+async fn git_discard(file_path: String) -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["checkout", "--", &file_path])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to discard: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to discard: {}", err));
+    }
+
+    Ok(format!("Discarded: {}", file_path))
+}
+
+/// Commit with a message
+#[tauri::command]
+async fn git_commit(message: String) -> Result<String, String> {
+    if message.is_empty() {
+        return Err("Commit message cannot be empty".to_string());
+    }
+
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["commit", "-m", &message])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to commit: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to commit: {}", err));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.to_string())
+}
+
+/// Get git log
+#[tauri::command]
+async fn git_log(count: Option<u32>) -> Result<Vec<serde_json::Value>, String> {
+    let count = count.unwrap_or(10);
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .args(["log", "--oneline", "-n", &count.to_string()])
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to execute git log: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Failed to get git log".to_string());
+    }
+
+    let log_text = String::from_utf8_lossy(&output.stdout);
+    let entries: Vec<serde_json::Value> = log_text
+        .lines()
+        .map(|line| {
+            let parts: Vec<&str> = line.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                json!({ "hash": parts[0], "message": parts[1] })
+            } else {
+                json!({ "hash": line, "message": "" })
+            }
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+/// Push to remote
+#[tauri::command]
+async fn git_push() -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .arg("push")
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to push: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(format!("{}{}", stderr, stdout));
+    }
+
+    Ok(format!("{}{}", stdout, stderr))
+}
+
+/// Pull from remote
+#[tauri::command]
+async fn git_pull() -> Result<String, String> {
+    let root = git_repo_root();
+    let output = Command::new("git")
+        .arg("pull")
+        .current_dir(&root)
+        .output()
+        .map_err(|e| format!("Failed to pull: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(format!("{}{}", stderr, stdout));
+    }
+
+    Ok(format!("{}{}", stdout, stderr))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -275,6 +693,7 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            app.handle().plugin(tauri_plugin_dialog::init())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -283,12 +702,30 @@ pub fn run() {
             ping_core,
             parse_urdf,
             validate_urdf,
+            validate_urdf_content,
             sim_load,
             sim_step,
             sim_reset,
             sim_get_state,
             sim_set_control,
-            sim_render
+            sim_render,
+            ai_edit,
+            ai_complete,
+            save_file,
+            open_file,
+            open_file_dialog,
+            save_file_dialog,
+            get_recent_files,
+            git_branch,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_discard,
+            git_commit,
+            git_log,
+            git_push,
+            git_pull
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
