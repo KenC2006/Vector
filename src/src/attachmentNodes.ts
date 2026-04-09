@@ -47,15 +47,17 @@ export function makeMountLinkName(parentLink: string, nodeId: string): string {
 }
 
 export function defaultFaceNodesForBoxDims(
-  hx: number, _hy: number, hz: number,
+  hx: number, hy: number, hz: number,
 ): AttachmentNodeDef[] {
   // URDF frame conventions in this app are consistent enough for simple face nodes.
   // Nodes are expressed in the component link frame.
   return [
-    { nodeId: 'top', label: 'Top', cls: 'mount_face', origin_xyz: [0, 0, hz], origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'bottom', label: 'Bottom', cls: 'mount_face', origin_xyz: [0, 0, -hz], origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'x_plus', label: '+X', cls: 'mount_face', origin_xyz: [hx, 0, 0], origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'x_minus', label: '-X', cls: 'mount_face', origin_xyz: [-hx, 0, 0], origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'top',     label: 'Top',  cls: 'mount_face', origin_xyz: [0,   0,   hz],  origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'bottom',  label: 'Bot',  cls: 'mount_face', origin_xyz: [0,   0,  -hz],  origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'x_plus',  label: '+X',   cls: 'mount_face', origin_xyz: [hx,  0,   0],   origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'x_minus', label: '-X',   cls: 'mount_face', origin_xyz: [-hx, 0,   0],   origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'y_plus',  label: '+Y',   cls: 'mount_face', origin_xyz: [0,   hy,  0],   origin_rpy: [0, 0, 0], single: true },
+    { nodeId: 'y_minus', label: '-Y',   cls: 'mount_face', origin_xyz: [0,  -hy,  0],   origin_rpy: [0, 0, 0], single: true },
   ]
 }
 

@@ -4,7 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
-import { defaultFaceNodesForBoxDims, makeMountLinkName, isMountLinkName, parseMountLinkName, type AttachmentNodeDef } from './attachmentNodes'
+import { isMountLinkName } from './attachmentNodes'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -117,13 +117,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ctx.scene.add(nodeRingsGroup)
   const nodeMeshByMount = new Map<string, THREE.Mesh>()
   const nodeRingsByMount = new Map<string, THREE.Group>()
+  // Synthesized attachment face nodes. `mountLink` is a unique synthetic key
+  // of the form `<parentLinkName>::<faceId>` and is NOT a real URDF link.
+  // `localPos` is the face center in the parent link's local frame.
   let mountNodes: Array<{
     mountLink: string
     parentLink: string
     nodeId: string
+    localPos: THREE.Vector3
     worldPos: THREE.Vector3
     worldQuat: THREE.Quaternion
   }> = []
+  const occupiedNodeKeys = new Set<string>()
 
   const NODE_MAT_NEUTRAL = new THREE.MeshBasicMaterial({ color: 0x2f7bff, transparent: true, opacity: 0.95, depthTest: false })
   const NODE_MAT_COMPAT = new THREE.MeshBasicMaterial({ color: 0x44b3ff, transparent: true, opacity: 1, depthTest: false })
@@ -143,6 +148,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ghostGroup.add(ghostBoxHelper)
   let bestMountCandidate: {
     mountLink: string
+    targetParentLink: string
     sourceMountLink: string
     reason?: string
     desiredLinkWorld: THREE.Matrix4
@@ -182,7 +188,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function nodeClassFromId(nodeId: string): 'mount_face' | 'generic' {
-    if (nodeId === 'top' || nodeId === 'bottom' || nodeId === 'x_plus' || nodeId === 'x_minus') return 'mount_face'
+    if (nodeId === 'top' || nodeId === 'bottom' || nodeId === 'x_plus' || nodeId === 'x_minus' || nodeId === 'y_plus' || nodeId === 'y_minus') return 'mount_face'
     return 'generic'
   }
 
@@ -204,7 +210,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const seen = new Set<string>()
     while (stack.length) {
       const cur = stack.pop()!
-      if (cur === target.mountLink) return { ok: false, reason: 'cycle', dist }
+      if (cur === target.parentLink) return { ok: false, reason: 'cycle', dist }
       if (seen.has(cur)) continue
       seen.add(cur)
       for (const ch of graph[cur]?.children ?? []) stack.push(ch)
@@ -235,7 +241,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
     if (!selectedGroup) return []
     selectedGroup.updateMatrixWorld(true)
-    const selectedWorldInv = selectedGroup.matrixWorld.clone().invert()
+    // Face nodes share the link's orientation and sit at localPos within the link frame,
+    // so the local-to-selected transform is just a translation by localPos.
     const out: Array<{
       mountLink: string
       nodeId: string
@@ -246,19 +253,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }> = []
     for (const n of mountNodes) {
       if (n.parentLink !== selectedLink) continue
-      const mountGroup = ctx.getParsedRobot().linkGroups.get(n.mountLink)
-      if (!mountGroup) continue
-      mountGroup.updateMatrixWorld(true)
-      const sourceWorldPos = new THREE.Vector3()
-      const sourceWorldQuat = new THREE.Quaternion()
-      const sourceWorldScale = new THREE.Vector3()
-      mountGroup.matrixWorld.decompose(sourceWorldPos, sourceWorldQuat, sourceWorldScale)
-      const localToSelected = selectedWorldInv.clone().multiply(mountGroup.matrixWorld.clone())
+      const localToSelected = new THREE.Matrix4().makeTranslation(n.localPos.x, n.localPos.y, n.localPos.z)
       out.push({
         mountLink: n.mountLink,
         nodeId: n.nodeId,
-        worldPos: sourceWorldPos,
-        worldQuat: sourceWorldQuat,
+        worldPos: n.worldPos.clone(),
+        worldQuat: n.worldQuat.clone(),
         localToSelected,
         cls: nodeClassFromId(n.nodeId),
       })
@@ -288,6 +288,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Choose closest valid source-target pair.
     let best: {
       mountLink: string
+      targetParentLink: string
       sourceMountLink: string
       dist: number
       reason: string
@@ -309,6 +310,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (!best || verdict.dist < best.dist) {
           best = {
             mountLink: target.mountLink,
+            targetParentLink: target.parentLink,
             sourceMountLink: srcNode.mountLink,
             dist: verdict.dist,
             reason: 'ok',
@@ -331,12 +333,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!best || !Number.isFinite(best.dist) || !best.desiredLinkWorld) {
       ghostGroup.visible = false
       bestMountCandidate = firstFailureReason
-        ? { mountLink: '', sourceMountLink: '', reason: firstFailureReason, desiredLinkWorld: new THREE.Matrix4() }
+        ? { mountLink: '', targetParentLink: '', sourceMountLink: '', reason: firstFailureReason, desiredLinkWorld: new THREE.Matrix4() }
         : null
       return
     }
     bestMountCandidate = {
       mountLink: best.mountLink,
+      targetParentLink: best.targetParentLink,
       sourceMountLink: best.sourceMountLink,
       reason: best.reason,
       desiredLinkWorld: best.desiredLinkWorld,
@@ -348,9 +351,45 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     updateGhostBoxAtTransform(selectedGroup, best.desiredLinkWorld)
   }
 
-  function isMountOccupied(mountLink: string): boolean {
-    const node = ctx.getKinematicGraph()[mountLink]
-    return (node?.children?.length ?? 0) > 0
+  function isMountOccupied(mountKey: string): boolean {
+    return occupiedNodeKeys.has(mountKey)
+  }
+
+  // Compute the bounding box of a link's own geometry in its local frame,
+  // excluding child-link pivot subtrees so we don't include downstream components.
+  function computeLinkLocalBoundingBox(linkGroup: THREE.Group): THREE.Box3 | null {
+    const pivotGroups = new Set<THREE.Object3D>()
+    for (const [, jointInfo] of ctx.getParsedRobot().joints) {
+      pivotGroups.add(jointInfo.group)
+    }
+
+    linkGroup.updateMatrixWorld(true)
+    const linkWorldInv = linkGroup.matrixWorld.clone().invert()
+
+    const box = new THREE.Box3()
+    let hasGeom = false
+
+    const tempBox = new THREE.Box3()
+    const tempMatrix = new THREE.Matrix4()
+    function walk(obj: THREE.Object3D) {
+      if (obj !== linkGroup && pivotGroups.has(obj)) return
+      const mesh = obj as THREE.Mesh
+      if (mesh.isMesh && mesh.geometry) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+        const bb = mesh.geometry.boundingBox
+        if (bb) {
+          mesh.updateMatrixWorld(true)
+          tempMatrix.multiplyMatrices(linkWorldInv, mesh.matrixWorld)
+          tempBox.copy(bb).applyMatrix4(tempMatrix)
+          box.union(tempBox)
+          hasGeom = true
+        }
+      }
+      for (const child of obj.children) walk(child)
+    }
+    walk(linkGroup)
+
+    return hasGeom ? box : null
   }
 
   function rebuildMountNodes() {
@@ -359,59 +398,120 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     nodeMeshByMount.clear()
     nodeRingsByMount.clear()
     mountNodes = []
+    occupiedNodeKeys.clear()
 
     const graph = ctx.getKinematicGraph()
+    const kinJoints = ctx.getKinematicJoints()
     const parsed = ctx.getParsedRobot()
+
+    const FACE_DIRS: Array<{ id: string; axis: [number, number, number] }> = [
+      { id: 'top',     axis: [ 0,  0,  1] },
+      { id: 'bottom',  axis: [ 0,  0, -1] },
+      { id: 'x_plus',  axis: [ 1,  0,  0] },
+      { id: 'x_minus', axis: [-1,  0,  0] },
+      { id: 'y_plus',  axis: [ 0,  1,  0] },
+      { id: 'y_minus', axis: [ 0, -1,  0] },
+    ]
+    const OCCUPIED_DIST_M = 0.025
+
     for (const linkName of Object.keys(graph)) {
-      if (!isMountLinkName(linkName)) continue
+      if (isMountLinkName(linkName)) continue
       const lg = parsed.linkGroups.get(linkName)
       if (!lg) continue
-      lg.updateMatrixWorld(true)
-      const worldPos = new THREE.Vector3().setFromMatrixPosition(lg.matrixWorld)
-      const parsedMount = parseMountLinkName(linkName)
-      if (!parsedMount) continue
-      const worldQuat = new THREE.Quaternion()
-      lg.matrixWorld.decompose(new THREE.Vector3(), worldQuat, new THREE.Vector3())
-      mountNodes.push({ mountLink: linkName, parentLink: parsedMount.parentLink, nodeId: parsedMount.nodeId, worldPos, worldQuat })
+      const localBox = computeLinkLocalBoundingBox(lg)
+      if (!localBox || localBox.isEmpty()) continue
 
-      const mesh = new THREE.Mesh(NODE_GEO, isMountOccupied(linkName) ? NODE_MAT_OCCUPIED : NODE_MAT_NEUTRAL)
-      mesh.position.copy(worldPos)
-      mesh.quaternion.copy(worldQuat)
-      mesh.renderOrder = 999
-      nodesGroup.add(mesh)
-      nodeMeshByMount.set(linkName, mesh)
-      const rings = makeNodeAxisRings()
-      rings.position.copy(worldPos)
-      rings.quaternion.copy(worldQuat)
-      nodeRingsGroup.add(rings)
-      nodeRingsByMount.set(linkName, rings)
+      const center = localBox.getCenter(new THREE.Vector3())
+      const size = localBox.getSize(new THREE.Vector3())
+      const half = new THREE.Vector3(size.x / 2, size.y / 2, size.z / 2)
+
+      // Gather child-joint origin xyz in parent-local frame, used to determine occupancy.
+      const childOriginsLocal: THREE.Vector3[] = []
+      for (const j of Object.values(kinJoints)) {
+        if (j.parentLink !== linkName) continue
+        if (isMountLinkName(j.childLink)) continue
+        // The URDF parser retains joint origin in the pivot group transform of the child link.
+        const childLg = parsed.linkGroups.get(j.childLink)
+        if (!childLg) continue
+        // Find the pivot group whose parent is lg
+        let pivot: THREE.Object3D | null = childLg.parent
+        if (!pivot) continue
+        // pivot's position is joint origin in parent-local (lg) frame
+        childOriginsLocal.push(new THREE.Vector3().copy(pivot.position))
+      }
+
+      lg.updateMatrixWorld(true)
+      const linkWorldQuat = new THREE.Quaternion()
+      lg.matrixWorld.decompose(new THREE.Vector3(), linkWorldQuat, new THREE.Vector3())
+
+      for (const f of FACE_DIRS) {
+        const localPos = new THREE.Vector3(
+          center.x + f.axis[0] * half.x,
+          center.y + f.axis[1] * half.y,
+          center.z + f.axis[2] * half.z,
+        )
+        const nodeKey = `${linkName}::${f.id}`
+        const worldPos = localPos.clone().applyMatrix4(lg.matrixWorld)
+        const worldQuat = linkWorldQuat.clone()
+
+        // Occupancy: is there a child joint whose origin sits near this face?
+        let occupied = false
+        for (const co of childOriginsLocal) {
+          if (co.distanceTo(localPos) <= OCCUPIED_DIST_M) { occupied = true; break }
+        }
+        if (occupied) occupiedNodeKeys.add(nodeKey)
+
+        mountNodes.push({
+          mountLink: nodeKey,
+          parentLink: linkName,
+          nodeId: f.id,
+          localPos,
+          worldPos,
+          worldQuat,
+        })
+
+        const mesh = new THREE.Mesh(NODE_GEO, occupied ? NODE_MAT_OCCUPIED : NODE_MAT_NEUTRAL)
+        mesh.position.copy(worldPos)
+        mesh.quaternion.copy(worldQuat)
+        mesh.renderOrder = 999
+        nodesGroup.add(mesh)
+        nodeMeshByMount.set(nodeKey, mesh)
+
+        const rings = makeNodeAxisRings()
+        rings.position.copy(worldPos)
+        rings.quaternion.copy(worldQuat)
+        nodeRingsGroup.add(rings)
+        nodeRingsByMount.set(nodeKey, rings)
+      }
     }
-    nodesGroup.visible = Boolean(selectedLink)
+    // Nodes are only shown while actively dragging a component; the drag
+    // handler flips this on/off. Keep the group hidden by default.
+    nodesGroup.visible = false
     applyNodeRingVisibility()
   }
 
   function refreshNodeWorldTransforms() {
     const parsed = ctx.getParsedRobot()
+    const worldQuatTmp = new THREE.Quaternion()
+    const worldPosTmp = new THREE.Vector3()
+    const worldScaleTmp = new THREE.Vector3()
     for (const n of mountNodes) {
-      const lg = parsed.linkGroups.get(n.mountLink)
+      const lg = parsed.linkGroups.get(n.parentLink)
       if (!lg) continue
       lg.updateMatrixWorld(true)
-      const worldPos = new THREE.Vector3()
-      const worldQuat = new THREE.Quaternion()
-      const worldScale = new THREE.Vector3()
-      lg.matrixWorld.decompose(worldPos, worldQuat, worldScale)
-      n.worldPos.copy(worldPos)
-      n.worldQuat.copy(worldQuat)
+      lg.matrixWorld.decompose(worldPosTmp, worldQuatTmp, worldScaleTmp)
+      n.worldQuat.copy(worldQuatTmp)
+      n.worldPos.copy(n.localPos).applyMatrix4(lg.matrixWorld)
 
       const mesh = nodeMeshByMount.get(n.mountLink)
       if (mesh) {
-        mesh.position.copy(worldPos)
-        mesh.quaternion.copy(worldQuat)
+        mesh.position.copy(n.worldPos)
+        mesh.quaternion.copy(n.worldQuat)
       }
       const rings = nodeRingsByMount.get(n.mountLink)
       if (rings) {
-        rings.position.copy(worldPos)
-        rings.quaternion.copy(worldQuat)
+        rings.position.copy(n.worldPos)
+        rings.quaternion.copy(n.worldQuat)
       }
     }
   }
@@ -578,15 +678,29 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const joints = ctx.getKinematicJoints()
     const parentJoint = Object.values(joints).find(j => j.childLink === selectedLink) || null
-    const graph = ctx.getKinematicGraph()
-    const mountChildren = (graph[selectedLink]?.children ?? []).filter(c => isMountLinkName(c))
-    const mountRows = mountChildren.map(m => {
-      const occupied = isMountOccupied(m)
-      const occBy = occupied ? ((graph[m]?.children ?? [])[0] ?? 'unknown') : ''
+    // Find synthetic face nodes belonging to the currently selected link, plus any
+    // child links whose joint origins match those faces (= occupying components).
+    const nodesForLink = mountNodes.filter(n => n.parentLink === selectedLink)
+    const childJointsByOrigin = Object.values(joints).filter(j => j.parentLink === selectedLink && !isMountLinkName(j.childLink))
+    const mountRows = nodesForLink.map(n => {
+      const occupied = isMountOccupied(n.mountLink)
+      let occBy = ''
+      if (occupied) {
+        // Find the child joint whose pivot position is closest to this face
+        const parsed = ctx.getParsedRobot()
+        let bestDist = Infinity
+        for (const j of childJointsByOrigin) {
+          const childLg = parsed.linkGroups.get(j.childLink)
+          const pivot = childLg?.parent
+          if (!pivot) continue
+          const d = pivot.position.distanceTo(n.localPos)
+          if (d < bestDist) { bestDist = d; occBy = j.childLink }
+        }
+      }
       return `<div class="insp-row">
-        <span class="insp-key">${m.split('__mount__')[1] ?? 'mount'}</span>
+        <span class="insp-key">${n.nodeId}</span>
         <span class="insp-val">${occupied ? `occupied by ${occBy}` : 'free'}</span>
-        ${occupied ? `<button type="button" class="bi-action-btn" data-detach-mount="${m}" data-detach-child="${occBy}">Detach</button>` : ''}
+        ${occupied && occBy ? `<button type="button" class="bi-action-btn" data-detach-mount="${n.mountLink}" data-detach-child="${occBy}">Detach</button>` : ''}
       </div>`
     }).join('')
     inspTitle.textContent = selectedLink
@@ -597,7 +711,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       </div>
       <div class="bi-section">
         <div class="bi-section-title">Attachment Nodes</div>
-        ${mountChildren.length ? mountRows : '<div class="insp-empty">No mount nodes on this link</div>'}
+        ${nodesForLink.length ? mountRows : '<div class="insp-empty">No mount nodes on this link</div>'}
       </div>
       <div class="bi-section">
         <div class="bi-section-title">Parent Joint</div>
@@ -772,13 +886,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         rootDragWarned = true
       }
     }
-    nodesGroup.visible = Boolean(name)
-    if (name) rebuildMountNodes()
-    else {
+    if (name) {
+      rebuildMountNodes()
+    } else {
       ghostGroup.visible = false
       bestMountCandidate = null
       clearBestCandidateHighlight()
-      nodeRingsGroup.visible = false
+      rebuildMountNodes()
     }
     refreshBuildPanel()
     renderInspector()
@@ -971,9 +1085,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const xm = (bb[0] ?? 40) / 1000
     const ym = (bb[1] ?? 40) / 1000
     const zm = (bb[2] ?? 40) / 1000
-    const hx = xm / 2
-    const hy = ym / 2
-    const hz = zm / 2
 
     // Compute inertia (for physics — uses bounding primitive)
     let inertia: { ixx: number; iyy: number; izz: number }
@@ -1076,31 +1187,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       robot.appendChild(link)
       robot.appendChild(joint)
 
-      // ── Attachment nodes (mount-frame links + fixed joints) ─────────────────
-      const nodeDefs: AttachmentNodeDef[] = defaultFaceNodesForBoxDims(hx, hy, hz)
-      for (const nd of nodeDefs) {
-        const mountLinkName = makeMountLinkName(childName, nd.nodeId)
-
-        const mountLink = doc.createElement('link')
-        mountLink.setAttribute('name', mountLinkName)
-
-        const mountJoint = doc.createElement('joint')
-        mountJoint.setAttribute('name', `${mountLinkName}__joint`)
-        mountJoint.setAttribute('type', 'fixed')
-        const mp = doc.createElement('parent')
-        mp.setAttribute('link', childName)
-        const mc = doc.createElement('child')
-        mc.setAttribute('link', mountLinkName)
-        const mo = doc.createElement('origin')
-        mo.setAttribute('xyz', nd.origin_xyz.map(v => v.toFixed(6)).join(' '))
-        mo.setAttribute('rpy', nd.origin_rpy.map(v => v.toFixed(6)).join(' '))
-        mountJoint.appendChild(mp)
-        mountJoint.appendChild(mc)
-        mountJoint.appendChild(mo)
-
-        robot.appendChild(mountLink)
-        robot.appendChild(mountJoint)
-      }
+      // Attachment face nodes are synthesized on-the-fly from link bounding boxes
+      // during rebuildMountNodes(); no persisted mount-frame links are needed here.
       return true
     })
 
@@ -1310,11 +1398,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         pivot.updateMatrixWorld(true)
         gizmoBasePivotWorld.copy(pivot.matrixWorld)
         rebuildMountNodes()
+        nodesGroup.visible = true
         updateBestCandidateDuringDrag(pivot)
       }
       return
     }
     if (!on && selectedLink) {
+      // Drag ended — hide all connection nodes regardless of snap outcome.
+      nodesGroup.visible = false
       const parentJoint = getParentJointForLink(selectedLink)
       const pivot = getPivotGroupForLink(selectedLink)
       if (!parentJoint || !pivot) {
@@ -1326,9 +1417,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         return
       }
 
-      // If we had a valid snap candidate, commit as a fixed joint reparent onto the mount link.
+      // If we had a valid snap candidate, commit as a fixed joint reparent onto the target link.
       if (bestMountCandidate?.mountLink && bestMountCandidate.reason === 'ok') {
         const targetMount = bestMountCandidate.mountLink
+        const targetParent = bestMountCandidate.targetParentLink
         const targetOccupied = isMountOccupied(targetMount)
         if (targetOccupied) {
           ctx.showToast('Snap target is occupied', 'warning')
@@ -1345,7 +1437,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         let cycle = false
         while (stack.length) {
           const cur = stack.pop()!
-          if (cur === targetMount) { cycle = true; break }
+          if (cur === targetParent) { cycle = true; break }
           if (seen.has(cur)) continue
           seen.add(cur)
           for (const ch of graph[cur]?.children ?? []) stack.push(ch)
@@ -1360,8 +1452,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         }
 
         pivot.updateMatrixWorld(true)
-        const mountGroup = ctx.getParsedRobot().linkGroups.get(targetMount)
-        if (!mountGroup) {
+        const parentLinkGroup = ctx.getParsedRobot().linkGroups.get(targetParent)
+        if (!parentLinkGroup) {
           ctx.showToast('Snap target not found in scene', 'warning')
           bestMountCandidate = null
           ghostGroup.visible = false
@@ -1369,13 +1461,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           selectLink(selectedLink)
           return
         }
-        mountGroup.updateMatrixWorld(true)
-        const mountWorldInv = mountGroup.matrixWorld.clone().invert()
-        // Compute selected-link frame pose in target mount frame from solved preview transform.
-        const childLocalInMount = mountWorldInv.multiply(bestMountCandidate.desiredLinkWorld.clone())
-        const newLocalPos = new THREE.Vector3().setFromMatrixPosition(childLocalInMount)
+        parentLinkGroup.updateMatrixWorld(true)
+        const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
+        // Compute selected-link frame pose in target parent frame from solved preview transform.
+        const childLocalInParent = parentWorldInv.multiply(bestMountCandidate.desiredLinkWorld.clone())
+        const newLocalPos = new THREE.Vector3().setFromMatrixPosition(childLocalInParent)
         const newLocalQuat = new THREE.Quaternion()
-        childLocalInMount.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
+        childLocalInParent.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
         const newLocalEuler = new THREE.Euler().setFromQuaternion(newLocalQuat, 'XYZ')
 
         const ok = commitUrdf(documentXml => {
@@ -1384,7 +1476,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           jointEl.setAttribute('type', 'fixed')
           const pEl = jointEl.querySelector('parent')
           if (!pEl) return false
-          pEl.setAttribute('link', targetMount)
+          pEl.setAttribute('link', targetParent)
           const origin = ensureOrigin(jointEl, documentXml)
           origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
           origin.setAttribute('rpy', `${fmt(newLocalEuler.x)} ${fmt(newLocalEuler.y)} ${fmt(newLocalEuler.z)}`)
@@ -1393,7 +1485,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         bestMountCandidate = null
         ghostGroup.visible = false
         clearBestCandidateHighlight()
-        if (ok) ctx.showToast(`Connected ${selectedLink} to ${targetMount}`, 'success')
+        if (ok) ctx.showToast(`Connected ${selectedLink} to ${targetParent}`, 'success')
         selectLink(selectedLink)
         return
       }

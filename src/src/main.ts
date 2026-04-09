@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
 import { applyRichVisuals } from './richVisuals'
+import { SAMPLE_URDF } from './sampleUrdf'
 
 const stlLoader = new STLLoader()
 
@@ -39,123 +40,6 @@ function waitForTauri(timeoutMs = 5000): Promise<void> {
     }, 50)
   })
 }
-
-// ── Sample URDF ──────────────────────────────────────────────────────────────
-
-const SAMPLE_URDF = `<?xml version="1.0"?>
-<robot name="vector_component_demo">
-  <!-- Default startup model built from current preset component IDs -->
-
-  <link name="structural_baseplate_1">
-    <inertial>
-      <mass value="1.2000"/>
-      <inertia ixx="0.020000" ixy="0" ixz="0" iyy="0.020000" iyz="0" izz="0.040000"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.300000 0.300000 0.012000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.300000 0.300000 0.012000"/></geometry>
-    </collision>
-  </link>
-
-  <link name="actuator_servo_high_torque_2">
-    <inertial>
-      <mass value="0.1650"/>
-      <inertia ixx="0.000033" ixy="0" ixz="0" iyy="0.000040" iyz="0" izz="0.000046"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.046500 0.036000 0.034000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.046500 0.036000 0.034000"/></geometry>
-    </collision>
-  </link>
-
-  <joint name="joint_actuator_servo_high_torque_2" type="revolute">
-    <parent link="structural_baseplate_1"/>
-    <child link="actuator_servo_high_torque_2"/>
-    <origin xyz="0 0 0.025" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
-  </joint>
-
-  <link name="structural_extrusion_2020_3">
-    <inertial>
-      <mass value="0.2100"/>
-      <inertia ixx="0.001900" ixy="0" ixz="0" iyy="0.001900" iyz="0" izz="0.000030"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.300000 0.020000 0.020000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.300000 0.020000 0.020000"/></geometry>
-    </collision>
-  </link>
-
-  <joint name="joint_structural_extrusion_2020_3" type="fixed">
-    <parent link="actuator_servo_high_torque_2"/>
-    <child link="structural_extrusion_2020_3"/>
-    <origin xyz="0.170 0 0" rpy="0 0 0"/>
-  </joint>
-
-  <link name="sensor_depth_camera_small_4">
-    <inertial>
-      <mass value="0.0720"/>
-      <inertia ixx="0.000020" ixy="0" ixz="0" iyy="0.000020" iyz="0" izz="0.000010"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.090000 0.025000 0.025000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.090000 0.025000 0.025000"/></geometry>
-    </collision>
-  </link>
-
-  <joint name="joint_sensor_depth_camera_small_4" type="fixed">
-    <parent link="structural_extrusion_2020_3"/>
-    <child link="sensor_depth_camera_small_4"/>
-    <origin xyz="0.160 0 0" rpy="0 0 0"/>
-  </joint>
-
-  <link name="compute_sbc_small_5">
-    <inertial>
-      <mass value="0.0460"/>
-      <inertia ixx="0.000006" ixy="0" ixz="0" iyy="0.000010" iyz="0" izz="0.000012"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.085000 0.056000 0.017000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.085000 0.056000 0.017000"/></geometry>
-    </collision>
-  </link>
-
-  <joint name="joint_compute_sbc_small_5" type="fixed">
-    <parent link="structural_baseplate_1"/>
-    <child link="compute_sbc_small_5"/>
-    <origin xyz="-0.060 0 0.020" rpy="0 0 0"/>
-  </joint>
-
-  <link name="power_lipo_3s_2200_6">
-    <inertial>
-      <mass value="0.1900"/>
-      <inertia ixx="0.000070" ixy="0" ixz="0" iyy="0.000180" iyz="0" izz="0.000210"/>
-    </inertial>
-    <visual>
-      <geometry><box size="0.105000 0.034000 0.025000"/></geometry>
-    </visual>
-    <collision>
-      <geometry><box size="0.105000 0.034000 0.025000"/></geometry>
-    </collision>
-  </link>
-
-  <joint name="joint_power_lipo_3s_2200_6" type="fixed">
-    <parent link="structural_baseplate_1"/>
-    <child link="power_lipo_3s_2200_6"/>
-    <origin xyz="0.060 0 0.020" rpy="0 0 0"/>
-  </joint>
-</robot>`
 
 // ── Monaco Editor ────────────────────────────────────────────────────────────
 
@@ -303,9 +187,15 @@ async function loadMeshFile(
       resolvedPath = `${dir}/${resolvedPath}`
     }
 
-    // Read binary file via Tauri IPC
-    const bytes = await invoke<number[]>('read_binary_file', { path: resolvedPath })
-    const buffer = new Uint8Array(bytes).buffer
+    let buffer: ArrayBuffer
+    if (/^https?:\/\//i.test(resolvedPath) || resolvedPath.startsWith('/')) {
+      const res = await fetch(resolvedPath)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      buffer = await res.arrayBuffer()
+    } else {
+      const bytes = await invoke<number[]>('read_binary_file', { path: resolvedPath })
+      buffer = new Uint8Array(bytes).buffer
+    }
 
     // Detect format from extension
     const ext = filename.split('.').pop()?.toLowerCase() || ''
