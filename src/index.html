@@ -48,7 +48,7 @@
             <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="5" r="2.5"/><circle cx="7" cy="19" r="2.5"/><circle cx="17" cy="12" r="2.5"/><line x1="7" y1="7.5" x2="7" y2="16.5"/><path d="M9.2 6.5 Q12 7 14.5 10" stroke-linecap="round"/></svg>
           </div>
           <div class="ab-spacer"></div>
-          <div class="ab-btn" data-panel="" title="Settings">
+          <div class="ab-btn" data-panel="settings" title="Settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           </div>
         </div>
@@ -89,7 +89,15 @@
             <div class="build-actions">
               <button type="button" class="ba-btn primary" id="btn-export-urdf">Save URDF Snapshot</button>
               <button type="button" class="ba-btn" id="btn-export-mjcf">Copy URDF to Editor</button>
+              <button type="button" class="ba-btn" id="btn-export-stl">Export Robot STL</button>
               <button type="button" class="ba-btn danger" id="btn-clear-assembly">Reset to Empty Robot</button>
+            </div>
+            <div class="build-checkpoints">
+              <div class="sp-title" style="padding-top:8px;border-top:1px solid var(--border)">Checkpoints</div>
+              <div style="padding:0 12px 8px">
+                <button type="button" class="ba-btn" id="btn-create-checkpoint" style="width:100%">Create Checkpoint</button>
+              </div>
+              <div id="checkpoints-list"></div>
             </div>
           </div>
 
@@ -176,6 +184,28 @@
             </div>
           </div>
 
+          <!-- Settings panel -->
+          <div class="sidebar-panel hidden" id="panel-settings">
+            <div class="sp-title">Settings</div>
+            <div class="settings-body">
+              <div class="settings-section">
+                <div class="settings-section-title">Appearance</div>
+                <div class="setting-row">
+                  <span class="setting-label">Theme</span>
+                  <select id="setting-theme" class="setting-select">
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                  </select>
+                </div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-section-title">Keyboard Shortcuts</div>
+                <div class="settings-hint">Click a shortcut to rebind it. Press Escape to cancel.</div>
+                <div id="shortcuts-list"></div>
+              </div>
+            </div>
+          </div>
+
         </div>
         <div id="sidebar-resize-handle"></div>
 
@@ -235,6 +265,10 @@
               </div>
             </div>
             <div id="viewport-chat" class="hidden">
+              <div id="vc-chat-header">
+                <select id="vc-chat-select" title="Switch conversation"></select>
+                <button id="vc-new-chat" title="New Chat">+ New</button>
+              </div>
               <div id="vc-messages"></div>
               <div id="vc-input-area">
                 <textarea id="vc-input" placeholder="Describe a change to your robot..." rows="2"></textarea>

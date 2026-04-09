@@ -1,10 +1,13 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { STLLoader } from 'three/addons/loaders/STLLoader.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
 import { applyRichVisuals } from './richVisuals'
+
+const stlLoader = new STLLoader()
 
 /** Raise the robot group so its lowest geometry point touches Y=0 (ground). */
 function groundRobot(robotGroup: THREE.Group) {
@@ -349,6 +352,132 @@ monaco.editor.defineTheme('vector-dark', {
   },
 })
 
+// Light theme for Monaco
+monaco.editor.defineTheme('vector-light', {
+  base: 'vs',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '008000', fontStyle: 'italic' },
+    { token: 'tag', foreground: '0000ff' },
+    { token: 'attribute.name', foreground: '0451a5' },
+    { token: 'attribute.value', foreground: 'a31515' },
+    { token: 'string', foreground: 'a31515' },
+    { token: 'number', foreground: '098658' },
+    { token: 'keyword', foreground: 'af00db' },
+    { token: 'type', foreground: '267f99' },
+    { token: 'delimiter', foreground: '333333' },
+    { token: 'delimiter.xml', foreground: '333333' },
+    { token: 'key', foreground: '0451a5' },
+    { token: 'metatag', foreground: '0000ff' },
+    { token: 'metatag.content.xml', foreground: 'a31515' },
+  ],
+  colors: {
+    'editor.background': '#ffffff',
+    'editor.foreground': '#333333',
+    'editorLineNumber.foreground': '#999999',
+    'editorLineNumber.activeForeground': '#333333',
+    'editor.selectionBackground': '#add6ff',
+    'editor.lineHighlightBackground': '#f5f5f5',
+    'editorCursor.foreground': '#333333',
+    'editorIndentGuide.background': '#d3d3d3',
+    'editorIndentGuide.activeBackground': '#939393',
+    'editorBracketMatch.background': '#add6ff80',
+    'editorBracketMatch.border': '#b9b9b9',
+    'scrollbarSlider.background': '#c1c1c166',
+    'scrollbarSlider.hoverBackground': '#9e9e9eb3',
+    'scrollbarSlider.activeBackground': '#bfbfbf66',
+    'minimap.background': '#ffffff',
+    'editorOverviewRuler.border': '#d4d4d4',
+    'editor.lineHighlightBorder': '#eeeeee',
+    'editorGutter.background': '#ffffff',
+    'editorWidget.background': '#f3f3f3',
+    'editorWidget.border': '#c8c8c8',
+    'editorSuggestWidget.background': '#f3f3f3',
+    'editorSuggestWidget.border': '#c8c8c8',
+    'editorSuggestWidget.selectedBackground': '#cce5ff',
+  },
+})
+
+// ── Theme system ────────────────────────────────────────────────────────────
+
+function applyTheme(theme: 'dark' | 'light') {
+  document.documentElement.classList.toggle('theme-light', theme === 'light')
+  monaco.editor.setTheme(theme === 'dark' ? 'vector-dark' : 'vector-light')
+  localStorage.setItem('vector_theme', theme)
+  // Update the settings dropdown if it exists
+  const select = document.getElementById('setting-theme') as HTMLSelectElement | null
+  if (select) select.value = theme
+}
+
+// Apply saved theme on load
+const savedTheme = (localStorage.getItem('vector_theme') || 'dark') as 'dark' | 'light'
+if (savedTheme === 'light') applyTheme('light')
+
+// ── Mesh file loading (async) ────────────────────────────────────────────────
+
+async function loadMeshFile(
+  filename: string,
+  parent: THREE.Group,
+  placeholder: THREE.Mesh,
+  material: THREE.MeshStandardMaterial,
+  scaleAttr: string | null,
+) {
+  try {
+    // Resolve path: strip package:// prefix, handle relative paths
+    let resolvedPath = filename
+    if (resolvedPath.startsWith('package://')) {
+      resolvedPath = resolvedPath.replace('package://', '')
+    }
+    // If relative, try resolving from current file's directory
+    if (currentFilePath && !resolvedPath.match(/^[A-Z]:/i) && !resolvedPath.startsWith('/')) {
+      const dir = currentFilePath.replace(/[\\/][^\\/]+$/, '')
+      resolvedPath = `${dir}/${resolvedPath}`
+    }
+
+    // Read binary file via Tauri IPC
+    const bytes = await invoke<number[]>('read_binary_file', { path: resolvedPath })
+    const buffer = new Uint8Array(bytes).buffer
+
+    // Detect format from extension
+    const ext = filename.split('.').pop()?.toLowerCase() || ''
+    let geometry: THREE.BufferGeometry | null = null
+
+    if (ext === 'stl') {
+      geometry = stlLoader.parse(buffer)
+    }
+    // Add more loaders here as needed (OBJ, DAE, etc.)
+
+    if (!geometry) {
+      console.warn(`[mesh] Unsupported mesh format: ${ext} (${filename})`)
+      return
+    }
+
+    // Create mesh with the parsed geometry
+    const loadedMesh = new THREE.Mesh(geometry, material)
+    loadedMesh.castShadow = true
+    loadedMesh.receiveShadow = true
+
+    // Apply scale if specified
+    if (scaleAttr) {
+      const s = scaleAttr.split(/\s+/).map(parseFloat)
+      if (s.length >= 3) loadedMesh.scale.set(s[0], s[1], s[2])
+      else if (s.length === 1 && s[0]) loadedMesh.scale.setScalar(s[0])
+    }
+
+    // Copy userData from placeholder
+    Object.assign(loadedMesh.userData, placeholder.userData)
+
+    // Replace placeholder with loaded mesh
+    parent.remove(placeholder)
+    placeholder.geometry.dispose()
+    parent.add(loadedMesh)
+
+  } catch (err) {
+    console.warn(`[mesh] Failed to load ${filename}:`, err)
+    // Keep placeholder — don't crash
+  }
+}
+
 // Create Monaco models — start with just the sample URDF
 const monacoModels: Record<string, monaco.editor.ITextModel> = {
   'robot.urdf': monaco.editor.createModel(SAMPLE_URDF, 'xml'),
@@ -387,8 +516,129 @@ const monacoEditor = monaco.editor.create(monacoContainer, {
 
 // ── Inline AI Completions (Cursor-style Ghost Text) ──────────────────────────
 
-// Unique session ID for conversation history (persists for the lifetime of this window)
-const aiSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+// ── Chat History System ──────────────────────────────────────────────────────
+
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: number
+}
+
+interface ChatConversation {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: ChatMessage[]
+}
+
+const MAX_CHATS = 20
+let chatHistory: ChatConversation[] = JSON.parse(localStorage.getItem('vector_chats') || '[]')
+let currentChatId: string = ''
+let currentChatMessages: ChatMessage[] = []
+
+function generateChatId(): string {
+  return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function saveChatHistory() {
+  while (chatHistory.length > MAX_CHATS) chatHistory.shift()
+  localStorage.setItem('vector_chats', JSON.stringify(chatHistory))
+}
+
+function getCurrentChat(): ChatConversation | undefined {
+  return chatHistory.find(c => c.id === currentChatId)
+}
+
+function updateChatDropdown() {
+  const select = document.getElementById('vc-chat-select') as HTMLSelectElement | null
+  if (!select) return
+  select.innerHTML = ''
+  // Newest first
+  for (let i = chatHistory.length - 1; i >= 0; i--) {
+    const chat = chatHistory[i]
+    const opt = document.createElement('option')
+    opt.value = chat.id
+    opt.textContent = chat.title || 'Untitled'
+    if (chat.id === currentChatId) opt.selected = true
+    select.appendChild(opt)
+  }
+}
+
+function startNewChat() {
+  const id = generateChatId()
+  const chat: ChatConversation = {
+    id,
+    title: 'New Chat',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [],
+  }
+  chatHistory.push(chat)
+  currentChatId = id
+  currentChatMessages = chat.messages
+  saveChatHistory()
+  updateChatDropdown()
+
+  // Clear chat UI
+  const vcMsgs = document.getElementById('vc-messages')
+  if (vcMsgs) {
+    vcMsgs.innerHTML = `<div class="ai-msg system">
+      <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
+    </div>`
+  }
+}
+
+function loadChat(chatId: string) {
+  const chat = chatHistory.find(c => c.id === chatId)
+  if (!chat) return
+  currentChatId = chatId
+  currentChatMessages = chat.messages
+
+  // Rebuild chat UI from stored messages
+  const vcMsgs = document.getElementById('vc-messages')
+  if (!vcMsgs) return
+  vcMsgs.innerHTML = `<div class="ai-msg system">
+    <div class="ai-msg-content">Describe changes to your robot in natural language.</div>
+  </div>`
+  for (const msg of chat.messages) {
+    const el = document.createElement('div')
+    el.className = `ai-msg ${msg.role}`
+    el.innerHTML = `<div class="ai-msg-content">${msg.role === 'user' ? escapeHtml(msg.content) : msg.content}</div>`
+    vcMsgs.appendChild(el)
+  }
+  vcMsgs.scrollTop = vcMsgs.scrollHeight
+  updateChatDropdown()
+}
+
+function recordChatMessage(role: 'user' | 'assistant' | 'system', content: string) {
+  const msg: ChatMessage = { role, content, timestamp: Date.now() }
+  currentChatMessages.push(msg)
+
+  const chat = getCurrentChat()
+  if (chat) {
+    chat.updatedAt = Date.now()
+    // Auto-title from first user message
+    if (!chat.title || chat.title === 'New Chat') {
+      const firstUser = currentChatMessages.find(m => m.role === 'user')
+      if (firstUser) chat.title = firstUser.content.slice(0, 50)
+    }
+    saveChatHistory()
+    updateChatDropdown()
+  }
+}
+
+// Initialize: load most recent chat or create new one
+if (chatHistory.length > 0) {
+  const latest = chatHistory[chatHistory.length - 1]
+  currentChatId = latest.id
+  currentChatMessages = latest.messages
+} else {
+  startNewChat()
+}
+
+// Use currentChatId as the session ID for the AI backend
+const aiSessionId = currentChatId
 
 // State for managing completion requests
 let inlineCompletionSettings = {
@@ -1042,9 +1292,25 @@ function parseURDFToScene(urdfXml: string): ParsedRobot {
             const mesh = new THREE.Mesh(geom, mat)
             visualGroup.add(mesh)
           } else {
-            const placeholderGeom = new THREE.SphereGeometry(0.02, 16, 16)
-            const mesh = new THREE.Mesh(placeholderGeom, mat)
-            visualGroup.add(mesh)
+            // Check for mesh file reference
+            const meshEl = geomEl.querySelector('mesh')
+            if (meshEl) {
+              const filename = meshEl.getAttribute('filename') || ''
+              const scaleAttr = meshEl.getAttribute('scale')
+              // Show placeholder immediately, load mesh async
+              const placeholder = new THREE.Mesh(
+                new THREE.SphereGeometry(0.02, 16, 16),
+                (mat as THREE.Material).clone(),
+              )
+              placeholder.userData._meshFile = filename
+              visualGroup.add(placeholder)
+              // Async mesh loading
+              loadMeshFile(filename, visualGroup, placeholder, mat as THREE.MeshStandardMaterial, scaleAttr)
+            } else {
+              const placeholderGeom = new THREE.SphereGeometry(0.02, 16, 16)
+              const mesh = new THREE.Mesh(placeholderGeom, mat)
+              visualGroup.add(mesh)
+            }
           }
         }
       }
@@ -1785,7 +2051,7 @@ function clearHighlight() {
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
-let urdfAssemblyApi: { onModelUpdated(): void } | null = null
+let urdfAssemblyApi: { onModelUpdated(): void; recordUndoExternal(content: string): void } | null = null
 
 function reparseURDF() {
   try {
@@ -2997,6 +3263,7 @@ const panels: Record<string, HTMLElement> = {
   validation: document.getElementById('panel-validation')!,
   kinematic: document.getElementById('panel-kinematic')!,
   git: document.getElementById('panel-git')!,
+  settings: document.getElementById('panel-settings')!,
 }
 
 function openSidebarPanel(panel: string) {
@@ -3048,6 +3315,217 @@ document.querySelectorAll('.sb-header').forEach(header => {
     if (arrow) arrow.textContent = isHidden ? '\u25BE' : '\u25B8'
   })
 })
+
+// ── Checkpoints ─────────────────────────────────────────────────────────────
+
+interface Checkpoint {
+  id: string
+  name: string
+  timestamp: number
+  urdfContent: string
+  isAutomatic: boolean
+}
+
+const MAX_CHECKPOINTS = 50
+let checkpoints: Checkpoint[] = JSON.parse(localStorage.getItem('vector_checkpoints') || '[]')
+
+function saveCheckpoints() {
+  // Cap at MAX_CHECKPOINTS, evict oldest
+  while (checkpoints.length > MAX_CHECKPOINTS) checkpoints.shift()
+  localStorage.setItem('vector_checkpoints', JSON.stringify(checkpoints))
+}
+
+function createCheckpoint(name: string, urdfContent?: string, auto = false) {
+  const content = urdfContent || monacoEditor.getValue()
+  const cp: Checkpoint = {
+    id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    timestamp: Date.now(),
+    urdfContent: content,
+    isAutomatic: auto,
+  }
+  checkpoints.push(cp)
+  saveCheckpoints()
+  renderCheckpointsPanel()
+  if (!auto) showToast(`Checkpoint created: ${name}`, 'success')
+}
+
+function restoreCheckpoint(id: string) {
+  const cp = checkpoints.find(c => c.id === id)
+  if (!cp) return
+  // Push current state to undo before restoring
+  if (urdfAssemblyApi) urdfAssemblyApi.recordUndoExternal(monacoEditor.getValue())
+  monacoEditor.setValue(cp.urdfContent)
+  showToast(`Restored: ${cp.name}`, 'success')
+}
+
+function deleteCheckpoint(id: string) {
+  checkpoints = checkpoints.filter(c => c.id !== id)
+  saveCheckpoints()
+  renderCheckpointsPanel()
+}
+
+function renderCheckpointsPanel() {
+  const container = document.getElementById('checkpoints-list')
+  if (!container) return
+  container.innerHTML = ''
+
+  if (checkpoints.length === 0) {
+    container.innerHTML = '<div class="insp-empty" style="padding:12px">No checkpoints yet. They are created automatically before AI edits, or manually with the button above.</div>'
+    return
+  }
+
+  // Show newest first
+  for (let i = checkpoints.length - 1; i >= 0; i--) {
+    const cp = checkpoints[i]
+    const el = document.createElement('div')
+    el.className = 'checkpoint-item'
+    const time = new Date(cp.timestamp)
+    const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    el.innerHTML = `
+      <div class="cp-info">
+        <span class="cp-name">${cp.isAutomatic ? '&#9679; ' : ''}${cp.name}</span>
+        <span class="cp-time">${dateStr} ${timeStr}</span>
+      </div>
+      <div class="cp-actions">
+        <button class="cp-btn cp-restore" title="Restore">&#8634;</button>
+        <button class="cp-btn cp-delete" title="Delete">&times;</button>
+      </div>
+    `
+    el.querySelector('.cp-restore')!.addEventListener('click', () => restoreCheckpoint(cp.id))
+    el.querySelector('.cp-delete')!.addEventListener('click', () => deleteCheckpoint(cp.id))
+    container.appendChild(el)
+  }
+}
+
+// Wire checkpoint button
+const btnCreateCheckpoint = document.getElementById('btn-create-checkpoint')
+btnCreateCheckpoint?.addEventListener('click', () => {
+  createCheckpoint('Manual checkpoint')
+})
+
+// Initial render
+renderCheckpointsPanel()
+
+// ── Settings Panel ──────────────────────────────────────────────────────────
+
+// Theme switcher
+const settingTheme = document.getElementById('setting-theme') as HTMLSelectElement | null
+if (settingTheme) {
+  settingTheme.value = savedTheme
+  settingTheme.addEventListener('change', () => {
+    applyTheme(settingTheme.value as 'dark' | 'light')
+  })
+}
+
+// Keyboard shortcut definitions
+interface ShortcutDef {
+  id: string
+  label: string
+  defaultKey: string
+  context: string
+}
+
+const SHORTCUT_DEFS: ShortcutDef[] = [
+  { id: 'save', label: 'Save File', defaultKey: 'Ctrl+S', context: 'Global' },
+  { id: 'saveAs', label: 'Save As', defaultKey: 'Ctrl+Shift+S', context: 'Global' },
+  { id: 'openFile', label: 'Open File', defaultKey: 'Ctrl+O', context: 'Global' },
+  { id: 'gitPanel', label: 'Source Control', defaultKey: 'Ctrl+Shift+G', context: 'Global' },
+  { id: 'toggleAxes', label: 'Toggle Axes', defaultKey: 'A', context: 'Viewport' },
+  { id: 'toggleCom', label: 'Toggle Center of Mass', defaultKey: 'C', context: 'Viewport' },
+  { id: 'toggleWireframe', label: 'Toggle Wireframe', defaultKey: 'W', context: 'Viewport' },
+  { id: 'toggleGrid', label: 'Toggle Grid', defaultKey: 'G', context: 'Viewport' },
+  { id: 'toggleGraph', label: 'Toggle Node Graph', defaultKey: 'N', context: 'Viewport' },
+  { id: 'togglePreview', label: 'Toggle 3D Preview', defaultKey: 'P', context: 'Viewport' },
+  { id: 'undo', label: 'Undo', defaultKey: 'Ctrl+Z', context: 'Viewport' },
+  { id: 'redo', label: 'Redo', defaultKey: 'Ctrl+Y', context: 'Viewport' },
+  { id: 'inspector', label: 'Open Inspector', defaultKey: 'I', context: 'Viewport' },
+  { id: 'components', label: 'Open Components', defaultKey: 'T', context: 'Viewport' },
+  { id: 'gizmoToggle', label: 'Toggle Gizmo Mode', defaultKey: 'R', context: 'Viewport' },
+  { id: 'deleteLink', label: 'Delete Selected Link', defaultKey: 'Delete', context: 'Viewport' },
+  { id: 'aiChat', label: 'Focus AI Chat', defaultKey: 'Ctrl+L', context: 'Global' },
+]
+
+// Load custom keybindings from localStorage
+const customBindings: Record<string, string> = JSON.parse(localStorage.getItem('vector_shortcuts') || '{}')
+
+function getBinding(id: string): string {
+  return customBindings[id] || SHORTCUT_DEFS.find(s => s.id === id)?.defaultKey || ''
+}
+
+function renderShortcutsList() {
+  const container = document.getElementById('shortcuts-list')
+  if (!container) return
+  container.innerHTML = ''
+
+  let currentContext = ''
+  for (const def of SHORTCUT_DEFS) {
+    if (def.context !== currentContext) {
+      currentContext = def.context
+      const header = document.createElement('div')
+      header.className = 'settings-section-title'
+      header.style.paddingTop = '12px'
+      header.textContent = currentContext
+      container.appendChild(header)
+    }
+
+    const row = document.createElement('div')
+    row.className = 'shortcut-item'
+
+    const label = document.createElement('span')
+    label.className = 'shortcut-label'
+    label.textContent = def.label
+
+    const key = document.createElement('span')
+    key.className = 'shortcut-key'
+    key.textContent = getBinding(def.id)
+    key.title = 'Click to rebind'
+
+    key.addEventListener('click', () => {
+      if (key.classList.contains('recording')) return
+      key.classList.add('recording')
+      key.textContent = 'Press keys...'
+
+      const handler = (ev: KeyboardEvent) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+
+        if (ev.key === 'Escape') {
+          key.classList.remove('recording')
+          key.textContent = getBinding(def.id)
+          document.removeEventListener('keydown', handler, true)
+          return
+        }
+
+        // Build key combo string
+        const parts: string[] = []
+        if (ev.ctrlKey || ev.metaKey) parts.push('Ctrl')
+        if (ev.shiftKey) parts.push('Shift')
+        if (ev.altKey) parts.push('Alt')
+        const k = ev.key.length === 1 ? ev.key.toUpperCase() : ev.key
+        if (!['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) parts.push(k)
+
+        const combo = parts.join('+')
+        customBindings[def.id] = combo
+        localStorage.setItem('vector_shortcuts', JSON.stringify(customBindings))
+
+        key.classList.remove('recording')
+        key.textContent = combo
+        document.removeEventListener('keydown', handler, true)
+        showToast(`${def.label} rebound to ${combo}`, 'success')
+      }
+
+      document.addEventListener('keydown', handler, true)
+    })
+
+    row.appendChild(label)
+    row.appendChild(key)
+    container.appendChild(row)
+  }
+}
+
+renderShortcutsList()
 
 
 // ── File I/O Buttons ─────────────────────────────────────────────────────────
@@ -3152,10 +3630,27 @@ const viewportTabs = document.querySelectorAll('.vp-tab')
 // @ts-ignore — read by external debug tools
 let activeViewportView: '3d' | 'chat' = '3d'
 
-// Add initial system message to viewport chat
-vcMessages.innerHTML = `<div class="ai-msg system">
-  <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
-</div>`
+// Initialize chat UI from stored history or show default message
+if (currentChatMessages.length > 0) {
+  loadChat(currentChatId)
+} else {
+  vcMessages.innerHTML = `<div class="ai-msg system">
+    <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
+  </div>`
+}
+updateChatDropdown()
+
+// Wire chat header controls
+const vcChatSelect = document.getElementById('vc-chat-select') as HTMLSelectElement | null
+const vcNewChatBtn = document.getElementById('vc-new-chat') as HTMLButtonElement | null
+
+vcChatSelect?.addEventListener('change', () => {
+  if (vcChatSelect.value && vcChatSelect.value !== currentChatId) {
+    loadChat(vcChatSelect.value)
+  }
+})
+
+vcNewChatBtn?.addEventListener('click', () => startNewChat())
 
 function switchViewportView(view: '3d' | 'chat') {
   activeViewportView = view
@@ -3186,6 +3681,10 @@ function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, ex
   diff?: { added: string[], removed: string[] },
   newUrdf?: string,
 }) {
+  // Persist to chat history (strip HTML tags for storage)
+  const plainContent = content.replace(/<[^>]*>/g, '').trim()
+  if (plainContent) recordChatMessage(role, plainContent)
+
   const msg = document.createElement('div')
   msg.className = `ai-msg ${role}`
 
@@ -3363,6 +3862,17 @@ function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
 
 function acceptInlineDiff() {
   const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+
+  // Push pre-AI state to undo stack so Ctrl+Z works after accepting
+  if (pendingOldText && urdfAssemblyApi) {
+    urdfAssemblyApi.recordUndoExternal(pendingOldText)
+  }
+
+  // Auto-create checkpoint before AI edit
+  if (pendingOldText) {
+    createCheckpoint('Before AI edit', pendingOldText, true)
+  }
+
   clearInlineDiff()
   pendingOldText = null
   showToast('Changes accepted', 'success')
@@ -3457,7 +3967,7 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
       prompt: prompt,
       urdfContent: currentUrdf,
       kinematicContext: kinematicContext,
-      sessionId: aiSessionId,
+      sessionId: currentChatId,
     }) as { explanation: string; new_urdf: string; stats: string }
 
     thinking.remove()
