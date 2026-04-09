@@ -67,11 +67,12 @@ except ImportError as e:
 
 # Lazy import AI client — anthropic may not be installed
 _generate_edit = None
+_generate_edit_streaming = None
 _generate_completion = None
 _ai_import_error = None
 
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_completion as _generate_completion
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -363,17 +364,20 @@ class JSONRPCServer:
         except Exception as e:
             raise ValueError(f"Failed to render frame: {e}")
 
+    def _emit_progress(self, stage: str, text: str) -> None:
+        """Emit a JSON-RPC notification for AI progress (no id = notification)."""
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "ai_progress",
+            "params": {"stage": stage, "text": text}
+        }
+        sys.stdout.write(json.dumps(notification, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
     def handle_ai_edit(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Use Claude AI to generate a robot model edit from natural language.
-
-        Params:
-            prompt (str): User's natural language edit request.
-            urdf_content (str): Current URDF XML as string.
-            kinematic_context (str, optional): Structured text summary of robot structure from frontend.
-
-        Returns:
-            Dict with "explanation", "new_urdf", and "stats".
+        Uses streaming API with progress notifications when available.
         """
         if _generate_edit is None:
             raise ValueError(
@@ -395,8 +399,6 @@ class JSONRPCServer:
             raise ValueError("Parameter 'urdf_content' must be a string")
 
         try:
-            # Try to parse URDF to get kinematic graph for extra context
-            # But don't fail if parsing doesn't work — Claude can work with raw XML
             kg_json = {}
             try:
                 if _parse_urdf_string is not None:
@@ -405,8 +407,17 @@ class JSONRPCServer:
             except Exception as parse_err:
                 print(f"[ai_edit] URDF pre-parse skipped: {parse_err}", file=sys.stderr)
 
-            # Call Claude to generate edit with conversation history
-            result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context, session_id)
+            # Use streaming if available, fallback to non-streaming
+            if _generate_edit_streaming is not None:
+                result = _generate_edit_streaming(
+                    prompt, urdf_content, kg_json, kinematic_context, session_id,
+                    on_progress=self._emit_progress,
+                )
+            else:
+                self._emit_progress("thinking", "Processing request...")
+                result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context, session_id)
+
+            self._emit_progress("done", "Complete")
 
             return {
                 "explanation": result.get("explanation", "Edit applied"),

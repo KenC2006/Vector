@@ -2,7 +2,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Child, Stdio};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{State, Emitter, AppHandle};
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
 
@@ -163,6 +163,81 @@ impl CoreProcess {
             Err(format!("Python error: {}", error))
         } else {
             Err("Invalid response format".to_string())
+        }
+    }
+
+    /// Send a JSON-RPC request, forwarding any notification lines as Tauri events.
+    /// Notifications are JSON lines with "method" but no "id" field.
+    fn send_rpc_streaming(&mut self, method: &str, params: serde_json::Value, id: u32, app: &AppHandle) -> Result<serde_json::Value, String> {
+        if !self.is_alive() {
+            return Err("Python core process has exited unexpectedly".to_string());
+        }
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": id
+        });
+
+        self.stdin
+            .write_all(request.to_string().as_bytes())
+            .map_err(|e| format!("Failed to write to Python process: {}", e))?;
+        self.stdin
+            .write_all(b"\n")
+            .map_err(|e| format!("Failed to write newline: {}", e))?;
+        self.stdin
+            .flush()
+            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+        // Read lines until we get the final response (has "id" or "result"/"error")
+        let mut attempts = 0;
+        loop {
+            let mut line = String::new();
+            self.stdout
+                .read_line(&mut line)
+                .map_err(|e| format!("Failed to read response: {}", e))?;
+
+            if line.is_empty() {
+                return Err("No response from Python process (process may have crashed)".to_string());
+            }
+
+            let trimmed = line.trim();
+            if !trimmed.starts_with('{') {
+                eprintln!("[send_rpc_streaming] Skipping non-JSON: {}", trimmed);
+                attempts += 1;
+                if attempts > 100 { return Err("Too many non-JSON lines".to_string()); }
+                continue;
+            }
+
+            // Parse the JSON
+            let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[send_rpc_streaming] Bad JSON: {} — {}", e, trimmed);
+                    attempts += 1;
+                    if attempts > 100 { return Err("Too many bad JSON lines".to_string()); }
+                    continue;
+                }
+            };
+
+            // Check if this is a notification (has "method" but no "id")
+            if parsed.get("method").is_some() && parsed.get("id").is_none() {
+                // Forward as Tauri event
+                let method_name = parsed["method"].as_str().unwrap_or("unknown");
+                let params = parsed.get("params").cloned().unwrap_or(json!({}));
+                let _ = app.emit(method_name, params);
+                continue;
+            }
+
+            // This is the final response
+            if let Some(result) = parsed.get("result") {
+                return Ok(result.clone());
+            } else if let Some(error) = parsed.get("error") {
+                return Err(format!("Python error: {}", error));
+            } else {
+                return Err("Invalid response format".to_string());
+            }
         }
     }
 }
@@ -326,17 +401,17 @@ async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Opti
 
 /// Use Claude AI to generate a robot model edit from natural language
 #[tauri::command]
-async fn ai_edit(state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>, session_id: Option<String>) -> Result<serde_json::Value, String> {
+async fn ai_edit(app: AppHandle, state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>, session_id: Option<String>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc("ai_edit", json!({
+    process.send_rpc_streaming("ai_edit", json!({
         "prompt": prompt,
         "urdf_content": urdf_content,
         "kinematic_context": kinematic_context,
         "session_id": session_id.unwrap_or_else(|| "default".to_string())
-    }), 1)
+    }), 1, &app)
 }
 
 /// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing

@@ -1009,6 +1009,16 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: #1e1e1e; }
   0%, 100% { opacity: 0.3; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1.2); }
 }
+.ai-streaming-preview {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 0 2px;
+  line-height: 1.5;
+  font-style: italic;
+}
+.ai-thinking-text {
+  transition: opacity 0.2s;
+}
 
 #ai-input-area {
   display: flex;

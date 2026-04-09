@@ -12,22 +12,7 @@
       <div id="titlebar">
         <span id="logo">VECTOR</span>
         <div id="tab-bar">
-          <div class="tab active" data-file="robot.urdf">
-            <svg class="tab-icon tab-icon-xml" viewBox="0 0 16 16"><path d="M1 3.5l3.5 4.5L1 12.5M6 12.5h4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="tab-label">robot.urdf</span>
-            <span class="tab-modified" title="Modified"></span>
-            <span class="tab-close" title="Close">&times;</span>
-          </div>
-          <div class="tab" data-file="presets.json">
-            <svg class="tab-icon tab-icon-json" viewBox="0 0 16 16"><path d="M4 2c-1.1 0-2 .9-2 2v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2M12 2c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-            <span class="tab-label">presets.json</span>
-            <span class="tab-close" title="Close">&times;</span>
-          </div>
-          <div class="tab" data-file="config.yaml">
-            <svg class="tab-icon tab-icon-yaml" viewBox="0 0 16 16"><path d="M2 3l3 5v5M14 3l-3 5v5M8 3v10" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-            <span class="tab-label">config.yaml</span>
-            <span class="tab-close" title="Close">&times;</span>
-          </div>
+          <!-- Tabs are rendered dynamically by main.ts -->
           <button class="tab-new" title="New file">+</button>
         </div>
         <div id="titlebar-right">
@@ -79,17 +64,10 @@
             </div>
             <div class="sb-section">
               <div class="sb-header" data-target="files-list">
-                <span class="arrow">&#9662;</span> simple_arm
+                <span class="arrow">&#9662;</span> Open Files
               </div>
               <div class="sb-list" id="files-list">
-                <div class="file-item active"><span class="fi-dot urdf"></span>robot.urdf</div>
-                <div class="file-item"><span class="fi-dot json"></span>presets.json</div>
-                <div class="file-item"><span class="fi-dot yaml"></span>config.yaml</div>
-                <div class="file-item folder"><span class="fi-arrow">&#9656;</span>meshes/</div>
-                <div class="file-item sub">base_link.stl</div>
-                <div class="file-item sub">link1.stl</div>
-                <div class="file-item sub">link2.stl</div>
-                <div class="file-item folder"><span class="fi-arrow">&#9656;</span>textures/</div>
+                <!-- Populated dynamically by main.ts -->
               </div>
             </div>
           </div>

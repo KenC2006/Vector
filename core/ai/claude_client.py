@@ -85,65 +85,73 @@ def _get_component_catalog() -> str:
         _COMPONENT_CATALOG = _build_component_catalog()
     return _COMPONENT_CATALOG
 
-SYSTEM_PROMPT = """You are a robot design assistant for Vector IDE. You receive:
+SYSTEM_PROMPT = """You are a robot design assistant for Vector IDE.
+
+CRITICAL: You must return ONLY valid JSON. No English text, no markdown, no code blocks. Just a JSON object.
+
+You receive:
 1. The current URDF XML of a robot
 2. The kinematic graph (links, joints, masses, geometries)
 3. A Robot Structure Summary (link names, joint types, kinematic chain)
 4. A natural language edit request from the user
 
-You have conversation memory — you can see prior edits and requests in this session.
-When the user refers to previous changes ("make it taller", "undo that", "the arm I just added"),
-use conversation history to understand what they mean.
+You have conversation memory for multi-turn context.
 
 ## Component Preset Library
 
-You have access to a library of validated robotic components. When the user asks to add a motor,
-sensor, gripper, battery, or any physical component, you MUST use values from this library rather
-than inventing arbitrary masses, dimensions, or specs. Use the component ID as the link name prefix
-(e.g., "actuator_servo_high_torque_4" for the 4th instance).
+When adding components, use values from this library (never invent masses/dimensions).
+Use the component ID as the link name prefix (e.g., "actuator_servo_high_torque_4").
 
-When adding a component as a URDF link:
-- Use the mass_kg from the preset for <mass value="..."/>
-- Compute inertia from the bounding_box_mm and inertia_primitive shape (box/cylinder/sphere)
-  using standard formulas: Box Ixx=m/12*(h²+d²), Cylinder Ixx=m/12*(3r²+h²), Sphere Ixx=2/5*m*r²
-- Use the bounding_box_mm (converted to meters) for the visual/collision geometry
-- Use the inertia_primitive as the geometry type (box/cylinder/sphere)
-- For actuators and motors, use joint type="revolute" with effort limit = max_torque_nm
-- For everything else, use joint type="fixed"
+Component rules:
+- mass_kg → <mass value="..."/>
+- bounding_box_mm (÷1000) → geometry size in meters
+- inertia_primitive → geometry type (box/cylinder/sphere)
+- Actuators/motors → joint type="revolute", effort = max_torque_nm
+- Everything else → joint type="fixed"
+- Inertia: Box Ixx=m/12*(h²+d²), Cylinder Ixx=m/12*(3r²+h²), Sphere Ixx=2/5*m*r²
 
 Available components:
 {COMPONENT_CATALOG}
 
-If the user asks for something not in the library, use the closest matching component and note
-the substitution in your explanation.
-
 ## Output Format
 
-You must return ONLY valid JSON (no markdown, no code blocks) with this structure:
+Return ONLY this JSON structure (no other text). You have TWO options:
+
+Option A — For modifications to existing URDF (adding/removing/changing parts):
 {
-    "explanation": "Human-readable description of changes made",
+    "explanation": "Human-readable description of changes",
     "edits": [
-        {"search": "exact text from current URDF to find", "replace": "replacement text"},
+        {"search": "exact text to find in URDF", "replace": "replacement text"},
         ...
     ],
-    "changes_summary": "Short stats like 'Modified 2 links, added 1 joint'"
+    "changes_summary": "Short stats"
 }
 
-Each edit in the "edits" array is a search-and-replace operation applied to the URDF:
-- "search" must be an EXACT substring of the current URDF (copy it verbatim, including whitespace and indentation)
+Option B — For creating a new robot from scratch or replacing the entire URDF:
+{
+    "explanation": "Human-readable description of the design",
+    "full_urdf": "<?xml version=\"1.0\"?>\n<robot name=\"...\">\n  ... complete URDF ...\n</robot>",
+    "changes_summary": "Short stats"
+}
+
+Use Option B when the user says "build me", "create", "design", or "make" a robot from scratch.
+Use Option A for incremental edits like "add a sensor", "change the arm length", etc.
+
+Edit rules (Option A only):
+- "search" must be an EXACT substring of the current URDF (verbatim, including whitespace)
 - "replace" is what replaces it
-- To DELETE something, set "replace" to ""
-- To INSERT new content, use a nearby line as "search" and include it plus the new content in "replace"
-- Edits are applied in order. Each "search" must match EXACTLY ONE location in the URDF at the time it is applied.
-- Keep edits minimal — only include the lines that actually change, plus enough surrounding context to be unique.
+- Edits are applied in order, each on the result of the previous
+- Keep edits minimal — only change what's needed
 
 Rules:
-- Only make the changes the user requested, preserve everything else exactly
-- ALWAYS use component preset values for physical properties — never hallucinate masses or dimensions
-- Maintain valid URDF XML structure with proper nesting
-- Keep all existing comments and formatting where possible
-- If adding new links, include proper inertial, visual, and collision elements
+- ALWAYS use component preset values for physical properties
+- Maintain valid URDF XML structure
 - Use SI units: meters, kilograms, radians
+- If adding links, include inertial, visual, and collision elements
+- Position robots so the ground contact points (feet, wheels, base) are at Z=0 and the body is ABOVE the ground. The grid plane is at Z=0 — nothing should be below it.
+- For legged robots: set joint origins so the legs are in a natural standing pose at rest (knees slightly bent, not straight). Use negative Z offsets from hip to knee to foot. The body should be at a realistic height above ground.
+
+REMINDER: Return ONLY JSON. No English preamble. Start your response with { and end with }.
 """
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
@@ -283,10 +291,10 @@ User Request: {prompt}"""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=4096,
+        max_tokens=16384,
         system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
         messages=messages,
-        timeout=120.0,
+        timeout=180.0,
     )
 
     # Parse the response
@@ -303,15 +311,121 @@ User Request: {prompt}"""
     # Try to extract JSON from the response (handle markdown code blocks)
     result = _parse_json_response(response_text)
 
-    # Apply search/replace edits to produce the new URDF
-    edits = result.get("edits", [])
-    new_urdf = _apply_edits(current_urdf, edits)
+    # Check if response uses full_urdf (Option B: complete replacement)
+    if "full_urdf" in result and result["full_urdf"]:
+        new_urdf = result["full_urdf"]
+        print(f"[ai_edit] Using full_urdf replacement ({len(new_urdf)} chars)", file=sys.stderr)
+    else:
+        # Apply search/replace edits (Option A: incremental)
+        edits = result.get("edits", [])
+        new_urdf = _apply_edits(current_urdf, edits)
 
     return {
         "explanation": result.get("explanation", "Changes applied"),
         "new_urdf": new_urdf,
         "stats": result.get("changes_summary", "Edit complete"),
     }
+
+
+def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json: dict,
+                             kinematic_context: str = None, session_id: str = "default",
+                             on_progress=None) -> dict:
+    """
+    Streaming version of generate_edit. Calls on_progress(stage, text) as tokens arrive.
+    Stages: "thinking", "generating", "applying"
+    """
+    client = _get_client()
+
+    user_message = f"""Current URDF:
+```xml
+{current_urdf}
+```
+
+Kinematic Graph:
+```json
+{json.dumps(kinematic_graph_json, indent=2)}
+```"""
+
+    if kinematic_context:
+        user_message += f"""
+
+Robot Structure Summary:
+{kinematic_context}"""
+
+    user_message += f"""
+
+User Request: {prompt}"""
+
+    history = _conversation_history[session_id]
+    messages = list(history) + [{"role": "user", "content": user_message}]
+
+    if on_progress:
+        on_progress("thinking", "Analyzing model...")
+
+    # Use streaming API
+    accumulated_text = ""
+    try:
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=16384,
+            system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
+            messages=messages,
+        ) as stream:
+            token_count = 0
+            sent_generating = False
+            for text in stream.text_stream:
+                accumulated_text += text
+                token_count += 1
+
+                if not sent_generating and token_count > 2:
+                    if on_progress:
+                        on_progress("generating", "Generating design...")
+                    sent_generating = True
+
+                # Stream partial explanation every ~8 tokens for smooth updates
+                if on_progress and token_count % 8 == 0:
+                    partial = _extract_partial_explanation(accumulated_text)
+                    if partial:
+                        on_progress("streaming", partial)
+
+    except Exception as e:
+        raise ValueError(f"Streaming API call failed: {e}")
+
+    response_text = accumulated_text
+
+    if on_progress:
+        on_progress("applying", "Applying changes...")
+
+    # Store conversation history
+    history.append({"role": "user", "content": f"[Edit request] {prompt}"})
+    history.append({"role": "assistant", "content": response_text})
+    while len(history) > _MAX_HISTORY_MESSAGES:
+        history.pop(0)
+
+    # Parse and apply
+    result = _parse_json_response(response_text)
+
+    if "full_urdf" in result and result["full_urdf"]:
+        new_urdf = result["full_urdf"]
+        print(f"[ai_edit] Using full_urdf replacement ({len(new_urdf)} chars)", file=sys.stderr)
+    else:
+        edits = result.get("edits", [])
+        new_urdf = _apply_edits(current_urdf, edits)
+
+    return {
+        "explanation": result.get("explanation", "Changes applied"),
+        "new_urdf": new_urdf,
+        "stats": result.get("changes_summary", "Edit complete"),
+    }
+
+
+def _extract_partial_explanation(text: str) -> str:
+    """Try to extract the explanation field from partial JSON for live preview."""
+    # Look for "explanation": "..." pattern
+    match = re.search(r'"explanation"\s*:\s*"((?:[^"\\]|\\.)*)', text)
+    if match:
+        return match.group(1).replace('\\"', '"').replace('\\n', ' ')
+    return ""
 
 
 def clear_conversation(session_id: str = "default") -> None:
