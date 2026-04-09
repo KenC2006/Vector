@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
+import { defaultFaceNodesForBoxDims, makeMountLinkName, isMountLinkName, parseMountLinkName, type AttachmentNodeDef } from './attachmentNodes'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -105,6 +106,314 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   let urdfRedo: string[] = []
   let rootDragWarned = false
 
+  // ── Attachment nodes (mount-frame links) ────────────────────────────────────
+  const nodesGroup = new THREE.Group()
+  nodesGroup.name = 'attachment_nodes'
+  ctx.scene.add(nodesGroup)
+  const nodeRingsGroup = new THREE.Group()
+  nodeRingsGroup.name = 'attachment_node_rings'
+  ctx.scene.add(nodeRingsGroup)
+  const nodeMeshByMount = new Map<string, THREE.Mesh>()
+  const nodeRingsByMount = new Map<string, THREE.Group>()
+  let mountNodes: Array<{
+    mountLink: string
+    parentLink: string
+    nodeId: string
+    worldPos: THREE.Vector3
+    worldQuat: THREE.Quaternion
+  }> = []
+
+  const NODE_MAT_NEUTRAL = new THREE.MeshBasicMaterial({ color: 0x2f7bff, transparent: true, opacity: 0.95, depthTest: false })
+  const NODE_MAT_COMPAT = new THREE.MeshBasicMaterial({ color: 0x44b3ff, transparent: true, opacity: 1, depthTest: false })
+  const NODE_MAT_BEST = new THREE.MeshBasicMaterial({ color: 0x2dff8a, transparent: true, opacity: 1, depthTest: false })
+  const NODE_MAT_OCCUPIED = new THREE.MeshBasicMaterial({ color: 0xff5533, transparent: true, opacity: 0.95, depthTest: false })
+  const NODE_GEO = new THREE.BoxGeometry(0.012, 0.012, 0.012)
+  const SNAP_RADIUS_M = 0.05
+  const SNAP_ANGLE_RAD = Math.PI / 4
+
+  const ghostGroup = new THREE.Group()
+  ghostGroup.name = 'snap_ghost'
+  ghostGroup.visible = false
+  ctx.scene.add(ghostGroup)
+  const ghostBox = new THREE.Box3()
+  const ghostBoxHelper = new THREE.Box3Helper(ghostBox, 0x33ff99)
+  ghostBoxHelper.renderOrder = 999
+  ghostGroup.add(ghostBoxHelper)
+  let bestMountCandidate: {
+    mountLink: string
+    sourceMountLink: string
+    reason?: string
+    desiredLinkWorld: THREE.Matrix4
+  } | null = null
+
+  function updateGhostBoxAtTransform(linkGroup: THREE.Group, desiredLinkWorld: THREE.Matrix4) {
+    if (!selectedLink) return
+    linkGroup.updateMatrixWorld(true)
+
+    const box = new THREE.Box3().setFromObject(linkGroup)
+    if (!isFinite(box.min.x) || !isFinite(box.max.x)) return
+    const currentLinkWorld = linkGroup.matrixWorld.clone()
+    const delta = desiredLinkWorld.clone().multiply(currentLinkWorld.invert())
+    box.applyMatrix4(delta)
+
+    ghostBox.copy(box)
+    ghostBoxHelper.updateMatrixWorld(true)
+  }
+
+  function clearBestCandidateHighlight() {
+    for (const [mount, mesh] of nodeMeshByMount.entries()) {
+      mesh.material = isMountOccupied(mount) ? NODE_MAT_OCCUPIED : NODE_MAT_NEUTRAL
+    }
+  }
+
+  function setNodeMeshState(mountLink: string, state: 'neutral' | 'compatible' | 'best' | 'occupied') {
+    const mesh = nodeMeshByMount.get(mountLink)
+    if (!mesh) return
+    mesh.material = state === 'best' ? NODE_MAT_BEST
+      : state === 'compatible' ? NODE_MAT_COMPAT
+      : state === 'occupied' ? NODE_MAT_OCCUPIED
+      : NODE_MAT_NEUTRAL
+  }
+
+  function angleBetweenNodes(a: THREE.Quaternion, b: THREE.Quaternion): number {
+    return a.angleTo(b)
+  }
+
+  function nodeClassFromId(nodeId: string): 'mount_face' | 'generic' {
+    if (nodeId === 'top' || nodeId === 'bottom' || nodeId === 'x_plus' || nodeId === 'x_minus') return 'mount_face'
+    return 'generic'
+  }
+
+  function validateSnapTarget(
+    movingLink: string,
+    sourceNodeClass: 'mount_face' | 'generic',
+    sourceWorldPos: THREE.Vector3,
+    sourceWorldQuat: THREE.Quaternion,
+    target: { mountLink: string; parentLink: string; nodeId: string; worldPos: THREE.Vector3; worldQuat: THREE.Quaternion },
+  ): { ok: boolean; reason: string; dist: number } {
+    if (target.parentLink === movingLink) return { ok: false, reason: 'same-component', dist: Infinity }
+    if (isMountOccupied(target.mountLink)) return { ok: false, reason: 'occupied', dist: Infinity }
+    const dist = target.worldPos.distanceTo(sourceWorldPos)
+    if (dist > SNAP_RADIUS_M) return { ok: false, reason: 'too-far', dist }
+
+    // Topology: do not attach into own subtree.
+    const graph = ctx.getKinematicGraph()
+    const stack = [movingLink]
+    const seen = new Set<string>()
+    while (stack.length) {
+      const cur = stack.pop()!
+      if (cur === target.mountLink) return { ok: false, reason: 'cycle', dist }
+      if (seen.has(cur)) continue
+      seen.add(cur)
+      for (const ch of graph[cur]?.children ?? []) stack.push(ch)
+    }
+
+    // Type compatibility (v1): face nodes connect to face nodes; generic accepts generic.
+    const tClass = nodeClassFromId(target.nodeId)
+    const sClass = sourceNodeClass
+    if (!(sClass === tClass || tClass === 'generic')) {
+      return { ok: false, reason: 'type-mismatch', dist }
+    }
+
+    const ang = angleBetweenNodes(sourceWorldQuat, target.worldQuat)
+    if (ang > SNAP_ANGLE_RAD) return { ok: false, reason: 'orientation', dist }
+
+    return { ok: true, reason: 'ok', dist }
+  }
+
+  function getSourceNodesForSelected(): Array<{
+    mountLink: string
+    nodeId: string
+    worldPos: THREE.Vector3
+    worldQuat: THREE.Quaternion
+    localToSelected: THREE.Matrix4
+    cls: 'mount_face' | 'generic'
+  }> {
+    if (!selectedLink) return []
+    const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    if (!selectedGroup) return []
+    selectedGroup.updateMatrixWorld(true)
+    const selectedWorldInv = selectedGroup.matrixWorld.clone().invert()
+    const out: Array<{
+      mountLink: string
+      nodeId: string
+      worldPos: THREE.Vector3
+      worldQuat: THREE.Quaternion
+      localToSelected: THREE.Matrix4
+      cls: 'mount_face' | 'generic'
+    }> = []
+    for (const n of mountNodes) {
+      if (n.parentLink !== selectedLink) continue
+      const mountGroup = ctx.getParsedRobot().linkGroups.get(n.mountLink)
+      if (!mountGroup) continue
+      mountGroup.updateMatrixWorld(true)
+      const sourceWorldPos = new THREE.Vector3()
+      const sourceWorldQuat = new THREE.Quaternion()
+      const sourceWorldScale = new THREE.Vector3()
+      mountGroup.matrixWorld.decompose(sourceWorldPos, sourceWorldQuat, sourceWorldScale)
+      const localToSelected = selectedWorldInv.clone().multiply(mountGroup.matrixWorld.clone())
+      out.push({
+        mountLink: n.mountLink,
+        nodeId: n.nodeId,
+        worldPos: sourceWorldPos,
+        worldQuat: sourceWorldQuat,
+        localToSelected,
+        cls: nodeClassFromId(n.nodeId),
+      })
+    }
+    return out
+  }
+
+  function updateBestCandidateDuringDrag(_pivot: THREE.Group) {
+    refreshNodeWorldTransforms()
+    bestMountCandidate = null
+    if (mountNodes.length === 0) {
+      clearBestCandidateHighlight()
+      ghostGroup.visible = false
+      return
+    }
+    if (!selectedLink) return
+    const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    if (!selectedGroup) return
+    selectedGroup.updateMatrixWorld(true)
+    const sourceNodes = getSourceNodesForSelected()
+    if (sourceNodes.length === 0) {
+      ghostGroup.visible = false
+      clearBestCandidateHighlight()
+      return
+    }
+
+    // Choose closest valid source-target pair.
+    let best: {
+      mountLink: string
+      sourceMountLink: string
+      dist: number
+      reason: string
+      desiredLinkWorld: THREE.Matrix4
+    } | null = null
+    let firstFailureReason: string | null = null
+
+    for (const srcNode of sourceNodes) {
+      for (const target of mountNodes) {
+        if (target.parentLink === selectedLink) continue
+        const verdict = validateSnapTarget(selectedLink, srcNode.cls, srcNode.worldPos, srcNode.worldQuat, target)
+        if (!verdict.ok) {
+          if (!firstFailureReason) firstFailureReason = verdict.reason
+          continue
+        }
+        const sourceLocalInv = srcNode.localToSelected.clone().invert()
+        const targetWorld = new THREE.Matrix4().compose(target.worldPos, target.worldQuat, new THREE.Vector3(1, 1, 1))
+        const desiredLinkWorld = targetWorld.clone().multiply(sourceLocalInv)
+        if (!best || verdict.dist < best.dist) {
+          best = {
+            mountLink: target.mountLink,
+            sourceMountLink: srcNode.mountLink,
+            dist: verdict.dist,
+            reason: 'ok',
+            desiredLinkWorld,
+          }
+        }
+      }
+    }
+
+    clearBestCandidateHighlight()
+    nodesGroup.visible = true
+    for (const target of mountNodes) {
+      setNodeMeshState(target.mountLink, isMountOccupied(target.mountLink) ? 'occupied' : 'neutral')
+    }
+    for (const target of mountNodes) {
+      if (target.parentLink === selectedLink) continue
+      setNodeMeshState(target.mountLink, isMountOccupied(target.mountLink) ? 'occupied' : 'compatible')
+    }
+
+    if (!best || !Number.isFinite(best.dist) || !best.desiredLinkWorld) {
+      ghostGroup.visible = false
+      bestMountCandidate = firstFailureReason
+        ? { mountLink: '', sourceMountLink: '', reason: firstFailureReason, desiredLinkWorld: new THREE.Matrix4() }
+        : null
+      return
+    }
+    bestMountCandidate = {
+      mountLink: best.mountLink,
+      sourceMountLink: best.sourceMountLink,
+      reason: best.reason,
+      desiredLinkWorld: best.desiredLinkWorld,
+    }
+    setNodeMeshState(best.mountLink, 'best')
+
+    // Ghost preview: show subtree bounding box at solved snapped pose.
+    ghostGroup.visible = true
+    updateGhostBoxAtTransform(selectedGroup, best.desiredLinkWorld)
+  }
+
+  function isMountOccupied(mountLink: string): boolean {
+    const node = ctx.getKinematicGraph()[mountLink]
+    return (node?.children?.length ?? 0) > 0
+  }
+
+  function rebuildMountNodes() {
+    nodesGroup.clear()
+    nodeRingsGroup.clear()
+    nodeMeshByMount.clear()
+    nodeRingsByMount.clear()
+    mountNodes = []
+
+    const graph = ctx.getKinematicGraph()
+    const parsed = ctx.getParsedRobot()
+    for (const linkName of Object.keys(graph)) {
+      if (!isMountLinkName(linkName)) continue
+      const lg = parsed.linkGroups.get(linkName)
+      if (!lg) continue
+      lg.updateMatrixWorld(true)
+      const worldPos = new THREE.Vector3().setFromMatrixPosition(lg.matrixWorld)
+      const parsedMount = parseMountLinkName(linkName)
+      if (!parsedMount) continue
+      const worldQuat = new THREE.Quaternion()
+      lg.matrixWorld.decompose(new THREE.Vector3(), worldQuat, new THREE.Vector3())
+      mountNodes.push({ mountLink: linkName, parentLink: parsedMount.parentLink, nodeId: parsedMount.nodeId, worldPos, worldQuat })
+
+      const mesh = new THREE.Mesh(NODE_GEO, isMountOccupied(linkName) ? NODE_MAT_OCCUPIED : NODE_MAT_NEUTRAL)
+      mesh.position.copy(worldPos)
+      mesh.quaternion.copy(worldQuat)
+      mesh.renderOrder = 999
+      nodesGroup.add(mesh)
+      nodeMeshByMount.set(linkName, mesh)
+      const rings = makeNodeAxisRings()
+      rings.position.copy(worldPos)
+      rings.quaternion.copy(worldQuat)
+      nodeRingsGroup.add(rings)
+      nodeRingsByMount.set(linkName, rings)
+    }
+    nodesGroup.visible = Boolean(selectedLink)
+    applyNodeRingVisibility()
+  }
+
+  function refreshNodeWorldTransforms() {
+    const parsed = ctx.getParsedRobot()
+    for (const n of mountNodes) {
+      const lg = parsed.linkGroups.get(n.mountLink)
+      if (!lg) continue
+      lg.updateMatrixWorld(true)
+      const worldPos = new THREE.Vector3()
+      const worldQuat = new THREE.Quaternion()
+      const worldScale = new THREE.Vector3()
+      lg.matrixWorld.decompose(worldPos, worldQuat, worldScale)
+      n.worldPos.copy(worldPos)
+      n.worldQuat.copy(worldQuat)
+
+      const mesh = nodeMeshByMount.get(n.mountLink)
+      if (mesh) {
+        mesh.position.copy(worldPos)
+        mesh.quaternion.copy(worldQuat)
+      }
+      const rings = nodeRingsByMount.get(n.mountLink)
+      if (rings) {
+        rings.position.copy(worldPos)
+        rings.quaternion.copy(worldQuat)
+      }
+    }
+  }
+
   const buildTree = document.getElementById('build-tree') as HTMLDivElement | null
   const buildEmpty = document.getElementById('build-empty') as HTMLDivElement | null
   const bsParts = document.getElementById('bs-parts') as HTMLSpanElement | null
@@ -117,6 +426,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const btnSaveUrdf = document.getElementById('btn-export-urdf') as HTMLButtonElement | null
   const btnCopyUrdf = document.getElementById('btn-export-mjcf') as HTMLButtonElement | null
   const btnResetRobot = document.getElementById('btn-clear-assembly') as HTMLButtonElement | null
+  const btnToggleNodeRings = document.getElementById('toggle-node-rings') as HTMLButtonElement | null
+  let showNodeRings = false
+
+  function makeNodeAxisRings(): THREE.Group {
+    const rings = new THREE.Group()
+    const radius = 0.018
+    const tube = 0.0015
+    const ringGeo = new THREE.TorusGeometry(radius, tube, 8, 40)
+    const matX = new THREE.MeshBasicMaterial({ color: 0xff6666, transparent: true, opacity: 0.9, depthTest: false })
+    const matY = new THREE.MeshBasicMaterial({ color: 0x66ff66, transparent: true, opacity: 0.9, depthTest: false })
+    const matZ = new THREE.MeshBasicMaterial({ color: 0x66aaff, transparent: true, opacity: 0.9, depthTest: false })
+    const rx = new THREE.Mesh(ringGeo, matX)
+    rx.rotation.y = Math.PI / 2
+    const ry = new THREE.Mesh(ringGeo, matY)
+    ry.rotation.x = Math.PI / 2
+    const rz = new THREE.Mesh(ringGeo, matZ)
+    rings.add(rx, ry, rz)
+    rings.name = 'node-axis-rings'
+    rings.visible = showNodeRings
+    return rings
+  }
+
+  function applyNodeRingVisibility() {
+    nodeRingsGroup.visible = showNodeRings
+    btnToggleNodeRings?.classList.toggle('active', showNodeRings)
+  }
 
   function recordUndo() {
     urdfUndo.push(ctx.getUrdfText())
@@ -149,7 +484,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     ctx.getParsedRobot().group.traverse(o => {
       if (o instanceof THREE.Mesh) {
         const name = (o.userData as Record<string, unknown>).urdfLinkName
-        if (typeof name === 'string' && name) targets.push(o)
+        if (typeof name === 'string' && name && !isMountLinkName(name)) targets.push(o)
       }
     })
     return targets
@@ -181,7 +516,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!buildTree || !buildEmpty || !bsParts || !bsMass || !bsJoints) return
     const graph = ctx.getKinematicGraph()
     const joints = ctx.getKinematicJoints()
-    const links = Object.values(graph)
+    const links = Object.values(graph).filter(l => !isMountLinkName(l.name))
     const totalMass = links.reduce((sum, l) => sum + (l.mass || 0), 0)
     bsParts.textContent = String(links.length)
     bsMass.textContent = `${Math.round(totalMass * 1000)} g`
@@ -193,6 +528,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const roots = links.filter(l => !l.parent)
     const rows: Array<{ link: string; depth: number }> = []
     const walk = (name: string, depth: number) => {
+      if (isMountLinkName(name)) return
       rows.push({ link: name, depth })
       const node = graph[name]
       if (!node) return
@@ -240,11 +576,26 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const joints = ctx.getKinematicJoints()
     const parentJoint = Object.values(joints).find(j => j.childLink === selectedLink) || null
+    const graph = ctx.getKinematicGraph()
+    const mountChildren = (graph[selectedLink]?.children ?? []).filter(c => isMountLinkName(c))
+    const mountRows = mountChildren.map(m => {
+      const occupied = isMountOccupied(m)
+      const occBy = occupied ? ((graph[m]?.children ?? [])[0] ?? 'unknown') : ''
+      return `<div class="insp-row">
+        <span class="insp-key">${m.split('__mount__')[1] ?? 'mount'}</span>
+        <span class="insp-val">${occupied ? `occupied by ${occBy}` : 'free'}</span>
+        ${occupied ? `<button type="button" class="bi-action-btn" data-detach-mount="${m}" data-detach-child="${occBy}">Detach</button>` : ''}
+      </div>`
+    }).join('')
     inspTitle.textContent = selectedLink
     inspBody.innerHTML = `
       <div class="bi-section">
         <div class="bi-section-title">Link</div>
         <div class="insp-row"><span class="insp-key">Name</span><span class="insp-val">${selectedLink}</span></div>
+      </div>
+      <div class="bi-section">
+        <div class="bi-section-title">Attachment Nodes</div>
+        ${mountChildren.length ? mountRows : '<div class="insp-empty">No mount nodes on this link</div>'}
       </div>
       <div class="bi-section">
         <div class="bi-section-title">Parent Joint</div>
@@ -276,6 +627,30 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const linkToDelete = selectedLink
       deleteBtn.addEventListener('click', () => deleteLink(linkToDelete))
     }
+
+    // Wire up detach buttons
+    inspBody.querySelectorAll('button[data-detach-mount]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mount = (btn as HTMLElement).getAttribute('data-detach-mount') || ''
+        const child = (btn as HTMLElement).getAttribute('data-detach-child') || ''
+        if (!mount || !child) return
+        const childParentJoint = getParentJointForLink(child)
+        if (!childParentJoint) return
+        const ok = commitUrdf(documentXml => {
+          const jointEl = documentXml.querySelector(`joint[name="${childParentJoint.name}"]`)
+          if (!jointEl) return false
+          const pEl = jointEl.querySelector('parent')
+          if (!pEl) return false
+          // Reattach the detached child to the currently selected link at origin.
+          pEl.setAttribute('link', selectedLink!)
+          const origin = ensureOrigin(jointEl, documentXml)
+          origin.setAttribute('xyz', '0 0 0')
+          origin.setAttribute('rpy', origin.getAttribute('rpy') || '0 0 0')
+          return true
+        })
+        if (ok) ctx.showToast(`Detached ${child} from ${mount}`, 'success')
+      })
+    })
 
     if (!parentJoint) return
 
@@ -367,6 +742,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function selectLink(name: string | null) {
+    if (name && isMountLinkName(name)) {
+      selectedLink = null
+      gizmo.detach()
+      refreshBuildPanel()
+      renderInspector()
+      updateParentIndicator()
+      return
+    }
     selectedLink = name
     gizmo.detach()
     rootDragWarned = false
@@ -380,6 +763,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         ctx.showToast('Root movement disabled (no world joint yet)', 'warning')
         rootDragWarned = true
       }
+    }
+    nodesGroup.visible = Boolean(name)
+    if (name) rebuildMountNodes()
+    else {
+      ghostGroup.visible = false
+      bestMountCandidate = null
+      clearBestCandidateHighlight()
+      nodeRingsGroup.visible = false
     }
     refreshBuildPanel()
     renderInspector()
@@ -572,6 +963,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const xm = (bb[0] ?? 40) / 1000
     const ym = (bb[1] ?? 40) / 1000
     const zm = (bb[2] ?? 40) / 1000
+    const hx = xm / 2
+    const hy = ym / 2
+    const hz = zm / 2
 
     // Compute inertia (for physics — uses bounding primitive)
     let inertia: { ixx: number; iyy: number; izz: number }
@@ -673,6 +1067,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       robot.appendChild(link)
       robot.appendChild(joint)
+
+      // ── Attachment nodes (mount-frame links + fixed joints) ─────────────────
+      const nodeDefs: AttachmentNodeDef[] = defaultFaceNodesForBoxDims(hx, hy, hz)
+      for (const nd of nodeDefs) {
+        const mountLinkName = makeMountLinkName(childName, nd.nodeId)
+
+        const mountLink = doc.createElement('link')
+        mountLink.setAttribute('name', mountLinkName)
+
+        const mountJoint = doc.createElement('joint')
+        mountJoint.setAttribute('name', `${mountLinkName}__joint`)
+        mountJoint.setAttribute('type', 'fixed')
+        const mp = doc.createElement('parent')
+        mp.setAttribute('link', childName)
+        const mc = doc.createElement('child')
+        mc.setAttribute('link', mountLinkName)
+        const mo = doc.createElement('origin')
+        mo.setAttribute('xyz', nd.origin_xyz.map(v => v.toFixed(6)).join(' '))
+        mo.setAttribute('rpy', nd.origin_rpy.map(v => v.toFixed(6)).join(' '))
+        mountJoint.appendChild(mp)
+        mountJoint.appendChild(mc)
+        mountJoint.appendChild(mo)
+
+        robot.appendChild(mountLink)
+        robot.appendChild(mountJoint)
+      }
       return true
     })
 
@@ -834,6 +1254,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     selectLink('base_link')
     ctx.showToast('Robot reset', 'info')
   })
+  btnToggleNodeRings?.addEventListener('click', () => {
+    showNodeRings = !showNodeRings
+    applyNodeRingVisibility()
+    ctx.showToast(showNodeRings ? 'Node axis rings: on' : 'Node axis rings: off', 'info')
+  })
   toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
 
   gizmo.addEventListener('dragging-changed', ev => {
@@ -844,6 +1269,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (pivot) {
         pivot.updateMatrixWorld(true)
         gizmoBasePivotWorld.copy(pivot.matrixWorld)
+        rebuildMountNodes()
+        updateBestCandidateDuringDrag(pivot)
       }
       return
     }
@@ -858,6 +1285,90 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         selectLink(selectedLink)
         return
       }
+
+      // If we had a valid snap candidate, commit as a fixed joint reparent onto the mount link.
+      if (bestMountCandidate?.mountLink && bestMountCandidate.reason === 'ok') {
+        const targetMount = bestMountCandidate.mountLink
+        const targetOccupied = isMountOccupied(targetMount)
+        if (targetOccupied) {
+          ctx.showToast('Snap target is occupied', 'warning')
+          bestMountCandidate = null
+          ghostGroup.visible = false
+          clearBestCandidateHighlight()
+          selectLink(selectedLink)
+          return
+        }
+        const graph = ctx.getKinematicGraph()
+        // topology / cycle check: don't attach into own subtree
+        const stack = [selectedLink]
+        const seen = new Set<string>()
+        let cycle = false
+        while (stack.length) {
+          const cur = stack.pop()!
+          if (cur === targetMount) { cycle = true; break }
+          if (seen.has(cur)) continue
+          seen.add(cur)
+          for (const ch of graph[cur]?.children ?? []) stack.push(ch)
+        }
+        if (cycle) {
+          ctx.showToast('Invalid snap (would create cycle)', 'warning')
+          bestMountCandidate = null
+          ghostGroup.visible = false
+          clearBestCandidateHighlight()
+          selectLink(selectedLink)
+          return
+        }
+
+        pivot.updateMatrixWorld(true)
+        const mountGroup = ctx.getParsedRobot().linkGroups.get(targetMount)
+        if (!mountGroup) {
+          ctx.showToast('Snap target not found in scene', 'warning')
+          bestMountCandidate = null
+          ghostGroup.visible = false
+          clearBestCandidateHighlight()
+          selectLink(selectedLink)
+          return
+        }
+        mountGroup.updateMatrixWorld(true)
+        const mountWorldInv = mountGroup.matrixWorld.clone().invert()
+        // Compute selected-link frame pose in target mount frame from solved preview transform.
+        const childLocalInMount = mountWorldInv.multiply(bestMountCandidate.desiredLinkWorld.clone())
+        const newLocalPos = new THREE.Vector3().setFromMatrixPosition(childLocalInMount)
+        const newLocalQuat = new THREE.Quaternion()
+        childLocalInMount.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
+        const newLocalEuler = new THREE.Euler().setFromQuaternion(newLocalQuat, 'XYZ')
+
+        const ok = commitUrdf(documentXml => {
+          const jointEl = documentXml.querySelector(`joint[name="${parentJoint.name}"]`)
+          if (!jointEl) return false
+          jointEl.setAttribute('type', 'fixed')
+          const pEl = jointEl.querySelector('parent')
+          if (!pEl) return false
+          pEl.setAttribute('link', targetMount)
+          const origin = ensureOrigin(jointEl, documentXml)
+          origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
+          origin.setAttribute('rpy', `${fmt(newLocalEuler.x)} ${fmt(newLocalEuler.y)} ${fmt(newLocalEuler.z)}`)
+          return true
+        })
+        bestMountCandidate = null
+        ghostGroup.visible = false
+        clearBestCandidateHighlight()
+        if (ok) ctx.showToast(`Connected ${selectedLink} to ${targetMount}`, 'success')
+        selectLink(selectedLink)
+        return
+      }
+      if (bestMountCandidate?.reason && bestMountCandidate.reason !== 'ok') {
+        const reasonLabel = bestMountCandidate.reason === 'occupied' ? 'target occupied'
+          : bestMountCandidate.reason === 'cycle' ? 'would create cycle'
+          : bestMountCandidate.reason === 'too-far' ? 'too far'
+          : bestMountCandidate.reason === 'orientation' ? 'orientation mismatch'
+          : bestMountCandidate.reason === 'type-mismatch' ? 'incompatible node types'
+          : bestMountCandidate.reason === 'same-component' ? 'same component'
+          : bestMountCandidate.reason
+        ctx.showToast(`Snap rejected: ${reasonLabel}`, 'warning')
+      }
+      ghostGroup.visible = false
+      clearBestCandidateHighlight()
 
       if (gizmo.mode !== 'translate') {
         ctx.showToast('Rotate persistence is not enabled yet', 'info')
@@ -907,6 +1418,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (ok) ctx.showToast(`Moved ${selectedLink} (joint origin updated)`, 'success')
       selectLink(selectedLink)
     }
+  })
+
+  gizmo.addEventListener('change', () => {
+    if (!selectedLink) return
+    if (!ctx.isViewport3D()) return
+    const pivot = getPivotGroupForLink(selectedLink)
+    if (!pivot) return
+    updateBestCandidateDuringDrag(pivot)
   })
 
   ctx.canvas.addEventListener('pointerdown', e => {
@@ -992,6 +1511,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         }
       }
     }
+    ghostGroup.visible = false
+    bestMountCandidate = null
+    rebuildMountNodes()
     refreshBuildPanel()
     renderInspector()
   }
