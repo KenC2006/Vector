@@ -196,6 +196,12 @@ const MONACO_THEMES: Record<ThemeId, string> = {
   'tokyo-night': 'vector-tokyo-night',
 }
 
+const VIEWPORT_BG: Record<ThemeId, number> = {
+  'dark': 0x1a1a1a,
+  'night-owl': 0x011627,
+  'tokyo-night': 0x16161e,
+}
+
 function applyTheme(theme: ThemeId) {
   // Remove all theme classes
   document.documentElement.classList.remove('theme-night-owl', 'theme-tokyo-night')
@@ -207,6 +213,8 @@ function applyTheme(theme: ThemeId) {
   localStorage.setItem('vector_theme', theme)
   const select = document.getElementById('setting-theme') as HTMLSelectElement | null
   if (select) select.value = theme
+  // Update 3D viewport background to match theme
+  try { renderer.setClearColor(VIEWPORT_BG[theme] || 0x1a1a1a) } catch {}
 }
 
 // Apply saved theme on load
@@ -290,12 +298,12 @@ async function loadMeshFile(
   }
 }
 
-// Create Monaco models — start empty (no default file)
+// Create Monaco models — start empty
 const monacoModels: Record<string, monaco.editor.ITextModel> = {}
 
 // Create Monaco editor instance
 const monacoEditor = monaco.editor.create(monacoContainer, {
-  model: null,  // no file open initially
+  model: null,
   theme: 'vector-dark',
   fontSize: 13,
   fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
@@ -678,13 +686,14 @@ monacoEditor.onDidChangeModelContent(() => {
 
 // ── Tab & File Management ───────────────────────────────────────────────────
 
-let activeFile = 'robot.urdf'
+let activeFile = ''
 const fileTypeLabel = document.getElementById('file-type') as HTMLSpanElement
 const tabBar = document.getElementById('tab-bar') as HTMLDivElement
 const tabNewBtn = tabBar.querySelector('.tab-new') as HTMLButtonElement
 const filesList = document.getElementById('files-list') as HTMLDivElement | null
 
 // Track open files and their paths
+let openedFolderPath: string | null = null
 const openFiles: string[] = []
 const filePaths: Record<string, string | null> = {} // filename → disk path (null = unsaved)
 const viewStates: Record<string, monaco.editor.ICodeEditorViewState | null> = {}
@@ -784,8 +793,8 @@ function switchToFile(filename: string) {
   renderExplorer()
 
   // Update breadcrumb
-  const bcItems = document.querySelectorAll('.bc-item')
-  if (bcItems.length > 0) bcItems[bcItems.length - 1].textContent = filename
+  const bcFilename = document.getElementById('bc-filename')
+  if (bcFilename) bcFilename.textContent = filename
 
   // Update title
   const path = filePaths[filename]
@@ -842,9 +851,10 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
 function showWelcomeState() {
   activeFile = ''
   monacoEditor.setModel(null)
-  // Show welcome overlay
   const welcomeEl = document.getElementById('editor-welcome')
   if (welcomeEl) welcomeEl.style.display = 'flex'
+  const bcFilename = document.getElementById('bc-filename')
+  if (bcFilename) bcFilename.textContent = ''
   renderTabs()
   renderExplorer()
 }
@@ -933,7 +943,7 @@ const viewportPanel = document.getElementById('viewport-panel') as HTMLDivElemen
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.setClearColor(0x1a1a1a)
+renderer.setClearColor(VIEWPORT_BG[savedTheme] || 0x1a1a1a)
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -1827,7 +1837,10 @@ function buildKinematicGraphFromURDF(urdfXml: string): {
 // to send to Claude for better context-aware edits
 
 function buildKinematicContext(): string {
-  const robotName = 'simple_arm' // TODO: Extract from URDF
+  // Extract robot name from URDF
+  const urdf = monacoEditor.getModel()?.getValue() || ''
+  const nameMatch = urdf.match(/<robot\s+name="([^"]*)"/)
+  const robotName = nameMatch?.[1] || 'robot'
   const links = Object.values(kinematicGraph)
   const joints = Object.values(kinematicJoints)
 
@@ -3212,7 +3225,7 @@ function saveCheckpoints() {
 }
 
 function createCheckpoint(name: string, urdfContent?: string, auto = false) {
-  const content = urdfContent || monacoEditor.getValue()
+  const content = urdfContent || monacoEditor.getModel()?.getValue() || ''
   const cp: Checkpoint = {
     id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     name,
@@ -3230,7 +3243,7 @@ function restoreCheckpoint(id: string) {
   const cp = checkpoints.find(c => c.id === id)
   if (!cp) return
   // Push current state to undo before restoring
-  if (urdfAssemblyApi) urdfAssemblyApi.recordUndoExternal(monacoEditor.getValue())
+  if (urdfAssemblyApi && monacoEditor.getModel()) urdfAssemblyApi.recordUndoExternal(monacoEditor.getValue())
   monacoEditor.setValue(cp.urdfContent)
   showToast(`Restored: ${cp.name}`, 'success')
 }
@@ -3418,14 +3431,16 @@ if (btnSaveFile) {
 
 // ── Open Folder ─────────────────────────────────────────────────────────────
 
-let openedFolderPath: string | null = null
-
 async function openFolderDialog() {
   try {
     const folderPath = await invoke<string | null>('open_folder_dialog')
     if (!folderPath) return
 
     openedFolderPath = folderPath
+    // Update breadcrumb project name
+    const bcProject = document.getElementById('bc-project')
+    if (bcProject) bcProject.textContent = folderPath.split(/[\\/]/).pop() || 'Vector'
+
     const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>('list_directory', { path: folderPath })
 
     // Update explorer header
@@ -3872,6 +3887,11 @@ function clearInlineDiff() {
 async function sendVCMessage(prompt: string, retryCount = 0) {
   if (!prompt.trim()) return
 
+  // Auto-create a file if none is open
+  if (!monacoEditor.getModel()) {
+    createNewFile('robot.urdf', SAMPLE_URDF, null)
+  }
+
   if (retryCount === 0) {
     addVCMessage('user', prompt)
     vcInput.value = ''
@@ -3993,6 +4013,7 @@ async function openFileDialog() {
 
 async function saveCurrentFile() {
   try {
+    if (!monacoEditor.getModel()) return
     const content = monacoEditor.getValue()
     let path = filePaths[activeFile] || currentFilePath
 
@@ -4014,6 +4035,7 @@ async function saveCurrentFile() {
 
 async function saveFileAs() {
   try {
+    if (!monacoEditor.getModel()) return
     const content = monacoEditor.getValue()
     const path = await invoke<string | null>('save_file_dialog', { default_name: currentFilePath?.split(/[\\/]/).pop() || 'robot.urdf' })
     if (!path) return
@@ -4077,7 +4099,9 @@ async function initializeSimulation() {
 
     console.log('[Sim] Loading robot model...')
     try {
-      await invoke('sim_load', { path: 'core/test_data/simple_arm.urdf' })
+      // TODO: Load the active URDF file path instead of hardcoded test file
+      const simPath = currentFilePath || 'core/test_data/simple_arm.urdf'
+      await invoke('sim_load', { path: simPath })
       console.log('[Sim] Robot model loaded')
     } catch (loadErr) {
       console.warn('[Sim] Could not load model (sim features limited):', loadErr)
@@ -4309,8 +4333,8 @@ urdfAssemblyApi = initUrdfAssembly({
   controls,
   showToast,
   switchPanel: openSidebarPanel,
-  getUrdfText: () => monacoEditor.getValue(),
-  setUrdfText: (content: string) => monacoEditor.setValue(content),
+  getUrdfText: () => monacoEditor.getModel()?.getValue() || '',
+  setUrdfText: (content: string) => { if (monacoEditor.getModel()) monacoEditor.setValue(content) },
   reparseUrdf: reparseURDF,
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,

@@ -59,11 +59,11 @@
           <div class="sidebar-panel" id="panel-explorer">
             <div class="sp-title">Explorer</div>
             <div class="explorer-actions" style="display: flex; gap: 6px; margin-bottom: 8px; padding: 0 12px;">
-              <button id="btn-open-file" title="Open File (Ctrl+O)" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Open File</button>
-              <button id="btn-save-file" title="Save (Ctrl+S)" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Save</button>
+              <button id="btn-open-file" title="Open File (Ctrl+O)" class="explorer-btn">Open File</button>
+              <button id="btn-save-file" title="Save (Ctrl+S)" class="explorer-btn">Save</button>
             </div>
             <div class="explorer-actions" style="display: flex; gap: 6px; margin-bottom: 12px; padding: 0 12px;">
-              <button id="btn-open-folder" title="Open Folder" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Open Folder</button>
+              <button id="btn-open-folder" title="Open Folder" class="explorer-btn">Open Folder</button>
             </div>
             <div class="sb-section">
               <div class="sb-header" data-target="files-list">
@@ -215,9 +215,9 @@
         <div id="main">
           <div id="editor-panel">
             <div id="breadcrumbs">
-              <span class="bc-item">simple_arm</span>
+              <span class="bc-item" id="bc-project">Vector</span>
               <svg class="bc-chevron" viewBox="0 0 16 16" width="12" height="12"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-              <span class="bc-item active">robot.urdf</span>
+              <span class="bc-item active" id="bc-filename"></span>
             </div>
             <div id="editor-wrap">
               <div id="monaco-container"></div>
@@ -226,9 +226,9 @@
                   <div class="welcome-logo">VECTOR</div>
                   <div class="welcome-subtitle">AI-Native Robotics IDE</div>
                   <div class="welcome-actions">
-                    <div class="welcome-action"><kbd>Ctrl+O</kbd> Open File</div>
-                    <div class="welcome-action"><kbd>Ctrl+L</kbd> AI Chat</div>
-                    <div class="welcome-action"><kbd>+</kbd> New File</div>
+                    <div class="welcome-action"><span class="welcome-action-label">Open File</span><kbd>Ctrl+O</kbd></div>
+                    <div class="welcome-action"><span class="welcome-action-label">AI Chat</span><kbd>Ctrl+L</kbd></div>
+                    <div class="welcome-action"><span class="welcome-action-label">New File</span><kbd>+</kbd></div>
                   </div>
                   <div class="welcome-hint">Open a folder or file to get started</div>
                 </div>
