@@ -452,6 +452,13 @@ async fn open_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+/// Read a binary file and return its contents as a Vec<u8> (for mesh loading)
+#[tauri::command]
+async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
+    fs::read(&path)
+        .map_err(|e| format!("Failed to read binary file: {}", e))
+}
+
 /// Open file dialog and return selected file path
 #[tauri::command]
 async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -790,6 +797,7 @@ pub fn run() {
             ai_complete,
             save_file,
             open_file,
+            read_binary_file,
             open_file_dialog,
             save_file_dialog,
             get_recent_files,

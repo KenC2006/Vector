@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
+import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import { defaultFaceNodesForBoxDims, makeMountLinkName, isMountLinkName, parseMountLinkName, type AttachmentNodeDef } from './attachmentNodes'
@@ -58,6 +59,7 @@ interface PresetData {
 
 export interface UrdfAssemblyApi {
   onModelUpdated(): void
+  recordUndoExternal(content: string): void
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -618,6 +620,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       </div>
       <div class="insp-actions-group">
         ${parentJoint ? '<button type="button" class="bi-action-btn apply-btn" id="urdf-apply-origin">Apply Changes</button>' : ''}
+        <button type="button" class="bi-action-btn" id="btn-export-link-stl" style="width:100%">Export Link STL</button>
         <button type="button" class="bi-action-btn danger-btn" id="urdf-delete-link">Delete Link</button>
       </div>
     `
@@ -651,6 +654,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (ok) ctx.showToast(`Detached ${child} from ${mount}`, 'success')
       })
     })
+    // Wire up per-link STL export button
+    const exportLinkBtn = document.getElementById('btn-export-link-stl')
+    if (exportLinkBtn) {
+      exportLinkBtn.addEventListener('click', exportSelectedLinkSTL)
+    }
 
     if (!parentJoint) return
 
@@ -1254,11 +1262,43 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     selectLink('base_link')
     ctx.showToast('Robot reset', 'info')
   })
-  btnToggleNodeRings?.addEventListener('click', () => {
-    showNodeRings = !showNodeRings
-    applyNodeRingVisibility()
-    ctx.showToast(showNodeRings ? 'Node axis rings: on' : 'Node axis rings: off', 'info')
-  })
+  // ── STL Export ─────────────────────────────────────────────────────────────
+
+  const stlExporter = new STLExporter()
+
+  function downloadBlob(data: unknown, filename: string, mime: string) {
+    const blobData = data instanceof DataView ? data.buffer : data
+    const blob = new Blob([blobData as BlobPart], { type: mime })
+    const url = URL.createObjectURL(blob)
+    Object.assign(document.createElement('a'), { href: url, download: filename }).click()
+    URL.revokeObjectURL(url)
+  }
+
+  function exportSelectedLinkSTL() {
+    if (!selectedLink) {
+      ctx.showToast('Select a link to export', 'warning')
+      return
+    }
+    const linkGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    if (!linkGroup) {
+      ctx.showToast('Link geometry not found', 'error')
+      return
+    }
+    const result = stlExporter.parse(linkGroup, { binary: true })
+    downloadBlob(result, `${selectedLink}.stl`, 'application/octet-stream')
+    ctx.showToast(`Exported ${selectedLink}.stl`, 'success')
+  }
+
+  function exportFullRobotSTL() {
+    const robot = ctx.getParsedRobot()
+    const result = stlExporter.parse(robot.group, { binary: true })
+    downloadBlob(result, 'robot.stl', 'application/octet-stream')
+    ctx.showToast('Exported robot.stl', 'success')
+  }
+
+  // Wire export buttons
+  const btnExportStl = document.getElementById('btn-export-stl')
+  btnExportStl?.addEventListener('click', exportFullRobotSTL)
   toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
 
   gizmo.addEventListener('dragging-changed', ev => {
@@ -1521,6 +1561,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   refreshBuildPanel()
   renderInspector()
 
-  return { onModelUpdated }
+  return {
+    onModelUpdated,
+    recordUndoExternal: (content: string) => {
+      urdfUndo.push(content)
+      if (urdfUndo.length > 80) urdfUndo.shift()
+      urdfRedo = []
+    },
+  }
 }
 

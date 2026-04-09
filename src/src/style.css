@@ -1999,3 +1999,85 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: #1e1e1e; }
   border-top: 1px solid var(--border);
   margin-top: 8px;
 }
+
+/* ── Light Theme ── */
+html.theme-light {
+  --bg: #f3f3f3;
+  --bg-1: #ffffff;
+  --bg-2: #f0f0f0;
+  --bg-3: #e5e5e5;
+  --bg-editor: #ffffff;
+  --border: #d4d4d4;
+  --border-dim: #e8e8e8;
+  --text: #333333;
+  --text-dim: #6e6e6e;
+  --text-dimmer: #a0a0a0;
+  --accent: #005fb8;
+  --accent-dim: rgba(0, 95, 184, 0.12);
+  --accent-glow: rgba(0, 95, 184, 0.06);
+  --orange: #bf8803;
+  --green: #388a6c;
+  --yellow: #c49b1a;
+  --red: #cd3131;
+  --purple: #af00db;
+  --font: 'Consolas', 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+
+/* ── Settings Panel ── */
+.settings-body { padding: 8px 0; overflow-y: auto; }
+.settings-section { padding: 0 12px 16px; }
+.settings-section-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 0 6px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 0; }
+.setting-label { font-size: 12px; color: var(--text); }
+.setting-select { background: var(--bg-3); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 3px 8px; font-size: 12px; font-family: var(--font); }
+.settings-hint { font-size: 10px; color: var(--text-dimmer); padding: 0 0 8px; }
+
+/* ── Shortcut List ── */
+.shortcut-item { display: flex; align-items: center; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border-dim); }
+.shortcut-label { font-size: 12px; color: var(--text); }
+.shortcut-key { font-size: 11px; font-family: var(--font); color: var(--text-dim); background: var(--bg-3); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; min-width: 50px; text-align: center; cursor: pointer; transition: border-color 0.15s; }
+.shortcut-key:hover { border-color: var(--accent); color: var(--accent); }
+.shortcut-key.recording { border-color: var(--orange); color: var(--orange); animation: pulse 1s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+/* Checkpoints */
+.build-checkpoints { margin-top: 4px; }
+.checkpoint-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 12px; font-size: 11px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.checkpoint-item:hover { background: rgba(255,255,255,0.03); }
+.cp-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cp-name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-time { font-size: 10px; color: var(--text-dimmer); }
+.cp-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.cp-btn {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: 3px;
+  color: var(--text-dimmer); cursor: pointer; font-size: 13px;
+  transition: all 0.12s;
+}
+.cp-btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border); color: var(--text); }
+.cp-restore:hover { color: var(--accent); border-color: rgba(0,122,204,0.3); }
+.cp-delete:hover { color: var(--red); border-color: rgba(244,67,54,0.3); }
+
+/* Chat history header */
+#vc-chat-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#vc-chat-select {
+  flex: 1; min-width: 0;
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 4px; padding: 3px 6px; font-size: 11px; font-family: var(--font);
+}
+#vc-new-chat {
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 4px; padding: 3px 8px; font-size: 11px; font-family: var(--font);
+  cursor: pointer; white-space: nowrap;
+  transition: all 0.12s;
+}
+#vc-new-chat:hover { background: var(--accent-dim); color: var(--accent); border-color: rgba(0,122,204,0.3); }
