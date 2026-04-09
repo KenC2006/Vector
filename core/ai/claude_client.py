@@ -43,6 +43,48 @@ _conversation_history: dict[str, list] = defaultdict(list)
 _MAX_HISTORY_MESSAGES = 20
 
 
+def _build_component_catalog() -> str:
+    """Build a compact summary of available preset components for the AI system prompt."""
+    try:
+        from core.presets import list_components, get_all_categories, get_category
+        lines = []
+        for cat_name in get_all_categories():
+            cat = get_category(cat_name)
+            label = cat_name.replace("_", " ").title()
+            comps = cat["components"]
+            items = []
+            for c in comps:
+                phys = c["physical"]
+                mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm")
+                mass_str = f"{mass}kg" if mass and mass >= 1 else f"{round(mass*1000)}g" if mass else "?"
+                bb = phys.get("bounding_box_mm", [])
+                bb_str = f"{bb[0]}x{bb[1]}x{bb[2]}mm" if len(bb) >= 3 else ""
+                shape = phys.get("inertia_primitive", "box")
+                # Key spec
+                me = c.get("mechanical_electrical", {})
+                spec = ""
+                if "max_torque_nm" in me: spec = f"{me['max_torque_nm']}Nm"
+                elif "holding_torque_nm" in me: spec = f"{me['holding_torque_nm']}Nm"
+                elif "max_force_n" in me: spec = f"{me['max_force_n']}N"
+                elif "grip_force_n" in me: spec = f"{me['grip_force_n']}N"
+                elif "capacity_mah" in me: spec = f"{me['capacity_mah']}mAh"
+                elif "fov_h_deg" in me: spec = f"{me['fov_h_deg']}°FOV"
+                elif "range_m" in me: spec = f"{me['range_m']}m"
+                items.append(f"  - {c['id']}: {c['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}")
+            lines.append(f"\n{label} ({len(comps)}):")
+            lines.extend(items)
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(Component catalog unavailable: {e})"
+
+_COMPONENT_CATALOG = None
+
+def _get_component_catalog() -> str:
+    global _COMPONENT_CATALOG
+    if _COMPONENT_CATALOG is None:
+        _COMPONENT_CATALOG = _build_component_catalog()
+    return _COMPONENT_CATALOG
+
 SYSTEM_PROMPT = """You are a robot design assistant for Vector IDE. You receive:
 1. The current URDF XML of a robot
 2. The kinematic graph (links, joints, masses, geometries)
@@ -52,6 +94,30 @@ SYSTEM_PROMPT = """You are a robot design assistant for Vector IDE. You receive:
 You have conversation memory — you can see prior edits and requests in this session.
 When the user refers to previous changes ("make it taller", "undo that", "the arm I just added"),
 use conversation history to understand what they mean.
+
+## Component Preset Library
+
+You have access to a library of validated robotic components. When the user asks to add a motor,
+sensor, gripper, battery, or any physical component, you MUST use values from this library rather
+than inventing arbitrary masses, dimensions, or specs. Use the component ID as the link name prefix
+(e.g., "actuator_servo_high_torque_4" for the 4th instance).
+
+When adding a component as a URDF link:
+- Use the mass_kg from the preset for <mass value="..."/>
+- Compute inertia from the bounding_box_mm and inertia_primitive shape (box/cylinder/sphere)
+  using standard formulas: Box Ixx=m/12*(h²+d²), Cylinder Ixx=m/12*(3r²+h²), Sphere Ixx=2/5*m*r²
+- Use the bounding_box_mm (converted to meters) for the visual/collision geometry
+- Use the inertia_primitive as the geometry type (box/cylinder/sphere)
+- For actuators and motors, use joint type="revolute" with effort limit = max_torque_nm
+- For everything else, use joint type="fixed"
+
+Available components:
+{COMPONENT_CATALOG}
+
+If the user asks for something not in the library, use the closest matching component and note
+the substitution in your explanation.
+
+## Output Format
 
 You must return ONLY valid JSON (no markdown, no code blocks) with this structure:
 {
@@ -73,7 +139,7 @@ Each edit in the "edits" array is a search-and-replace operation applied to the 
 
 Rules:
 - Only make the changes the user requested, preserve everything else exactly
-- Ensure physical plausibility (reasonable masses, dimensions in meters, etc.)
+- ALWAYS use component preset values for physical properties — never hallucinate masses or dimensions
 - Maintain valid URDF XML structure with proper nesting
 - Keep all existing comments and formatting where possible
 - If adding new links, include proper inertial, visual, and collision elements
@@ -218,7 +284,7 @@ User Request: {prompt}"""
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
         messages=messages,
         timeout=120.0,
     )

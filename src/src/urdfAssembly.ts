@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
+import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
+import type { UrdfVisualDesc } from './componentMeshes'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -22,6 +24,35 @@ export interface UrdfAssemblyContext {
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
   isViewport3D: () => boolean
+}
+
+// ── Preset types ──────────────────────────────────────────────────────────────
+
+interface PresetPhysical {
+  mass_kg?: number
+  mass_kg_per_100mm?: number
+  bounding_box_mm?: number[]
+  cross_section_mm?: number[]
+  inertia_primitive: string
+}
+
+interface PresetComponent {
+  id: string
+  name: string
+  description: string
+  physical: PresetPhysical
+  mechanical_electrical: Record<string, unknown>
+  mounting_logic: Record<string, unknown>
+  sim_metadata: Record<string, unknown>
+}
+
+interface PresetCategory {
+  description: string
+  components: PresetComponent[]
+}
+
+interface PresetData {
+  categories: Record<string, PresetCategory>
 }
 
 export interface UrdfAssemblyApi {
@@ -81,20 +112,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const bsJoints = document.getElementById('bs-joints') as HTMLSpanElement | null
   const inspBody = document.querySelector('#panel-inspector .insp-body') as HTMLDivElement | null
   const inspTitle = document.getElementById('insp-title') as HTMLSpanElement | null
-  const toolboxItems = document.getElementById('toolbox-items') as HTMLDivElement | null
-  const toolboxDetail = document.getElementById('toolbox-detail') as HTMLDivElement | null
-  const toolboxHint = document.getElementById('toolbox-hint') as HTMLDivElement | null
   const toolboxSearch = document.getElementById('toolbox-search') as HTMLInputElement | null
   const btnFocusBase = document.getElementById('btn-load-example') as HTMLButtonElement | null
   const btnSaveUrdf = document.getElementById('btn-export-urdf') as HTMLButtonElement | null
   const btnCopyUrdf = document.getElementById('btn-export-mjcf') as HTMLButtonElement | null
   const btnResetRobot = document.getElementById('btn-clear-assembly') as HTMLButtonElement | null
-
-  const templates = [
-    { id: 'box', title: 'Add Box Link', desc: 'Create a child link with box visual and a fixed joint' },
-    { id: 'cylinder', title: 'Add Cylinder Link', desc: 'Create a child link with cylinder visual and a fixed joint' },
-    { id: 'sphere', title: 'Add Sphere Link', desc: 'Create a child link with sphere visual and a fixed joint' },
-  ]
 
   function recordUndo() {
     urdfUndo.push(ctx.getUrdfText())
@@ -185,8 +207,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const el = document.createElement('div')
       el.className = 'bt-row' + (selectedLink === row.link ? ' selected' : '')
       el.style.paddingLeft = `${10 + row.depth * 14}px`
+
+      // Detect category from link name (preset links use ID prefixes)
+      let catDot = ''
+      if (presetData) {
+        for (const [catName, cat] of Object.entries(presetData.categories)) {
+          if (cat.components.some(c => row.link.startsWith(c.id))) {
+            const cc = CATEGORY_COLORS[catName] ?? [0.6, 0.6, 0.6, 1]
+            catDot = `<span class="bt-cat-dot" style="background:rgb(${Math.round(cc[0]*255)},${Math.round(cc[1]*255)},${Math.round(cc[2]*255)})"></span>`
+            break
+          }
+        }
+      }
+
       el.innerHTML = `
         <span class="bt-joint-badge">${edge ? edge.type.slice(0, 3) : 'root'}</span>
+        ${catDot}
         <span class="bt-name">${row.link}</span>
         <span class="bt-mass">${Math.round((meta?.mass || 0) * 1000)}g</span>
       `
@@ -227,12 +263,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             <input id="urdf-origin-p" class="joint-lim-input" />
             <input id="urdf-origin-yaw" class="joint-lim-input" />
           </div>
-          <div class="bi-actions" style="padding-top:8px">
-            <button type="button" class="bi-action-btn focus-btn" id="urdf-apply-origin"><span class="ba-icon">✓</span>Apply</button>
-          </div>
         ` : '<div class="insp-empty">Root link has no parent joint origin</div>'}
       </div>
+      <div class="insp-actions-group">
+        ${parentJoint ? '<button type="button" class="bi-action-btn apply-btn" id="urdf-apply-origin">Apply Changes</button>' : ''}
+        <button type="button" class="bi-action-btn danger-btn" id="urdf-delete-link">Delete Link</button>
+      </div>
     `
+    // Wire up delete button (available for all links)
+    const deleteBtn = document.getElementById('urdf-delete-link')
+    if (deleteBtn && selectedLink) {
+      const linkToDelete = selectedLink
+      deleteBtn.addEventListener('click', () => deleteLink(linkToDelete))
+    }
+
     if (!parentJoint) return
 
     const parser = new DOMParser()
@@ -266,6 +310,62 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     })
   }
 
+  function deleteLink(linkName: string) {
+    if (!linkName) return
+    const graph = ctx.getKinematicGraph()
+    const node = graph[linkName]
+    if (!node) return
+
+    // Prevent deleting root link if it's the only one
+    if (!node.parent && Object.keys(graph).length <= 1) {
+      ctx.showToast('Cannot delete the only remaining link', 'warning')
+      return
+    }
+
+    // Collect subtree: the link itself + all descendants
+    const toRemove = new Set<string>()
+    const walk = (name: string) => {
+      toRemove.add(name)
+      const n = graph[name]
+      if (n) n.children.forEach(walk)
+    }
+    walk(linkName)
+
+    const childCount = toRemove.size - 1
+    const label = childCount > 0 ? `"${linkName}" and ${childCount} child link${childCount > 1 ? 's' : ''}` : `"${linkName}"`
+
+    const changed = commitUrdf(doc => {
+      const robot = doc.querySelector('robot')
+      if (!robot) return false
+
+      // Remove all links in subtree
+      for (const name of toRemove) {
+        const linkEl = doc.querySelector(`link[name="${name}"]`)
+        if (linkEl) robot.removeChild(linkEl)
+      }
+
+      // Remove all joints whose parent or child is in the subtree
+      const joints = doc.querySelectorAll('joint')
+      joints.forEach(j => {
+        const parentName = j.querySelector('parent')?.getAttribute('link')
+        const childName = j.querySelector('child')?.getAttribute('link')
+        if ((parentName && toRemove.has(parentName)) || (childName && toRemove.has(childName))) {
+          robot.removeChild(j)
+        }
+      })
+
+      return true
+    })
+
+    if (changed) {
+      gizmo.detach()
+      selectedLink = null
+      ctx.showToast(`Deleted ${label}`, 'success')
+      refreshBuildPanel()
+      renderInspector()
+    }
+  }
+
   function selectLink(name: string | null) {
     selectedLink = name
     gizmo.detach()
@@ -280,13 +380,179 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         ctx.showToast('Root movement disabled (no world joint yet)', 'warning')
         rootDragWarned = true
       }
-      ctx.switchPanel('inspector')
     }
     refreshBuildPanel()
     renderInspector()
+    updateParentIndicator()
   }
 
-  function addTemplate(kind: 'box' | 'cylinder' | 'sphere') {
+  const parentNameEl = document.getElementById('tb-parent-name') as HTMLSpanElement | null
+  const parentIndicator = document.getElementById('tb-parent-indicator') as HTMLDivElement | null
+
+  function updateParentIndicator() {
+    if (!parentNameEl || !parentIndicator) return
+    if (selectedLink) {
+      parentNameEl.textContent = selectedLink
+      parentIndicator.classList.add('has-selection')
+    } else {
+      parentNameEl.textContent = 'none selected'
+      parentIndicator.classList.remove('has-selection')
+    }
+  }
+
+  // ── Component Presets (loaded from generic_presets.json) ────────────────────
+
+  const compItems = document.getElementById('comp-items') as HTMLDivElement | null
+  const compDetail = document.getElementById('comp-detail') as HTMLDivElement | null
+  let presetData: PresetData | null = null
+
+  function computeBoxInertia(mass: number, xm: number, ym: number, zm: number) {
+    return {
+      ixx: mass / 12 * (ym * ym + zm * zm),
+      iyy: mass / 12 * (xm * xm + zm * zm),
+      izz: mass / 12 * (xm * xm + ym * ym),
+    }
+  }
+
+  function computeCylinderInertia(mass: number, rm: number, hm: number) {
+    const ixx = mass / 12 * (3 * rm * rm + hm * hm)
+    return { ixx, iyy: ixx, izz: mass / 2 * rm * rm }
+  }
+
+  function computeSphereInertia(mass: number, rm: number) {
+    const i = 2 / 5 * mass * rm * rm
+    return { ixx: i, iyy: i, izz: i }
+  }
+
+  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number } {
+    // Extract parent link's bounding half-extents from its URDF geometry
+    const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
+    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+
+    const vis = linkEl.querySelector('visual geometry')
+    if (!vis) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+
+    const boxEl = vis.querySelector('box')
+    if (boxEl) {
+      const size = (boxEl.getAttribute('size') || '0.1 0.1 0.1').split(/\s+/).map(Number)
+      return { hx: (size[0] || 0.1) / 2, hy: (size[1] || 0.1) / 2, hz: (size[2] || 0.1) / 2 }
+    }
+    const cylEl = vis.querySelector('cylinder')
+    if (cylEl) {
+      const r = Number(cylEl.getAttribute('radius')) || 0.05
+      const h = Number(cylEl.getAttribute('length')) || 0.1
+      return { hx: r, hy: r, hz: h / 2 }
+    }
+    const sphEl = vis.querySelector('sphere')
+    if (sphEl) {
+      const r = Number(sphEl.getAttribute('radius')) || 0.05
+      return { hx: r, hy: r, hz: r }
+    }
+    return { hx: 0.05, hy: 0.05, hz: 0.05 }
+  }
+
+  function computePlacement(
+    doc: Document, parentLinkName: string,
+    comp: PresetComponent,
+    childX: number, _childY: number, childZ: number,
+  ): { xyz: string; rpy: string } {
+    const parent = getParentBounds(doc, parentLinkName)
+    const mount = (comp.mounting_logic?.primary as string) || 'face_mount'
+    const gap = 0.005 // 5mm clearance
+
+    // face_mount / pcb_solder / bracket_mount → stack on top (Z+) of parent
+    if (mount === 'face_mount' || mount === 'pcb_solder' || mount === 'bracket_mount') {
+      const oz = parent.hz + childZ / 2 + gap
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
+    // axial_shaft → coaxial along Z, placed at parent's top face
+    if (mount === 'axial_shaft') {
+      const oz = parent.hz + childZ / 2 + gap
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
+    // rail_slot / side_rail_mount → mount on the side (X+) of parent
+    if (mount === 'rail_slot' || mount === 'side_rail_mount' || mount === 'clamp_mount') {
+      const ox = parent.hx + childX / 2 + gap
+      return { xyz: `${ox.toFixed(4)} 0 0`, rpy: '0 0 0' }
+    }
+
+    // hub_bore → coaxial, flush with parent face
+    if (mount === 'hub_bore') {
+      const oz = parent.hz + childZ / 2 + gap
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
+    // press_fit → inside parent bore, centered
+    if (mount === 'press_fit') {
+      return { xyz: '0 0 0', rpy: '0 0 0' }
+    }
+
+    // linear_rod → extend along Z from parent
+    if (mount === 'linear_rod') {
+      const oz = parent.hz + childZ / 2 + gap
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
+    // tool_changer_master/slave → stack on bottom (Z-) if slave
+    if (mount === 'tool_changer_slave') {
+      const oz = -(parent.hz + childZ / 2 + gap)
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+    if (mount === 'tool_changer_master') {
+      const oz = parent.hz + childZ / 2 + gap
+      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
+    // Default: stack on top
+    const oz = parent.hz + childZ / 2 + gap
+    return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
+  }
+
+  // Resolve which category a component belongs to
+  function findCategory(comp: PresetComponent): string {
+    if (!presetData) return 'structural'
+    for (const [catName, cat] of Object.entries(presetData.categories)) {
+      if (cat.components.some(c => c.id === comp.id)) return catName
+    }
+    return 'structural'
+  }
+
+  function addVisualElement(doc: Document, link: Element, vis: UrdfVisualDesc, matIdx: number) {
+    const visual = doc.createElement('visual')
+    const vo = doc.createElement('origin')
+    vo.setAttribute('xyz', vis.origin_xyz.map(v => v.toFixed(6)).join(' '))
+    vo.setAttribute('rpy', vis.origin_rpy.map(v => v.toFixed(6)).join(' '))
+    const geometry = doc.createElement('geometry')
+    const g = vis.geometry
+    if (g.type === 'box') {
+      const el = doc.createElement('box')
+      el.setAttribute('size', g.size.map(v => v.toFixed(6)).join(' '))
+      geometry.appendChild(el)
+    } else if (g.type === 'cylinder') {
+      const el = doc.createElement('cylinder')
+      el.setAttribute('radius', g.radius.toFixed(6))
+      el.setAttribute('length', g.length.toFixed(6))
+      geometry.appendChild(el)
+    } else {
+      const el = doc.createElement('sphere')
+      el.setAttribute('radius', g.radius.toFixed(6))
+      geometry.appendChild(el)
+    }
+    visual.appendChild(vo)
+    visual.appendChild(geometry)
+    // Material with colour
+    const mat = doc.createElement('material')
+    mat.setAttribute('name', `comp_mat_${matIdx}`)
+    const color = doc.createElement('color')
+    color.setAttribute('rgba', vis.color_rgba.map(v => v.toFixed(3)).join(' '))
+    mat.appendChild(color)
+    visual.appendChild(mat)
+    link.appendChild(visual)
+  }
+
+  function addComponent(comp: PresetComponent) {
     if (!selectedLink) {
       ctx.showToast('Select a parent link first', 'warning')
       return
@@ -294,100 +560,251 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const parentLink = selectedLink
     const graph = ctx.getKinematicGraph()
     const nextIdx = Object.keys(graph).length + 1
-    const childName = `link_${nextIdx}`
-    const jointName = `joint_${nextIdx}`
+    const childName = `${comp.id}_${nextIdx}`
+    const jointName = `joint_${comp.id}_${nextIdx}`
+
+    const phys = comp.physical
+    const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
+    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    const shape = phys.inertia_primitive || 'box'
+
+    // Convert mm to meters for URDF
+    const xm = (bb[0] ?? 40) / 1000
+    const ym = (bb[1] ?? 40) / 1000
+    const zm = (bb[2] ?? 40) / 1000
+
+    // Compute inertia (for physics — uses bounding primitive)
+    let inertia: { ixx: number; iyy: number; izz: number }
+    if (shape === 'cylinder') {
+      inertia = computeCylinderInertia(mass, Math.max(xm, ym) / 2, zm)
+    } else if (shape === 'sphere') {
+      inertia = computeSphereInertia(mass, xm / 2)
+    } else {
+      inertia = computeBoxInertia(mass, xm, ym, zm)
+    }
+
+    // Generate parametric visuals
+    const catName = findCategory(comp)
+    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+
     const changed = commitUrdf(doc => {
       const robot = doc.querySelector('robot')
       if (!robot) return false
 
+      // Create link
       const link = doc.createElement('link')
       link.setAttribute('name', childName)
 
-      const inertial = doc.createElement('inertial')
-      const mass = doc.createElement('mass')
-      mass.setAttribute('value', '0.1')
-      const inertia = doc.createElement('inertia')
-      inertia.setAttribute('ixx', '0.0001'); inertia.setAttribute('iyy', '0.0001'); inertia.setAttribute('izz', '0.0001')
-      inertia.setAttribute('ixy', '0'); inertia.setAttribute('ixz', '0'); inertia.setAttribute('iyz', '0')
-      inertial.appendChild(mass)
-      inertial.appendChild(inertia)
-      link.appendChild(inertial)
+      // Inertial
+      const inertialEl = doc.createElement('inertial')
+      const massEl = doc.createElement('mass')
+      massEl.setAttribute('value', mass.toFixed(4))
+      const inertiaEl = doc.createElement('inertia')
+      inertiaEl.setAttribute('ixx', inertia.ixx.toFixed(6))
+      inertiaEl.setAttribute('iyy', inertia.iyy.toFixed(6))
+      inertiaEl.setAttribute('izz', inertia.izz.toFixed(6))
+      inertiaEl.setAttribute('ixy', '0')
+      inertiaEl.setAttribute('ixz', '0')
+      inertiaEl.setAttribute('iyz', '0')
+      inertialEl.appendChild(massEl)
+      inertialEl.appendChild(inertiaEl)
+      link.appendChild(inertialEl)
 
-      const visual = doc.createElement('visual')
-      const vo = doc.createElement('origin')
-      vo.setAttribute('xyz', '0 0 0')
-      vo.setAttribute('rpy', '0 0 0')
-      const geometry = doc.createElement('geometry')
-      if (kind === 'box') {
-        const box = doc.createElement('box')
-        box.setAttribute('size', '0.08 0.04 0.04')
-        geometry.appendChild(box)
-      } else if (kind === 'cylinder') {
-        const c = doc.createElement('cylinder')
-        c.setAttribute('radius', '0.02')
-        c.setAttribute('length', '0.12')
-        geometry.appendChild(c)
+      // Multiple visual elements from parametric generator
+      visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
+
+      // Single collision primitive (bounding shape for physics)
+      const collision = doc.createElement('collision')
+      const co = doc.createElement('origin')
+      co.setAttribute('xyz', '0 0 0')
+      co.setAttribute('rpy', '0 0 0')
+      const collGeom = doc.createElement('geometry')
+      if (shape === 'cylinder') {
+        const el = doc.createElement('cylinder')
+        el.setAttribute('radius', (Math.max(xm, ym) / 2).toFixed(6))
+        el.setAttribute('length', zm.toFixed(6))
+        collGeom.appendChild(el)
+      } else if (shape === 'sphere') {
+        const el = doc.createElement('sphere')
+        el.setAttribute('radius', (Math.max(xm, ym, zm) / 2).toFixed(6))
+        collGeom.appendChild(el)
       } else {
-        const s = doc.createElement('sphere')
-        s.setAttribute('radius', '0.03')
-        geometry.appendChild(s)
+        const el = doc.createElement('box')
+        el.setAttribute('size', `${xm.toFixed(6)} ${ym.toFixed(6)} ${zm.toFixed(6)}`)
+        collGeom.appendChild(el)
       }
-      visual.appendChild(vo)
-      visual.appendChild(geometry)
-      link.appendChild(visual)
+      collision.appendChild(co)
+      collision.appendChild(collGeom)
+      link.appendChild(collision)
 
+      // Joint
       const joint = doc.createElement('joint')
       joint.setAttribute('name', jointName)
-      joint.setAttribute('type', 'fixed')
+      const category = comp.id.split('_')[0]
+      const isActuated = category === 'actuator' || category === 'motor'
+      joint.setAttribute('type', isActuated ? 'revolute' : 'fixed')
+
       const parent = doc.createElement('parent')
       parent.setAttribute('link', parentLink)
       const child = doc.createElement('child')
       child.setAttribute('link', childName)
+      // Smart placement based on parent geometry + mounting logic
       const origin = doc.createElement('origin')
-      origin.setAttribute('xyz', '0 0 0.1')
-      origin.setAttribute('rpy', '0 0 0')
+      const placement = computePlacement(doc, parentLink, comp, xm, ym, zm)
+      origin.setAttribute('xyz', placement.xyz)
+      origin.setAttribute('rpy', placement.rpy)
       joint.appendChild(parent)
       joint.appendChild(child)
       joint.appendChild(origin)
+
+      if (isActuated) {
+        const axis = doc.createElement('axis')
+        axis.setAttribute('xyz', '0 0 1')
+        joint.appendChild(axis)
+        const limit = doc.createElement('limit')
+        limit.setAttribute('lower', '-3.14159')
+        limit.setAttribute('upper', '3.14159')
+        const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
+                          (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
+        limit.setAttribute('effort', String(maxTorque))
+        limit.setAttribute('velocity', '3.14')
+        joint.appendChild(limit)
+      }
 
       robot.appendChild(link)
       robot.appendChild(joint)
       return true
     })
+
     if (changed) {
-      ctx.showToast(`Added ${kind} link "${childName}"`, 'success')
+      ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
       selectLink(childName)
     }
   }
 
-  function renderToolbox(filter = '') {
-    if (!toolboxItems || !toolboxDetail) return
+  function getCompactSpec(comp: PresetComponent): string {
+    const me = comp.mechanical_electrical
+    if (me.max_torque_nm) return `${me.max_torque_nm} Nm`
+    if (me.holding_torque_nm) return `${me.holding_torque_nm} Nm`
+    if (me.max_force_n) return `${me.max_force_n} N`
+    if (me.grip_force_n) return `${me.grip_force_n} N`
+    if (me.fov_h_deg) return `${me.fov_h_deg}° FOV`
+    if (me.range_m) return `${me.range_m}m range`
+    if (me.capacity_mah) return `${me.capacity_mah}mAh`
+    if (me.gear_ratio_options) return 'gearbox'
+    if (me.max_load_n) return `${me.max_load_n}N`
+    const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
+    if (mass != null) return `${mass >= 1 ? mass.toFixed(1) : Math.round(mass * 1000)}${mass >= 1 ? 'kg' : 'g'}`
+    return ''
+  }
+
+  function renderComponentDetail(comp: PresetComponent) {
+    if (!compDetail) return
+    const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
+    const massLabel = comp.physical.mass_kg_per_100mm ? `${(comp.physical.mass_kg_per_100mm * 1000).toFixed(0)}g/100mm` :
+                      mass != null ? (mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`) : '—'
+    const bb = comp.physical.bounding_box_mm
+    const dims = bb ? `${bb[0]}×${bb[1]}×${bb[2]} mm` : '—'
+    const shape = comp.physical.inertia_primitive || 'box'
+
+    // Build mechanical specs
+    const me = comp.mechanical_electrical
+    const specs = Object.entries(me).slice(0, 6).map(([k, v]) => {
+      const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const val = Array.isArray(v) ? v.join(' – ') : String(v)
+      return `<div class="tb-kv"><span class="tb-kv-key">${label}</span><span class="tb-kv-val">${val}</span></div>`
+    }).join('')
+
+    const mounting = comp.mounting_logic.primary ?? '—'
+
+    compDetail.innerHTML = `
+      <div class="tb-detail-name">${comp.name}</div>
+      <div class="tb-detail-desc">${comp.description}</div>
+      <div class="tb-detail-chiprow">
+        <span class="tb-chip">${shape}</span>
+        <span class="tb-chip">${massLabel}</span>
+        <span class="tb-chip">${mounting}</span>
+      </div>
+      <div class="tb-detail-sec">
+        <div class="tb-detail-sec-title">Dimensions</div>
+        <div class="tb-kv"><span class="tb-kv-key">Bounding Box</span><span class="tb-kv-val">${dims}</span></div>
+      </div>
+      <div class="tb-detail-sec">
+        <div class="tb-detail-sec-title">Specs</div>
+        ${specs}
+      </div>
+    `
+  }
+
+  function renderComponents(filter: string) {
+    if (!compItems || !presetData) return
     const q = filter.trim().toLowerCase()
-    const items = templates.filter(t => !q || t.title.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q))
-    toolboxItems.innerHTML = ''
-    for (const t of items) {
-      const el = document.createElement('div')
-      el.className = 'tb-item'
-      el.innerHTML = `
-        <div class="tb-item-info">
-          <div class="tb-item-name">${t.title}</div>
-          <div class="tb-item-meta">${t.desc}</div>
-        </div>
-      `
-      el.addEventListener('click', () => {
-        if (t.id === 'box' || t.id === 'cylinder' || t.id === 'sphere') addTemplate(t.id)
-        toolboxDetail.innerHTML = `<div class="tb-detail-name">${t.title}</div><div class="tb-detail-desc">${t.desc}</div>`
+    compItems.innerHTML = ''
+
+    for (const [catName, cat] of Object.entries(presetData.categories)) {
+      const comps = cat.components.filter(c =>
+        !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
+      )
+      if (comps.length === 0) continue
+
+      // Category header
+      const catLabel = catName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const catEl = document.createElement('div')
+      catEl.className = 'tb-cat'
+      catEl.innerHTML = `<span class="tb-cat-arrow">▾</span> ${catLabel} <span style="opacity:0.4;margin-left:auto;font-size:10px">${comps.length}</span>`
+      let collapsed = false
+      catEl.addEventListener('click', () => {
+        collapsed = !collapsed
+        listEl.classList.toggle('collapsed', collapsed)
+        catEl.querySelector('.tb-cat-arrow')!.textContent = collapsed ? '▸' : '▾'
       })
-      toolboxItems.appendChild(el)
+      compItems.appendChild(catEl)
+
+      const listEl = document.createElement('div')
+      listEl.className = 'tb-list'
+      const cc = CATEGORY_COLORS[catName] ?? [0.6, 0.6, 0.6, 1]
+      const dotColor = `rgb(${Math.round(cc[0]*255)},${Math.round(cc[1]*255)},${Math.round(cc[2]*255)})`
+      for (const comp of comps) {
+        const el = document.createElement('div')
+        el.className = 'tb-item'
+        const spec = getCompactSpec(comp)
+        el.innerHTML = `
+          <span class="tb-cat-dot" style="background:${dotColor}"></span>
+          <div class="tb-item-info">
+            <div class="tb-item-name">${comp.name}</div>
+            <div class="tb-item-meta">${spec}</div>
+          </div>
+        `
+        el.addEventListener('click', () => {
+          // Show detail
+          renderComponentDetail(comp)
+          // Highlight
+          compItems!.querySelectorAll('.tb-item').forEach(i => i.classList.remove('selected'))
+          el.classList.add('selected')
+          // Insert into assembly
+          addComponent(comp)
+        })
+        listEl.appendChild(el)
+      }
+      compItems.appendChild(listEl)
     }
-    if (items.length === 0) {
-      toolboxItems.innerHTML = '<div class="tb-empty">No matching templates</div>'
+
+    if (compItems.children.length === 0) {
+      compItems.innerHTML = '<div class="tb-empty">No matching components</div>'
     }
   }
 
-  if (toolboxHint) {
-    toolboxHint.textContent = 'Select a URDF link, then click a template to add a child link + joint.'
-  }
+  // Load presets JSON from public directory
+  fetch('/generic_presets.json')
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then((data: PresetData) => {
+      presetData = data
+      renderComponents('')
+    })
+    .catch(() => {
+      if (compItems) compItems.innerHTML = '<div class="tb-empty">Failed to load component presets</div>'
+    })
+
   btnFocusBase?.addEventListener('click', () => {
     const graph = ctx.getKinematicGraph()
     const base = Object.values(graph).find(l => !l.parent)?.name || 'base_link'
@@ -417,8 +834,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     selectLink('base_link')
     ctx.showToast('Robot reset', 'info')
   })
-  toolboxSearch?.addEventListener('input', () => renderToolbox(toolboxSearch.value))
-  renderToolbox('')
+  toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
 
   gizmo.addEventListener('dragging-changed', ev => {
     const on = Boolean((ev as unknown as { value: boolean }).value)
@@ -551,6 +967,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (k === 'r' && selectedLink && gizmo.object) {
       gizmo.setMode(gizmo.mode === 'translate' ? 'rotate' : 'translate')
       ctx.showToast(`Gizmo: ${gizmo.mode}`, 'info')
+      return
+    }
+    if ((k === 'delete' || k === 'backspace') && selectedLink) {
+      e.preventDefault()
+      deleteLink(selectedLink)
+      return
     }
   })
 
