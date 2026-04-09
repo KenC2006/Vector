@@ -2,7 +2,7 @@ import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { invoke } from '@tauri-apps/api/core'
-import { initAssemblyBuilder } from './assemblyBuilder'
+import { initUrdfAssembly } from './urdfAssembly'
 
 // Wait for Tauri IPC bridge to be ready (injected async by Tauri)
 function waitForTauri(timeoutMs = 5000): Promise<void> {
@@ -946,11 +946,12 @@ function parseURDFToScene(urdfXml: string): ParsedRobot {
       }
     }
 
-    // Add shadow properties and finalize geometry
+    // Add shadow properties and tag with link name for raycasting
     geometryGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true
         child.receiveShadow = true
+        child.userData.urdfLinkName = linkName
       }
     })
 
@@ -1639,6 +1640,7 @@ function clearHighlight() {
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
+let urdfAssemblyApi: { onModelUpdated(): void } | null = null
 
 function reparseURDF() {
   try {
@@ -1679,6 +1681,7 @@ function reparseURDF() {
 
     // Rebuild kinematic tree
     buildKinematicTreeUI()
+    urdfAssemblyApi?.onModelUpdated()
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
@@ -2847,6 +2850,15 @@ const panels: Record<string, HTMLElement> = {
 }
 
 function openSidebarPanel(panel: string) {
+  if ((panel === 'build' || panel === 'toolbox' || panel === 'inspector') && activeViewportView !== '3d') {
+    switchViewportView('3d')
+    showToast('Switched to 3D Preview for URDF editing', 'info')
+  }
+  if ((panel === 'build' || panel === 'toolbox' || panel === 'inspector') && graphCanvasVisible) {
+    graphCanvasVisible = false
+    if (graphContainer) graphContainer.style.display = 'none'
+    toggleGraphBtn.classList.remove('active')
+  }
   document.querySelectorAll('.ab-btn').forEach(b => b.classList.remove('active'))
   Object.values(panels).forEach(p => p.classList.add('hidden'))
   const btn = document.querySelector(`.ab-btn[data-panel="${panel}"]`) as HTMLElement | null
@@ -3698,11 +3710,18 @@ if (document.readyState === 'loading') {
   setTimeout(testCoreIntegration, 500)
 }
 
-initAssemblyBuilder({
+urdfAssemblyApi = initUrdfAssembly({
   scene,
   camera,
   canvas,
   controls,
   showToast,
   switchPanel: openSidebarPanel,
+  getUrdfText: () => monacoEditor.getValue(),
+  setUrdfText: (content: string) => monacoEditor.setValue(content),
+  reparseUrdf: reparseURDF,
+  getParsedRobot: () => parsedRobot,
+  getKinematicGraph: () => kinematicGraph,
+  getKinematicJoints: () => kinematicJoints,
+  isViewport3D: () => activeViewportView === '3d',
 })
