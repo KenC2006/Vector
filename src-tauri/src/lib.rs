@@ -326,7 +326,7 @@ async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Opti
 
 /// Use Claude AI to generate a robot model edit from natural language
 #[tauri::command]
-async fn ai_edit(state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>) -> Result<serde_json::Value, String> {
+async fn ai_edit(state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>, session_id: Option<String>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -334,13 +334,14 @@ async fn ai_edit(state: State<'_, AppState>, prompt: String, urdf_content: Strin
     process.send_rpc("ai_edit", json!({
         "prompt": prompt,
         "urdf_content": urdf_content,
-        "kinematic_context": kinematic_context
+        "kinematic_context": kinematic_context,
+        "session_id": session_id.unwrap_or_else(|| "default".to_string())
     }), 1)
 }
 
 /// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing
 #[tauri::command]
-async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_line: u32, cursor_column: u32, prefix: String) -> Result<String, String> {
+async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_line: u32, cursor_column: u32, prefix: String, kinematic_context: Option<String>) -> Result<String, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -349,7 +350,8 @@ async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_li
         "urdf_content": urdf_content,
         "cursor_line": cursor_line,
         "cursor_column": cursor_column,
-        "prefix": prefix
+        "prefix": prefix,
+        "kinematic_context": kinematic_context.unwrap_or_default()
     }), 1)?;
 
     // Extract the completion text from the result

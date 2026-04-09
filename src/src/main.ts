@@ -444,15 +444,19 @@ const monacoEditor = monaco.editor.create(monacoContainer, {
 
 // ── Inline AI Completions (Cursor-style Ghost Text) ──────────────────────────
 
+// Unique session ID for conversation history (persists for the lifetime of this window)
+const aiSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
 // State for managing completion requests
 let inlineCompletionSettings = {
   enabled: true,
-  debounceMs: 500,
+  debounceMs: 350,  // Reduced from 500ms — cache handles repeated requests
 }
 
-// lastCompletionRequestId removed — using timestamp-based dedup instead
+// Dedup and staleness tracking
 let completionInFlight = false
 let lastCompletionTimestamp = 0
+let lastCompletionVersion = 0  // editor model version when request was made
 
 // Simple delay — NOT tied to Monaco's cancellation token
 function delayMs(ms: number): Promise<void> {
@@ -513,39 +517,85 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
     const lines = urdfContent.split('\n')
     const currentLine = lines[cursorLine - 1] || ''
     const textBeforeCursor = currentLine.slice(0, cursorColumn - 1)
+    const modelVersion = model.getVersionId()
 
     // Don't request completions on empty/whitespace-only lines
     if (!textBeforeCursor.trim() && cursorColumn <= 1) {
       return { items: [] }
     }
 
+    // Skip positions where completions aren't useful:
+    // - Right after a closing tag (user just finished an element)
+    // - On comment lines
+    const trimmedBefore = textBeforeCursor.trim()
+    if (trimmedBefore.endsWith('-->') || trimmedBefore.startsWith('<!--')) {
+      return { items: [] }
+    }
+
     try {
       completionInFlight = true
-      console.log(`[Completions] Requesting at L${cursorLine}:${cursorColumn} "${textBeforeCursor.trim().slice(-40)}"`)
+      lastCompletionVersion = modelVersion
+      console.log(`[Completions] Requesting at L${cursorLine}:${cursorColumn} "${trimmedBefore.slice(-40)}"`)
 
       const completion = await invokeWithTimeout<string>('ai_complete', {
         urdfContent,
         cursorLine,
         cursorColumn,
         prefix: textBeforeCursor,
-      }, 10000)
+        kinematicContext: buildKinematicContext(),
+      }, 12000)
 
       completionInFlight = false
+
+      // Reject stale results — if the editor changed while we were waiting,
+      // this completion is for an old state and will likely be wrong
+      if (model.getVersionId() !== lastCompletionVersion) {
+        console.log('[Completions] Stale result (editor changed), discarding')
+        return { items: [] }
+      }
 
       if (!completion || !completion.trim()) {
         console.log('[Completions] Empty response')
         return { items: [] }
       }
 
-      // Truncate to first 4 lines if too long
       let result = completion
-      const resultLines = result.split('\n')
-      if (resultLines.length > 4) {
-        result = resultLines.slice(0, 4).join('\n')
-        console.log(`[Completions] Truncated ${resultLines.length} → 4 lines`)
+
+      // Client-side overlap guard: strip any tail of the completion that
+      // duplicates text already present after the cursor in the editor.
+      const textAfterCursor = model.getValue().slice(
+        model.getOffsetAt(position)
+      )
+      if (textAfterCursor) {
+        const compLines = result.split('\n')
+        const sufLines = textAfterCursor.split('\n')
+        let overlapLines = 0
+        for (let n = 1; n <= Math.min(compLines.length, sufLines.length); n++) {
+          const tail = compLines.slice(-n).map(l => l.trim())
+          const head = sufLines.slice(0, n).map(l => l.trim())
+          if (tail.every((l, i) => l === head[i])) {
+            overlapLines = n
+          }
+        }
+        if (overlapLines > 0) {
+          result = compLines.slice(0, -overlapLines).join('\n')
+          console.log(`[Completions] Stripped ${overlapLines} overlapping lines`)
+        }
       }
 
-      console.log('[Completions] ✓ Got:', JSON.stringify(result.slice(0, 80)))
+      // Safety cap at 20 lines — keeps ghost text readable
+      const resultLines = result.split('\n')
+      if (resultLines.length > 20) {
+        result = resultLines.slice(0, 20).join('\n')
+        console.log(`[Completions] Capped ${resultLines.length} → 20 lines`)
+      }
+
+      if (!result.trim()) {
+        console.log('[Completions] Empty after overlap trimming')
+        return { items: [] }
+      }
+
+      console.log('[Completions] ✓ Got:', JSON.stringify(result.slice(0, 120)))
 
       return {
         items: [{
@@ -3282,6 +3332,7 @@ async function sendVCMessage(prompt: string) {
       prompt: prompt,
       urdfContent: currentUrdf,
       kinematicContext: kinematicContext,
+      sessionId: aiSessionId,
     }) as { explanation: string; new_urdf: string; stats: string }
 
     thinking.remove()

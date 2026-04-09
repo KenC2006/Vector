@@ -387,6 +387,7 @@ class JSONRPCServer:
         prompt = params["prompt"]
         urdf_content = params["urdf_content"]
         kinematic_context = params.get("kinematic_context", None)
+        session_id = params.get("session_id", "default")
 
         if not isinstance(prompt, str):
             raise ValueError("Parameter 'prompt' must be a string")
@@ -404,8 +405,8 @@ class JSONRPCServer:
             except Exception as parse_err:
                 print(f"[ai_edit] URDF pre-parse skipped: {parse_err}", file=sys.stderr)
 
-            # Call Claude to generate edit with optional frontend context
-            result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context)
+            # Call Claude to generate edit with conversation history
+            result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context, session_id)
 
             return {
                 "explanation": result.get("explanation", "Edit applied"),
@@ -436,6 +437,7 @@ class JSONRPCServer:
         cursor_line = params.get("cursor_line", 1)
         cursor_column = params.get("cursor_column", 1)
         prefix = params.get("prefix", "")
+        kinematic_context = params.get("kinematic_context", "")
 
         if not isinstance(urdf_content, str):
             raise ValueError("Parameter 'urdf_content' must be a string")
@@ -451,25 +453,18 @@ class JSONRPCServer:
                     urdf_content,
                     cursor_line,
                     cursor_column,
-                    prefix
+                    prefix,
+                    kinematic_context
                 )
                 print(f"[server] ai_complete (claude): got {len(completion)} chars", file=sys.stderr)
                 return completion
             except Exception as e:
-                print(f"[server] Claude failed, falling back to local: {e}", file=sys.stderr)
+                print(f"[server] Claude completion failed: {e}", file=sys.stderr)
+                return ""
 
-        # Local pattern-based fallback
-        try:
-            completion = _generate_local_completion(
-                urdf_content, cursor_line, cursor_column, prefix
-            )
-            if completion:
-                print(f"[server] ai_complete (local): got {len(completion)} chars", file=sys.stderr)
-                return completion
-            return ""
-        except Exception as e:
-            print(f"[server] local completion error: {e}", file=sys.stderr)
-            return ""
+        # No Claude API available — return empty rather than low-quality local suggestions
+        print(f"[server] ai_complete: Claude not available, returning empty", file=sys.stderr)
+        return ""
 
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
