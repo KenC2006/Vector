@@ -459,6 +459,62 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Failed to read binary file: {}", e))
 }
 
+/// Open folder dialog and return the selected directory path
+#[tauri::command]
+async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path: Option<tauri_plugin_dialog::FilePath> = app
+        .dialog()
+        .file()
+        .blocking_pick_folder();
+
+    Ok(path.map(|p| p.to_string()))
+}
+
+/// List files in a directory (recursive, max 2 levels deep)
+#[tauri::command]
+async fn list_directory(path: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut entries = Vec::new();
+    list_dir_recursive(&std::path::Path::new(&path), &path, 0, 2, &mut entries)
+        .map_err(|e| format!("Failed to list directory: {}", e))?;
+    Ok(entries)
+}
+
+fn list_dir_recursive(
+    dir: &std::path::Path,
+    root: &str,
+    depth: u32,
+    max_depth: u32,
+    entries: &mut Vec<serde_json::Value>,
+) -> std::io::Result<()> {
+    if depth > max_depth { return Ok(()); }
+    let mut items: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    items.sort_by_key(|e| e.file_name());
+
+    for entry in items {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let full_path = path.to_string_lossy().to_string();
+        let is_dir = path.is_dir();
+
+        // Skip hidden files and common non-relevant dirs
+        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" {
+            continue;
+        }
+
+        entries.push(json!({
+            "name": name,
+            "path": full_path,
+            "isDir": is_dir,
+            "depth": depth,
+        }));
+
+        if is_dir {
+            list_dir_recursive(&path, root, depth + 1, max_depth, entries)?;
+        }
+    }
+    Ok(())
+}
+
 /// Open file dialog and return selected file path
 #[tauri::command]
 async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -799,6 +855,8 @@ pub fn run() {
             open_file,
             read_binary_file,
             open_file_dialog,
+            open_folder_dialog,
+            list_directory,
             save_file_dialog,
             get_recent_files,
             git_branch,

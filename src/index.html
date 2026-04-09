@@ -58,9 +58,12 @@
           <!-- Explorer panel -->
           <div class="sidebar-panel" id="panel-explorer">
             <div class="sp-title">Explorer</div>
-            <div class="explorer-actions" style="display: flex; gap: 6px; margin-bottom: 12px; padding: 0 12px;">
+            <div class="explorer-actions" style="display: flex; gap: 6px; margin-bottom: 8px; padding: 0 12px;">
               <button id="btn-open-file" title="Open File (Ctrl+O)" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Open File</button>
               <button id="btn-save-file" title="Save (Ctrl+S)" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Save</button>
+            </div>
+            <div class="explorer-actions" style="display: flex; gap: 6px; margin-bottom: 12px; padding: 0 12px;">
+              <button id="btn-open-folder" title="Open Folder" style="flex: 1; padding: 6px 12px; background: #2d2d30; border: 1px solid #3e3e42; color: #cccccc; cursor: pointer; border-radius: 4px; font-size: 12px;">Open Folder</button>
             </div>
             <div class="sb-section">
               <div class="sb-header" data-target="files-list">
@@ -87,8 +90,6 @@
             </div>
             <div id="build-tree" class="build-tree"></div>
             <div class="build-actions">
-              <button type="button" class="ba-btn primary" id="btn-export-urdf">Save URDF Snapshot</button>
-              <button type="button" class="ba-btn" id="btn-export-mjcf">Copy URDF to Editor</button>
               <button type="button" class="ba-btn" id="btn-export-stl">Export Robot STL</button>
               <button type="button" class="ba-btn danger" id="btn-clear-assembly">Reset to Empty Robot</button>
             </div>
@@ -193,8 +194,9 @@
                 <div class="setting-row">
                   <span class="setting-label">Theme</span>
                   <select id="setting-theme" class="setting-select">
-                    <option value="dark">Dark</option>
-                    <option value="light">Light</option>
+                    <option value="dark">Dark (Default)</option>
+                    <option value="night-owl">Night Owl</option>
+                    <option value="tokyo-night">Tokyo Night</option>
                   </select>
                 </div>
               </div>
@@ -219,6 +221,18 @@
             </div>
             <div id="editor-wrap">
               <div id="monaco-container"></div>
+              <div id="editor-welcome" style="display:flex">
+                <div class="welcome-content">
+                  <div class="welcome-logo">VECTOR</div>
+                  <div class="welcome-subtitle">AI-Native Robotics IDE</div>
+                  <div class="welcome-actions">
+                    <div class="welcome-action"><kbd>Ctrl+O</kbd> Open File</div>
+                    <div class="welcome-action"><kbd>Ctrl+L</kbd> AI Chat</div>
+                    <div class="welcome-action"><kbd>+</kbd> New File</div>
+                  </div>
+                  <div class="welcome-hint">Open a folder or file to get started</div>
+                </div>
+              </div>
             </div>
           </div>
           <div id="resize-handle"></div>

@@ -41,6 +41,13 @@ function waitForTauri(timeoutMs = 5000): Promise<void> {
   })
 }
 
+// ── Default empty URDF ──────────────────────────────────────────────────────
+
+const SAMPLE_URDF = `<?xml version="1.0"?>
+<robot name="robot">
+  <link name="base_link"/>
+</robot>`
+
 // ── Monaco Editor ────────────────────────────────────────────────────────────
 
 import * as monaco from 'monaco-editor'
@@ -105,66 +112,112 @@ monaco.editor.defineTheme('vector-dark', {
   },
 })
 
-// Light theme for Monaco
-monaco.editor.defineTheme('vector-light', {
-  base: 'vs',
+// Night Owl theme for Monaco
+monaco.editor.defineTheme('vector-night-owl', {
+  base: 'vs-dark',
   inherit: true,
   rules: [
-    { token: 'comment', foreground: '008000', fontStyle: 'italic' },
-    { token: 'tag', foreground: '0000ff' },
-    { token: 'attribute.name', foreground: '0451a5' },
-    { token: 'attribute.value', foreground: 'a31515' },
-    { token: 'string', foreground: 'a31515' },
-    { token: 'number', foreground: '098658' },
-    { token: 'keyword', foreground: 'af00db' },
-    { token: 'type', foreground: '267f99' },
-    { token: 'delimiter', foreground: '333333' },
-    { token: 'delimiter.xml', foreground: '333333' },
-    { token: 'key', foreground: '0451a5' },
-    { token: 'metatag', foreground: '0000ff' },
-    { token: 'metatag.content.xml', foreground: 'a31515' },
+    { token: 'comment', foreground: '637777', fontStyle: 'italic' },
+    { token: 'tag', foreground: 'caece6' },
+    { token: 'attribute.name', foreground: 'c5e478' },
+    { token: 'attribute.value', foreground: 'ecc48d' },
+    { token: 'string', foreground: 'ecc48d' },
+    { token: 'number', foreground: 'F78C6C' },
+    { token: 'keyword', foreground: 'c792ea' },
+    { token: 'type', foreground: 'ffcb8b' },
+    { token: 'delimiter', foreground: 'd6deeb' },
+    { token: 'delimiter.xml', foreground: 'd6deeb' },
+    { token: 'key', foreground: 'c5e478' },
+    { token: 'metatag', foreground: '82aaff' },
+    { token: 'metatag.content.xml', foreground: 'ecc48d' },
   ],
   colors: {
-    'editor.background': '#ffffff',
-    'editor.foreground': '#333333',
-    'editorLineNumber.foreground': '#999999',
-    'editorLineNumber.activeForeground': '#333333',
-    'editor.selectionBackground': '#add6ff',
-    'editor.lineHighlightBackground': '#f5f5f5',
-    'editorCursor.foreground': '#333333',
-    'editorIndentGuide.background': '#d3d3d3',
-    'editorIndentGuide.activeBackground': '#939393',
-    'editorBracketMatch.background': '#add6ff80',
-    'editorBracketMatch.border': '#b9b9b9',
-    'scrollbarSlider.background': '#c1c1c166',
-    'scrollbarSlider.hoverBackground': '#9e9e9eb3',
-    'scrollbarSlider.activeBackground': '#bfbfbf66',
-    'minimap.background': '#ffffff',
-    'editorOverviewRuler.border': '#d4d4d4',
-    'editor.lineHighlightBorder': '#eeeeee',
-    'editorGutter.background': '#ffffff',
-    'editorWidget.background': '#f3f3f3',
-    'editorWidget.border': '#c8c8c8',
-    'editorSuggestWidget.background': '#f3f3f3',
-    'editorSuggestWidget.border': '#c8c8c8',
-    'editorSuggestWidget.selectedBackground': '#cce5ff',
+    'editor.background': '#011627',
+    'editor.foreground': '#d6deeb',
+    'editorLineNumber.foreground': '#4b6479',
+    'editorLineNumber.activeForeground': '#89a4bb',
+    'editor.selectionBackground': '#1d3b53',
+    'editor.lineHighlightBackground': '#28707d29',
+    'editorCursor.foreground': '#80a4c2',
+    'editorIndentGuide.background': '#122d42',
+    'editorIndentGuide.activeBackground': '#1d3b53',
+    'scrollbarSlider.background': '#1d3b5366',
+    'scrollbarSlider.hoverBackground': '#1d3b53b3',
+    'minimap.background': '#011627',
+    'editorWidget.background': '#0b2942',
+    'editorWidget.border': '#122d42',
+    'editorSuggestWidget.background': '#0b2942',
+    'editorSuggestWidget.border': '#122d42',
+    'editorSuggestWidget.selectedBackground': '#1d3b53',
+  },
+})
+
+// Tokyo Night theme for Monaco
+monaco.editor.defineTheme('vector-tokyo-night', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '51597d', fontStyle: 'italic' },
+    { token: 'tag', foreground: 'f7768e' },
+    { token: 'attribute.name', foreground: 'bb9af7' },
+    { token: 'attribute.value', foreground: '9ece6a' },
+    { token: 'string', foreground: '9ece6a' },
+    { token: 'number', foreground: 'ff9e64' },
+    { token: 'keyword', foreground: 'bb9af7' },
+    { token: 'type', foreground: '0db9d7' },
+    { token: 'delimiter', foreground: 'a9b1d6' },
+    { token: 'delimiter.xml', foreground: 'a9b1d6' },
+    { token: 'key', foreground: '7aa2f7' },
+    { token: 'metatag', foreground: '7aa2f7' },
+    { token: 'metatag.content.xml', foreground: '9ece6a' },
+  ],
+  colors: {
+    'editor.background': '#1a1b26',
+    'editor.foreground': '#a9b1d6',
+    'editorLineNumber.foreground': '#363b54',
+    'editorLineNumber.activeForeground': '#787c99',
+    'editor.selectionBackground': '#515c7e4d',
+    'editor.lineHighlightBackground': '#1e202e',
+    'editorCursor.foreground': '#c0caf5',
+    'editorIndentGuide.background': '#292e42',
+    'editorIndentGuide.activeBackground': '#363b54',
+    'scrollbarSlider.background': '#292e4266',
+    'scrollbarSlider.hoverBackground': '#363b54b3',
+    'minimap.background': '#1a1b26',
+    'editorWidget.background': '#1e202e',
+    'editorWidget.border': '#292e42',
+    'editorSuggestWidget.background': '#1e202e',
+    'editorSuggestWidget.border': '#292e42',
+    'editorSuggestWidget.selectedBackground': '#24283b',
   },
 })
 
 // ── Theme system ────────────────────────────────────────────────────────────
 
-function applyTheme(theme: 'dark' | 'light') {
-  document.documentElement.classList.toggle('theme-light', theme === 'light')
-  monaco.editor.setTheme(theme === 'dark' ? 'vector-dark' : 'vector-light')
+type ThemeId = 'dark' | 'night-owl' | 'tokyo-night'
+
+const MONACO_THEMES: Record<ThemeId, string> = {
+  'dark': 'vector-dark',
+  'night-owl': 'vector-night-owl',
+  'tokyo-night': 'vector-tokyo-night',
+}
+
+function applyTheme(theme: ThemeId) {
+  // Remove all theme classes
+  document.documentElement.classList.remove('theme-night-owl', 'theme-tokyo-night')
+  // Add new theme class (dark is the default, no class needed)
+  if (theme !== 'dark') {
+    document.documentElement.classList.add(`theme-${theme}`)
+  }
+  monaco.editor.setTheme(MONACO_THEMES[theme] || 'vector-dark')
   localStorage.setItem('vector_theme', theme)
-  // Update the settings dropdown if it exists
   const select = document.getElementById('setting-theme') as HTMLSelectElement | null
   if (select) select.value = theme
 }
 
 // Apply saved theme on load
-const savedTheme = (localStorage.getItem('vector_theme') || 'dark') as 'dark' | 'light'
-if (savedTheme === 'light') applyTheme('light')
+const savedTheme = (localStorage.getItem('vector_theme') || 'dark') as ThemeId
+if (savedTheme !== 'dark') applyTheme(savedTheme)
 
 // ── Mesh file loading (async) ────────────────────────────────────────────────
 
@@ -181,11 +234,17 @@ async function loadMeshFile(
     if (resolvedPath.startsWith('package://')) {
       resolvedPath = resolvedPath.replace('package://', '')
     }
-    // If relative, try resolving from current file's directory
-    if (currentFilePath && !resolvedPath.match(/^[A-Z]:/i) && !resolvedPath.startsWith('/')) {
-      const dir = currentFilePath.replace(/[\\/][^\\/]+$/, '')
-      resolvedPath = `${dir}/${resolvedPath}`
+    // If relative, resolve from the active file's directory or opened folder
+    const activeFileDiskPath = filePaths[activeFile] || currentFilePath
+    if (!resolvedPath.match(/^[A-Z]:/i) && !resolvedPath.startsWith('/')) {
+      if (activeFileDiskPath) {
+        const dir = activeFileDiskPath.replace(/[\\/][^\\/]+$/, '')
+        resolvedPath = `${dir}/${resolvedPath}`
+      } else if (openedFolderPath) {
+        resolvedPath = `${openedFolderPath}/${resolvedPath}`
+      }
     }
+    console.log(`[mesh] Loading: ${filename} → ${resolvedPath}`)
 
     let buffer: ArrayBuffer
     if (/^https?:\/\//i.test(resolvedPath) || resolvedPath.startsWith('/')) {
@@ -237,14 +296,12 @@ async function loadMeshFile(
   }
 }
 
-// Create Monaco models — start with just the sample URDF
-const monacoModels: Record<string, monaco.editor.ITextModel> = {
-  'robot.urdf': monaco.editor.createModel(SAMPLE_URDF, 'xml'),
-}
+// Create Monaco models — start empty (no default file)
+const monacoModels: Record<string, monaco.editor.ITextModel> = {}
 
 // Create Monaco editor instance
 const monacoEditor = monaco.editor.create(monacoContainer, {
-  model: monacoModels['robot.urdf'],
+  model: null,  // no file open initially
   theme: 'vector-dark',
   fontSize: 13,
   fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
@@ -634,7 +691,7 @@ const tabNewBtn = tabBar.querySelector('.tab-new') as HTMLButtonElement
 const filesList = document.getElementById('files-list') as HTMLDivElement | null
 
 // Track open files and their paths
-const openFiles: string[] = ['robot.urdf']
+const openFiles: string[] = []
 const filePaths: Record<string, string | null> = {} // filename → disk path (null = unsaved)
 const viewStates: Record<string, monaco.editor.ICodeEditorViewState | null> = {}
 let untitledCounter = 0
@@ -689,6 +746,15 @@ function renderTabs() {
 
 function renderExplorer() {
   if (!filesList) return
+  // If a folder is open, just update active highlights — don't rebuild the tree
+  if (openedFolderPath) {
+    filesList.querySelectorAll('.file-item').forEach(item => {
+      const text = item.textContent?.trim() || ''
+      item.classList.toggle('active', text === activeFile)
+    })
+    return
+  }
+  // No folder open — show open files list
   filesList.innerHTML = ''
   for (const filename of openFiles) {
     const ext = getFileExt(filename)
@@ -709,6 +775,8 @@ function switchToFile(filename: string) {
 
   activeFile = filename
   fileTypeLabel.textContent = getFileType(filename)
+
+  hideWelcomeState()
 
   // Switch Monaco model
   const model = monacoModels[filename]
@@ -731,8 +799,10 @@ function switchToFile(filename: string) {
 
   monacoEditor.focus()
 
-  // Reparse if it's a URDF file
+  // Reparse 3D viewport if switching to a URDF/XML file
   if (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml') {
+    reparseURDF()
+    urdfAssemblyApi?.onModelUpdated()
     runLocalValidation()
   }
 }
@@ -775,13 +845,22 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   return filename
 }
 
-function closeFile(filename: string) {
-  // Can't close the last file
-  if (openFiles.length <= 1) {
-    showToast('Cannot close the last file', 'warning')
-    return
-  }
+function showWelcomeState() {
+  activeFile = ''
+  monacoEditor.setModel(null)
+  // Show welcome overlay
+  const welcomeEl = document.getElementById('editor-welcome')
+  if (welcomeEl) welcomeEl.style.display = 'flex'
+  renderTabs()
+  renderExplorer()
+}
 
+function hideWelcomeState() {
+  const welcomeEl = document.getElementById('editor-welcome')
+  if (welcomeEl) welcomeEl.style.display = 'none'
+}
+
+function closeFile(filename: string) {
   const idx = openFiles.indexOf(filename)
   if (idx < 0) return
 
@@ -797,11 +876,15 @@ function closeFile(filename: string) {
     delete monacoModels[filename]
   }
 
-  // Switch to adjacent tab if closing the active file
+  // Switch to adjacent tab or show welcome if no files left
   if (filename === activeFile) {
-    const newIdx = Math.min(idx, openFiles.length - 1)
-    activeFile = '' // force switch
-    switchToFile(openFiles[newIdx])
+    if (openFiles.length > 0) {
+      const newIdx = Math.min(idx, openFiles.length - 1)
+      activeFile = '' // force switch
+      switchToFile(openFiles[newIdx])
+    } else {
+      showWelcomeState()
+    }
   }
 
   renderTabs()
@@ -932,7 +1015,7 @@ const wireMat = new THREE.MeshBasicMaterial({
   color: 0x4a9eff, wireframe: true, transparent: true, opacity: 0.12,
 })
 const defaultMat = new THREE.MeshStandardMaterial({
-  color: 0x888888, roughness: 0.4, metalness: 0.5,
+  color: 0xbbbbbb, roughness: 0.4, metalness: 0.3,
 })
 
 // ── URDF Parser ─────────────────────────────────────────────────────────────
@@ -979,6 +1062,24 @@ function parseURDFToScene(urdfXml: string): ParsedRobot {
   const jointData: URDFJoint[] = []
   const childLinkSet = new Set<string>()
 
+  // Collect named materials defined at robot level (e.g., <material name="Grey"><color rgba="0.7 0.7 0.7 1"/></material>)
+  const namedMaterials = new Map<string, THREE.MeshStandardMaterial>()
+  const robotEl = doc.querySelector('robot')
+  if (robotEl) {
+    for (const matEl of robotEl.querySelectorAll(':scope > material')) {
+      const matName = matEl.getAttribute('name')
+      const colorEl = matEl.querySelector('color')
+      if (matName && colorEl) {
+        const rgba = (colorEl.getAttribute('rgba') || '0.5 0.5 0.5 1').split(/\s+/).map(parseFloat)
+        namedMaterials.set(matName, new THREE.MeshStandardMaterial({
+          color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
+          roughness: 0.4,
+          metalness: 0.3,
+        }))
+      }
+    }
+  }
+
   // Parse all links
   const linkElements = doc.querySelectorAll('link')
   for (const linkEl of linkElements) {
@@ -1009,7 +1110,7 @@ function parseURDFToScene(urdfXml: string): ParsedRobot {
 
       let mat: THREE.Material = defaultMat
 
-      // Get material color if specified
+      // Get material color if specified (inline or by name reference)
       const matEl = visualEl.querySelector('material')
       if (matEl) {
         const colorEl = matEl.querySelector('color')
@@ -1019,8 +1120,14 @@ function parseURDFToScene(urdfXml: string): ParsedRobot {
           mat = new THREE.MeshStandardMaterial({
             color,
             roughness: 0.4,
-            metalness: 0.5,
+            metalness: 0.3,
           })
+        } else {
+          // Try named material lookup
+          const matName = matEl.getAttribute('name')
+          if (matName && namedMaterials.has(matName)) {
+            mat = namedMaterials.get(matName)!
+          }
         }
       }
 
@@ -1825,7 +1932,9 @@ let urdfAssemblyApi: { onModelUpdated(): void; recordUndoExternal(content: strin
 
 function reparseURDF() {
   try {
-    const urdfContent = monacoEditor.getValue()
+    const model = monacoEditor.getModel()
+    if (!model) return  // no file open
+    const urdfContent = model.getValue()
     const newParsed = parseURDFToScene(urdfContent)
     const newKinematicData = buildKinematicGraphFromURDF(urdfContent)
 
@@ -3188,7 +3297,7 @@ const settingTheme = document.getElementById('setting-theme') as HTMLSelectEleme
 if (settingTheme) {
   settingTheme.value = savedTheme
   settingTheme.addEventListener('change', () => {
-    applyTheme(settingTheme.value as 'dark' | 'light')
+    applyTheme(settingTheme.value as ThemeId)
   })
 }
 
@@ -3304,12 +3413,71 @@ renderShortcutsList()
 // ── File I/O Buttons ─────────────────────────────────────────────────────────
 const btnOpenFile = document.getElementById('btn-open-file') as HTMLButtonElement | null
 const btnSaveFile = document.getElementById('btn-save-file') as HTMLButtonElement | null
+const btnOpenFolder = document.getElementById('btn-open-folder') as HTMLButtonElement | null
 
 if (btnOpenFile) {
   btnOpenFile.addEventListener('click', openFileDialog)
 }
 if (btnSaveFile) {
   btnSaveFile.addEventListener('click', saveCurrentFile)
+}
+
+// ── Open Folder ─────────────────────────────────────────────────────────────
+
+let openedFolderPath: string | null = null
+
+async function openFolderDialog() {
+  try {
+    const folderPath = await invoke<string | null>('open_folder_dialog')
+    if (!folderPath) return
+
+    openedFolderPath = folderPath
+    const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>('list_directory', { path: folderPath })
+
+    // Update explorer header
+    const sbHeader = document.querySelector('#panel-explorer .sb-header')
+    if (sbHeader) {
+      const folderName = folderPath.split(/[\\/]/).pop() || folderPath
+      sbHeader.innerHTML = `<span class="arrow">&#9662;</span> ${folderName}`
+    }
+
+    // Render folder tree
+    const filesList = document.getElementById('files-list')
+    if (!filesList) return
+    filesList.innerHTML = ''
+
+    for (const entry of entries) {
+      const el = document.createElement('div')
+      const ext = entry.name.split('.').pop()?.toLowerCase() || ''
+      if (entry.isDir) {
+        el.className = 'file-item folder'
+        el.style.paddingLeft = `${12 + entry.depth * 14}px`
+        el.innerHTML = `<span class="fi-arrow">&#9656;</span>${entry.name}/`
+      } else {
+        el.className = 'file-item'
+        el.style.paddingLeft = `${12 + entry.depth * 14}px`
+        el.innerHTML = `<span class="fi-dot ${ext}"></span>${entry.name}`
+        el.addEventListener('click', async () => {
+          try {
+            const content = await invoke<string>('open_file', { path: entry.path })
+            createNewFile(entry.name, content, entry.path)
+            currentFilePath = entry.path
+          } catch (err) {
+            showToast(`Failed to open ${entry.name}: ${err}`, 'error')
+          }
+        })
+      }
+      filesList.appendChild(el)
+    }
+
+    showToast(`Opened folder: ${folderPath.split(/[\\/]/).pop()}`, 'success')
+  } catch (err) {
+    showToast(`Error opening folder: ${err}`, 'error')
+  }
+}
+
+if (btnOpenFolder) {
+  btnOpenFolder.addEventListener('click', openFolderDialog)
 }
 
 // ── Toast notifications ──────────────────────────────────────────────────────

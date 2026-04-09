@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { STLExporter } from 'three/addons/exporters/STLExporter.js'
+import { invoke } from '@tauri-apps/api/core'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import { isMountLinkName } from './attachmentNodes'
@@ -525,8 +526,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const inspTitle = document.getElementById('insp-title') as HTMLSpanElement | null
   const toolboxSearch = document.getElementById('toolbox-search') as HTMLInputElement | null
   const btnFocusBase = document.getElementById('btn-load-example') as HTMLButtonElement | null
-  const btnSaveUrdf = document.getElementById('btn-export-urdf') as HTMLButtonElement | null
-  const btnCopyUrdf = document.getElementById('btn-export-mjcf') as HTMLButtonElement | null
   const btnResetRobot = document.getElementById('btn-clear-assembly') as HTMLButtonElement | null
   const btnToggleNodeRings = document.getElementById('toggle-node-rings') as HTMLButtonElement | null
   let showNodeRings = false
@@ -1326,21 +1325,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const base = Object.values(graph).find(l => !l.parent)?.name || 'base_link'
     selectLink(base)
   })
-  btnSaveUrdf?.addEventListener('click', () => {
-    const blob = new Blob([ctx.getUrdfText()], { type: 'application/xml' })
-    const url = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), { href: url, download: 'robot.urdf' }).click()
-    URL.revokeObjectURL(url)
-    ctx.showToast('Saved URDF snapshot', 'success')
-  })
-  btnCopyUrdf?.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(ctx.getUrdfText())
-      ctx.showToast('URDF copied to clipboard', 'success')
-    } catch {
-      ctx.showToast('Clipboard copy failed', 'warning')
-    }
-  })
   btnResetRobot?.addEventListener('click', () => {
     if (!confirm('Reset robot to a minimal base_link URDF?')) return
     recordUndo()
@@ -1354,15 +1338,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   const stlExporter = new STLExporter()
 
-  function downloadBlob(data: unknown, filename: string, mime: string) {
-    const blobData = data instanceof DataView ? data.buffer : data
-    const blob = new Blob([blobData as BlobPart], { type: mime })
-    const url = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), { href: url, download: filename }).click()
-    URL.revokeObjectURL(url)
+  async function saveStlToFile(group: THREE.Object3D, defaultName: string) {
+    try {
+      const path = await invoke<string | null>('save_file_dialog', { default_name: defaultName })
+      if (!path) return
+
+      // Export as ASCII STL (text-based, works with save_file)
+      const stlString = stlExporter.parse(group, { binary: false }) as string
+      await invoke('save_file', { path, content: stlString })
+
+      const filename = path.split(/[\\/]/).pop() || defaultName
+      ctx.showToast(`Exported ${filename}`, 'success')
+    } catch (err) {
+      ctx.showToast(`Export failed: ${err}`, 'error')
+    }
   }
 
-  function exportSelectedLinkSTL() {
+  async function exportSelectedLinkSTL() {
     if (!selectedLink) {
       ctx.showToast('Select a link to export', 'warning')
       return
@@ -1372,16 +1364,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.showToast('Link geometry not found', 'error')
       return
     }
-    const result = stlExporter.parse(linkGroup, { binary: true })
-    downloadBlob(result, `${selectedLink}.stl`, 'application/octet-stream')
-    ctx.showToast(`Exported ${selectedLink}.stl`, 'success')
+    await saveStlToFile(linkGroup, `${selectedLink}.stl`)
   }
 
-  function exportFullRobotSTL() {
+  async function exportFullRobotSTL() {
     const robot = ctx.getParsedRobot()
-    const result = stlExporter.parse(robot.group, { binary: true })
-    downloadBlob(result, 'robot.stl', 'application/octet-stream')
-    ctx.showToast('Exported robot.stl', 'success')
+    await saveStlToFile(robot.group, 'robot.stl')
   }
 
   // Wire export buttons

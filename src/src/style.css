@@ -384,6 +384,30 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: #1e1e1e; }
   position: relative;
 }
 
+#editor-welcome {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-editor);
+}
+.welcome-content { text-align: center; }
+.welcome-logo {
+  font-size: 32px; font-weight: 700; letter-spacing: 0.15em;
+  color: var(--text-dimmer); margin-bottom: 4px;
+}
+.welcome-subtitle { font-size: 13px; color: var(--text-dimmer); margin-bottom: 32px; }
+.welcome-actions { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-bottom: 24px; }
+.welcome-action {
+  font-size: 12px; color: var(--text-dim);
+  display: flex; align-items: center; gap: 10px;
+}
+.welcome-action kbd {
+  font-family: var(--font); font-size: 11px;
+  background: var(--bg-3); border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 8px; color: var(--text-dimmer);
+  min-width: 60px; text-align: center;
+}
+.welcome-hint { font-size: 11px; color: var(--text-dimmer); }
+
 #monaco-container {
   width: 100%;
   height: 100%;
@@ -2001,26 +2025,46 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: #1e1e1e; }
 }
 
 /* ── Light Theme ── */
-html.theme-light {
-  --bg: #f3f3f3;
-  --bg-1: #ffffff;
-  --bg-2: #f0f0f0;
-  --bg-3: #e5e5e5;
-  --bg-editor: #ffffff;
-  --border: #d4d4d4;
-  --border-dim: #e8e8e8;
-  --text: #333333;
-  --text-dim: #6e6e6e;
-  --text-dimmer: #a0a0a0;
-  --accent: #005fb8;
-  --accent-dim: rgba(0, 95, 184, 0.12);
-  --accent-glow: rgba(0, 95, 184, 0.06);
-  --orange: #bf8803;
-  --green: #388a6c;
-  --yellow: #c49b1a;
-  --red: #cd3131;
-  --purple: #af00db;
-  --font: 'Consolas', 'Menlo', 'Monaco', 'Courier New', monospace;
+html.theme-night-owl {
+  --bg: #011627;
+  --bg-1: #011627;
+  --bg-2: #0b2942;
+  --bg-3: #122d42;
+  --bg-editor: #011627;
+  --border: #122d42;
+  --border-dim: #0b2942;
+  --text: #d6deeb;
+  --text-dim: #89a4bb;
+  --text-dimmer: #4b6479;
+  --accent: #82aaff;
+  --accent-dim: rgba(130, 170, 255, 0.12);
+  --accent-glow: rgba(130, 170, 255, 0.06);
+  --orange: #f78c6c;
+  --green: #c5e478;
+  --yellow: #ecc48d;
+  --red: #ef5350;
+  --purple: #c792ea;
+}
+
+html.theme-tokyo-night {
+  --bg: #16161e;
+  --bg-1: #1a1b26;
+  --bg-2: #1e202e;
+  --bg-3: #24283b;
+  --bg-editor: #1a1b26;
+  --border: #292e42;
+  --border-dim: #1e202e;
+  --text: #a9b1d6;
+  --text-dim: #787c99;
+  --text-dimmer: #51597d;
+  --accent: #7aa2f7;
+  --accent-dim: rgba(122, 162, 247, 0.12);
+  --accent-glow: rgba(122, 162, 247, 0.06);
+  --orange: #ff9e64;
+  --green: #9ece6a;
+  --yellow: #e0af68;
+  --red: #f7768e;
+  --purple: #bb9af7;
 }
 
 /* ── Settings Panel ── */
