@@ -2,6 +2,9 @@ import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { STLLoader } from 'three/addons/loaders/STLLoader.js'
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
@@ -9,6 +12,9 @@ import { applyRichVisuals } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
 
 const stlLoader = new STLLoader()
+const objLoader = new OBJLoader()
+const colladaLoader = new ColladaLoader()
+const gltfLoader = new GLTFLoader()
 
 /** Raise the robot group so its lowest geometry point touches Y=0 (ground). */
 function groundRobot(robotGroup: THREE.Group) {
@@ -258,39 +264,60 @@ async function loadMeshFile(
       buffer = new Uint8Array(bytes).buffer
     }
 
-    // Detect format from extension
+    // Detect format and parse
     const ext = filename.split('.').pop()?.toLowerCase() || ''
-    let geometry: THREE.BufferGeometry | null = null
+    let loadedObject: THREE.Object3D | null = null
 
     if (ext === 'stl') {
-      geometry = stlLoader.parse(buffer)
+      const geometry = stlLoader.parse(buffer)
+      loadedObject = new THREE.Mesh(geometry, material)
+    } else if (ext === 'obj') {
+      const text = new TextDecoder().decode(buffer)
+      const group = objLoader.parse(text)
+      // Apply material to all meshes in the OBJ group
+      group.traverse(child => {
+        if (child instanceof THREE.Mesh && !child.material) child.material = material
+      })
+      loadedObject = group
+    } else if (ext === 'dae') {
+      const text = new TextDecoder().decode(buffer)
+      const result = colladaLoader.parse(text, resolvedPath)
+      loadedObject = result?.scene ?? null
+    } else if (ext === 'glb' || ext === 'gltf') {
+      // GLTF needs async parsing
+      const result = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+        gltfLoader.parse(buffer, '', resolve, reject)
+      })
+      loadedObject = result.scene
     }
-    // Add more loaders here as needed (OBJ, DAE, etc.)
 
-    if (!geometry) {
+    if (!loadedObject) {
       console.warn(`[mesh] Unsupported mesh format: ${ext} (${filename})`)
       return
     }
 
-    // Create mesh with the parsed geometry
-    const loadedMesh = new THREE.Mesh(geometry, material)
-    loadedMesh.castShadow = true
-    loadedMesh.receiveShadow = true
+    // Apply shadow and userData to all meshes
+    loadedObject.traverse(child => {
+      if (child instanceof THREE.Mesh) {
+        child.castShadow = true
+        child.receiveShadow = true
+      }
+    })
 
     // Apply scale if specified
     if (scaleAttr) {
       const s = scaleAttr.split(/\s+/).map(parseFloat)
-      if (s.length >= 3) loadedMesh.scale.set(s[0], s[1], s[2])
-      else if (s.length === 1 && s[0]) loadedMesh.scale.setScalar(s[0])
+      if (s.length >= 3) loadedObject.scale.set(s[0], s[1], s[2])
+      else if (s.length === 1 && s[0]) loadedObject.scale.setScalar(s[0])
     }
 
     // Copy userData from placeholder
-    Object.assign(loadedMesh.userData, placeholder.userData)
+    Object.assign(loadedObject.userData, placeholder.userData)
 
-    // Replace placeholder with loaded mesh
+    // Replace placeholder with loaded object
     parent.remove(placeholder)
     placeholder.geometry.dispose()
-    parent.add(loadedMesh)
+    parent.add(loadedObject)
 
   } catch (err) {
     console.warn(`[mesh] Failed to load ${filename}:`, err)
@@ -810,6 +837,56 @@ function switchToFile(filename: string) {
   }
 }
 
+// ── Recent files ────────────────────────────────────────────────────────────
+
+const MAX_RECENT = 5
+let recentFiles: Array<{ name: string; path: string }> = JSON.parse(localStorage.getItem('vector_recent_files') || '[]')
+
+function addRecentFile(name: string, path: string) {
+  recentFiles = recentFiles.filter(r => r.path !== path)
+  recentFiles.unshift({ name, path })
+  if (recentFiles.length > MAX_RECENT) recentFiles.pop()
+  localStorage.setItem('vector_recent_files', JSON.stringify(recentFiles))
+  renderRecentFiles()
+}
+
+function renderRecentFiles() {
+  const container = document.getElementById('welcome-recent')
+  if (!container) return
+  if (recentFiles.length === 0) {
+    container.innerHTML = ''
+    return
+  }
+  let html = '<div class="welcome-recent-title">Recent</div>'
+  for (const file of recentFiles) {
+    const shortPath = file.path.length > 50 ? '...' + file.path.slice(-47) : file.path
+    html += `<div class="welcome-recent-item" data-path="${file.path.replace(/"/g, '&quot;')}" title="${file.path.replace(/"/g, '&quot;')}">
+      <span class="welcome-recent-name">${file.name}</span>
+      <span class="welcome-recent-path">${shortPath}</span>
+    </div>`
+  }
+  container.innerHTML = html
+
+  // Wire click handlers
+  container.querySelectorAll('.welcome-recent-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      const path = (item as HTMLElement).dataset.path
+      if (!path) return
+      try {
+        const content = await invoke<string>('open_file', { path })
+        const name = path.split(/[\\/]/).pop() || 'file'
+        createNewFile(name, content, path)
+        currentFilePath = path
+      } catch (err) {
+        showToast(`Failed to open: ${err}`, 'error')
+      }
+    })
+  })
+}
+
+// Initial render
+renderRecentFiles()
+
 function createNewFile(filename?: string, content = '', diskPath: string | null = null) {
   if (!filename) {
     untitledCounter++
@@ -826,6 +903,9 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   monacoModels[filename] = monaco.editor.createModel(content, lang)
   openFiles.push(filename)
   filePaths[filename] = diskPath
+
+  // Track in recent files
+  if (diskPath) addRecentFile(filename, diskPath)
 
   // Listen for changes on URDF/XML files with debounce
   if (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml') {
@@ -1727,6 +1807,46 @@ function setViewportCollapsed(collapsed: boolean) {
 
 toggleViewportBtn.addEventListener('click', () => setViewportCollapsed(!viewportCollapsed))
 expandViewportBtn.addEventListener('click', () => setViewportCollapsed(false))
+
+// ── Fullscreen 3D mode ──────────────────────────────────────────────────────
+let viewportFullscreen = false
+const fullscreenViewportBtn = document.getElementById('toggle-fullscreen-viewport') as HTMLButtonElement | null
+const sidebarEl = document.getElementById('sidebar') as HTMLDivElement | null
+const activityBarEl = document.getElementById('activity-bar') as HTMLDivElement | null
+
+function setViewportFullscreen(full: boolean) {
+  viewportFullscreen = full
+  if (full) {
+    // Hide editor, sidebar, activity bar — viewport takes everything
+    editorPanel.style.display = 'none'
+    handle.style.display = 'none'
+    if (sidebarEl) sidebarEl.style.display = 'none'
+    if (activityBarEl) activityBarEl.style.display = 'none'
+    if (sidebarHandle) sidebarHandle.style.display = 'none'
+    viewportPanel.style.flex = '1'
+    fullscreenViewportBtn?.classList.add('active')
+  } else {
+    // Restore everything
+    editorPanel.style.display = ''
+    handle.style.display = ''
+    if (sidebarEl) sidebarEl.style.display = ''
+    if (activityBarEl) activityBarEl.style.display = ''
+    if (sidebarHandle) sidebarHandle.style.display = ''
+    viewportPanel.style.flex = ''
+    editorPanel.style.width = savedEditorWidth
+    fullscreenViewportBtn?.classList.remove('active')
+  }
+  // Trigger layout updates
+  requestAnimationFrame(() => {
+    resize()
+    if ((window as any).__vectorEditor) (window as any).__vectorEditor.layout()
+  })
+}
+
+fullscreenViewportBtn?.addEventListener('click', () => setViewportFullscreen(!viewportFullscreen))
+
+// Double-click resize handle to toggle fullscreen
+handle.addEventListener('dblclick', () => setViewportFullscreen(!viewportFullscreen))
 
 // ── Kinematic Graph Data Structure ──────────────────────────────────────────
 
@@ -2858,7 +2978,14 @@ document.addEventListener('keydown', (e) => {
     case 'p':
       setViewportCollapsed(!viewportCollapsed)
       break
+    case 'f':
+      setViewportFullscreen(!viewportFullscreen)
+      break
     case 'escape':
+      if (viewportFullscreen) {
+        setViewportFullscreen(false)
+        break
+      }
       if (graphCanvasVisible) {
         graphCanvasVisible = false
         if (graphContainer) graphContainer.style.display = 'none'
@@ -3487,6 +3614,81 @@ async function openFolderDialog() {
 
 if (btnOpenFolder) {
   btnOpenFolder.addEventListener('click', openFolderDialog)
+}
+
+// ── Drag and drop ───────────────────────────────────────────────────────────
+
+// Tauri 2.x file drop events
+try {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const appWindow = getCurrentWindow()
+  appWindow.onDragDropEvent(async (event) => {
+    if (event.payload.type === 'drop') {
+      const paths = event.payload.paths
+      if (!paths || paths.length === 0) return
+
+      for (const path of paths) {
+        const name = path.split(/[\\/]/).pop() || 'file'
+        const ext = name.split('.').pop()?.toLowerCase() || ''
+
+        // Check if it's a directory by trying to list it
+        try {
+          const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>('list_directory', { path })
+          // It's a directory — open as folder
+          openedFolderPath = path
+          const bcProject = document.getElementById('bc-project')
+          if (bcProject) bcProject.textContent = name
+          const sbHeader = document.querySelector('#panel-explorer .sb-header')
+          if (sbHeader) sbHeader.innerHTML = `<span class="arrow">&#9662;</span> ${name}`
+          const filesList = document.getElementById('files-list')
+          if (filesList) {
+            filesList.innerHTML = ''
+            for (const entry of entries) {
+              const el = document.createElement('div')
+              const entryExt = entry.name.split('.').pop()?.toLowerCase() || ''
+              if (entry.isDir) {
+                el.className = 'file-item folder'
+                el.style.paddingLeft = `${12 + entry.depth * 14}px`
+                el.innerHTML = `<span class="fi-arrow">&#9656;</span>${entry.name}/`
+              } else {
+                el.className = 'file-item'
+                el.style.paddingLeft = `${12 + entry.depth * 14}px`
+                el.innerHTML = `<span class="fi-dot ${entryExt}"></span>${entry.name}`
+                el.addEventListener('click', async () => {
+                  try {
+                    const content = await invoke<string>('open_file', { path: entry.path })
+                    createNewFile(entry.name, content, entry.path)
+                    currentFilePath = entry.path
+                  } catch (err) {
+                    showToast(`Failed to open ${entry.name}: ${err}`, 'error')
+                  }
+                })
+              }
+              filesList.appendChild(el)
+            }
+          }
+          showToast(`Opened folder: ${name}`, 'success')
+          openSidebarPanel('explorer')
+          continue
+        } catch {
+          // Not a directory — try opening as file
+        }
+
+        if (['urdf', 'xml', 'sdf', 'mjcf', 'json', 'yaml', 'yml', 'txt', 'obj', 'py'].includes(ext)) {
+          try {
+            const content = await invoke<string>('open_file', { path })
+            createNewFile(name, content, path)
+            currentFilePath = path
+            showToast(`Opened ${name}`, 'success')
+          } catch (err) {
+            showToast(`Failed to open ${name}: ${err}`, 'error')
+          }
+        }
+      }
+    }
+  })
+} catch {
+  // Tauri drag-drop not available (dev mode without Tauri)
 }
 
 // ── Toast notifications ──────────────────────────────────────────────────────

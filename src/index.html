@@ -230,7 +230,8 @@
                     <div class="welcome-action"><span class="welcome-action-label">AI Chat</span><kbd>Ctrl+L</kbd></div>
                     <div class="welcome-action"><span class="welcome-action-label">New File</span><kbd>+</kbd></div>
                   </div>
-                  <div class="welcome-hint">Open a folder or file to get started</div>
+                  <div id="welcome-recent"></div>
+                  <div class="welcome-hint">Open a folder or file to get started, or drag and drop</div>
                 </div>
               </div>
             </div>
@@ -274,6 +275,9 @@
                   <span>Simulate</span>
                 </button>
                 <div class="vp-sep"></div>
+                <button class="vp-btn" id="toggle-fullscreen-viewport" title="Fullscreen 3D (F)">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
                 <button class="vp-btn" id="toggle-viewport" title="Close 3D Preview (P)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round"/></svg>
                 </button>
