@@ -22,6 +22,7 @@ export interface UrdfAssemblyContext {
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
   isViewport3D: () => boolean
+  isSimActive?: () => boolean
 }
 
 export interface UrdfAssemblyApi {
@@ -103,6 +104,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function commitUrdf(mutator: (doc: Document) => boolean): boolean {
+    if (ctx.isSimActive?.()) {
+      ctx.showToast('Stop simulation before editing URDF', 'warning')
+      return false
+    }
     const current = ctx.getUrdfText()
     const parser = new DOMParser()
     const doc = parser.parseFromString(current, 'application/xml')
@@ -153,6 +158,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const parentJoint = getParentJointForLink(linkName)
     if (!parentJoint) return null
     return ctx.getParsedRobot().joints.get(parentJoint.name)?.group ?? null
+  }
+
+  function nextUniqueName(prefix: string, taken: Set<string>): string {
+    let idx = 1
+    while (taken.has(`${prefix}_${idx}`)) idx++
+    return `${prefix}_${idx}`
   }
 
   function refreshBuildPanel() {
@@ -229,10 +240,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           </div>
           <div class="bi-actions" style="padding-top:8px">
             <button type="button" class="bi-action-btn focus-btn" id="urdf-apply-origin"><span class="ba-icon">✓</span>Apply</button>
+            <button type="button" class="bi-action-btn del-btn" id="urdf-delete-link"><span class="ba-icon">✕</span>Delete Link</button>
           </div>
-        ` : '<div class="insp-empty">Root link has no parent joint origin</div>'}
+        ` : `
+          <div class="insp-empty">Root link has no parent joint origin</div>
+          <div class="bi-actions" style="padding-top:8px">
+            <button type="button" class="bi-action-btn del-btn root-del" id="urdf-delete-link" disabled><span class="ba-icon">✕</span>Delete Link</button>
+          </div>
+        `}
       </div>
     `
+    const deleteBtn = document.getElementById('urdf-delete-link')
+    deleteBtn?.addEventListener('click', () => {
+      if (!selectedLink) return
+      deleteLinkCascade(selectedLink)
+    })
     if (!parentJoint) return
 
     const parser = new DOMParser()
@@ -286,6 +308,61 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     renderInspector()
   }
 
+  function deleteLinkCascade(targetLink: string) {
+    const graph = ctx.getKinematicGraph()
+    const target = graph[targetLink]
+    if (!target) return
+    if (!target.parent) {
+      ctx.showToast('Cannot delete root link. Use Reset to clear robot.', 'warning')
+      return
+    }
+
+    const deleting = new Set<string>()
+    const walk = (name: string) => {
+      if (deleting.has(name)) return
+      deleting.add(name)
+      const node = graph[name]
+      if (!node) return
+      for (const child of node.children) walk(child)
+    }
+    walk(targetLink)
+
+    const joints = ctx.getKinematicJoints()
+    const jointsRemoved = Object.values(joints).filter(j => deleting.has(j.parentLink) || deleting.has(j.childLink)).length
+    const linksRemoved = deleting.size
+    const parentToSelect = target.parent ?? null
+
+    if (!confirm(`Delete "${targetLink}" and ${linksRemoved - 1} descendant link(s)?`)) return
+
+    const ok = commitUrdf(doc => {
+      let changed = false
+      const jointEls = Array.from(doc.querySelectorAll('joint'))
+      for (const je of jointEls) {
+        const parent = je.querySelector('parent')?.getAttribute('link') || ''
+        const child = je.querySelector('child')?.getAttribute('link') || ''
+        if (deleting.has(parent) || deleting.has(child)) {
+          je.parentNode?.removeChild(je)
+          changed = true
+        }
+      }
+
+      const linkEls = Array.from(doc.querySelectorAll('link'))
+      for (const le of linkEls) {
+        const name = le.getAttribute('name') || ''
+        if (deleting.has(name)) {
+          le.parentNode?.removeChild(le)
+          changed = true
+        }
+      }
+      return changed
+    })
+
+    if (ok) {
+      ctx.showToast(`Deleted ${linksRemoved} link(s), ${jointsRemoved} joint(s)`, 'success')
+      selectLink(parentToSelect)
+    }
+  }
+
   function addTemplate(kind: 'box' | 'cylinder' | 'sphere') {
     if (!selectedLink) {
       ctx.showToast('Select a parent link first', 'warning')
@@ -293,9 +370,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const parentLink = selectedLink
     const graph = ctx.getKinematicGraph()
-    const nextIdx = Object.keys(graph).length + 1
-    const childName = `link_${nextIdx}`
-    const jointName = `joint_${nextIdx}`
+    const joints = ctx.getKinematicJoints()
+    const linkNames = new Set(Object.keys(graph))
+    const jointNames = new Set(Object.keys(joints))
+    const childName = nextUniqueName('link', linkNames)
+    const jointName = nextUniqueName('joint', jointNames)
     const changed = commitUrdf(doc => {
       const robot = doc.querySelector('robot')
       if (!robot) return false
@@ -548,6 +627,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     if (k === 'i') { ctx.switchPanel('inspector'); return }
     if (k === 't') { ctx.switchPanel('toolbox'); return }
+    if ((k === 'delete' || k === 'backspace') && selectedLink) {
+      e.preventDefault()
+      deleteLinkCascade(selectedLink)
+      return
+    }
     if (k === 'r' && selectedLink && gizmo.object) {
       gizmo.setMode(gizmo.mode === 'translate' ? 'rotate' : 'translate')
       ctx.showToast(`Gizmo: ${gizmo.mode}`, 'info')

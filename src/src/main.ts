@@ -3775,4 +3775,5 @@ urdfAssemblyApi = initUrdfAssembly({
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
   isViewport3D: () => activeViewportView === '3d',
+  isSimActive: () => simActive,
 })
