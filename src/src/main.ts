@@ -724,6 +724,7 @@ let openedFolderPath: string | null = null
 const openFiles: string[] = []
 const filePaths: Record<string, string | null> = {} // filename → disk path (null = unsaved)
 const viewStates: Record<string, monaco.editor.ICodeEditorViewState | null> = {}
+const cameraStates: Record<string, { pos: [number, number, number]; target: [number, number, number] }> = {}
 let untitledCounter = 0
 
 function getFileExt(filename: string): string {
@@ -800,8 +801,14 @@ function switchToFile(filename: string) {
   if (filename === activeFile) return
   if (!monacoModels[filename]) return
 
-  // Save current view state
+  // Save current view state (editor + camera)
   viewStates[activeFile] = monacoEditor.saveViewState()
+  if (activeFile) {
+    cameraStates[activeFile] = {
+      pos: [camera.position.x, camera.position.y, camera.position.z],
+      target: [controls.target.x, controls.target.y, controls.target.z],
+    }
+  }
 
   activeFile = filename
   fileTypeLabel.textContent = getFileType(filename)
@@ -834,6 +841,17 @@ function switchToFile(filename: string) {
     reparseURDF()
     urdfAssemblyApi?.onModelUpdated()
     runLocalValidation()
+
+    // Restore saved camera or auto-frame
+    const savedCam = cameraStates[filename]
+    if (savedCam) {
+      camera.position.set(...savedCam.pos)
+      controls.target.set(...savedCam.target)
+      controls.update()
+    } else {
+      // First time viewing this file — auto-frame
+      setTimeout(focusOnRobot, 100) // slight delay for meshes to load
+    }
   }
 }
 
@@ -951,6 +969,7 @@ function closeFile(filename: string) {
   // Remove from tracking
   openFiles.splice(idx, 1)
   delete viewStates[filename]
+  delete cameraStates[filename]
   delete filePaths[filename]
 
   // Dispose Monaco model
@@ -1039,10 +1058,20 @@ camera.position.set(1.2, 1.0, 1.6)
 
 const controls = new OrbitControls(camera, canvas)
 controls.enableDamping = true
-controls.dampingFactor = 0.06
+controls.dampingFactor = 0.08
 controls.target.set(0, 0.35, 0)
-controls.minDistance = 0.3
-controls.maxDistance = 8
+controls.minDistance = 0.05
+controls.maxDistance = 50
+controls.rotateSpeed = 0.8
+controls.panSpeed = 0.8
+controls.zoomSpeed = 1.2
+controls.enablePan = true
+controls.screenSpacePanning = true  // pan moves in screen plane (more intuitive)
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
+}
 
 // ── Scene setup ──────────────────────────────────────────────────────────────
 
@@ -1573,11 +1602,46 @@ function zoomCamera(factor: number) {
 
 viZoomIn?.addEventListener('click', () => zoomCamera(0.75))
 viZoomOut?.addEventListener('click', () => zoomCamera(1.33))
-viResetView?.addEventListener('click', () => {
-  camera.position.copy(DEFAULT_CAM_POS)
-  controls.target.copy(DEFAULT_CAM_TARGET)
+
+function focusOnRobot() {
+  // Compute bounding box of all meshes in the robot
+  const box = new THREE.Box3()
+  robot.traverse(child => {
+    if (child instanceof THREE.Mesh) {
+      child.updateWorldMatrix(true, false)
+      const childBox = new THREE.Box3().setFromObject(child)
+      if (!childBox.isEmpty()) box.union(childBox)
+    }
+  })
+
+  if (box.isEmpty()) {
+    // No geometry — use defaults
+    camera.position.copy(DEFAULT_CAM_POS)
+    controls.target.copy(DEFAULT_CAM_TARGET)
+    controls.update()
+    return
+  }
+
+  const center = new THREE.Vector3()
+  const size = new THREE.Vector3()
+  box.getCenter(center)
+  box.getSize(size)
+
+  // Position camera to fit the bounding sphere
+  const maxDim = Math.max(size.x, size.y, size.z)
+  const fov = camera.fov * (Math.PI / 180)
+  const dist = maxDim / (2 * Math.tan(fov / 2)) * 1.5  // 1.5x padding
+
+  controls.target.copy(center)
+  camera.position.set(
+    center.x + dist * 0.7,
+    center.y + dist * 0.5,
+    center.z + dist * 0.7,
+  )
   controls.update()
-})
+}
+
+viResetView?.addEventListener('click', focusOnRobot)
 
 // ── Sim mode ─────────────────────────────────────────────────────────────────
 
