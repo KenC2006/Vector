@@ -11,6 +11,7 @@ import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
 import { applyRichVisuals } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
+import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
 import { initGitPanel } from './gitPanel'
 import { initValidation } from './validation'
@@ -479,13 +480,18 @@ function getFileExt(filename: string): string {
 
 function getFileType(filename: string): string {
   const ext = getFileExt(filename)
-  const types: Record<string, string> = { urdf: 'URDF', xml: 'XML', json: 'JSON', yaml: 'YAML', yml: 'YAML', sdf: 'SDF', mjcf: 'MJCF', txt: 'TEXT' }
+  const types: Record<string, string> = { urdf: 'URDF', xacro: 'XACRO', xml: 'XML', json: 'JSON', yaml: 'YAML', yml: 'YAML', sdf: 'SDF', mjcf: 'MJCF', txt: 'TEXT' }
   return types[ext] || 'TEXT'
+}
+
+function isUrdfLike(filename: string): boolean {
+  const ext = getFileExt(filename)
+  return ['urdf', 'xacro', 'xml', 'sdf', 'mjcf'].includes(ext)
 }
 
 function getMonacoLang(filename: string): string {
   const ext = getFileExt(filename)
-  const langs: Record<string, string> = { urdf: 'xml', xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml', sdf: 'xml', mjcf: 'xml' }
+  const langs: Record<string, string> = { urdf: 'xml', xacro: 'xml', xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml', sdf: 'xml', mjcf: 'xml' }
   return langs[ext] || 'plaintext'
 }
 
@@ -582,7 +588,7 @@ function switchToFile(filename: string) {
   monacoEditor.focus()
 
   // Reparse 3D viewport if switching to a URDF/XML file
-  if (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml') {
+  if (isUrdfLike(filename)) {
     reparseURDF()
     urdfAssemblyApi?.onModelUpdated()
     runLocalValidation()
@@ -657,7 +663,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   }
 
   // New URDF files should start with minimal valid robot, not empty
-  if (!content && (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml')) {
+  if (!content && (isUrdfLike(filename))) {
     content = SAMPLE_URDF
   }
 
@@ -676,7 +682,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   if (diskPath) addRecentFile(filename, diskPath)
 
   // Listen for changes on URDF/XML files with debounce
-  if (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml') {
+  if (isUrdfLike(filename)) {
     const fn = filename // capture for closure
     monacoModels[filename].onDidChangeContent(() => {
       if (activeFile === fn) {
@@ -1271,7 +1277,50 @@ function reparseURDF() {
   try {
     const model = monacoEditor.getModel()
     if (!model) return  // no file open
-    const urdfContent = model.getValue()
+    let urdfContent = model.getValue()
+
+    // If this is a xacro file, preprocess it first
+    const isXacro = activeFile.endsWith('.xacro') || urdfContent.includes('xacro:')
+    if (isXacro) {
+      // Async xacro processing — fire and forget, reparse when done
+      processXacro(urdfContent, {
+        basePath: filePaths[activeFile]?.replace(/[\\/][^\\/]+$/, '') || openedFolderPath || '',
+        fileLoader: async (filename: string) => {
+          try {
+            return await invoke<string>('open_file', { path: filename })
+          } catch {
+            console.warn(`[xacro] Could not load include: ${filename}`)
+            return ''
+          }
+        },
+      }).then(processed => {
+        try {
+          const newParsed = parseURDFToScene(processed)
+          const newKinematicData = buildKinematicGraphFromURDF(processed)
+          robot.remove(parsedRobot.group)
+          wireframeGroup.clear()
+          axisVisuals.length = 0
+          parsedRobot = newParsed
+          kinematicGraph = newKinematicData.kinematicGraph
+          kinematicJoints = newKinematicData.kinematicJoints
+          parsedRobot.group.rotation.x = -Math.PI / 2
+          robot.add(parsedRobot.group)
+          applyRichVisuals(parsedRobot)
+          addEdgeLines(parsedRobot)
+          groundRobot(robot)
+          updateComMarker()
+          rebuildWireframes()
+          vpControls.updateViewportInfo()
+          urdfAssemblyApi?.onModelUpdated()
+        } catch (e) {
+          console.warn('[xacro] Parse error after preprocessing:', e)
+        }
+      }).catch(e => {
+        console.warn('[xacro] Preprocessing failed:', e)
+      })
+      return // async — will reparse when done
+    }
+
     const newParsed = parseURDFToScene(urdfContent)
     const newKinematicData = buildKinematicGraphFromURDF(urdfContent)
 

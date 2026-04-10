@@ -521,7 +521,7 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
     let path: Option<tauri_plugin_dialog::FilePath> = app
         .dialog()
         .file()
-        .add_filter("Robot Files", &["urdf", "mjcf", "sdf", "xml"])
+        .add_filter("Robot Files", &["urdf", "xacro", "mjcf", "sdf", "xml"])
         .add_filter("All Files", &["*"])
         .blocking_pick_file();
 

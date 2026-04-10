@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<robot name="test_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Properties -->
+  <xacro:property name="base_width" value="0.2"/>
+  <xacro:property name="base_height" value="0.05"/>
+  <xacro:property name="arm_length" value="0.3"/>
+  <xacro:property name="arm_radius" value="0.02"/>
+  <xacro:property name="pi" value="3.14159265359"/>
+
+  <!-- Macro for a simple link -->
+  <xacro:macro name="simple_link" params="name length radius color_r color_g color_b">
+    <link name="${name}">
+      <inertial>
+        <mass value="0.5"/>
+        <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+      </inertial>
+      <visual>
+        <geometry>
+          <cylinder radius="${radius}" length="${length}"/>
+        </geometry>
+        <material name="${name}_mat">
+          <color rgba="${color_r} ${color_g} ${color_b} 1"/>
+        </material>
+      </visual>
+    </link>
+  </xacro:macro>
+
+  <!-- Macro for a revolute joint -->
+  <xacro:macro name="revolute_joint" params="name parent child x y z">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${-pi/2}" upper="${pi/2}" effort="10" velocity="1"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Base link -->
+  <link name="base_link">
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <box size="${base_width} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="grey">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- Use macros to create arm links -->
+  <xacro:simple_link name="upper_arm" length="${arm_length}" radius="${arm_radius}" color_r="0.2" color_g="0.4" color_b="0.8"/>
+  <xacro:simple_link name="lower_arm" length="${arm_length * 0.8}" radius="${arm_radius * 0.8}" color_r="0.8" color_g="0.3" color_b="0.2"/>
+
+  <!-- Joints -->
+  <xacro:revolute_joint name="shoulder" parent="base_link" child="upper_arm" x="0" y="0" z="${base_height/2 + 0.01}"/>
+  <xacro:revolute_joint name="elbow" parent="upper_arm" child="lower_arm" x="0" y="0" z="${arm_length}"/>
+
+  <!-- Conditional: add gripper if enabled -->
+  <xacro:property name="has_gripper" value="true"/>
+  <xacro:if value="${has_gripper}">
+    <link name="gripper">
+      <visual>
+        <geometry>
+          <box size="0.04 0.08 0.02"/>
+        </geometry>
+        <material name="dark">
+          <color rgba="0.1 0.1 0.1 1"/>
+        </material>
+      </visual>
+    </link>
+    <joint name="gripper_joint" type="fixed">
+      <parent link="lower_arm"/>
+      <child link="gripper"/>
+      <origin xyz="0 0 ${arm_length * 0.8}" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+
+</robot>
