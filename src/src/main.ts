@@ -2,6 +2,12 @@ import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+// Post-processing imports available for future use:
+// import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+// import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+// import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js'
+// import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js'
+// import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
@@ -769,9 +775,6 @@ pmremGenerator.compileEquirectangularShader()
 scene.environment = pmremGenerator.fromScene(new RoomEnvironment()).texture
 pmremGenerator.dispose()
 
-// Subtle fog for depth
-scene.fog = new THREE.FogExp2(0x1a1a1a, 0.3)
-
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100)
 camera.position.set(1.2, 1.0, 1.6)
 
@@ -791,6 +794,10 @@ controls.mouseButtons = {
   MIDDLE: THREE.MOUSE.PAN,
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
+
+// Post-processing (SSAO, SMAA) disabled — causes rendering artifacts.
+// The built-in renderer antialias + tone mapping is sufficient.
+// Edge lines are added directly to meshes instead of as a post-process pass.
 
 // ── Scene setup ──────────────────────────────────────────────────────────────
 
@@ -864,7 +871,28 @@ let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 parsedRobot.group.rotation.x = -Math.PI / 2
 robot.add(parsedRobot.group)
 applyRichVisuals(parsedRobot)
+addEdgeLines(parsedRobot)
 groundRobot(robot)
+
+// ── Edge lines (CAD-style silhouette edges) ─────────────────────────────────
+
+const edgeMaterial = new THREE.LineBasicMaterial({
+  color: 0x000000,
+  transparent: true,
+  opacity: 0.3,
+  depthTest: true,
+})
+
+function addEdgeLines(parsed: typeof parsedRobot) {
+  parsed.group.traverse(child => {
+    if (child instanceof THREE.Mesh && child.geometry) {
+      const edges = new THREE.EdgesGeometry(child.geometry, 30) // 30° threshold
+      const line = new THREE.LineSegments(edges, edgeMaterial)
+      line.raycast = () => {} // don't interfere with raycasting
+      child.add(line)
+    }
+  })
+}
 
 // ── Wireframe overlay ────────────────────────────────────────────────────────
 
@@ -1084,6 +1112,7 @@ function animate() {
 }
 animate()
 
+
 // ── Draggable split ──────────────────────────────────────────────────────────
 
 const main = document.getElementById('main') as HTMLDivElement
@@ -1240,6 +1269,7 @@ function reparseURDF() {
     parsedRobot.group.rotation.x = -Math.PI / 2
     robot.add(parsedRobot.group)
     applyRichVisuals(parsedRobot)
+    addEdgeLines(parsedRobot)
     groundRobot(robot)
 
     // Rebuild axis visuals
