@@ -807,10 +807,12 @@ requestAnimationFrame(() => {
 const renderPass = new RenderPass(scene, camera)
 composer.addPass(renderPass)
 
-// GTAO — ground-truth ambient occlusion (handles background correctly)
-const gtaoPass = new GTAOPass(scene, camera)
-gtaoPass.blendIntensity = 0.8
-composer.addPass(gtaoPass)
+// GTAO disabled — causes visible halo around objects against background.
+// The directional light shadow map provides ground shadows.
+// Re-enable when scene has a floor/ground plane that masks the halo.
+// const gtaoPass = new GTAOPass(scene, camera)
+// gtaoPass.blendIntensity = 0.15
+// composer.addPass(gtaoPass)
 
 // Output pass (tone mapping + color space conversion)
 const outputPass = new OutputPass()
