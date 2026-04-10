@@ -13,8 +13,7 @@ import {
   boltCircle, mountingHole, screwHead, labelRecess, flangePlate,
   cablePort, knurledRing,
 } from '../primitives'
-// NURBS engine available but not yet used — needs visual debugging
-// import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
+import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
 
@@ -30,18 +29,18 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
 
   const isHeavy = id.includes('heavy') || id.includes('high_torque')
 
-  // Servo housing — chamfered box body + separate ear flanges
+  // Servo housing — NURBS filleted box (smooth mathematically exact edges)
   const housing = new THREE.Mesh(
-    chamferedBox(w, h * 0.72, d),
+    nurbsFilletBox(w, h * 0.72, d, Math.min(w, d) * 0.06, 16),
     getMaterial('matte_plastic'),
   )
   g.add(housing)
 
-  // Mounting ears (separate piece on each side)
+  // Mounting ears — NURBS filleted
   const earW = w * 1.15
   const earH = h * 0.1
   const ear = new THREE.Mesh(
-    chamferedBox(earW, earH, d),
+    nurbsFilletBox(earW, earH, d, Math.min(earW, d) * 0.04, 8),
     getMaterial('matte_plastic', 0x1a1a1a),
   )
   ear.position.y = h * 0.30
@@ -57,11 +56,11 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
     }
   }
 
-  // Output horn
+  // Output horn — NURBS smooth disc with lip profile
   const hornR = Math.min(w, d) * 0.3
   const hornH = h * 0.07
   const horn = new THREE.Mesh(
-    chamferedCylinder(hornR, hornH, hornH * 0.25, 64),
+    nurbsServoHorn(hornR, hornH, Math.min(w, d) * 0.04, 48),
     getMaterial('glossy_plastic', 0xeeeeee),
   )
   horn.position.y = h * 0.42
@@ -77,18 +76,18 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   screw.position.y = h * 0.46
   g.add(screw)
 
-  // Output shaft
+  // Output shaft — NURBS smooth cylinder
   const shaftR = Math.min(w, d) * 0.055
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, hornH * 1.8, shaftR * 0.15),
+    nurbsCylinder(shaftR, hornH * 1.8, shaftR * 0.15, 32),
     getMaterial('brushed_steel'),
   )
   shaft.position.y = h * 0.48
   g.add(shaft)
 
-  // Shaft bearing ring
+  // Shaft bearing ring — NURBS torus
   const bearingRing = new THREE.Mesh(
-    new THREE.TorusGeometry(shaftR * 2.2, shaftR * 0.4, 12, 48),
+    nurbsTorus(shaftR * 2.2, shaftR * 0.4, 48, 16),
     getMaterial('brushed_steel'),
   )
   bearingRing.rotation.x = Math.PI / 2
@@ -101,9 +100,9 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   cable.position.set(0, -h * 0.35, -d * 0.42)
   g.add(cable)
 
-  // Cable strain relief
+  // Cable strain relief — NURBS cylinder
   const strain = new THREE.Mesh(
-    chamferedCylinder(Math.min(w, d) * 0.04, d * 0.12, Math.min(w, d) * 0.005),
+    nurbsCylinder(Math.min(w, d) * 0.04, d * 0.12, Math.min(w, d) * 0.005, 16),
     getMaterial('rubber_black'),
   )
   strain.rotation.x = Math.PI / 2
@@ -115,10 +114,10 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   label.position.set(0, -h * 0.05, d * 0.38)
   g.add(label)
 
-  // Side ribs
+  // Side ribs — NURBS filleted
   for (const sx of [-1, 1]) {
     const rib = new THREE.Mesh(
-      chamferedBox(w * 0.02, h * 0.5, d * 0.7, w * 0.003),
+      nurbsFilletBox(w * 0.02, h * 0.5, d * 0.7, w * 0.003, 4),
       getMaterial('matte_plastic', 0x1a1a1a),
     )
     rib.position.set(sx * w * 0.48, -h * 0.05, 0)
@@ -145,36 +144,36 @@ function generateBLDC(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, z: h } = dims
   const r = w / 2
 
-  // Main motor body — revolved profile
+  // Main motor body — NURBS revolved profile (body + cap + shaft in one smooth surface)
   const shaftR = r * 0.11
   const shaftH = h * 0.35
   const motorBody = new THREE.Mesh(
-    revolvedMotor(r, h * 0.72, shaftR, shaftH, 64),
+    nurbsMotorHousing(r, h * 0.72, shaftR, shaftH, r * 0.88, h * 0.06, 64),
     catMetal(0.4),
   )
   g.add(motorBody)
 
-  // Winding peek — copper torus
+  // Winding peek — NURBS torus
   const winding = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.58, r * 0.09, 12, 48),
+    nurbsTorus(r * 0.58, r * 0.09, 48, 16),
     getMaterial('copper_trace'),
   )
   winding.rotation.x = Math.PI / 2
   winding.position.y = -h * 0.1
   g.add(winding)
 
-  // Top accent ring
+  // Top accent ring — NURBS torus
   const topRing = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.96, r * 0.025, 8, 48),
+    nurbsTorus(r * 0.96, r * 0.025, 48, 8),
     getMaterial('dark_chrome'),
   )
   topRing.rotation.x = Math.PI / 2
   topRing.position.y = h * 0.34
   g.add(topRing)
 
-  // Bottom accent ring
+  // Bottom accent ring — NURBS torus
   const botRing = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.96, r * 0.025, 8, 48),
+    nurbsTorus(r * 0.96, r * 0.025, 48, 8),
     getMaterial('dark_chrome'),
   )
   botRing.rotation.x = Math.PI / 2
