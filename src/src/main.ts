@@ -2,12 +2,10 @@ import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-// Post-processing imports available for future use:
-// import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
-// import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
-// import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js'
-// import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js'
-// import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
@@ -795,9 +793,28 @@ controls.mouseButtons = {
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
 
-// Post-processing (SSAO, SMAA) disabled — causes rendering artifacts.
-// The built-in renderer antialias + tone mapping is sufficient.
-// Edge lines are added directly to meshes instead of as a post-process pass.
+// ── Post-processing pipeline (SSAO + output) ───────────────────────────────
+
+const composer = new EffectComposer(renderer)
+composer.setPixelRatio(renderer.getPixelRatio())
+// Sync initial size after a frame (viewport layout not done yet at this point)
+requestAnimationFrame(() => {
+  const w = renderer.domElement.clientWidth
+  const h = renderer.domElement.clientHeight
+  if (w > 0 && h > 0) composer.setSize(w, h)
+})
+
+const renderPass = new RenderPass(scene, camera)
+composer.addPass(renderPass)
+
+// GTAO — ground-truth ambient occlusion (handles background correctly)
+const gtaoPass = new GTAOPass(scene, camera)
+gtaoPass.blendIntensity = 0.8
+composer.addPass(gtaoPass)
+
+// Output pass (tone mapping + color space conversion)
+const outputPass = new OutputPass()
+composer.addPass(outputPass)
 
 // ── Scene setup ──────────────────────────────────────────────────────────────
 
@@ -1040,6 +1057,7 @@ const vpControls = initViewportControls({
   simActive: () => simActive,
   parsedRobot: () => parsedRobot,
   showToast,
+  onResize: (w, h) => { composer.setSize(w, h); composer.setPixelRatio(renderer.getPixelRatio()) },
 })
 
 const { resize, focusOnRobot, zoomCamera, setViewportCollapsed, setViewportFullscreen, updateViewportInfo } = vpControls
@@ -1108,7 +1126,7 @@ function animate() {
     }
   }
 
-  renderer.render(scene, camera)
+  composer.render()
 }
 animate()
 

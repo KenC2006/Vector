@@ -491,6 +491,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   user-select: none;
+  position: relative;
+  z-index: 2;
 }
 #viewport-label { font-size: 11px; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
 #viewport-controls { display: flex; align-items: center; gap: 2px; }

@@ -21,6 +21,7 @@ export function initViewportControls(deps: {
   simActive: () => boolean
   parsedRobot: () => ParsedRobot
   showToast: (msg: string, type?: 'success' | 'warning' | 'error' | 'info') => void
+  onResize?: (w: number, h: number) => void
 }): {
   resize: () => void
   focusOnRobot: () => void
@@ -163,6 +164,7 @@ export function initViewportControls(deps: {
       renderer.setSize(w, h)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
+      deps.onResize?.(w, h)
     }
   }
   resize()
