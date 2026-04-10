@@ -1,6 +1,7 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly } from './urdfAssembly'
@@ -651,6 +652,11 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
     filename = `untitled_${untitledCounter}.urdf`
   }
 
+  // New URDF files should start with minimal valid robot, not empty
+  if (!content && (getFileExt(filename) === 'urdf' || getFileExt(filename) === 'xml')) {
+    content = SAMPLE_URDF
+  }
+
   // If file already open, just switch to it
   if (monacoModels[filename]) {
     switchToFile(filename)
@@ -756,6 +762,12 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping
 renderer.toneMappingExposure = 1.1
 
 const scene = new THREE.Scene()
+
+// Procedural HDR environment map for realistic PBR metallic reflections
+const pmremGenerator = new THREE.PMREMGenerator(renderer)
+pmremGenerator.compileEquirectangularShader()
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment()).texture
+pmremGenerator.dispose()
 
 // Subtle fog for depth
 scene.fog = new THREE.FogExp2(0x1a1a1a, 0.3)
