@@ -12,6 +12,7 @@ import {
   revolvedMotor, chamferedBox, chamferedCylinder,
   boltCircle, mountingHole, labelRecess, flangePlate, cablePort,
 } from '../primitives'
+import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.91, 0.30, 0.24] // red-orange
 
@@ -37,7 +38,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = isLarge ? r * 0.1 : (isMedium ? r * 0.09 : r * 0.07)
   const shaftH = d * 0.3
   const motorMesh = new THREE.Mesh(
-    revolvedMotor(r, d * 0.72, shaftR, shaftH, 48),
+    nurbsMotorHousing(r, d * 0.72, shaftR, shaftH, undefined, undefined, 48),
     catPlastic(0.2),
   )
   g.add(motorMesh)
@@ -48,7 +49,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
   const termD = r * 0.08
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      chamferedBox(termW, termD, termH, termW * 0.08),
+      nurbsFilletBox(termW, termD, termH, termW * 0.08, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * r * 0.35, -(d * 0.36 + d * 0.05 + termH / 2), 0)
@@ -58,7 +59,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
   // Body band ring (decorative)
   const bandR = r * 1.005
   const band = new THREE.Mesh(
-    new THREE.TorusGeometry(bandR, r * 0.015, 8, 36),
+    nurbsTorus(bandR, r * 0.015, 36, 8),
     getMaterial('dark_chrome'),
   )
   band.rotation.x = Math.PI / 2
@@ -67,7 +68,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
 
   // Second band near bottom
   const band2 = new THREE.Mesh(
-    new THREE.TorusGeometry(bandR, r * 0.012, 8, 36),
+    nurbsTorus(bandR, r * 0.012, 36, 8),
     getMaterial('dark_chrome'),
   )
   band2.rotation.x = Math.PI / 2
@@ -78,7 +79,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
   const commR = r * 0.3
   const commH = d * 0.04
   const comm = new THREE.Mesh(
-    chamferedCylinder(commR, commH, commR * 0.05, 24),
+    nurbsCylinder(commR, commH, commR * 0.05, 24),
     getMaterial('copper_trace'),
   )
   comm.position.y = -(d * 0.36 + d * 0.05 + commH / 2)
@@ -109,7 +110,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
 
   // Brush access dimple
   const dimple = new THREE.Mesh(
-    chamferedCylinder(r * 0.06, d * 0.015, r * 0.01, 16),
+    nurbsCylinder(r * 0.06, d * 0.015, r * 0.01, 16),
     getMaterial('dark_chrome'),
   )
   dimple.position.set(r * 0.6, -d * 0.25, r * 0.6)
@@ -131,7 +132,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   // Motor cylinder — revolvedMotor (includes rear cap shape)
   const motorShaftR = motorR * 0.1
   const motorBody = new THREE.Mesh(
-    revolvedMotor(motorR, d * 0.45, motorShaftR, 0, 36),
+    nurbsMotorHousing(motorR, d * 0.45, motorShaftR, 0, undefined, undefined, 36),
     catPlastic(0.2),
   )
   motorBody.position.y = -d * 0.15
@@ -140,7 +141,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal bumps on motor rear
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      chamferedBox(w * 0.04, w * 0.03, d * 0.028, w * 0.005),
+      nurbsFilletBox(w * 0.04, w * 0.03, d * 0.028, w * 0.005, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * motorR * 0.4, -d * 0.15 - d * 0.225 - d * 0.06, 0)
@@ -149,7 +150,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
 
   // Motor body band
   const bandRing = new THREE.Mesh(
-    new THREE.TorusGeometry(motorR * 1.005, motorR * 0.012, 6, 36),
+    nurbsTorus(motorR * 1.005, motorR * 0.012, 36, 6),
     getMaterial('dark_chrome'),
   )
   bandRing.rotation.x = Math.PI / 2
@@ -161,7 +162,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   const gbH = h * 0.85
   const gbD = d * 0.35
   const gearbox = new THREE.Mesh(
-    chamferedBox(gbW, gbH, gbD, chamfer * 1.8),
+    nurbsFilletBox(gbW, gbH, gbD, chamfer * 1.8, 16),
     catMetal(0.35),
   )
   gearbox.position.y = d * 0.2
@@ -181,7 +182,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = isHeavy ? w * 0.07 : w * 0.05
   const shaftH = d * 0.22
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, shaftH, shaftR * 0.12),
+    nurbsCylinder(shaftR, shaftH, shaftR * 0.12),
     getMaterial('brushed_steel'),
   )
   shaft.position.y = d * 0.2 + gbD / 2 + shaftH / 2
@@ -197,7 +198,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
 
   // Gearbox face plate accent (bearing boss)
   const facePlate = new THREE.Mesh(
-    chamferedCylinder(w * 0.18, gbD * 0.1, chamfer * 0.3, 24),
+    nurbsCylinder(w * 0.18, gbD * 0.1, chamfer * 0.3, 24),
     getMaterial('brushed_steel'),
   )
   facePlate.position.y = d * 0.2 + gbD * 0.48
@@ -231,7 +232,7 @@ function generateCoreless(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = r * 0.08
   const shaftH = d * 0.35
   const motor = new THREE.Mesh(
-    revolvedMotor(r, d * 0.65, shaftR, shaftH, 24),
+    nurbsMotorHousing(r, d * 0.65, shaftR, shaftH, undefined, undefined, 24),
     catMetal(0.3),
   )
   g.add(motor)
@@ -239,7 +240,7 @@ function generateCoreless(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal wires (2 thin cylinders)
   for (const sx of [-1, 1]) {
     const wire = new THREE.Mesh(
-      chamferedCylinder(r * 0.04, d * 0.15, r * 0.005),
+      nurbsCylinder(r * 0.04, d * 0.15, r * 0.005),
       getMaterial('copper_trace'),
     )
     wire.position.set(sx * r * 0.3, -(d * 0.325 + d * 0.065 + d * 0.075), 0)
@@ -248,7 +249,7 @@ function generateCoreless(id: string, dims: GeneratorDims): THREE.Group {
 
   // Body accent ring
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.98, r * 0.015, 6, 24),
+    nurbsTorus(r * 0.98, r * 0.015, 24, 6),
     getMaterial('dark_chrome'),
   )
   ring.rotation.x = Math.PI / 2
@@ -272,7 +273,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
 
   // Motor cylinder — revolvedMotor
   const motor = new THREE.Mesh(
-    revolvedMotor(motorR, d * 0.5, motorR * 0.08, 0, 32),
+    nurbsMotorHousing(motorR, d * 0.5, motorR * 0.08, 0, undefined, undefined, 32),
     catPlastic(0.2),
   )
   g.add(motor)
@@ -280,7 +281,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal bumps
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      chamferedBox(w * 0.03, w * 0.025, d * 0.025, w * 0.004),
+      nurbsFilletBox(w * 0.03, w * 0.025, d * 0.025, w * 0.004, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * motorR * 0.35, -(d * 0.25 + d * 0.04 + d * 0.012), 0)
@@ -292,7 +293,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
   const gbH = h * 0.5
   const gbD = d * 0.4
   const gearbox = new THREE.Mesh(
-    chamferedBox(gbW, gbH, gbD, chamfer * 1.2),
+    nurbsFilletBox(gbW, gbH, gbD, chamfer * 1.2, 16),
     catMetal(0.35),
   )
   gearbox.position.set(w * 0.3, d * 0.275 * 0.55, 0)
@@ -302,7 +303,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = w * 0.04
   const shaftH = d * 0.2
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, shaftH, shaftR * 0.15),
+    nurbsCylinder(shaftR, shaftH, shaftR * 0.15),
     getMaterial('brushed_steel'),
   )
   shaft.rotation.z = Math.PI / 2
@@ -373,7 +374,7 @@ function generateHubMotor(id: string, dims: GeneratorDims): THREE.Group {
   const axleR = outerR * 0.08
   const axleH = d * 1.2
   const axle = new THREE.Mesh(
-    chamferedCylinder(axleR, axleH, axleR * 0.1),
+    nurbsCylinder(axleR, axleH, axleR * 0.1),
     getMaterial('brushed_steel'),
   )
   g.add(axle)
@@ -381,7 +382,7 @@ function generateHubMotor(id: string, dims: GeneratorDims): THREE.Group {
   // Side cover plates
   for (const sy of [-1, 1]) {
     const cover = new THREE.Mesh(
-      chamferedCylinder(outerR * 0.93, d * 0.025, outerR * 0.01, 48),
+      nurbsCylinder(outerR * 0.93, d * 0.025, outerR * 0.01, 48),
       getMaterial('dark_chrome'),
     )
     cover.position.y = sy * shellH * 0.52
@@ -395,7 +396,7 @@ function generateHubMotor(id: string, dims: GeneratorDims): THREE.Group {
 
   // Stator winding peek (copper ring visible between spokes)
   const windingRing = new THREE.Mesh(
-    new THREE.TorusGeometry(midR, outerR * 0.04, 8, 48),
+    nurbsTorus(midR, outerR * 0.04, 48, 8),
     getMaterial('copper_trace'),
   )
   windingRing.rotation.x = Math.PI / 2
@@ -467,7 +468,7 @@ function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Accent ring at body-to-flange step
   const stepRing = new THREE.Mesh(
-    new THREE.TorusGeometry(flangeR, r * 0.018, 8, 48),
+    nurbsTorus(flangeR, r * 0.018, 48, 8),
     getMaterial('dark_chrome'),
   )
   stepRing.rotation.x = Math.PI / 2
@@ -476,7 +477,7 @@ function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Accent ring at flange-to-output step
   const stepRing2 = new THREE.Mesh(
-    new THREE.TorusGeometry(outputR, r * 0.015, 8, 48),
+    nurbsTorus(outputR, r * 0.015, 48, 8),
     getMaterial('dark_chrome'),
   )
   stepRing2.rotation.x = Math.PI / 2
@@ -495,7 +496,7 @@ function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Output bore (dark center hole)
   const bore = new THREE.Mesh(
-    chamferedCylinder(boreR, totalH * 1.05, boreR * 0.08),
+    nurbsCylinder(boreR, totalH * 1.05, boreR * 0.08),
     getMaterial('dark_chrome'),
   )
   g.add(bore)
@@ -513,7 +514,7 @@ function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Strain gauge wire
   const wire = new THREE.Mesh(
-    chamferedCylinder(r * 0.03, r * 0.12, r * 0.004),
+    nurbsCylinder(r * 0.03, r * 0.12, r * 0.004),
     getMaterial('rubber_black'),
   )
   wire.rotation.z = Math.PI / 2
@@ -534,7 +535,7 @@ function generatePancake(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = r * 0.08
   const shaftH = d * 0.38
   const motor = new THREE.Mesh(
-    revolvedMotor(r, d * 0.42, shaftR, shaftH, 48),
+    nurbsMotorHousing(r, d * 0.42, shaftR, shaftH, undefined, undefined, 48),
     catMetal(0.35),
   )
   g.add(motor)
@@ -542,7 +543,7 @@ function generatePancake(id: string, dims: GeneratorDims): THREE.Group {
   // Extra top cover plate
   const coverH = d * 0.04
   const cover = new THREE.Mesh(
-    chamferedCylinder(r * 0.96, coverH, r * 0.01, 48),
+    nurbsCylinder(r * 0.96, coverH, r * 0.01, 48),
     getMaterial('brushed_steel'),
   )
   cover.position.y = d * 0.21 + coverH / 2
@@ -555,7 +556,7 @@ function generatePancake(id: string, dims: GeneratorDims): THREE.Group {
 
   // Decorative body ring
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 1.0, r * 0.015, 6, 48),
+    nurbsTorus(r * 1.0, r * 0.015, 48, 6),
     getMaterial('dark_chrome'),
   )
   ring.rotation.x = Math.PI / 2
@@ -586,7 +587,7 @@ function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group
   const shaftR = r * 0.1
   const shaftH = d * 0.33
   const motor = new THREE.Mesh(
-    revolvedMotor(r, d * 0.68, shaftR, shaftH, 40),
+    nurbsMotorHousing(r, d * 0.68, shaftR, shaftH, undefined, undefined, 40),
     catMetal(0.35),
   )
   g.add(motor)
@@ -597,7 +598,7 @@ function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group
   const finSpacing = bodyH / (finCount + 1)
   for (let i = 1; i <= finCount; i++) {
     const fin = new THREE.Mesh(
-      new THREE.TorusGeometry(r * 1.04, r * 0.012, 6, 40),
+      nurbsTorus(r * 1.04, r * 0.012, 40, 6),
       getMaterial('anodized_aluminum', 0x444444),
     )
     fin.rotation.x = Math.PI / 2
@@ -611,7 +612,7 @@ function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group
   for (let i = 0; i < 3; i++) {
     const a = ((i / 3) * Math.PI * 2) - Math.PI / 2
     const wire = new THREE.Mesh(
-      chamferedCylinder(r * 0.035, d * 0.12, r * 0.005),
+      nurbsCylinder(r * 0.035, d * 0.12, r * 0.005),
       getMaterial('glossy_plastic', wireColors[i]),
     )
     wire.position.set(

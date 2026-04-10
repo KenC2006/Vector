@@ -11,6 +11,7 @@ import {
   boltCircle, knurledRing, flangePlate,
   gearCylinder, bearingProfile, bearingOuterProfile,
 } from '../primitives'
+import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.56, 0.27, 0.68]  // purple
 
@@ -60,7 +61,7 @@ function generateBushing(id: string, dims: GeneratorDims): THREE.Group {
   const chamfer = r * 0.05
 
   const body = new THREE.Mesh(
-    chamferedCylinder(r, h, chamfer, 32),
+    nurbsCylinder(r, h, chamfer, 32),
     catMetal('brushed_steel', 0.25),
   )
   g.add(body)
@@ -69,7 +70,7 @@ function generateBushing(id: string, dims: GeneratorDims): THREE.Group {
   const flangeR = r * 1.3
   const flangeH = h * 0.12
   const flange = new THREE.Mesh(
-    chamferedCylinder(flangeR, flangeH, chamfer * 0.5, 32),
+    nurbsCylinder(flangeR, flangeH, chamfer * 0.5, 32),
     catMetal('brushed_steel', 0.25),
   )
   flange.position.y = (h + flangeH) / 2
@@ -146,7 +147,7 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
   // Main body cylinder
   const bodyH = h * 0.75
   const body = new THREE.Mesh(
-    chamferedCylinder(r, bodyH, chamfer, 48),
+    nurbsCylinder(r, bodyH, chamfer, 48),
     catMetal(),
   )
   g.add(body)
@@ -162,7 +163,7 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
   const shaftR = r * 0.15
   const shaftH = h * 0.2
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, shaftH, shaftR * 0.15, 24),
+    nurbsCylinder(shaftR, shaftH, shaftR * 0.15, 24),
     getMaterial('brushed_steel'),
   )
   shaft.position.y = (bodyH + flangeH * 2 + shaftH) / 2
@@ -172,7 +173,7 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
   const bossR = r * 0.6
   const bossH = h * 0.1
   const boss = new THREE.Mesh(
-    chamferedCylinder(bossR, bossH, chamfer * 0.5, 32),
+    nurbsCylinder(bossR, bossH, chamfer * 0.5, 32),
     catMetal(),
   )
   boss.position.y = -(bodyH + bossH) / 2
@@ -182,7 +183,7 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
   const ringMat = getMaterial('dark_chrome')
   for (const sy of [-0.2, 0.15]) {
     const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(r * 1.01, r * 0.015, 8, 48),
+      nurbsTorus(r * 1.01, r * 0.015, 48, 8),
       ringMat,
     )
     ring.rotation.x = Math.PI / 2
@@ -206,7 +207,7 @@ function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
   // Two chamferedCylinder pulleys
   for (const sx of [-1, 1]) {
     const pulley = new THREE.Mesh(
-      chamferedCylinder(pulleyR, pulleyH, pulleyR * 0.08, 32),
+      nurbsCylinder(pulleyR, pulleyH, pulleyR * 0.08, 32),
       catMetal(),
     )
     pulley.position.set(sx * spacing, 0, 0)
@@ -215,7 +216,7 @@ function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
     // Pulley flanges
     for (const sy of [-1, 1]) {
       const flange = new THREE.Mesh(
-        chamferedCylinder(pulleyR * 1.15, pulleyH * 0.08, pulleyR * 0.04, 32),
+        nurbsCylinder(pulleyR * 1.15, pulleyH * 0.08, pulleyR * 0.04, 32),
         getMaterial('brushed_steel'),
       )
       flange.position.set(sx * spacing, sy * pulleyH * 0.45, 0)
@@ -237,14 +238,14 @@ function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
   const beltMat = getMaterial('rubber_black')
 
   const topBelt = new THREE.Mesh(
-    chamferedBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2),
+    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
     beltMat,
   )
   topBelt.position.y = pulleyR
   g.add(topBelt)
 
   const botBelt = new THREE.Mesh(
-    chamferedBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2),
+    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
     beltMat,
   )
   botBelt.position.y = -pulleyR
@@ -263,7 +264,7 @@ function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
 
   // Chamfered shaft
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, length * 0.9, shaftR * 0.1, 24),
+    nurbsCylinder(shaftR, length * 0.9, shaftR * 0.1, 24),
     getMaterial('brushed_steel'),
   )
   shaft.rotation.x = Math.PI / 2
@@ -281,7 +282,7 @@ function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
   const nutMat = isBall ? catMetal('anodized_aluminum', 0.4) : catMetal()
 
   const nut = new THREE.Mesh(
-    chamferedBox(nutW, nutH, nutD, nutW * 0.06),
+    nurbsFilletBox(nutW, nutH, nutD, nutW * 0.06, 12),
     nutMat,
   )
   nut.position.z = length * 0.1
@@ -304,7 +305,7 @@ function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
   const blockD = length * 0.08
 
   const bearing = new THREE.Mesh(
-    chamferedBox(blockW, blockH, blockD, blockW * 0.04),
+    nurbsFilletBox(blockW, blockH, blockD, blockW * 0.04, 12),
     catMetal(),
   )
   bearing.position.z = -length * 0.42
@@ -336,7 +337,7 @@ function generateWormGearSet(id: string, dims: GeneratorDims): THREE.Group {
 
   // Worm shaft
   const wormShaft = new THREE.Mesh(
-    chamferedCylinder(wormR, wormLen, wormR * 0.1, 24),
+    nurbsCylinder(wormR, wormLen, wormR * 0.1, 24),
     getMaterial('brushed_steel'),
   )
   wormShaft.rotation.x = Math.PI / 2
@@ -432,33 +433,33 @@ function generateUniversalJoint(id: string, dims: GeneratorDims): THREE.Group {
   const chamfer = yokeThick * 0.3
   const mat = catMetal('brushed_steel', 0.25)
 
-  // Yoke 1 (U-shape in XY plane) — chamferedBox forks
+  // Yoke 1 (U-shape in XY plane) — nurbsFilletBox forks
   for (const sx of [-1, 1]) {
     const fork = new THREE.Mesh(
-      chamferedBox(yokeThick, yokeThick, yokeH, chamfer),
+      nurbsFilletBox(yokeThick, yokeThick, yokeH, chamfer, 12),
       mat,
     )
     fork.position.set(sx * yokeW, 0, yokeH * 0.25)
     g.add(fork)
   }
   const yoke1Bar = new THREE.Mesh(
-    chamferedBox(yokeW * 2 + yokeThick, yokeThick, yokeThick, chamfer),
+    nurbsFilletBox(yokeW * 2 + yokeThick, yokeThick, yokeThick, chamfer, 12),
     mat,
   )
   yoke1Bar.position.z = yokeH * 0.5
   g.add(yoke1Bar)
 
-  // Yoke 2 (U-shape in YZ plane, perpendicular) — chamferedBox forks
+  // Yoke 2 (U-shape in YZ plane, perpendicular) — nurbsFilletBox forks
   for (const sz of [-1, 1]) {
     const fork = new THREE.Mesh(
-      chamferedBox(yokeThick, yokeThick, yokeH, chamfer),
+      nurbsFilletBox(yokeThick, yokeThick, yokeH, chamfer, 12),
       mat,
     )
     fork.position.set(0, sz * yokeW, -yokeH * 0.25)
     g.add(fork)
   }
   const yoke2Bar = new THREE.Mesh(
-    chamferedBox(yokeThick, yokeW * 2 + yokeThick, yokeThick, chamfer),
+    nurbsFilletBox(yokeThick, yokeW * 2 + yokeThick, yokeThick, chamfer, 12),
     mat,
   )
   yoke2Bar.position.z = -yokeH * 0.5
@@ -479,7 +480,7 @@ function generateUniversalJoint(id: string, dims: GeneratorDims): THREE.Group {
   // X-axis pins
   for (const sx of [-1, 1]) {
     const pin = new THREE.Mesh(
-      chamferedCylinder(pinR, pinLen, pinR * 0.1, 12),
+      nurbsCylinder(pinR, pinLen, pinR * 0.1, 12),
       pinMat,
     )
     pin.rotation.z = Math.PI / 2
@@ -490,7 +491,7 @@ function generateUniversalJoint(id: string, dims: GeneratorDims): THREE.Group {
   // Y-axis pins
   for (const sy of [-1, 1]) {
     const pin = new THREE.Mesh(
-      chamferedCylinder(pinR, pinLen, pinR * 0.1, 12),
+      nurbsCylinder(pinR, pinLen, pinR * 0.1, 12),
       pinMat,
     )
     pin.position.y = sy * pinLen * 0.3
@@ -509,9 +510,9 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
   const chamfer = r * 0.05
   const isRigid = id.includes('rigid')
 
-  // Main coupling body — chamferedCylinder
+  // Main coupling body — nurbsCylinder
   const body = new THREE.Mesh(
-    chamferedCylinder(r, h, chamfer, 32),
+    nurbsCylinder(r, h, chamfer, 32),
     isRigid ? getMaterial('brushed_steel') : catMetal(),
   )
   g.add(body)
@@ -523,7 +524,7 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
     for (let i = 0; i < 3; i++) {
       const y = -h * 0.3 + i * h * 0.3
       const split = new THREE.Mesh(
-        new THREE.TorusGeometry(r * 1.01, r * 0.015, 6, 32),
+        nurbsTorus(r * 1.01, r * 0.015, 32, 6),
         splitMat,
       )
       split.rotation.x = Math.PI / 2
@@ -571,14 +572,14 @@ function generateRackPinion(id: string, dims: GeneratorDims): THREE.Group {
   const chamfer = Math.min(rackH, rackD) * 0.06
 
   // Rack bar
-  const rack = new THREE.Mesh(chamferedBox(rackW, rackD, rackH, chamfer), getMaterial('brushed_steel'))
+  const rack = new THREE.Mesh(nurbsFilletBox(rackW, rackD, rackH, chamfer, 16), getMaterial('brushed_steel'))
   rack.position.y = -h * 0.25
   g.add(rack)
 
   // Tooth strip on top of rack
   const toothStripH = rackH * 0.25
   const toothStrip = new THREE.Mesh(
-    chamferedBox(rackW * 0.95, rackD * 0.6, toothStripH, chamfer * 0.3),
+    nurbsFilletBox(rackW * 0.95, rackD * 0.6, toothStripH, chamfer * 0.3, 12),
     catMetal('brushed_steel', 0.2),
   )
   toothStrip.position.y = -h * 0.25 + (rackH + toothStripH) / 2
@@ -628,7 +629,7 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
 
   // Outer ring
   const outerRing = new THREE.Mesh(
-    chamferedCylinder(outerR, h, chamfer, 48),
+    nurbsCylinder(outerR, h, chamfer, 48),
     catMetal('brushed_steel', 0.2),
   )
   g.add(outerRing)
@@ -636,7 +637,7 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
   // Inner ring
   const innerR = outerR * 0.7
   const innerRing = new THREE.Mesh(
-    chamferedCylinder(innerR, h * 1.01, chamfer * 0.5, 48),
+    nurbsCylinder(innerR, h * 1.01, chamfer * 0.5, 48),
     getMaterial('brushed_steel'),
   )
   g.add(innerRing)
@@ -644,7 +645,7 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
   // Rolling element track
   const trackR = (outerR + innerR) / 2
   const track = new THREE.Mesh(
-    new THREE.TorusGeometry(trackR, h * 0.15, 8, 48),
+    nurbsTorus(trackR, h * 0.15, 48, 8),
     getMaterial('dark_chrome'),
   )
   track.rotation.x = Math.PI / 2
@@ -697,6 +698,6 @@ export function generateRichTransmission(id: string, dims: GeneratorDims): THREE
   // Fallback: generic transmission cylinder
   const g = new THREE.Group()
   const r = Math.min(dims.x, dims.z) / 2
-  g.add(new THREE.Mesh(chamferedCylinder(r, dims.y, r * 0.04, 32), catMetal()))
+  g.add(new THREE.Mesh(nurbsCylinder(r, dims.y, r * 0.04, 32), catMetal()))
   return g
 }

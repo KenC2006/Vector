@@ -13,6 +13,7 @@ import {
   screwHead, labelRecess, knurledRing, pcbBoard,
   connectorBlock, cablePort, flangePlate,
 } from '../primitives'
+import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.20, 0.60, 0.86] // blue
 
@@ -34,7 +35,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main housing — chamferedBox (wide thin box)
   const body = new THREE.Mesh(
-    chamferedBox(w, h, d, chamfer),
+    nurbsFilletBox(w, h, d, chamfer, 16),
     getMaterial('matte_plastic'),
   )
   g.add(body)
@@ -43,7 +44,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
   const faceH = h * 0.72
   const faceW = w * 0.88
   const face = new THREE.Mesh(
-    chamferedBox(faceW, faceH, d * 0.06, chamfer * 0.3),
+    nurbsFilletBox(faceW, faceH, d * 0.06, chamfer * 0.3, 12),
     getMaterial('dark_chrome'),
   )
   face.position.z = d * 0.43
@@ -65,7 +66,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
 
     // Lens recess ring (outer housing, slightly larger, dark)
     const housing = new THREE.Mesh(
-      chamferedCylinder(lr * 1.15, lensDepth * 1.2, lr * 0.04, 32),
+      nurbsCylinder(lr * 1.15, lensDepth * 1.2, lr * 0.04, 32),
       getMaterial('matte_plastic', 0x111111),
     )
     housing.rotation.x = Math.PI / 2
@@ -74,7 +75,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
 
     // Actual lens element (recessed inside housing)
     const lens = new THREE.Mesh(
-      chamferedCylinder(lr, lensDepth * 0.5, lr * 0.06, 32),
+      nurbsCylinder(lr, lensDepth * 0.5, lr * 0.06, 32),
       lensMats[i],
     )
     lens.rotation.x = Math.PI / 2
@@ -83,7 +84,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
 
     // Accent ring around each lens
     const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(lr * 1.18, lensR * 0.05, 6, 24),
+      nurbsTorus(lr * 1.18, lensR * 0.05, 24, 6),
       getMaterial('dark_chrome'),
     )
     ring.position.set(lensPositions[i], 0, d * 0.41)
@@ -103,7 +104,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
   const tabH = h * 0.14
   const tabD = d * 0.6
   const tab = new THREE.Mesh(
-    chamferedBox(tabW, tabH, tabD, chamfer * 0.3),
+    nurbsFilletBox(tabW, tabH, tabD, chamfer * 0.3, 12),
     catMetal(0.25),
   )
   tab.position.set(0, -(h + tabH) / 2, 0)
@@ -180,7 +181,7 @@ function generateLidar2D(id: string, dims: GeneratorDims): THREE.Group {
   // Dark sensor band (separate torus around body mid-height)
   const bandR = r * 1.01
   const band = new THREE.Mesh(
-    new THREE.TorusGeometry(bandR, d * 0.055, 8, 48),
+    nurbsTorus(bandR, d * 0.055, 48, 8),
     getMaterial('dark_chrome'),
   )
   band.rotation.x = Math.PI / 2
@@ -189,7 +190,7 @@ function generateLidar2D(id: string, dims: GeneratorDims): THREE.Group {
 
   // Second thinner band above
   const band2 = new THREE.Mesh(
-    new THREE.TorusGeometry(bandR * 0.98, d * 0.025, 6, 48),
+    nurbsTorus(bandR * 0.98, d * 0.025, 48, 6),
     getMaterial('dark_chrome'),
   )
   band2.rotation.x = Math.PI / 2
@@ -213,7 +214,7 @@ function generateLidar2D(id: string, dims: GeneratorDims): THREE.Group {
 
   // Cable strain relief
   const strain = new THREE.Mesh(
-    chamferedCylinder(r * 0.05, r * 0.12, r * 0.006),
+    nurbsCylinder(r * 0.05, r * 0.12, r * 0.006),
     getMaterial('rubber_black'),
   )
   strain.rotation.z = Math.PI / 2
@@ -277,7 +278,7 @@ function generateLidar3D(id: string, dims: GeneratorDims): THREE.Group {
 
   // Dark sensor band
   const band = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 1.01, d * 0.045, 8, 48),
+    nurbsTorus(r * 1.01, d * 0.045, 48, 8),
     getMaterial('dark_chrome'),
   )
   band.rotation.x = Math.PI / 2
@@ -286,7 +287,7 @@ function generateLidar3D(id: string, dims: GeneratorDims): THREE.Group {
 
   // Dome-to-body accent ring
   const domeRing = new THREE.Mesh(
-    new THREE.TorusGeometry(domeR, r * 0.015, 6, 36),
+    nurbsTorus(domeR, r * 0.015, 36, 6),
     getMaterial('dark_chrome'),
   )
   domeRing.rotation.x = Math.PI / 2
@@ -348,7 +349,7 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
   const chipH = h * 0.35
   const chipD = d * 0.18
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipH, chipD, chipW * 0.04),
+    nurbsFilletBox(chipW, chipH, chipD, chipW * 0.04, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, 0, d * 0.24)
@@ -365,7 +366,7 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
   // Bypass capacitors (tiny SMD parts)
   for (const sx of [-1, 1]) {
     const cap = new THREE.Mesh(
-      chamferedBox(w * 0.08, h * 0.05, d * 0.06, w * 0.004),
+      nurbsFilletBox(w * 0.08, h * 0.05, d * 0.06, w * 0.004, 12),
       getMaterial('matte_plastic', 0x443322),
     )
     cap.position.set(sx * w * 0.3, h * 0.15, d * 0.2)
@@ -374,7 +375,7 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
 
   // Crystal oscillator
   const crystal = new THREE.Mesh(
-    chamferedBox(w * 0.1, h * 0.08, d * 0.06, w * 0.005),
+    nurbsFilletBox(w * 0.1, h * 0.08, d * 0.06, w * 0.005, 12),
     getMaterial('brushed_steel'),
   )
   crystal.position.set(w * 0.2, -h * 0.15, d * 0.2)
@@ -385,7 +386,7 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
   const headerH = h * 0.08
   const headerD = d * 0.35
   const header = new THREE.Mesh(
-    chamferedBox(headerW, headerH, headerD, headerH * 0.1),
+    nurbsFilletBox(headerW, headerH, headerD, headerH * 0.1, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.4, d * 0.05)
@@ -425,7 +426,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main body — chamferedBox
   const body = new THREE.Mesh(
-    chamferedBox(w, h, d, chamfer),
+    nurbsFilletBox(w, h, d, chamfer, 16),
     catMetal(0.3),
   )
   g.add(body)
@@ -436,7 +437,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
   for (const sx of [-1, 1]) {
     // Recess cavity (dark hole in face)
     const recess = new THREE.Mesh(
-      chamferedCylinder(eyeR * 1.15, eyeDepth * 0.4, eyeR * 0.02, 32),
+      nurbsCylinder(eyeR * 1.15, eyeDepth * 0.4, eyeR * 0.02, 32),
       getMaterial('dark_chrome'),
     )
     recess.rotation.x = Math.PI / 2
@@ -445,7 +446,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
     // Outer housing ring
     const housing = new THREE.Mesh(
-      chamferedCylinder(eyeR * 1.1, eyeDepth, eyeR * 0.05, 32),
+      nurbsCylinder(eyeR * 1.1, eyeDepth, eyeR * 0.05, 32),
       getMaterial('glossy_plastic', 0x888888),
     )
     housing.rotation.x = Math.PI / 2
@@ -454,7 +455,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
     // Inner transducer cone (lighter, recessed)
     const inner = new THREE.Mesh(
-      chamferedCylinder(eyeR * 0.78, eyeDepth * 0.5, eyeR * 0.03, 32),
+      nurbsCylinder(eyeR * 0.78, eyeDepth * 0.5, eyeR * 0.03, 32),
       getMaterial('glossy_plastic', 0xcccccc),
     )
     inner.rotation.x = Math.PI / 2
@@ -463,7 +464,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
     // Accent ring around transducer
     const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(eyeR * 1.12, eyeR * 0.04, 6, 24),
+      nurbsTorus(eyeR * 1.12, eyeR * 0.04, 24, 6),
       getMaterial('dark_chrome'),
     )
     ring.position.set(sx * w * 0.22, 0, d * 0.42)
@@ -472,7 +473,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
   // PCB visible through back (partial board)
   const pcbMesh = new THREE.Mesh(
-    chamferedBox(w * 0.85, h * 0.75, d * 0.04, chamfer * 0.2),
+    nurbsFilletBox(w * 0.85, h * 0.75, d * 0.04, chamfer * 0.2, 12),
     getMaterial('pcb_green'),
   )
   pcbMesh.position.z = -d * 0.38
@@ -480,7 +481,7 @@ function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
 
   // Rear pin header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.55, h * 0.1, d * 0.15, chamfer * 0.2),
+    nurbsFilletBox(w * 0.55, h * 0.1, d * 0.15, chamfer * 0.2, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.38, -d * 0.38)
@@ -517,7 +518,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
   const chipW = w * 0.3
   const chipD = d * 0.15
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW, chipD, chipW * 0.04),
+    nurbsFilletBox(chipW, chipW, chipD, chipW * 0.04, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, 0, d * 0.22)
@@ -526,7 +527,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
   // Lens aperture (dark cylinder inset in chip)
   const lensR = chipW * 0.28
   const lens = new THREE.Mesh(
-    chamferedCylinder(lensR, chipD * 0.7, lensR * 0.05, 16),
+    nurbsCylinder(lensR, chipD * 0.7, lensR * 0.05, 16),
     getMaterial('dark_chrome'),
   )
   lens.rotation.x = Math.PI / 2
@@ -544,7 +545,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
   // Bypass caps
   for (const sx of [-1, 1]) {
     const cap = new THREE.Mesh(
-      chamferedBox(w * 0.07, h * 0.04, d * 0.05, w * 0.004),
+      nurbsFilletBox(w * 0.07, h * 0.04, d * 0.05, w * 0.004, 12),
       getMaterial('matte_plastic', 0x443322),
     )
     cap.position.set(sx * w * 0.25, h * 0.2, d * 0.18)
@@ -553,7 +554,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
 
   // Voltage regulator
   const vreg = new THREE.Mesh(
-    chamferedBox(w * 0.1, h * 0.06, d * 0.08, w * 0.005),
+    nurbsFilletBox(w * 0.1, h * 0.06, d * 0.08, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   vreg.position.set(-w * 0.2, -h * 0.15, d * 0.2)
@@ -561,7 +562,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
 
   // Pin header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.4, h * 0.06, d * 0.25, w * 0.005),
+    nurbsFilletBox(w * 0.4, h * 0.06, d * 0.25, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.38, d * 0.02)
@@ -591,7 +592,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
   // Main cylindrical flange — chamferedCylinder
   const bodyH = d * 0.6
   const body = new THREE.Mesh(
-    chamferedCylinder(r, bodyH, r * 0.03, 64),
+    nurbsCylinder(r, bodyH, r * 0.03, 64),
     catMetal(0.35),
   )
   g.add(body)
@@ -608,7 +609,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
   // Top flange face — flangePlate overlay for visual depth
   const topFlange = new THREE.Mesh(
-    chamferedCylinder(r * 0.98, bodyH * 0.12, r * 0.02, 64),
+    nurbsCylinder(r * 0.98, bodyH * 0.12, r * 0.02, 64),
     getMaterial('brushed_steel'),
   )
   topFlange.position.y = bodyH * 0.44
@@ -616,7 +617,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
   // Bottom flange face
   const botFlange = new THREE.Mesh(
-    chamferedCylinder(r * 0.98, bodyH * 0.12, r * 0.02, 64),
+    nurbsCylinder(r * 0.98, bodyH * 0.12, r * 0.02, 64),
     getMaterial('brushed_steel'),
   )
   botFlange.position.y = -bodyH * 0.44
@@ -626,7 +627,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
   const innerR = r * 0.44
   const innerH = bodyH * 0.48
   const inner = new THREE.Mesh(
-    chamferedCylinder(innerR, innerH, r * 0.015, 32),
+    nurbsCylinder(innerR, innerH, r * 0.015, 32),
     getMaterial('brushed_steel'),
   )
   inner.position.y = bodyH * 0.05
@@ -634,7 +635,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
   // Accent ring (top face)
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.6, r * 0.015, 6, 48),
+    nurbsTorus(r * 0.6, r * 0.015, 48, 6),
     getMaterial('dark_chrome'),
   )
   ring.rotation.x = Math.PI / 2
@@ -643,7 +644,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
   // Mid-body parting line ring
   const midRing = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 1.005, r * 0.008, 6, 48),
+    nurbsTorus(r * 1.005, r * 0.008, 48, 6),
     getMaterial('dark_chrome'),
   )
   midRing.rotation.x = Math.PI / 2
@@ -657,7 +658,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
   // Strain relief
   const strain = new THREE.Mesh(
-    chamferedCylinder(r * 0.04, r * 0.12, r * 0.005),
+    nurbsCylinder(r * 0.04, r * 0.12, r * 0.005),
     getMaterial('rubber_black'),
   )
   strain.rotation.z = Math.PI / 2
@@ -684,7 +685,7 @@ function generateEncoder(id: string, dims: GeneratorDims): THREE.Group {
   // Flat cylindrical body
   const bodyH = d * 0.5
   const body = new THREE.Mesh(
-    chamferedCylinder(r, bodyH, chamfer, 36),
+    nurbsCylinder(r, bodyH, chamfer, 36),
     catMetal(0.3),
   )
   g.add(body)
@@ -692,14 +693,14 @@ function generateEncoder(id: string, dims: GeneratorDims): THREE.Group {
   // Shaft bore hole (dark center)
   const boreR = r * 0.2
   const bore = new THREE.Mesh(
-    chamferedCylinder(boreR, bodyH * 1.1, boreR * 0.05, 16),
+    nurbsCylinder(boreR, bodyH * 1.1, boreR * 0.05, 16),
     getMaterial('dark_chrome'),
   )
   g.add(bore)
 
   // Top face accent ring
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.6, r * 0.012, 6, 36),
+    nurbsTorus(r * 0.6, r * 0.012, 36, 6),
     getMaterial('dark_chrome'),
   )
   ring.rotation.x = Math.PI / 2
@@ -736,7 +737,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main body — chamferedBox
   const body = new THREE.Mesh(
-    chamferedBox(w, h, d, chamfer),
+    nurbsFilletBox(w, h, d, chamfer, 16),
     getMaterial('matte_plastic'),
   )
   g.add(body)
@@ -747,7 +748,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Lens housing recess
   const housingRecess = new THREE.Mesh(
-    chamferedCylinder(lensR * 1.2, lensDepth * 0.5, lensR * 0.03, 32),
+    nurbsCylinder(lensR * 1.2, lensDepth * 0.5, lensR * 0.03, 32),
     getMaterial('dark_chrome'),
   )
   housingRecess.rotation.x = Math.PI / 2
@@ -756,7 +757,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Lens housing
   const housing = new THREE.Mesh(
-    chamferedCylinder(lensR * 1.15, lensDepth, lensR * 0.05, 32),
+    nurbsCylinder(lensR * 1.15, lensDepth, lensR * 0.05, 32),
     getMaterial('matte_plastic'),
   )
   housing.rotation.x = Math.PI / 2
@@ -765,7 +766,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Lens element (dark germanium look)
   const lens = new THREE.Mesh(
-    chamferedCylinder(lensR, lensDepth * 0.5, lensR * 0.03, 32),
+    nurbsCylinder(lensR, lensDepth * 0.5, lensR * 0.03, 32),
     getMaterial('glossy_plastic', 0x110022),
   )
   lens.rotation.x = Math.PI / 2
@@ -774,7 +775,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
   // Lens ring accent
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(lensR * 1.12, lensR * 0.05, 6, 24),
+    nurbsTorus(lensR * 1.12, lensR * 0.05, 24, 6),
     getMaterial('dark_chrome'),
   )
   ring.position.set(0, 0, d * 0.44)
@@ -798,7 +799,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
   const tabW = w * 0.2
   const tabH = h * 0.12
   const tab = new THREE.Mesh(
-    chamferedBox(tabW, tabH, d * 0.5, chamfer * 0.3),
+    nurbsFilletBox(tabW, tabH, d * 0.5, chamfer * 0.3, 12),
     catMetal(0.2),
   )
   tab.position.set(0, -(h + tabH) / 2, 0)
@@ -822,7 +823,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main body (small box)
   const body = new THREE.Mesh(
-    chamferedBox(w, h, d, chamfer),
+    nurbsFilletBox(w, h, d, chamfer, 16),
     catPlastic(0.2),
   )
   g.add(body)
@@ -832,7 +833,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
   const leverH = h * 0.06
   const leverD = d * 0.3
   const lever = new THREE.Mesh(
-    chamferedBox(leverW, leverD, leverH, leverH * 0.15),
+    nurbsFilletBox(leverW, leverD, leverH, leverH * 0.15, 12),
     getMaterial('brushed_steel'),
   )
   lever.position.set(w * 0.3, h * 0.35, 0)
@@ -841,7 +842,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
   // Lever pivot
   const pivotR = Math.min(w, h) * 0.06
   const pivot = new THREE.Mesh(
-    chamferedCylinder(pivotR, d * 0.35, pivotR * 0.1, 12),
+    nurbsCylinder(pivotR, d * 0.35, pivotR * 0.1, 12),
     getMaterial('dark_chrome'),
   )
   pivot.rotation.x = Math.PI / 2
@@ -851,7 +852,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
   // Lever roller tip
   const rollerR = Math.min(w, h) * 0.08
   const roller = new THREE.Mesh(
-    chamferedCylinder(rollerR, d * 0.25, rollerR * 0.1, 12),
+    nurbsCylinder(rollerR, d * 0.25, rollerR * 0.1, 12),
     getMaterial('dark_chrome'),
   )
   roller.rotation.x = Math.PI / 2
@@ -861,7 +862,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal pins (bottom)
   for (let i = -1; i <= 1; i++) {
     const pin = new THREE.Mesh(
-      chamferedCylinder(w * 0.02, h * 0.2, w * 0.003),
+      nurbsCylinder(w * 0.02, h * 0.2, w * 0.003),
       getMaterial('copper_trace'),
     )
     pin.position.set(i * w * 0.2, -(h + h * 0.2) / 2, 0)
@@ -892,7 +893,7 @@ function generatePotentiometer(id: string, dims: GeneratorDims): THREE.Group {
   // Main cylindrical body
   const bodyH = d * 0.55
   const body = new THREE.Mesh(
-    chamferedCylinder(r, bodyH, chamfer, 32),
+    nurbsCylinder(r, bodyH, chamfer, 32),
     catMetal(0.3),
   )
   g.add(body)
@@ -901,7 +902,7 @@ function generatePotentiometer(id: string, dims: GeneratorDims): THREE.Group {
   const shaftR = r * 0.1
   const shaftH = d * 0.2
   const shaft = new THREE.Mesh(
-    chamferedCylinder(shaftR, shaftH, shaftR * 0.1),
+    nurbsCylinder(shaftR, shaftH, shaftR * 0.1),
     getMaterial('brushed_steel'),
   )
   shaft.position.y = (bodyH + shaftH) / 2
@@ -915,7 +916,7 @@ function generatePotentiometer(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal pins (3 pins at bottom)
   for (let i = -1; i <= 1; i++) {
     const pin = new THREE.Mesh(
-      chamferedCylinder(r * 0.04, d * 0.2, r * 0.005),
+      nurbsCylinder(r * 0.04, d * 0.2, r * 0.005),
       getMaterial('copper_trace'),
     )
     pin.position.set(i * r * 0.4, -(bodyH + d * 0.2) / 2, 0)
@@ -927,7 +928,7 @@ function generatePotentiometer(id: string, dims: GeneratorDims): THREE.Group {
   const tabH = r * 0.06
   const tabD = d * 0.2
   const tab = new THREE.Mesh(
-    chamferedBox(tabW, tabD, tabH, tabH * 0.1),
+    nurbsFilletBox(tabW, tabD, tabH, tabH * 0.1, 12),
     getMaterial('brushed_steel'),
   )
   tab.position.set(r * 0.85, bodyH * 0.2, 0)
@@ -951,7 +952,7 @@ function generateLoadCell(id: string, dims: GeneratorDims): THREE.Group {
 
   // Flat beam body
   const body = new THREE.Mesh(
-    chamferedBox(w, h, d, chamfer),
+    nurbsFilletBox(w, h, d, chamfer, 16),
     catMetal(0.3),
   )
   g.add(body)
@@ -961,7 +962,7 @@ function generateLoadCell(id: string, dims: GeneratorDims): THREE.Group {
   const gaugeH = h * 0.6
   const gaugeD = d * 0.02
   const gauge = new THREE.Mesh(
-    chamferedBox(gaugeW, gaugeH, gaugeD, gaugeW * 0.02),
+    nurbsFilletBox(gaugeW, gaugeH, gaugeD, gaugeW * 0.02, 12),
     getMaterial('copper_trace'),
   )
   gauge.position.set(0, 0, d * 0.48)
@@ -972,7 +973,7 @@ function generateLoadCell(id: string, dims: GeneratorDims): THREE.Group {
   const lineSpacing = gaugeH / (lineCount + 1)
   for (let i = 1; i <= lineCount; i++) {
     const line = new THREE.Mesh(
-      chamferedBox(gaugeW * 0.8, gaugeH * 0.02, gaugeD * 0.5, gaugeW * 0.005),
+      nurbsFilletBox(gaugeW * 0.8, gaugeH * 0.02, gaugeD * 0.5, gaugeW * 0.005, 12),
       getMaterial('copper_trace'),
     )
     line.position.set(0, -gaugeH / 2 + i * lineSpacing, d * 0.5)
@@ -1010,7 +1011,7 @@ function generateCurrentVoltage(id: string, dims: GeneratorDims): THREE.Group {
   // Main IC
   const chipW = w * 0.25
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW, d * 0.12, chipW * 0.04),
+    nurbsFilletBox(chipW, chipW, d * 0.12, chipW * 0.04, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, 0, d * 0.2)
@@ -1026,7 +1027,7 @@ function generateCurrentVoltage(id: string, dims: GeneratorDims): THREE.Group {
   // Small capacitors
   for (const sx of [-1, 1]) {
     const cap = new THREE.Mesh(
-      chamferedCylinder(w * 0.04, d * 0.15, w * 0.005, 12),
+      nurbsCylinder(w * 0.04, d * 0.15, w * 0.005, 12),
       getMaterial('matte_plastic', 0x222244),
     )
     cap.position.set(sx * w * 0.15, h * 0.2, d * 0.18)
@@ -1083,7 +1084,7 @@ function generateColorLight(id: string, dims: GeneratorDims): THREE.Group {
 
   // IC chip
   const chip = new THREE.Mesh(
-    chamferedBox(w * 0.2, h * 0.2, d * 0.08, w * 0.01),
+    nurbsFilletBox(w * 0.2, h * 0.2, d * 0.08, w * 0.01, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(w * 0.2, -h * 0.15, d * 0.18)
@@ -1091,7 +1092,7 @@ function generateColorLight(id: string, dims: GeneratorDims): THREE.Group {
 
   // Pin header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.4, h * 0.06, d * 0.2, w * 0.005),
+    nurbsFilletBox(w * 0.4, h * 0.06, d * 0.2, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.4, d * 0.05)
@@ -1123,7 +1124,7 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
   // Main IC
   const chipW = w * 0.25
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW, d * 0.1, chipW * 0.03),
+    nurbsFilletBox(chipW, chipW, d * 0.1, chipW * 0.03, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(w * 0.15, -h * 0.1, d * 0.18)
@@ -1131,7 +1132,7 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
 
   // Bypass cap
   const cap = new THREE.Mesh(
-    chamferedBox(w * 0.06, h * 0.04, d * 0.05, w * 0.005),
+    nurbsFilletBox(w * 0.06, h * 0.04, d * 0.05, w * 0.005, 12),
     getMaterial('matte_plastic', 0x443322),
   )
   cap.position.set(-w * 0.2, h * 0.15, d * 0.18)
@@ -1139,7 +1140,7 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
 
   // Pin header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.35, h * 0.06, d * 0.2, w * 0.005),
+    nurbsFilletBox(w * 0.35, h * 0.06, d * 0.2, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.38, d * 0.05)

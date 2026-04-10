@@ -10,6 +10,7 @@ import {
   chamferedBox, chamferedCylinder, mountingHole,
   labelRecess, pcbBoard, connectorBlock, heatsinkFins,
 } from '../primitives'
+import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
 // Category color: [0.18, 0.80, 0.44] (green) — applied via pcbBoard's green material
 
@@ -28,7 +29,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   const chipH = h * 0.3
   const chipD = d * 0.1
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipH, chipD, chipW * 0.04),
+    nurbsFilletBox(chipW, chipH, chipD, chipW * 0.04, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, 0, d * 0.2)
@@ -45,7 +46,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   // Crystal oscillator (tiny chamferedCylinder)
   const crystalR = w * 0.035
   const crystal = new THREE.Mesh(
-    chamferedCylinder(crystalR, d * 0.06, crystalR * 0.1, 12),
+    nurbsCylinder(crystalR, d * 0.06, crystalR * 0.1, 12),
     getMaterial('brushed_steel'),
   )
   crystal.position.set(w * 0.25, h * 0.15, d * 0.18)
@@ -56,7 +57,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   const headerH = h * 0.06
   const headerD = d * 0.4
   const header = new THREE.Mesh(
-    chamferedBox(headerW, headerH, headerD, headerH * 0.1),
+    nurbsFilletBox(headerW, headerH, headerD, headerH * 0.1, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.35, d * 0.12)
@@ -67,7 +68,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   const pinSpacing = headerW / (pinCount + 1)
   for (let i = 1; i <= pinCount; i++) {
     const pin = new THREE.Mesh(
-      chamferedCylinder(headerH * 0.3, headerD * 0.7, headerH * 0.03),
+      nurbsCylinder(headerH * 0.3, headerD * 0.7, headerH * 0.03),
       getMaterial('copper_trace'),
     )
     pin.position.set(-headerW / 2 + i * pinSpacing, -h * 0.35, d * 0.12)
@@ -83,7 +84,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   // Bypass capacitors (small chamferedBox)
   for (const pos of [[w * 0.15, h * 0.2], [-w * 0.15, h * 0.2]]) {
     const cap = new THREE.Mesh(
-      chamferedBox(w * 0.05, h * 0.03, d * 0.04, w * 0.004),
+      nurbsFilletBox(w * 0.05, h * 0.03, d * 0.04, w * 0.004, 12),
       getMaterial('matte_plastic', 0x443322),
     )
     cap.position.set(pos[0], pos[1], d * 0.17)
@@ -117,7 +118,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   // SoC chip package (chamferedBox)
   const chipW = w * 0.2
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW, d * 0.08, chipW * 0.03),
+    nurbsFilletBox(chipW, chipW, d * 0.08, chipW * 0.03, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(-w * 0.1, h * 0.05, d * 0.15)
@@ -125,7 +126,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
 
   // RAM chip (chamferedBox)
   const ram = new THREE.Mesh(
-    chamferedBox(w * 0.15, w * 0.08, d * 0.05, w * 0.008),
+    nurbsFilletBox(w * 0.15, w * 0.08, d * 0.05, w * 0.008, 12),
     getMaterial('matte_plastic'),
   )
   ram.position.set(w * 0.15, h * 0.1, d * 0.14)
@@ -150,7 +151,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   const headerH = h * 0.05
   const headerD = d * 0.35
   const header = new THREE.Mesh(
-    chamferedBox(headerW, headerH, headerD, headerH * 0.1),
+    nurbsFilletBox(headerW, headerH, headerD, headerH * 0.1, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(-w * 0.05, h * 0.38, d * 0.12)
@@ -162,7 +163,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
     const pinSpacing = headerW / (pinCount + 1)
     for (let i = 1; i <= pinCount; i++) {
       const pin = new THREE.Mesh(
-        chamferedCylinder(headerH * 0.25, headerD * 0.6, headerH * 0.02),
+        nurbsCylinder(headerH * 0.25, headerD * 0.6, headerH * 0.02),
         getMaterial('copper_trace'),
       )
       pin.position.set(
@@ -176,7 +177,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
 
   // SD card slot
   const sd = new THREE.Mesh(
-    chamferedBox(w * 0.12, h * 0.02, d * 0.08, w * 0.005),
+    nurbsFilletBox(w * 0.12, h * 0.02, d * 0.08, w * 0.005, 12),
     getMaterial('brushed_steel'),
   )
   sd.position.set(-w * 0.35, -h * 0.1, d * 0.05)
@@ -227,7 +228,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
 
   // SoC chip under heatsink
   const chip = new THREE.Mesh(
-    chamferedBox(w * 0.2, h * 0.2, d * 0.06, w * 0.008),
+    nurbsFilletBox(w * 0.2, h * 0.2, d * 0.06, w * 0.008, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(-w * 0.05, 0, d * 0.12)
@@ -249,7 +250,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
 
   // Power barrel jack
   const barrel = new THREE.Mesh(
-    chamferedCylinder(w * 0.04, d * 0.1, w * 0.005, 12),
+    nurbsCylinder(w * 0.04, d * 0.1, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   barrel.rotation.x = Math.PI / 2
@@ -261,7 +262,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   const headerH = h * 0.04
   const headerD = d * 0.3
   const header = new THREE.Mesh(
-    chamferedBox(headerW, headerH, headerD, headerH * 0.1),
+    nurbsFilletBox(headerW, headerH, headerD, headerH * 0.1, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, h * 0.38, d * 0.1)
@@ -270,7 +271,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   // Capacitors
   for (const pos of [[w * 0.2, h * 0.15], [-w * 0.3, h * 0.2]]) {
     const cap = new THREE.Mesh(
-      chamferedCylinder(w * 0.025, d * 0.15, w * 0.003, 12),
+      nurbsCylinder(w * 0.025, d * 0.15, w * 0.003, 12),
       getMaterial('matte_plastic', 0x222244),
     )
     cap.position.set(pos[0], pos[1], d * 0.18)
@@ -328,7 +329,7 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
 
   // Signal header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.4, h * 0.04, d * 0.2, w * 0.004),
+    nurbsFilletBox(w * 0.4, h * 0.04, d * 0.2, w * 0.004, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, h * 0.15, d * 0.12)
@@ -337,7 +338,7 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
   // Capacitors (bulk decoupling)
   for (const sx of [-1, 1]) {
     const cap = new THREE.Mesh(
-      chamferedCylinder(w * 0.04, d * 0.25, w * 0.005, 12),
+      nurbsCylinder(w * 0.04, d * 0.25, w * 0.005, 12),
       getMaterial('matte_plastic', 0x111133),
     )
     cap.position.set(sx * w * 0.05, h * 0.2, d * 0.2)
@@ -387,7 +388,7 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
 
   // FOC driver IC (chamferedBox under heatsink)
   const chip = new THREE.Mesh(
-    chamferedBox(w * 0.18, h * 0.18, d * 0.05, w * 0.006),
+    nurbsFilletBox(w * 0.18, h * 0.18, d * 0.05, w * 0.006, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(-w * 0.1, 0, d * 0.12)
@@ -416,7 +417,7 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
   // Bulk capacitors
   for (const sx of [-1, 1]) {
     const cap = new THREE.Mesh(
-      chamferedCylinder(w * 0.03, d * 0.2, w * 0.004, 12),
+      nurbsCylinder(w * 0.03, d * 0.2, w * 0.004, 12),
       getMaterial('matte_plastic', 0x111133),
     )
     cap.position.set(w * 0.2 + sx * w * 0.08, h * 0.15, d * 0.18)
@@ -460,7 +461,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   // Large BGA chip (chamferedBox)
   const chipW = w * 0.3
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW, d * 0.06, chipW * 0.03),
+    nurbsFilletBox(chipW, chipW, d * 0.06, chipW * 0.03, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, 0, d * 0.13)
@@ -481,7 +482,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
 
   // Configuration flash chip
   const flash = new THREE.Mesh(
-    chamferedBox(w * 0.1, h * 0.06, d * 0.04, w * 0.005),
+    nurbsFilletBox(w * 0.1, h * 0.06, d * 0.04, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   flash.position.set(w * 0.25, h * 0.15, d * 0.12)
@@ -489,7 +490,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
 
   // JTAG header
   const jtag = new THREE.Mesh(
-    chamferedBox(w * 0.12, h * 0.08, d * 0.2, w * 0.005),
+    nurbsFilletBox(w * 0.12, h * 0.08, d * 0.2, w * 0.005, 12),
     getMaterial('matte_plastic'),
   )
   jtag.position.set(-w * 0.3, h * 0.25, d * 0.1)
@@ -498,7 +499,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   // IO headers (2 long rows)
   for (const sy of [-1, 1]) {
     const header = new THREE.Mesh(
-      chamferedBox(w * 0.6, h * 0.04, d * 0.25, w * 0.003),
+      nurbsFilletBox(w * 0.6, h * 0.04, d * 0.25, w * 0.003, 12),
       getMaterial('matte_plastic'),
     )
     header.position.set(0, sy * h * 0.38, d * 0.1)
@@ -508,7 +509,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   // Voltage regulators
   for (let i = 0; i < 2; i++) {
     const vreg = new THREE.Mesh(
-      chamferedBox(w * 0.06, h * 0.04, d * 0.08, w * 0.003),
+      nurbsFilletBox(w * 0.06, h * 0.04, d * 0.08, w * 0.003, 12),
       getMaterial('matte_plastic'),
     )
     vreg.position.set(w * 0.3, -h * 0.05 + i * h * 0.12, d * 0.12)
@@ -554,7 +555,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   // Main IC (chamferedBox)
   const chipW = w * 0.2
   const chip = new THREE.Mesh(
-    chamferedBox(chipW, chipW * 0.8, d * 0.08, chipW * 0.03),
+    nurbsFilletBox(chipW, chipW * 0.8, d * 0.08, chipW * 0.03, 12),
     getMaterial('matte_plastic'),
   )
   chip.position.set(0, h * 0.05, d * 0.18)
@@ -564,7 +565,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   const passiveCount = 4
   for (let i = 0; i < passiveCount; i++) {
     const passive = new THREE.Mesh(
-      chamferedBox(w * 0.06, h * 0.035, d * 0.04, w * 0.004),
+      nurbsFilletBox(w * 0.06, h * 0.035, d * 0.04, w * 0.004, 12),
       getMaterial('matte_plastic', 0x443322),
     )
     passive.position.set(
@@ -599,7 +600,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   if (hasAntenna) {
     // SMA connector base
     const smaBase = new THREE.Mesh(
-      chamferedCylinder(w * 0.03, d * 0.05, w * 0.004, 12),
+      nurbsCylinder(w * 0.03, d * 0.05, w * 0.004, 12),
       getMaterial('copper_trace'),
     )
     smaBase.position.set(-w * 0.3, h * 0.3, d * 0.16)
@@ -609,7 +610,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
     const antennaR = w * 0.015
     const antennaH = d * 0.8
     const antenna = new THREE.Mesh(
-      chamferedCylinder(antennaR, antennaH, antennaR * 0.1),
+      nurbsCylinder(antennaR, antennaH, antennaR * 0.1),
       getMaterial('matte_plastic'),
     )
     antenna.position.set(-w * 0.3, h * 0.3, d * 0.16 + d * 0.025 + antennaH / 2)
@@ -617,7 +618,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
 
     // Antenna tip
     const tip = new THREE.Mesh(
-      chamferedCylinder(antennaR * 1.5, antennaR * 3, antennaR * 0.2),
+      nurbsCylinder(antennaR * 1.5, antennaR * 3, antennaR * 0.2),
       getMaterial('matte_plastic'),
     )
     tip.position.set(-w * 0.3, h * 0.3, d * 0.16 + d * 0.025 + antennaH + antennaR * 1.5)
@@ -626,7 +627,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
     // GPS: patch antenna plate
     if (id.includes('gps')) {
       const patch = new THREE.Mesh(
-        chamferedBox(w * 0.25, h * 0.25, d * 0.04, w * 0.01),
+        nurbsFilletBox(w * 0.25, h * 0.25, d * 0.04, w * 0.01, 12),
         getMaterial('glossy_plastic', 0xeeeeee),
       )
       patch.position.set(w * 0.1, -h * 0.1, d * 0.2)
@@ -636,7 +637,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
 
   // Pin header
   const header = new THREE.Mesh(
-    chamferedBox(w * 0.5, h * 0.04, d * 0.2, w * 0.003),
+    nurbsFilletBox(w * 0.5, h * 0.04, d * 0.2, w * 0.003, 12),
     getMaterial('matte_plastic'),
   )
   header.position.set(0, -h * 0.38, d * 0.08)

@@ -10,6 +10,7 @@ import {
   chamferedBox, chamferedCylinder, boltCircle, screwHead,
   flangePlate, knurledRing, labelRecess, connectorBlock, cablePort,
 } from '../primitives'
+import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.10, 0.74, 0.61]  // teal
 
@@ -29,7 +30,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
   const bodyW = w * 0.7
   const bodyH = h * 0.4
   const bodyD = d * 0.75
-  const body = new THREE.Mesh(chamferedBox(bodyW, bodyD, bodyH, chamfer), catMetal(0.35))
+  const body = new THREE.Mesh(nurbsFilletBox(bodyW, bodyD, bodyH, chamfer, 16), catMetal(0.35))
   g.add(body)
 
   // Rail detail — thin raised chamferedBox across front face (fingers slide on this)
@@ -37,7 +38,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
   const railThick = h * 0.035
   const railDepth = bodyD * 0.1
   const rail = new THREE.Mesh(
-    chamferedBox(railW, railDepth, railThick, chamfer * 0.2),
+    nurbsFilletBox(railW, railDepth, railThick, chamfer * 0.2, 12),
     getMaterial('brushed_steel'),
   )
   rail.position.set(0, -bodyH * 0.22, bodyD * 0.43)
@@ -45,7 +46,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
 
   // Second rail line (parallel guide)
   const rail2 = new THREE.Mesh(
-    chamferedBox(railW, railDepth * 0.6, railThick * 0.7, chamfer * 0.15),
+    nurbsFilletBox(railW, railDepth * 0.6, railThick * 0.7, chamfer * 0.15, 12),
     getMaterial('brushed_steel'),
   )
   rail2.position.set(0, -bodyH * 0.08, bodyD * 0.43)
@@ -62,7 +63,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
     const sliderH = bodyH * 0.25
     const sliderD = bodyD * 0.2
     const slider = new THREE.Mesh(
-      chamferedBox(sliderW, sliderD, sliderH, chamfer * 0.2),
+      nurbsFilletBox(sliderW, sliderD, sliderH, chamfer * 0.2, 12),
       catMetal(0.2),
     )
     slider.position.set(sx * fingerSpacing, -bodyH * 0.15, bodyD * 0.42)
@@ -70,7 +71,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
 
     // Finger body
     const finger = new THREE.Mesh(
-      chamferedBox(fingerW, fingerD, fingerH, chamfer * 0.4),
+      nurbsFilletBox(fingerW, fingerD, fingerH, chamfer * 0.4, 16),
       catMetal(0.25),
     )
     finger.position.set(sx * fingerSpacing, -bodyH * 0.5 - fingerH * 0.5 + fingerH * 0.05, 0)
@@ -81,7 +82,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
     const padH = fingerH * 0.75
     const padD = fingerD * 0.88
     const pad = new THREE.Mesh(
-      chamferedBox(padW, padD, padH, chamfer * 0.1),
+      nurbsFilletBox(padW, padD, padH, chamfer * 0.1, 12),
       getMaterial('rubber_black'),
     )
     pad.position.set(
@@ -123,7 +124,7 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
   // Cylindrical base
   const baseR = Math.min(w, d) * 0.38
   const baseH = h * 0.32
-  const base = new THREE.Mesh(chamferedCylinder(baseR, baseH, chamfer, 36), catMetal(0.4))
+  const base = new THREE.Mesh(nurbsCylinder(baseR, baseH, chamfer, 36), catMetal(0.4))
   g.add(base)
 
   // Mounting flange on top
@@ -143,7 +144,7 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
 
     // Finger body — chamferedBox
     const finger = new THREE.Mesh(
-      chamferedBox(fingerW, fingerD, fingerH, chamfer * 0.3),
+      nurbsFilletBox(fingerW, fingerD, fingerH, chamfer * 0.3, 16),
       catMetal(0.25),
     )
     finger.position.set(fx, -baseH * 0.5 - fingerH * 0.5 + fingerH * 0.05, fz)
@@ -222,7 +223,7 @@ function generateSuctionCup(id: string, dims: GeneratorDims): THREE.Group {
   const fittingR = tubeR * 0.6
   const fittingH = h * 0.1
   const fitting = new THREE.Mesh(
-    chamferedCylinder(fittingR, fittingH, fittingR * 0.15, 16),
+    nurbsCylinder(fittingR, fittingH, fittingR * 0.15, 16),
     getMaterial('brushed_steel'),
   )
   fitting.position.y = totalH * 0.5 + fittingH * 0.5
@@ -246,7 +247,7 @@ function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
 
   // Flat plate
   const plateH = h * 0.25
-  const plate = new THREE.Mesh(chamferedBox(w * 0.85, d * 0.85, plateH, chamfer), catMetal(0.3))
+  const plate = new THREE.Mesh(nurbsFilletBox(w * 0.85, d * 0.85, plateH, chamfer, 16), catMetal(0.3))
   g.add(plate)
 
   // 6 suction pad cylinders (3x2 grid)
@@ -260,7 +261,7 @@ function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
       const px = (col - (cols - 1) / 2) * spacingX
       const pz = (row - (rows - 1) / 2) * spacingZ
       const pad = new THREE.Mesh(
-        chamferedCylinder(padR, padH, padR * 0.15, 20),
+        nurbsCylinder(padR, padH, padR * 0.15, 20),
         getMaterial('rubber_black'),
       )
       pad.position.set(px, -plateH * 0.5 - padH * 0.5, pz)
@@ -271,7 +272,7 @@ function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
   // Air manifold tube
   const manifoldR = Math.min(w, d) * 0.04
   const manifold = new THREE.Mesh(
-    chamferedCylinder(manifoldR, w * 0.7, manifoldR * 0.2, 12),
+    nurbsCylinder(manifoldR, w * 0.7, manifoldR * 0.2, 12),
     getMaterial('brushed_steel'),
   )
   manifold.rotation.z = Math.PI / 2
@@ -296,14 +297,14 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
   // Cylindrical body
   const bodyR = Math.min(w, d) * 0.3
   const bodyH = h * 0.6
-  const body = new THREE.Mesh(chamferedCylinder(bodyR, bodyH, chamfer, 32), catMetal(0.35))
+  const body = new THREE.Mesh(nurbsCylinder(bodyR, bodyH, chamfer, 32), catMetal(0.35))
   g.add(body)
 
   // Pole face disc at bottom
   const poleR = bodyR * 1.05
   const poleH = h * 0.06
   const pole = new THREE.Mesh(
-    chamferedCylinder(poleR, poleH, poleH * 0.15, 32),
+    nurbsCylinder(poleR, poleH, poleH * 0.15, 32),
     getMaterial('dark_chrome'),
   )
   pole.position.y = -bodyH * 0.5 - poleH * 0.5
@@ -311,7 +312,7 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
 
   // Accent ring
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(poleR * 0.85, poleR * 0.04, 8, 32),
+    nurbsTorus(poleR * 0.85, poleR * 0.04, 32, 8),
     getMaterial('copper_trace'),
   )
   ring.rotation.x = Math.PI / 2
@@ -322,7 +323,7 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
   const cableR = bodyR * 0.15
   const cableH = h * 0.15
   const cable = new THREE.Mesh(
-    chamferedCylinder(cableR, cableH, cableR * 0.2, 12),
+    nurbsCylinder(cableR, cableH, cableR * 0.2, 12),
     getMaterial('matte_plastic'),
   )
   cable.position.y = bodyH * 0.5 + cableH * 0.5
@@ -351,14 +352,14 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
   // Flat cylindrical plate
   const plateR = Math.min(w, d) * 0.42
   const plateH = h * 0.3
-  const plate = new THREE.Mesh(chamferedCylinder(plateR, plateH, chamfer, 48), catMetal(0.35))
+  const plate = new THREE.Mesh(nurbsCylinder(plateR, plateH, chamfer, 48), catMetal(0.35))
   g.add(plate)
 
   // Center pilot — raised chamferedCylinder
   const pilotR = plateR * 0.35
   const pilotH = h * 0.22
   const pilot = new THREE.Mesh(
-    chamferedCylinder(pilotR, pilotH, chamfer * 0.5, 32),
+    nurbsCylinder(pilotR, pilotH, chamfer * 0.5, 32),
     getMaterial('brushed_steel'),
   )
   pilot.position.y = -plateH * 0.5 - pilotH * 0.5
@@ -371,7 +372,7 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
   for (let i = 0; i < 3; i++) {
     const angle = (i / 3) * Math.PI * 2
     const pin = new THREE.Mesh(
-      chamferedCylinder(pinR, pinH, pinR * 0.2, 12),
+      nurbsCylinder(pinR, pinH, pinR * 0.2, 12),
       getMaterial('dark_chrome'),
     )
     pin.position.set(
@@ -409,7 +410,7 @@ function generateSoftGripper(id: string, dims: GeneratorDims): THREE.Group {
   // Cylindrical base
   const baseR = Math.min(w, d) * 0.3
   const baseH = h * 0.25
-  const base = new THREE.Mesh(chamferedCylinder(baseR, baseH, chamfer, 32), catMetal(0.35))
+  const base = new THREE.Mesh(nurbsCylinder(baseR, baseH, chamfer, 32), catMetal(0.35))
   g.add(base)
 
   // 4 tapered soft fingers at 90-degree spacing
@@ -430,7 +431,7 @@ function generateSoftGripper(id: string, dims: GeneratorDims): THREE.Group {
       const taper = 1.0 - s * 0.25  // 1.0, 0.75, 0.5
       const segR = baseSegR * taper
       const seg = new THREE.Mesh(
-        chamferedCylinder(segR, segH, segR * 0.12, 16),
+        nurbsCylinder(segR, segH, segR * 0.12, 16),
         getMaterial('rubber_black'),
       )
       seg.position.set(fx, currentY - segH * 0.5, fz)
@@ -464,7 +465,7 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   const ringR = Math.min(w, d) * 0.32
   const ringH = h * 0.18
   const ring = new THREE.Mesh(
-    chamferedCylinder(ringR, ringH, chamfer * 0.5, 32),
+    nurbsCylinder(ringR, ringH, chamfer * 0.5, 32),
     catMetal(0.3),
   )
   ring.position.y = -h * 0.08
@@ -474,7 +475,7 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   const tubeR = ringR * 0.82
   const tubeH = h * 0.45
   const tube = new THREE.Mesh(
-    chamferedCylinder(tubeR, tubeH, chamfer * 0.4, 28),
+    nurbsCylinder(tubeR, tubeH, chamfer * 0.4, 28),
     catMetal(0.35),
   )
   tube.position.y = h * 0.1
@@ -489,7 +490,7 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   // Inner bore (dark inset)
   const boreR = tubeR * 0.55
   const bore = new THREE.Mesh(
-    chamferedCylinder(boreR, tubeH * 0.3, boreR * 0.1, 16),
+    nurbsCylinder(boreR, tubeH * 0.3, boreR * 0.1, 16),
     getMaterial('dark_chrome'),
   )
   bore.position.y = -h * 0.15
