@@ -13,6 +13,8 @@ import {
   boltCircle, mountingHole, screwHead, labelRecess, flangePlate,
   cablePort, knurledRing,
 } from '../primitives'
+// NURBS engine available but not yet used — needs visual debugging
+// import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
 
@@ -28,27 +30,34 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
 
   const isHeavy = id.includes('heavy') || id.includes('high_torque')
 
-  // Servo housing — single extruded profile with integrated mounting ears
-  const earW = w * 1.18
-  const earH = d * 0.12
-  const earY = d * 0.15  // ears slightly above center
+  // Servo housing — chamfered box body + separate ear flanges
   const housing = new THREE.Mesh(
-    servoBody(w, h, d, earW, earH, earY),
+    chamferedBox(w, h * 0.72, d),
     getMaterial('matte_plastic'),
   )
   g.add(housing)
 
-  // Ear mounting holes (2 per side)
+  // Mounting ears (separate piece on each side)
+  const earW = w * 1.15
+  const earH = h * 0.1
+  const ear = new THREE.Mesh(
+    chamferedBox(earW, earH, d),
+    getMaterial('matte_plastic', 0x1a1a1a),
+  )
+  ear.position.y = h * 0.30
+  g.add(ear)
+
+  // Ear mounting holes
   const holeR = Math.min(w, d) * 0.03
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       const hole = mountingHole(holeR, earH * 1.2)
-      hole.position.set(sx * earW * 0.43, earY, sz * d * 0.28)
+      hole.position.set(sx * earW * 0.42, h * 0.30, sz * d * 0.28)
       g.add(hole)
     }
   }
 
-  // Output horn — chamferedCylinder with bolt circle
+  // Output horn
   const hornR = Math.min(w, d) * 0.3
   const hornH = h * 0.07
   const horn = new THREE.Mesh(
@@ -63,12 +72,12 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   hornBolts.position.y = h * 0.42
   g.add(hornBolts)
 
-  // Center screw on horn
+  // Center screw
   const screw = screwHead(holeR * 1.3, hornH * 0.6)
   screw.position.y = h * 0.46
   g.add(screw)
 
-  // Output shaft — chamferedCylinder
+  // Output shaft
   const shaftR = Math.min(w, d) * 0.055
   const shaft = new THREE.Mesh(
     chamferedCylinder(shaftR, hornH * 1.8, shaftR * 0.15),
@@ -79,14 +88,14 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
 
   // Shaft bearing ring
   const bearingRing = new THREE.Mesh(
-    new THREE.TorusGeometry(shaftR * 2.2, shaftR * 0.4, 8, 32),
+    new THREE.TorusGeometry(shaftR * 2.2, shaftR * 0.4, 12, 48),
     getMaterial('brushed_steel'),
   )
   bearingRing.rotation.x = Math.PI / 2
   bearingRing.position.y = h * 0.38
   g.add(bearingRing)
 
-  // Cable exit (bottom rear) — using cablePort
+  // Cable exit
   const cable = cablePort(Math.min(w, d) * 0.06, Math.min(w, d) * 0.02)
   cable.rotation.set(0, Math.PI, 0)
   cable.position.set(0, -h * 0.35, -d * 0.42)
@@ -101,12 +110,12 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   strain.position.set(0, -h * 0.35, -d * 0.5)
   g.add(strain)
 
-  // Label recess on front face
+  // Label recess
   const label = labelRecess(w * 0.55, h * 0.3, Math.min(w, d) * 0.025)
   label.position.set(0, -h * 0.05, d * 0.38)
   g.add(label)
 
-  // Side rib detail (subtle)
+  // Side ribs
   for (const sx of [-1, 1]) {
     const rib = new THREE.Mesh(
       chamferedBox(w * 0.02, h * 0.5, d * 0.7, w * 0.003),
@@ -116,13 +125,10 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
     g.add(rib)
   }
 
-  // Bottom ventilation slots
-  const slotW = w * 0.06
-  const slotH = h * 0.015
-  const slotD = d * 0.5
+  // Ventilation slots
   for (let i = -2; i <= 2; i++) {
     const slot = new THREE.Mesh(
-      new THREE.BoxGeometry(slotW, slotH, slotD),
+      new THREE.BoxGeometry(w * 0.06, h * 0.015, d * 0.5),
       getMaterial('dark_chrome'),
     )
     slot.position.set(i * w * 0.12, -h * 0.36, 0)
@@ -139,7 +145,7 @@ function generateBLDC(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, z: h } = dims
   const r = w / 2
 
-  // Main motor body — single revolved profile
+  // Main motor body — revolved profile
   const shaftR = r * 0.11
   const shaftH = h * 0.35
   const motorBody = new THREE.Mesh(
@@ -148,9 +154,9 @@ function generateBLDC(id: string, dims: GeneratorDims): THREE.Group {
   )
   g.add(motorBody)
 
-  // Winding peek — copper torus visible through vent area
+  // Winding peek — copper torus
   const winding = new THREE.Mesh(
-    new THREE.TorusGeometry(r * 0.58, r * 0.09, 8, 48),
+    new THREE.TorusGeometry(r * 0.58, r * 0.09, 12, 48),
     getMaterial('copper_trace'),
   )
   winding.rotation.x = Math.PI / 2

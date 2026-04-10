@@ -85,10 +85,13 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
       }
     })
 
-    // Find the geometryGroup (first child of linkGroup that contains meshes)
-    const geometryChild = linkGroup.children.find(c =>
-      c instanceof THREE.Group && c.children.some(gc => gc instanceof THREE.Mesh)
-    ) as THREE.Group | undefined
+    // Find the geometryGroup (first child of linkGroup that contains any mesh descendants)
+    const geometryChild = linkGroup.children.find(c => {
+      if (!(c instanceof THREE.Group)) return false
+      let hasMesh = false
+      c.traverse(gc => { if (gc instanceof THREE.Mesh) hasMesh = true })
+      return hasMesh
+    }) as THREE.Group | undefined
 
     if (geometryChild) {
       // Dispose old primitive geometry to prevent GPU memory leaks
