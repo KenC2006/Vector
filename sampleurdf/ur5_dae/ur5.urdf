@@ -1,0 +1,106 @@
+<?xml version="1.0"?>
+<robot name="ur5">
+  <material name="ur_blue">
+    <color rgba="0.0 0.216 0.518 1.0"/>
+  </material>
+  <material name="ur_grey">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="meshes/base.dae"/></geometry>
+    </visual>
+    <inertial><mass value="4.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+
+  <link name="shoulder_link">
+    <visual>
+      <geometry><mesh filename="meshes/shoulder.dae"/></geometry>
+    </visual>
+    <inertial><mass value="3.7"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+
+  <joint name="shoulder_pan_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.089159" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.28" upper="6.28" effort="150" velocity="3.15"/>
+  </joint>
+
+  <link name="upper_arm_link">
+    <visual>
+      <geometry><mesh filename="meshes/upperarm.dae"/></geometry>
+    </visual>
+    <inertial><mass value="8.393"/><inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/></inertial>
+  </link>
+
+  <joint name="shoulder_lift_joint" type="revolute">
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <origin xyz="0 0.13585 0" rpy="0 1.5708 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-6.28" upper="6.28" effort="150" velocity="3.15"/>
+  </joint>
+
+  <link name="forearm_link">
+    <visual>
+      <geometry><mesh filename="meshes/forearm.dae"/></geometry>
+    </visual>
+    <inertial><mass value="2.275"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+
+  <joint name="elbow_joint" type="revolute">
+    <parent link="upper_arm_link"/>
+    <child link="forearm_link"/>
+    <origin xyz="0 -0.1197 0.42500" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="150" velocity="3.15"/>
+  </joint>
+
+  <link name="wrist_1_link">
+    <visual>
+      <geometry><mesh filename="meshes/wrist1.dae"/></geometry>
+    </visual>
+    <inertial><mass value="1.219"/><inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.005"/></inertial>
+  </link>
+
+  <joint name="wrist_1_joint" type="revolute">
+    <parent link="forearm_link"/>
+    <child link="wrist_1_link"/>
+    <origin xyz="0 0 0.39225" rpy="0 1.5708 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-6.28" upper="6.28" effort="28" velocity="3.2"/>
+  </joint>
+
+  <link name="wrist_2_link">
+    <visual>
+      <geometry><mesh filename="meshes/wrist2.dae"/></geometry>
+    </visual>
+    <inertial><mass value="1.219"/><inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.005"/></inertial>
+  </link>
+
+  <joint name="wrist_2_joint" type="revolute">
+    <parent link="wrist_1_link"/>
+    <child link="wrist_2_link"/>
+    <origin xyz="0 0.09465 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.28" upper="6.28" effort="28" velocity="3.2"/>
+  </joint>
+
+  <link name="wrist_3_link">
+    <visual>
+      <geometry><mesh filename="meshes/wrist3.dae"/></geometry>
+    </visual>
+    <inertial><mass value="0.1879"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+  </link>
+
+  <joint name="wrist_3_joint" type="revolute">
+    <parent link="wrist_2_link"/>
+    <child link="wrist_3_link"/>
+    <origin xyz="0 0.0823 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-6.28" upper="6.28" effort="28" velocity="3.2"/>
+  </joint>
+</robot>

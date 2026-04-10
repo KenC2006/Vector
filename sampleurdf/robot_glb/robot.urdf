@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<robot name="robot_expressive">
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="robot.glb"/></geometry>
+    </visual>
+    <inertial><mass value="5.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+</robot>

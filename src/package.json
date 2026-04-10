@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2.0.0",
     "@types/three": "^0.183.1",
     "monaco-editor": "^0.55.1",
+    "occt-import-js": "^0.0.23",
     "three": "^0.183.2"
   }
 }

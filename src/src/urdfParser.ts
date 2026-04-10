@@ -141,6 +141,13 @@ async function loadMeshFile(
         gltfLoader.parse(buffer, '', resolve, reject)
       })
       loadedObject = result.scene
+    } else if (ext === 'step' || ext === 'stp') {
+      // STEP files — use OpenCascade WASM
+      const { parseSTEP } = await import('./stepLoader')
+      loadedObject = await parseSTEP(buffer, material)
+    } else if (ext === 'iges' || ext === 'igs') {
+      const { parseIGES } = await import('./stepLoader')
+      loadedObject = await parseIGES(buffer, material)
     }
 
     if (!loadedObject) {
