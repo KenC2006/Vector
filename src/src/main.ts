@@ -2048,10 +2048,7 @@ function acceptInlineDiff() {
 
   // Sync the 3D viewport with the accepted URDF
   if (editor) {
-    const newVal = editor.getValue()
-    if (typeof (window as any).__vectorParseAndRender === 'function') {
-      (window as any).__vectorParseAndRender(newVal)
-    }
+    reparseURDF()
 
     // Run local validation on the accepted changes (avoids blocking Mutex)
     runLocalValidation()

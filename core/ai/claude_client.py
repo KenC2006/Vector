@@ -151,6 +151,8 @@ Rules:
 - Position robots so the ground contact points (feet, wheels, base) are at Z=0 and the body is ABOVE the ground. The grid plane is at Z=0 — nothing should be below it.
 - For legged robots: set joint origins so the legs are in a natural standing pose at rest (knees slightly bent, not straight). Use negative Z offsets from hip to knee to foot. The body should be at a realistic height above ground.
 
+IMPORTANT: Keep URDF output concise. Omit comments. Use minimal whitespace. Don't add redundant collision elements if they match the visual geometry exactly.
+
 REMINDER: Return ONLY JSON. No English preamble. Start your response with { and end with }.
 """
 
@@ -291,7 +293,7 @@ User Request: {prompt}"""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=16384,
+        max_tokens=65536,
         system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
         messages=messages,
         timeout=180.0,
@@ -367,7 +369,7 @@ User Request: {prompt}"""
     try:
         with client.messages.stream(
             model="claude-sonnet-4-20250514",
-            max_tokens=16384,
+            max_tokens=65536,
             system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
             messages=messages,
         ) as stream:
