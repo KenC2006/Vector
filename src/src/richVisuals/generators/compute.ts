@@ -1,6 +1,7 @@
 /**
  * Rich visual generators for compute / electronics components.
- * MCUs, SBCs, motor drivers, FOC controllers, FPGA boards, transceivers, etc.
+ * Uses pcbBoard(), connectorBlock(), heatsinkFins(), chamferedBox chip packages,
+ * and chamferedCylinder antenna stubs for Fusion-quality board visuals.
  */
 import * as THREE from 'three'
 import type { GeneratorDims } from './index'
@@ -10,17 +11,19 @@ import {
   labelRecess, pcbBoard, connectorBlock, heatsinkFins,
 } from '../primitives'
 
+// Category color: [0.18, 0.80, 0.44] (green) — applied via pcbBoard's green material
+
 // ── MCU Small ───────────────────────────────────────────────────────────────
 
 function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.25)
   g.add(pcb)
 
-  // Main chip package (small dark QFP)
+  // Main chip package (dark QFP)
   const chipW = w * 0.3
   const chipH = h * 0.3
   const chipD = d * 0.1
@@ -39,7 +42,16 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   dot.position.set(-chipW * 0.35, -chipH * 0.3, d * 0.26)
   g.add(dot)
 
-  // GPIO pin header (tall thin box along one edge)
+  // Crystal oscillator (tiny chamferedCylinder)
+  const crystalR = w * 0.035
+  const crystal = new THREE.Mesh(
+    chamferedCylinder(crystalR, d * 0.06, crystalR * 0.1, 12),
+    getMaterial('brushed_steel'),
+  )
+  crystal.position.set(w * 0.25, h * 0.15, d * 0.18)
+  g.add(crystal)
+
+  // GPIO pin header (thin tall chamferedBox)
   const headerW = w * 0.7
   const headerH = h * 0.06
   const headerD = d * 0.4
@@ -62,22 +74,13 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
     g.add(pin)
   }
 
-  // Crystal oscillator
-  const crystalW = w * 0.08
-  const crystal = new THREE.Mesh(
-    chamferedBox(crystalW, crystalW * 0.6, d * 0.06, crystalW * 0.03),
-    getMaterial('brushed_steel'),
-  )
-  crystal.position.set(w * 0.25, h * 0.15, d * 0.18)
-  g.add(crystal)
-
   // USB micro connector
   const usb = connectorBlock(w * 0.1, d * 0.08, h * 0.1, 0x333333)
   usb.rotation.x = Math.PI / 2
   usb.position.set(-w * 0.35, h * 0.0, -d * 0.06)
   g.add(usb)
 
-  // Bypass capacitors
+  // Bypass capacitors (small chamferedBox)
   for (const pos of [[w * 0.15, h * 0.2], [-w * 0.15, h * 0.2]]) {
     const cap = new THREE.Mesh(
       chamferedBox(w * 0.05, h * 0.03, d * 0.04, w * 0.004),
@@ -107,11 +110,11 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.2)
   g.add(pcb)
 
-  // SoC chip (main processor)
+  // SoC chip package (chamferedBox)
   const chipW = w * 0.2
   const chip = new THREE.Mesh(
     chamferedBox(chipW, chipW, d * 0.08, chipW * 0.03),
@@ -120,7 +123,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   chip.position.set(-w * 0.1, h * 0.05, d * 0.15)
   g.add(chip)
 
-  // RAM chip
+  // RAM chip (chamferedBox)
   const ram = new THREE.Mesh(
     chamferedBox(w * 0.15, w * 0.08, d * 0.05, w * 0.008),
     getMaterial('matte_plastic'),
@@ -128,7 +131,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   ram.position.set(w * 0.15, h * 0.1, d * 0.14)
   g.add(ram)
 
-  // USB ports (2 stacked on one edge)
+  // USB connectorBlock ports (2 stacked)
   for (let i = 0; i < 2; i++) {
     const usb = connectorBlock(w * 0.1, d * 0.12, h * 0.15, 0x333333)
     usb.rotation.x = Math.PI / 2
@@ -136,13 +139,13 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
     g.add(usb)
   }
 
-  // Ethernet port (taller connector)
+  // Ethernet connectorBlock port (taller)
   const eth = connectorBlock(w * 0.12, d * 0.14, h * 0.15, 0x222222)
   eth.rotation.x = Math.PI / 2
   eth.position.set(w * 0.15, -h * 0.3, 0)
   g.add(eth)
 
-  // GPIO header (2x20 pin block)
+  // GPIO header (thin tall chamferedBox)
   const headerW = w * 0.65
   const headerH = h * 0.05
   const headerD = d * 0.35
@@ -179,7 +182,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   sd.position.set(-w * 0.35, -h * 0.1, d * 0.05)
   g.add(sd)
 
-  // Status LEDs (2 tiny dots)
+  // Status LEDs
   for (let i = 0; i < 2; i++) {
     const led = new THREE.Mesh(
       new THREE.SphereGeometry(w * 0.012, 6, 6),
@@ -209,11 +212,11 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.18)
   g.add(pcb)
 
-  // Heatsink on top (covers chip area)
+  // heatsinkFins on top (covers chip area)
   const hsW = w * 0.45
   const hsH = h * 0.45
   const hsD = d * 0.5
@@ -222,7 +225,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   hs.rotation.x = Math.PI / 2
   g.add(hs)
 
-  // SoC chip under heatsink (barely visible)
+  // SoC chip under heatsink
   const chip = new THREE.Mesh(
     chamferedBox(w * 0.2, h * 0.2, d * 0.06, w * 0.008),
     getMaterial('matte_plastic'),
@@ -230,7 +233,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   chip.position.set(-w * 0.05, 0, d * 0.12)
   g.add(chip)
 
-  // USB ports (2 on right edge)
+  // USB connectorBlock ports (2 on right edge)
   for (let i = 0; i < 2; i++) {
     const usb = connectorBlock(w * 0.1, d * 0.1, h * 0.12, 0x333333)
     usb.rotation.x = Math.PI / 2
@@ -238,7 +241,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
     g.add(usb)
   }
 
-  // Ethernet port
+  // Ethernet connectorBlock port
   const eth = connectorBlock(w * 0.12, d * 0.12, h * 0.14, 0x222222)
   eth.rotation.x = Math.PI / 2
   eth.position.set(w * 0.2, -h * 0.32, 0)
@@ -253,7 +256,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   barrel.position.set(-w * 0.38, -h * 0.3, d * 0.06)
   g.add(barrel)
 
-  // GPIO header
+  // GPIO header (thin tall chamferedBox)
   const headerW = w * 0.55
   const headerH = h * 0.04
   const headerD = d * 0.3
@@ -294,11 +297,11 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.2)
   g.add(pcb)
 
-  // 2 heatsink blocks (H-bridge drivers)
+  // 2 heatsinkFins blocks (H-bridge drivers)
   for (const sx of [-1, 1]) {
     const hsW = w * 0.2
     const hsH = h * 0.3
@@ -309,7 +312,7 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
     g.add(hs)
   }
 
-  // Terminal blocks (motor outputs, 2 pairs)
+  // Terminal blocks (motor outputs) — connectorBlock
   for (const sx of [-1, 1]) {
     const term = connectorBlock(w * 0.12, d * 0.12, h * 0.12, 0x00aa44)
     term.rotation.x = Math.PI / 2
@@ -317,13 +320,13 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
     g.add(term)
   }
 
-  // Power input terminal
+  // Power input terminal — connectorBlock
   const powerTerm = connectorBlock(w * 0.15, d * 0.1, h * 0.1, 0xaa0000)
   powerTerm.rotation.x = Math.PI / 2
   powerTerm.position.set(0, h * 0.35, 0)
   g.add(powerTerm)
 
-  // Signal header (logic input)
+  // Signal header
   const header = new THREE.Mesh(
     chamferedBox(w * 0.4, h * 0.04, d * 0.2, w * 0.004),
     getMaterial('matte_plastic'),
@@ -369,11 +372,11 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.2)
   g.add(pcb)
 
-  // Main heatsink
+  // Main heatsinkFins
   const hsW = w * 0.35
   const hsH = h * 0.4
   const hsD = d * 0.45
@@ -382,7 +385,7 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
   hs.rotation.x = Math.PI / 2
   g.add(hs)
 
-  // FOC driver IC (under heatsink)
+  // FOC driver IC (chamferedBox under heatsink)
   const chip = new THREE.Mesh(
     chamferedBox(w * 0.18, h * 0.18, d * 0.05, w * 0.006),
     getMaterial('matte_plastic'),
@@ -390,13 +393,13 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
   chip.position.set(-w * 0.1, 0, d * 0.12)
   g.add(chip)
 
-  // CAN bus connector
+  // CAN bus connectorBlock
   const can = connectorBlock(w * 0.08, d * 0.08, h * 0.1, 0x00aa00)
   can.rotation.x = Math.PI / 2
   can.position.set(w * 0.35, h * 0.1, 0)
   g.add(can)
 
-  // Motor phase output terminals (3 for 3-phase)
+  // Motor phase output terminals (3-phase)
   for (let i = -1; i <= 1; i++) {
     const term = connectorBlock(w * 0.08, d * 0.08, h * 0.08, 0x0044aa)
     term.rotation.x = Math.PI / 2
@@ -450,11 +453,11 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.18)
   g.add(pcb)
 
-  // Large BGA chip
+  // Large BGA chip (chamferedBox)
   const chipW = w * 0.3
   const chip = new THREE.Mesh(
     chamferedBox(chipW, chipW, d * 0.06, chipW * 0.03),
@@ -468,7 +471,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   chipLabel.position.set(0, 0, d * 0.17)
   g.add(chipLabel)
 
-  // Heatsink on chip
+  // heatsinkFins on chip
   const hsW = chipW * 1.1
   const hsD = d * 0.3
   const hs = heatsinkFins(hsW, hsW, hsD, 6, hsW * 0.015)
@@ -544,11 +547,11 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const hasAntenna = id.includes('wireless') || id.includes('lora') || id.includes('gps')
 
-  // PCB
+  // PCB base
   const pcb = pcbBoard(w, h, d * 0.25)
   g.add(pcb)
 
-  // Main IC
+  // Main IC (chamferedBox)
   const chipW = w * 0.2
   const chip = new THREE.Mesh(
     chamferedBox(chipW, chipW * 0.8, d * 0.08, chipW * 0.03),
@@ -557,7 +560,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   chip.position.set(0, h * 0.05, d * 0.18)
   g.add(chip)
 
-  // Component boxes (small passives cluster)
+  // Passive component cluster (chamferedBox)
   const passiveCount = 4
   for (let i = 0; i < passiveCount; i++) {
     const passive = new THREE.Mesh(
@@ -572,14 +575,13 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
     g.add(passive)
   }
 
-  // Connector (CAN/USB/SMA depending on type)
+  // Connector (CAN/USB/SMA depending on type) — connectorBlock
   if (id.includes('can')) {
     const conn = connectorBlock(w * 0.08, d * 0.08, h * 0.08, 0x00aa00)
     conn.rotation.x = Math.PI / 2
     conn.position.set(w * 0.35, 0, 0)
     g.add(conn)
   } else if (id.includes('usb_hub')) {
-    // Multiple USB ports
     for (let i = 0; i < 3; i++) {
       const usb = connectorBlock(w * 0.08, d * 0.07, h * 0.08, 0x333333)
       usb.rotation.x = Math.PI / 2
@@ -587,14 +589,13 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
       g.add(usb)
     }
   } else {
-    // Generic connector
     const conn = connectorBlock(w * 0.1, d * 0.08, h * 0.1, 0x333333)
     conn.rotation.x = Math.PI / 2
     conn.position.set(w * 0.35, -h * 0.1, 0)
     g.add(conn)
   }
 
-  // Antenna stub (for wireless, LoRa, GPS)
+  // Antenna stub (thin chamferedCylinder) for wireless/LoRa/GPS
   if (hasAntenna) {
     // SMA connector base
     const smaBase = new THREE.Mesh(
@@ -604,7 +605,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
     smaBase.position.set(-w * 0.3, h * 0.3, d * 0.16)
     g.add(smaBase)
 
-    // Antenna rod
+    // Antenna rod (thin chamferedCylinder)
     const antennaR = w * 0.015
     const antennaH = d * 0.8
     const antenna = new THREE.Mesh(
@@ -622,7 +623,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
     tip.position.set(-w * 0.3, h * 0.3, d * 0.16 + d * 0.025 + antennaH + antennaR * 1.5)
     g.add(tip)
 
-    // For GPS: patch antenna plate instead of rod
+    // GPS: patch antenna plate
     if (id.includes('gps')) {
       const patch = new THREE.Mesh(
         chamferedBox(w * 0.25, h * 0.25, d * 0.04, w * 0.01),

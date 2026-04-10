@@ -1,13 +1,14 @@
 /**
  * Rich visual generators for end-effector components.
- * Grippers, suction tools, magnetic tools, tool changers, holders.
+ * Fusion-quality visuals using profile-based geometry.
+ * Grippers, suction tools, tool changers, soft grippers, holders.
  */
 import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   chamferedBox, chamferedCylinder, boltCircle, screwHead,
-  flangePlate, labelRecess, connectorBlock,
+  flangePlate, knurledRing, labelRecess, connectorBlock, cablePort,
 } from '../primitives'
 
 const CAT_COLOR: [number, number, number] = [0.10, 0.74, 0.61]  // teal
@@ -24,30 +25,49 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
   const isLarge = id.includes('large')
   const chamfer = Math.min(w, d) * 0.06
 
-  // Base housing
+  // Base housing — chamferedBox
   const bodyW = w * 0.7
-  const bodyH = h * 0.45
-  const bodyD = d * 0.8
+  const bodyH = h * 0.4
+  const bodyD = d * 0.75
   const body = new THREE.Mesh(chamferedBox(bodyW, bodyD, bodyH, chamfer), catMetal(0.35))
   g.add(body)
 
-  // Rail strip on front face
-  const railW = bodyW * 0.9
-  const railH = h * 0.04
-  const railD = bodyD * 0.12
+  // Rail detail — thin raised chamferedBox across front face (fingers slide on this)
+  const railW = bodyW * 0.92
+  const railThick = h * 0.035
+  const railDepth = bodyD * 0.1
   const rail = new THREE.Mesh(
-    chamferedBox(railW, railD, railH, chamfer * 0.3),
+    chamferedBox(railW, railDepth, railThick, chamfer * 0.2),
     getMaterial('brushed_steel'),
   )
-  rail.position.set(0, -bodyH * 0.15, bodyD * 0.45)
+  rail.position.set(0, -bodyH * 0.22, bodyD * 0.43)
   g.add(rail)
 
-  // Two parallel fingers
-  const fingerW = w * 0.12
+  // Second rail line (parallel guide)
+  const rail2 = new THREE.Mesh(
+    chamferedBox(railW, railDepth * 0.6, railThick * 0.7, chamfer * 0.15),
+    getMaterial('brushed_steel'),
+  )
+  rail2.position.set(0, -bodyH * 0.08, bodyD * 0.43)
+  g.add(rail2)
+
+  // Two parallel finger assemblies
+  const fingerW = w * 0.13
   const fingerH = h * 0.5
-  const fingerD = d * 0.6
+  const fingerD = d * 0.55
   const fingerSpacing = w * 0.28
   for (const sx of [-1, 1]) {
+    // Finger slider block (rides on rail)
+    const sliderW = fingerW * 1.3
+    const sliderH = bodyH * 0.25
+    const sliderD = bodyD * 0.2
+    const slider = new THREE.Mesh(
+      chamferedBox(sliderW, sliderD, sliderH, chamfer * 0.2),
+      catMetal(0.2),
+    )
+    slider.position.set(sx * fingerSpacing, -bodyH * 0.15, bodyD * 0.42)
+    g.add(slider)
+
     // Finger body
     const finger = new THREE.Mesh(
       chamferedBox(fingerW, fingerD, fingerH, chamfer * 0.4),
@@ -56,33 +76,39 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
     finger.position.set(sx * fingerSpacing, -bodyH * 0.5 - fingerH * 0.5 + fingerH * 0.05, 0)
     g.add(finger)
 
-    // Rubber finger pad on inner face
-    const padW = fingerW * 0.35
-    const padH = fingerH * 0.7
-    const padD = fingerD * 0.85
+    // Rubber finger pad on inner face — thin box
+    const padW = fingerW * 0.3
+    const padH = fingerH * 0.75
+    const padD = fingerD * 0.88
     const pad = new THREE.Mesh(
-      chamferedBox(padW, padD, padH, chamfer * 0.15),
+      chamferedBox(padW, padD, padH, chamfer * 0.1),
       getMaterial('rubber_black'),
     )
     pad.position.set(
-      sx * fingerSpacing - sx * fingerW * 0.35,
+      sx * fingerSpacing - sx * fingerW * 0.38,
       -bodyH * 0.5 - fingerH * 0.5 + fingerH * 0.05,
       0,
     )
     g.add(pad)
   }
 
-  // Mounting flange on top
+  // Mounting flange on top — chamferedCylinder plate
   const flangeR = Math.min(w, d) * 0.28
   const flangeH = h * 0.08
   const flange = flangePlate(flangeR, flangeH, isLarge ? 6 : 4, flangeR * 0.7, flangeR * 0.06)
   flange.position.y = bodyH * 0.5 + flangeH * 0.5
   g.add(flange)
 
-  // Label on body
-  const label = labelRecess(bodyW * 0.55, bodyH * 0.35, chamfer * 0.4)
-  label.position.set(0, 0, bodyD * 0.38)
+  // Label on body front
+  const label = labelRecess(bodyW * 0.5, bodyH * 0.3, chamfer * 0.4)
+  label.position.set(0, bodyH * 0.08, bodyD * 0.39)
   g.add(label)
+
+  // Cable port on back
+  const cp = cablePort(Math.min(w, d) * 0.04, Math.min(w, d) * 0.012)
+  cp.position.set(0, bodyH * 0.2, -bodyD * 0.4)
+  cp.rotation.y = Math.PI
+  g.add(cp)
 
   return g
 }
@@ -96,7 +122,7 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Cylindrical base
   const baseR = Math.min(w, d) * 0.38
-  const baseH = h * 0.35
+  const baseH = h * 0.32
   const base = new THREE.Mesh(chamferedCylinder(baseR, baseH, chamfer, 36), catMetal(0.4))
   g.add(base)
 
@@ -105,17 +131,17 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
   flange.position.y = baseH * 0.5 + h * 0.03
   g.add(flange)
 
-  // 3 fingers at 120-degree spacing
+  // 3 finger assemblies at 120-degree spacing
   const fingerW = w * 0.1
-  const fingerH = h * 0.5
+  const fingerH = h * 0.48
   const fingerD = d * 0.12
-  const fingerRadius = baseR * 0.7
+  const fingerRadius = baseR * 0.72
   for (let i = 0; i < 3; i++) {
     const angle = (i / 3) * Math.PI * 2
     const fx = Math.cos(angle) * fingerRadius
     const fz = Math.sin(angle) * fingerRadius
 
-    // Finger
+    // Finger body — chamferedBox
     const finger = new THREE.Mesh(
       chamferedBox(fingerW, fingerD, fingerH, chamfer * 0.3),
       catMetal(0.25),
@@ -124,13 +150,16 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
     finger.rotation.y = -angle
     g.add(finger)
 
-    // Sphere fingertip
-    const tipR = fingerW * 0.55
-    const tip = new THREE.Mesh(
-      new THREE.SphereGeometry(tipR, 16, 16),
-      getMaterial('rubber_black'),
+    // Knurled ring fingertip
+    const tipR = fingerW * 0.5
+    const tipH = fingerD * 0.9
+    const tip = knurledRing(tipR, tipH, 12)
+    tip.position.set(
+      Math.cos(angle) * fingerRadius,
+      -baseH * 0.5 - fingerH + tipR * 0.6,
+      Math.sin(angle) * fingerRadius,
     )
-    tip.position.set(fx, -baseH * 0.5 - fingerH + tipR * 0.3, fz)
+    tip.rotation.y = -angle
     g.add(tip)
   }
 
@@ -149,47 +178,60 @@ function generateSuctionCup(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.05
 
-  // Body tube
-  const bodyR = Math.min(w, d) * 0.22
-  const bodyH = h * 0.5
-  const body = new THREE.Mesh(chamferedCylinder(bodyR, bodyH, chamfer, 32), catMetal(0.35))
-  body.position.y = h * 0.1
-  g.add(body)
+  // Revolved bell shape via LatheGeometry (narrow tube -> wide bell -> thin lip)
+  const tubeR = Math.min(w, d) * 0.12
+  const bellR = Math.min(w, d) * 0.38
+  const totalH = h * 0.7
+  const tubeH = totalH * 0.45
+  const bellH = totalH * 0.35
+  const lipH = totalH * 0.08
 
-  // Bell-shaped cup (wider cylinder at bottom)
-  const cupR = Math.min(w, d) * 0.38
-  const cupH = h * 0.2
-  const cup = new THREE.Mesh(
-    chamferedCylinder(cupR, cupH, chamfer * 0.5, 32),
-    getMaterial('rubber_black'),
-  )
-  cup.position.y = -h * 0.25
+  const pts: THREE.Vector2[] = []
+  // Top center (narrow tube start)
+  pts.push(new THREE.Vector2(0, totalH * 0.5))
+  pts.push(new THREE.Vector2(tubeR, totalH * 0.5))
+  // Tube body down
+  pts.push(new THREE.Vector2(tubeR, totalH * 0.5 - tubeH))
+  // Transition to bell — smooth curve outward
+  const bellTop = totalH * 0.5 - tubeH
+  const bellBot = bellTop - bellH
+  const curveSteps = 12
+  for (let i = 0; i <= curveSteps; i++) {
+    const t = i / curveSteps
+    const angle = t * Math.PI * 0.5
+    const r = tubeR + (bellR - tubeR) * Math.sin(angle)
+    const y = bellTop - bellH * t
+    pts.push(new THREE.Vector2(r, y))
+  }
+  // Lip (thin rolled edge at bottom)
+  const lipBot = bellBot - lipH
+  pts.push(new THREE.Vector2(bellR * 1.02, lipBot + lipH * 0.6))
+  pts.push(new THREE.Vector2(bellR * 0.95, lipBot))
+  pts.push(new THREE.Vector2(bellR * 0.82, lipBot + lipH * 0.2))
+  // Inner wall curves back up
+  pts.push(new THREE.Vector2(bellR * 0.65, bellBot))
+  pts.push(new THREE.Vector2(tubeR * 0.8, bellTop + bellH * 0.1))
+  // Close at center bottom
+  pts.push(new THREE.Vector2(0, bellTop + bellH * 0.1))
+
+  const cupGeom = new THREE.LatheGeometry(pts, 48)
+  const cup = new THREE.Mesh(cupGeom, getMaterial('rubber_black'))
   g.add(cup)
 
-  // Inner cup recess (darker)
-  const innerR = cupR * 0.7
-  const innerH = cupH * 0.5
-  const inner = new THREE.Mesh(
-    chamferedCylinder(innerR, innerH, chamfer * 0.2, 24),
-    getMaterial('matte_plastic', 0x0a0a0a),
-  )
-  inner.position.y = -h * 0.28
-  g.add(inner)
-
-  // Air fitting on top (small cylinder)
-  const fittingR = bodyR * 0.35
-  const fittingH = h * 0.12
+  // Air fitting on top (small brushed steel cylinder)
+  const fittingR = tubeR * 0.6
+  const fittingH = h * 0.1
   const fitting = new THREE.Mesh(
     chamferedCylinder(fittingR, fittingH, fittingR * 0.15, 16),
     getMaterial('brushed_steel'),
   )
-  fitting.position.y = h * 0.1 + bodyH * 0.5 + fittingH * 0.5
+  fitting.position.y = totalH * 0.5 + fittingH * 0.5
   g.add(fitting)
 
   // Mounting flange
-  const flangeR = bodyR * 1.3
+  const flangeR = tubeR * 2.2
   const flange = flangePlate(flangeR, h * 0.05, 4, flangeR * 0.7, flangeR * 0.06)
-  flange.position.y = h * 0.1 + bodyH * 0.5 + fittingH + h * 0.025
+  flange.position.y = totalH * 0.5 + fittingH + h * 0.025
   g.add(flange)
 
   return g
@@ -226,7 +268,7 @@ function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
     }
   }
 
-  // Air manifold (tube across top)
+  // Air manifold tube
   const manifoldR = Math.min(w, d) * 0.04
   const manifold = new THREE.Mesh(
     chamferedCylinder(manifoldR, w * 0.7, manifoldR * 0.2, 12),
@@ -257,7 +299,7 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
   const body = new THREE.Mesh(chamferedCylinder(bodyR, bodyH, chamfer, 32), catMetal(0.35))
   g.add(body)
 
-  // Pole face (flat dark disc at bottom)
+  // Pole face disc at bottom
   const poleR = bodyR * 1.05
   const poleH = h * 0.06
   const pole = new THREE.Mesh(
@@ -267,7 +309,7 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
   pole.position.y = -bodyH * 0.5 - poleH * 0.5
   g.add(pole)
 
-  // Accent ring around pole
+  // Accent ring
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(poleR * 0.85, poleR * 0.04, 8, 32),
     getMaterial('copper_trace'),
@@ -312,9 +354,9 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
   const plate = new THREE.Mesh(chamferedCylinder(plateR, plateH, chamfer, 48), catMetal(0.35))
   g.add(plate)
 
-  // Center pilot ring (raised cylinder)
+  // Center pilot — raised chamferedCylinder
   const pilotR = plateR * 0.35
-  const pilotH = h * 0.2
+  const pilotH = h * 0.22
   const pilot = new THREE.Mesh(
     chamferedCylinder(pilotR, pilotH, chamfer * 0.5, 32),
     getMaterial('brushed_steel'),
@@ -322,9 +364,9 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
   pilot.position.y = -plateH * 0.5 - pilotH * 0.5
   g.add(pilot)
 
-  // 3 locating pins (dark_chrome cylinders at 120 degrees)
-  const pinR = plateR * 0.06
-  const pinH = h * 0.15
+  // 3 locating pin cylinders at 120 degrees
+  const pinR = plateR * 0.065
+  const pinH = h * 0.16
   const pinCircleR = plateR * 0.65
   for (let i = 0; i < 3; i++) {
     const angle = (i / 3) * Math.PI * 2
@@ -342,7 +384,6 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
 
   // Bolt circle on top face
   const bolts = boltCircle(plateR * 0.75, plateR * 0.04, 6, plateH * 1.05)
-  bolts.position.y = 0
   g.add(bolts)
 
   // Mounting flange on top
@@ -372,47 +413,42 @@ function generateSoftGripper(id: string, dims: GeneratorDims): THREE.Group {
   g.add(base)
 
   // 4 tapered soft fingers at 90-degree spacing
+  // Each finger is 3 stacked chamferedCylinders getting narrower (rubber_black)
   const fingerCount = 4
-  const fingerRadius = baseR * 0.85
+  const fingerCircleR = baseR * 0.82
   for (let i = 0; i < fingerCount; i++) {
     const angle = (i / fingerCount) * Math.PI * 2
-    const fx = Math.cos(angle) * fingerRadius
-    const fz = Math.sin(angle) * fingerRadius
+    const fx = Math.cos(angle) * fingerCircleR
+    const fz = Math.sin(angle) * fingerCircleR
 
-    // Tapered finger (thicker at base, thinner at tip)
-    const fingerBaseR = Math.min(w, d) * 0.08
-    const fingerTipR = fingerBaseR * 0.5
-    const fingerH = h * 0.55
-    const finger = new THREE.Mesh(
-      chamferedCylinder(fingerBaseR, fingerH, fingerBaseR * 0.1, 16),
-      getMaterial('rubber_black'),
-    )
-    finger.position.set(fx, -baseH * 0.5 - fingerH * 0.5, fz)
-    g.add(finger)
-
-    // Thinner tip section
-    const tipSectionH = fingerH * 0.4
-    const tipSection = new THREE.Mesh(
-      chamferedCylinder(fingerTipR, tipSectionH, fingerTipR * 0.1, 12),
-      getMaterial('rubber_black'),
-    )
-    tipSection.position.set(fx, -baseH * 0.5 - fingerH - tipSectionH * 0.4, fz)
-    g.add(tipSection)
-
-    // Sphere tip
-    const tipR = fingerTipR * 0.9
-    const tip = new THREE.Mesh(
-      new THREE.SphereGeometry(tipR, 12, 12),
-      getMaterial('rubber_black'),
-    )
-    tip.position.set(fx, -baseH * 0.5 - fingerH - tipSectionH * 0.7, fz)
-    g.add(tip)
+    // Segment radii (taper down)
+    const segCount = 3
+    const baseSegR = Math.min(w, d) * 0.08
+    const segH = h * 0.18
+    let currentY = -baseH * 0.5
+    for (let s = 0; s < segCount; s++) {
+      const taper = 1.0 - s * 0.25  // 1.0, 0.75, 0.5
+      const segR = baseSegR * taper
+      const seg = new THREE.Mesh(
+        chamferedCylinder(segR, segH, segR * 0.12, 16),
+        getMaterial('rubber_black'),
+      )
+      seg.position.set(fx, currentY - segH * 0.5, fz)
+      g.add(seg)
+      currentY -= segH * 0.92  // slight overlap
+    }
   }
 
   // Mounting flange on top
   const flange = flangePlate(baseR * 0.85, h * 0.06, 4, baseR * 0.6, baseR * 0.05)
   flange.position.y = baseH * 0.5 + h * 0.03
   g.add(flange)
+
+  // Cable port on side
+  const cp = cablePort(Math.min(w, d) * 0.035, Math.min(w, d) * 0.01)
+  cp.position.set(baseR * 0.9, baseH * 0.1, 0)
+  cp.rotation.z = Math.PI / 2
+  g.add(cp)
 
   return g
 }
@@ -424,18 +460,18 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.05
 
-  // Clamp ring
+  // Clamp ring — chamferedCylinder
   const ringR = Math.min(w, d) * 0.32
-  const ringH = h * 0.2
+  const ringH = h * 0.18
   const ring = new THREE.Mesh(
     chamferedCylinder(ringR, ringH, chamfer * 0.5, 32),
     catMetal(0.3),
   )
-  ring.position.y = -h * 0.1
+  ring.position.y = -h * 0.08
   g.add(ring)
 
-  // Body tube
-  const tubeR = ringR * 0.85
+  // Body tube — chamferedCylinder
+  const tubeR = ringR * 0.82
   const tubeH = h * 0.45
   const tube = new THREE.Mesh(
     chamferedCylinder(tubeR, tubeH, chamfer * 0.4, 28),
@@ -443,6 +479,12 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   )
   tube.position.y = h * 0.1
   g.add(tube)
+
+  // Clamping screw on clamp ring
+  const screw = screwHead(ringR * 0.12, ringH * 0.4)
+  screw.position.set(ringR * 0.95, -h * 0.08, 0)
+  screw.rotation.z = Math.PI / 2
+  g.add(screw)
 
   // Inner bore (dark inset)
   const boreR = tubeR * 0.55
@@ -458,17 +500,11 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
   flange.position.y = h * 0.1 + tubeH * 0.5 + h * 0.035
   g.add(flange)
 
-  // Clamping screw
-  const screw = screwHead(ringR * 0.12, ringH * 0.4)
-  screw.position.set(ringR * 0.95, -h * 0.1, 0)
-  screw.rotation.z = Math.PI / 2
-  g.add(screw)
-
   // Cable exit (only for welding torch)
   if (id.includes('welding')) {
-    const cableR = tubeR * 0.12
+    const cableR2 = tubeR * 0.12
     const cable = new THREE.Mesh(
-      new THREE.CylinderGeometry(cableR, cableR, tubeR * 0.4, 8),
+      new THREE.CylinderGeometry(cableR2, cableR2, tubeR * 0.4, 8),
       getMaterial('matte_plastic'),
     )
     cable.rotation.z = Math.PI / 2
@@ -478,7 +514,7 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
 
   // Label
   const label = labelRecess(ringR * 1.0, ringH * 0.6, chamfer * 0.3)
-  label.position.set(0, -h * 0.1, ringR * 0.93)
+  label.position.set(0, -h * 0.08, ringR * 0.93)
   g.add(label)
 
   return g

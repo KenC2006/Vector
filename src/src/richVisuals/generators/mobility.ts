@@ -1,5 +1,6 @@
 /**
  * Rich visual generators for mobility components.
+ * Fusion-quality visuals using profile-based geometry.
  * Wheels, casters, mecanum, omni, tracks, swerve drives, ball transfers, feet.
  */
 import * as THREE from 'three'
@@ -20,62 +21,146 @@ function catMetal(strength = 0.3) {
 function generateDrivenWheel(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.04
 
-  // Tire (sideways chamferedCylinder)
   const tireR = Math.max(w, d) * 0.45
-  const tireH = h * 0.35
-  const tire = new THREE.Mesh(
-    chamferedCylinder(tireR, tireH, chamfer, 36),
-    getMaterial('rubber_black'),
-  )
+  const tireWidth = h * 0.35
+  const hubR = tireR * 0.52
+
+  // Tire — LatheGeometry revolved profile (hub -> sidewall curve -> tread flat -> other sidewall)
+  // Profile is half-section from center axis outward, revolved around Z
+  const hw = tireWidth / 2
+  const sidewallBulge = tireR * 0.06  // sidewall convex outward
+  const treadFlat = tireR * 0.03      // tread crown radius drop
+  const steps = 10
+
+  const tirePts: THREE.Vector2[] = []
+  // Inner bore bottom
+  tirePts.push(new THREE.Vector2(hubR * 1.05, -hw))
+  // Lower sidewall — curves outward from hub to tread
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const angle = t * Math.PI * 0.5
+    const r = hubR * 1.05 + (tireR - hubR * 1.05 - treadFlat) * Math.sin(angle)
+    const bulge = sidewallBulge * Math.sin(t * Math.PI)
+    const y = -hw + (hw - treadFlat) * t
+    tirePts.push(new THREE.Vector2(r + bulge, y))
+  }
+  // Tread crown (slightly rounded flat)
+  tirePts.push(new THREE.Vector2(tireR, -treadFlat))
+  tirePts.push(new THREE.Vector2(tireR + treadFlat * 0.3, 0))
+  tirePts.push(new THREE.Vector2(tireR, treadFlat))
+  // Upper sidewall — mirror curves back to hub
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const angle = (1 - t) * Math.PI * 0.5
+    const r = hubR * 1.05 + (tireR - hubR * 1.05 - treadFlat) * Math.sin(angle)
+    const bulge = sidewallBulge * Math.sin((1 - t) * Math.PI)
+    const y = treadFlat + (hw - treadFlat) * t
+    tirePts.push(new THREE.Vector2(r + bulge, y))
+  }
+  // Inner bore top
+  tirePts.push(new THREE.Vector2(hubR * 1.05, hw))
+  // Close inner wall
+  tirePts.push(new THREE.Vector2(hubR * 1.05, -hw))
+
+  const tireGeom = new THREE.LatheGeometry(tirePts, 48)
+  const tire = new THREE.Mesh(tireGeom, getMaterial('rubber_black'))
+  // Orient sideways (wheel spins around X axis)
   tire.rotation.x = Math.PI / 2
   g.add(tire)
 
-  // Hub (smaller, anodized aluminum)
-  const hubR = tireR * 0.55
-  const hubH = tireH * 0.6
+  // Hub — separate anodized_aluminum chamferedCylinder
+  const hubWidth = tireWidth * 0.55
   const hub = new THREE.Mesh(
-    chamferedCylinder(hubR, hubH, chamfer * 0.5, 32),
+    chamferedCylinder(hubR, hubWidth, hubR * 0.04, 32),
     catMetal(0.35),
   )
   hub.rotation.x = Math.PI / 2
   g.add(hub)
 
+  // Hub spokes (5 cross pattern)
+  const spokeW = hubR * 0.12
+  const spokeLen = hubR * 1.6
+  const spokeD = hubWidth * 0.15
+  for (let i = 0; i < 5; i++) {
+    const angle = (i / 5) * Math.PI * 2
+    const spoke = new THREE.Mesh(
+      chamferedBox(spokeW, spokeLen, spokeD, hubR * 0.01),
+      catMetal(0.25),
+    )
+    spoke.rotation.z = angle
+    g.add(spoke)
+  }
+
   // Axle bore (dark inset)
-  const axleR = hubR * 0.3
+  const axleR = hubR * 0.28
   const axle = new THREE.Mesh(
-    chamferedCylinder(axleR, hubH * 1.1, axleR * 0.1, 16),
+    chamferedCylinder(axleR, hubWidth * 1.1, axleR * 0.1, 16),
     getMaterial('dark_chrome'),
   )
   axle.rotation.x = Math.PI / 2
   g.add(axle)
 
-  // Tread lines (thin rings on tire surface)
-  const treadMat = getMaterial('matte_plastic', 0x1a1a1a)
-  const treadCount = 6
-  for (let i = 0; i < treadCount; i++) {
-    const t = (i / (treadCount - 1)) - 0.5
-    const tread = new THREE.Mesh(
-      new THREE.TorusGeometry(tireR * 0.98, tireR * 0.015, 6, 32),
-      treadMat,
+  return g
+}
+
+// ── Mecanum Wheel ───────────────────────────────────────────────────────────
+
+function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
+  const g = new THREE.Group()
+  const { x: w, y: h, z: d } = dims
+  const chamfer = Math.min(w, d) * 0.03
+
+  const plateR = Math.max(w, d) * 0.42
+  const hubH = h * 0.35
+
+  // 2 side plates
+  const plateH = h * 0.055
+  for (const s of [-1, 1]) {
+    const plate = new THREE.Mesh(
+      chamferedCylinder(plateR, plateH, chamfer * 0.3, 36),
+      catMetal(0.35),
     )
-    tread.position.z = t * tireH * 0.8
-    g.add(tread)
+    plate.rotation.x = Math.PI / 2
+    plate.position.z = s * hubH * 0.42
+    g.add(plate)
   }
 
-  // Hub spokes (cross pattern)
-  const spokeW = hubR * 0.12
-  const spokeLen = hubR * 1.6
-  const spokeD = hubH * 0.15
-  for (let i = 0; i < 5; i++) {
-    const angle = (i / 5) * Math.PI * 2
-    const spoke = new THREE.Mesh(
-      chamferedBox(spokeW, spokeLen, spokeD, chamfer * 0.2),
-      catMetal(0.25),
+  // Hub
+  const hubR = plateR * 0.3
+  const hub = new THREE.Mesh(
+    chamferedCylinder(hubR, hubH, chamfer * 0.4, 24),
+    catMetal(0.3),
+  )
+  hub.rotation.x = Math.PI / 2
+  g.add(hub)
+
+  // Axle bore
+  const axleR = hubR * 0.35
+  const axle = new THREE.Mesh(
+    chamferedCylinder(axleR, hubH * 1.2, axleR * 0.1, 12),
+    getMaterial('dark_chrome'),
+  )
+  axle.rotation.x = Math.PI / 2
+  g.add(axle)
+
+  // 9 angled rollers at 45 degrees (rubber_black chamferedCylinders)
+  const rollerR = plateR * 0.09
+  const rollerH = h * 0.24
+  const rollerCircleR = plateR * 0.72
+  for (let i = 0; i < 9; i++) {
+    const angle = (i / 9) * Math.PI * 2
+    const rx = Math.cos(angle) * rollerCircleR
+    const ry = Math.sin(angle) * rollerCircleR
+    const roller = new THREE.Mesh(
+      chamferedCylinder(rollerR, rollerH, rollerR * 0.15, 10),
+      getMaterial('rubber_black'),
     )
-    spoke.rotation.z = angle
-    g.add(spoke)
+    // Position on rim, then tilt 45 degrees in axial direction
+    roller.position.set(rx, ry, 0)
+    roller.rotation.set(0, 0, angle)
+    roller.rotateX(Math.PI / 4)
+    g.add(roller)
   }
 
   return g
@@ -88,7 +173,7 @@ function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.04
 
-  // Top mounting plate
+  // Top mounting plate — chamferedCylinder
   const plateR = Math.min(w, d) * 0.3
   const plateH = h * 0.08
   const plate = new THREE.Mesh(
@@ -130,149 +215,48 @@ function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
   bridge.position.y = h * 0.15
   g.add(bridge)
 
-  // Wheel (rubber_black, sideways)
+  // Wheel — LatheGeometry tire profile (not just a flat cylinder)
   const wheelR = Math.min(w, d) * 0.25
-  const wheelH = d * 0.15
-  const wheel = new THREE.Mesh(
-    chamferedCylinder(wheelR, wheelH, chamfer * 0.3, 24),
-    getMaterial('rubber_black'),
-  )
+  const wheelWidth = d * 0.13
+  const whw = wheelWidth / 2
+  const wheelPts: THREE.Vector2[] = []
+  const innerR = wheelR * 0.45
+  // Inner bore bottom
+  wheelPts.push(new THREE.Vector2(innerR, -whw))
+  // Lower sidewall curve
+  wheelPts.push(new THREE.Vector2(wheelR * 0.7, -whw))
+  wheelPts.push(new THREE.Vector2(wheelR * 0.92, -whw * 0.7))
+  wheelPts.push(new THREE.Vector2(wheelR, -whw * 0.3))
+  // Tread
+  wheelPts.push(new THREE.Vector2(wheelR * 1.01, 0))
+  // Upper sidewall
+  wheelPts.push(new THREE.Vector2(wheelR, whw * 0.3))
+  wheelPts.push(new THREE.Vector2(wheelR * 0.92, whw * 0.7))
+  wheelPts.push(new THREE.Vector2(wheelR * 0.7, whw))
+  // Inner bore top
+  wheelPts.push(new THREE.Vector2(innerR, whw))
+  wheelPts.push(new THREE.Vector2(innerR, -whw))
+
+  const wheelGeom = new THREE.LatheGeometry(wheelPts, 32)
+  const wheel = new THREE.Mesh(wheelGeom, getMaterial('rubber_black'))
   wheel.rotation.x = Math.PI / 2
   wheel.position.y = -h * 0.25
   g.add(wheel)
 
   // Axle through wheel
   const axleR = wheelR * 0.15
-  const axle = new THREE.Mesh(
+  const axle2 = new THREE.Mesh(
     chamferedCylinder(axleR, forkSpacing * 2.5, axleR * 0.2, 8),
     getMaterial('brushed_steel'),
   )
-  axle.rotation.x = Math.PI / 2
-  axle.position.y = -h * 0.25
-  g.add(axle)
+  axle2.rotation.x = Math.PI / 2
+  axle2.position.y = -h * 0.25
+  g.add(axle2)
 
   return g
 }
 
-// ── Mecanum Wheel ───────────────────────────────────────────────────────────
-
-function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
-  const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.03
-
-  // Side plates (2 chamferedCylinders)
-  const plateR = Math.max(w, d) * 0.42
-  const plateH = h * 0.06
-  for (const s of [-1, 1]) {
-    const plate = new THREE.Mesh(
-      chamferedCylinder(plateR, plateH, chamfer * 0.3, 36),
-      catMetal(0.35),
-    )
-    plate.rotation.x = Math.PI / 2
-    plate.position.z = s * h * 0.15
-    g.add(plate)
-  }
-
-  // Hub
-  const hubR = plateR * 0.3
-  const hubH = h * 0.35
-  const hub = new THREE.Mesh(
-    chamferedCylinder(hubR, hubH, chamfer * 0.4, 24),
-    catMetal(0.3),
-  )
-  hub.rotation.x = Math.PI / 2
-  g.add(hub)
-
-  // Axle bore
-  const axleR = hubR * 0.35
-  const axle = new THREE.Mesh(
-    chamferedCylinder(axleR, hubH * 1.2, axleR * 0.1, 12),
-    getMaterial('dark_chrome'),
-  )
-  axle.rotation.x = Math.PI / 2
-  g.add(axle)
-
-  // 9 angled rollers at 45 degrees
-  const rollerR = plateR * 0.09
-  const rollerH = h * 0.22
-  const rollerCircleR = plateR * 0.72
-  for (let i = 0; i < 9; i++) {
-    const angle = (i / 9) * Math.PI * 2
-    const rx = Math.cos(angle) * rollerCircleR
-    const ry = Math.sin(angle) * rollerCircleR
-    const roller = new THREE.Mesh(
-      chamferedCylinder(rollerR, rollerH, rollerR * 0.15, 10),
-      getMaterial('rubber_black'),
-    )
-    // 45-degree tilt in the axial direction
-    roller.position.set(rx, ry, 0)
-    roller.rotation.set(0, 0, angle)
-    roller.rotateX(Math.PI / 4)
-    g.add(roller)
-  }
-
-  return g
-}
-
-// ── Omni Wheel ──────────────────────────────────────────────────────────────
-
-function generateOmniWheel(id: string, dims: GeneratorDims): THREE.Group {
-  const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.03
-
-  // Hub
-  const hubR = Math.max(w, d) * 0.2
-  const hubH = h * 0.3
-  const hub = new THREE.Mesh(
-    chamferedCylinder(hubR, hubH, chamfer * 0.4, 24),
-    catMetal(0.35),
-  )
-  hub.rotation.x = Math.PI / 2
-  g.add(hub)
-
-  // Axle bore
-  const axleR = hubR * 0.35
-  const axle = new THREE.Mesh(
-    chamferedCylinder(axleR, hubH * 1.1, axleR * 0.1, 12),
-    getMaterial('dark_chrome'),
-  )
-  axle.rotation.x = Math.PI / 2
-  g.add(axle)
-
-  // 10 perpendicular rollers around circumference
-  const wheelR = Math.max(w, d) * 0.42
-  const rollerR = wheelR * 0.1
-  const rollerH = h * 0.25
-  for (let i = 0; i < 10; i++) {
-    const angle = (i / 10) * Math.PI * 2
-    const rx = Math.cos(angle) * wheelR
-    const ry = Math.sin(angle) * wheelR
-    const roller = new THREE.Mesh(
-      chamferedCylinder(rollerR, rollerH, rollerR * 0.12, 10),
-      getMaterial('rubber_black'),
-    )
-    roller.position.set(rx, ry, 0)
-    // Perpendicular to wheel plane (along Z, the axle direction)
-    roller.rotation.x = Math.PI / 2
-    g.add(roller)
-  }
-
-  // Side ring outlines (thin torus on each side)
-  for (const s of [-1, 1]) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(wheelR, wheelR * 0.02, 6, 36),
-      catMetal(0.25),
-    )
-    ring.position.z = s * hubH * 0.35
-    g.add(ring)
-  }
-
-  return g
-}
-
-// ── Track Tread System ──────────────────────────────────────────────────────
+// ── Track/Tread System ──────────────────────────────────────────────────────
 
 function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
@@ -284,7 +268,7 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
   const trackLen = d * 0.8
   const halfLen = trackLen * 0.5
 
-  // 2 sprocket wheels
+  // 2 sprocket wheels with gear teeth
   for (const sx of [-1, 1]) {
     const sprocket = new THREE.Mesh(
       chamferedCylinder(sprocketR, sprocketH, chamfer * 0.3, 24),
@@ -294,17 +278,17 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
     sprocket.position.set(0, 0, sx * halfLen)
     g.add(sprocket)
 
-    // Sprocket teeth (small boxes around circumference)
+    // Gear teeth around sprocket circumference
     const toothCount = 12
     const toothW = sprocketR * 0.1
-    const toothH = sprocketR * 0.12
+    const toothH2 = sprocketR * 0.12
     const toothD = sprocketH * 0.8
     for (let i = 0; i < toothCount; i++) {
       const angle = (i / toothCount) * Math.PI * 2
       const tx = Math.cos(angle) * sprocketR * 1.05
       const ty = Math.sin(angle) * sprocketR * 1.05
       const tooth = new THREE.Mesh(
-        chamferedBox(toothD, toothW, toothH, chamfer * 0.1),
+        chamferedBox(toothD, toothW, toothH2, chamfer * 0.1),
         catMetal(0.3),
       )
       tooth.position.set(tx, ty, sx * halfLen)
@@ -313,7 +297,7 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
     }
   }
 
-  // Tread belt (top and bottom runs)
+  // Flat belt — top and bottom runs (chamferedBoxes)
   const beltW = w * 0.25
   const beltH = h * 0.06
   for (const sy of [-1, 1]) {
@@ -329,12 +313,12 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
   const armorW = w * 0.04
   const armorH = sprocketR * 2.4
   const armorD = trackLen * 1.15
-  for (const sx of [-1, 1]) {
+  for (const sx2 of [-1, 1]) {
     const armor = new THREE.Mesh(
       chamferedBox(armorW, armorD, armorH, chamfer * 0.3),
       catMetal(0.2),
     )
-    armor.position.x = sx * beltW * 0.55
+    armor.position.x = sx2 * beltW * 0.55
     g.add(armor)
   }
 
@@ -348,7 +332,7 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.05
 
-  // Steering housing
+  // Housing — chamferedBox
   const housingW = w * 0.5
   const housingH = h * 0.35
   const housingD = d * 0.5
@@ -359,7 +343,7 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
   housing.position.y = h * 0.15
   g.add(housing)
 
-  // Steering motor on top (small cylinder)
+  // Steering motor on top — chamferedCylinder
   const motorR = Math.min(w, d) * 0.12
   const motorH = h * 0.2
   const motor = new THREE.Mesh(
@@ -385,9 +369,9 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
 
   // Wheel
   const wheelR = Math.min(w, d) * 0.25
-  const wheelH = d * 0.14
+  const wheelH2 = d * 0.14
   const wheel = new THREE.Mesh(
-    chamferedCylinder(wheelR, wheelH, chamfer * 0.3, 24),
+    chamferedCylinder(wheelR, wheelH2, chamfer * 0.3, 24),
     getMaterial('rubber_black'),
   )
   wheel.rotation.x = Math.PI / 2
@@ -407,6 +391,64 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
   return g
 }
 
+// ── Omni Wheel ──────────────────────────────────────────────────────────────
+
+function generateOmniWheel(id: string, dims: GeneratorDims): THREE.Group {
+  const g = new THREE.Group()
+  const { x: w, y: h, z: d } = dims
+  const chamfer = Math.min(w, d) * 0.03
+
+  const wheelR = Math.max(w, d) * 0.42
+
+  // Hub
+  const hubR = wheelR * 0.48
+  const hubH = h * 0.3
+  const hub = new THREE.Mesh(
+    chamferedCylinder(hubR, hubH, chamfer * 0.4, 24),
+    catMetal(0.35),
+  )
+  hub.rotation.x = Math.PI / 2
+  g.add(hub)
+
+  // Axle bore
+  const axleR = hubR * 0.35
+  const axle = new THREE.Mesh(
+    chamferedCylinder(axleR, hubH * 1.1, axleR * 0.1, 12),
+    getMaterial('dark_chrome'),
+  )
+  axle.rotation.x = Math.PI / 2
+  g.add(axle)
+
+  // 10 small perpendicular chamferedCylinder rollers around circumference
+  const rollerR = wheelR * 0.1
+  const rollerH = h * 0.26
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * Math.PI * 2
+    const rx = Math.cos(angle) * wheelR
+    const ry = Math.sin(angle) * wheelR
+    const roller = new THREE.Mesh(
+      chamferedCylinder(rollerR, rollerH, rollerR * 0.12, 10),
+      getMaterial('rubber_black'),
+    )
+    roller.position.set(rx, ry, 0)
+    // Perpendicular to wheel plane (along Z, the axle direction)
+    roller.rotation.x = Math.PI / 2
+    g.add(roller)
+  }
+
+  // Side ring outlines
+  for (const s of [-1, 1]) {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(wheelR, wheelR * 0.02, 6, 36),
+      catMetal(0.25),
+    )
+    ring.position.z = s * hubH * 0.35
+    g.add(ring)
+  }
+
+  return g
+}
+
 // ── Ball Transfer Unit ──────────────────────────────────────────────────────
 
 function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
@@ -414,7 +456,7 @@ function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.04
 
-  // Housing cylinder
+  // Housing cylinder — chamferedCylinder
   const housingR = Math.min(w, d) * 0.35
   const housingH = h * 0.5
   const housing = new THREE.Mesh(
@@ -434,7 +476,7 @@ function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
   lip.position.y = housingH * 0.35
   g.add(lip)
 
-  // Ball on top (glossy plastic)
+  // Ball — sphere with glossy_plastic
   const ballR = housingR * 0.6
   const ball = new THREE.Mesh(
     new THREE.SphereGeometry(ballR, 24, 24),
@@ -448,7 +490,7 @@ function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
   flange.position.y = -h * 0.1 - housingH * 0.5 - h * 0.03
   g.add(flange)
 
-  // Inner race ring (visible above lip)
+  // Inner race ring
   const raceRing = new THREE.Mesh(
     new THREE.TorusGeometry(housingR * 0.55, housingR * 0.04, 6, 24),
     getMaterial('brushed_steel'),
@@ -467,7 +509,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.06
 
-  // Squat rubber cylinder
+  // Rubber body — chamferedCylinder (rubber_black)
   const bodyR = Math.min(w, d) * 0.35
   const bodyH = h * 0.45
   const body = new THREE.Mesh(
@@ -476,7 +518,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
   )
   g.add(body)
 
-  // Wider base flange
+  // Wider base flange — chamferedCylinder (rubber_black)
   const baseR = bodyR * 1.35
   const baseH = h * 0.15
   const base = new THREE.Mesh(
@@ -486,7 +528,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
   base.position.y = -bodyH * 0.5 - baseH * 0.3
   g.add(base)
 
-  // Center mounting bolt inset
+  // Center mounting bolt
   const boltR = bodyR * 0.15
   const bolt = new THREE.Mesh(
     chamferedCylinder(boltR, bodyH * 1.2, boltR * 0.1, 12),
