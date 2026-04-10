@@ -49,7 +49,7 @@ export function initViewportControls(deps: {
 
   let axesVisible = true
   let gridVisible = true
-  let jointAxisVisible = true
+  let jointAxisVisible = false
 
   toggleAxesBtn.addEventListener('click', () => {
     axesVisible = !axesVisible
@@ -101,37 +101,8 @@ export function initViewportControls(deps: {
   viZoomOut?.addEventListener('click', () => zoomCamera(1.33))
 
   function focusOnRobot() {
-    const box = new THREE.Box3()
-    robot.traverse(child => {
-      if (child instanceof THREE.Mesh) {
-        child.updateWorldMatrix(true, false)
-        const childBox = new THREE.Box3().setFromObject(child)
-        if (!childBox.isEmpty()) box.union(childBox)
-      }
-    })
-
-    if (box.isEmpty()) {
-      camera.position.copy(DEFAULT_CAM_POS)
-      controls.target.copy(DEFAULT_CAM_TARGET)
-      controls.update()
-      return
-    }
-
-    const center = new THREE.Vector3()
-    const size = new THREE.Vector3()
-    box.getCenter(center)
-    box.getSize(size)
-
-    const maxDim = Math.max(size.x, size.y, size.z)
-    const fov = camera.fov * (Math.PI / 180)
-    const dist = maxDim / (2 * Math.tan(fov / 2)) * 1.5
-
-    controls.target.copy(center)
-    camera.position.set(
-      center.x + dist * 0.7,
-      center.y + dist * 0.5,
-      center.z + dist * 0.7,
-    )
+    camera.position.copy(DEFAULT_CAM_POS)
+    controls.target.copy(DEFAULT_CAM_TARGET)
     controls.update()
   }
 

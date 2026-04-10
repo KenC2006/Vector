@@ -929,7 +929,7 @@ robot.add(wireframeGroup)
 
 // ── Joint axis lines ─────────────────────────────────────────────────────────
 
-let jointAxisVisible = true
+let jointAxisVisible = false
 const axisVisuals: THREE.Object3D[] = []
 
 function addJointAxis(parent: THREE.Object3D, dir: THREE.Vector3, color: number) {

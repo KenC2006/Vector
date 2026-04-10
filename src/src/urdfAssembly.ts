@@ -6,6 +6,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import { isMountLinkName } from './attachmentNodes'
+import { hasMeshOverride } from './richVisuals/meshOverrides'
+import { SLOW_MESH_BLACKLIST } from './richVisuals/index'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -1257,9 +1259,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     compItems.innerHTML = ''
 
     for (const [catName, cat] of Object.entries(presetData.categories)) {
-      const comps = cat.components.filter(c =>
-        !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
-      )
+      const comps = cat.components.filter(c => {
+        // Only show components that have real mesh files
+        if (!hasMeshOverride(c.id)) return false
+        // Exclude components whose meshes are too large/slow to load
+        if (SLOW_MESH_BLACKLIST.has(c.id)) return false
+        // Apply search filter
+        return !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
+      })
       if (comps.length === 0) continue
 
       // Category header

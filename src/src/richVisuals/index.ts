@@ -11,6 +11,53 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
+import { getMeshOverrideUrl, getStepFallbackUrl } from './meshOverrides'
+import { getMaterial } from './materials'
+
+/** Get a category-appropriate material for STEP meshes that lack embedded colors. */
+function getCategoryMaterial(compId: string): THREE.MeshStandardMaterial {
+  if (compId.startsWith('actuator_servo') || compId.startsWith('actuator_continuous') || compId.startsWith('actuator_high_speed'))
+    return getMaterial('matte_plastic')  // dark plastic servo body
+  if (compId.startsWith('actuator_bldc') || compId.startsWith('motor_brushless'))
+    return getMaterial('anodized_aluminum', 0x444455)  // dark metal motor
+  if (compId.startsWith('actuator_stepper'))
+    return getMaterial('matte_plastic')  // black stepper body
+  if (compId.startsWith('actuator_linear'))
+    return getMaterial('anodized_aluminum')
+  if (compId.startsWith('motor_dc') || compId.startsWith('motor_coreless') || compId.startsWith('motor_pancake'))
+    return getMaterial('brushed_steel')
+  if (compId.startsWith('motor_gear') || compId.startsWith('motor_worm'))
+    return getMaterial('anodized_aluminum', 0x555555)
+  if (compId.startsWith('motor_hub'))
+    return getMaterial('matte_plastic')
+  if (compId.startsWith('motor_harmonic'))
+    return getMaterial('anodized_aluminum')
+  if (compId.startsWith('sensor_'))
+    return getMaterial('matte_plastic', 0x333333)  // dark sensor housing
+  if (compId.startsWith('compute_'))
+    return getMaterial('pcb_green')
+  if (compId.startsWith('power_lipo') || compId.startsWith('power_18650'))
+    return getMaterial('glossy_plastic', 0x2255bb)  // blue battery
+  if (compId.startsWith('power_estop'))
+    return getMaterial('glossy_plastic', 0xcc2222)  // red e-stop
+  if (compId.startsWith('power_solar'))
+    return getMaterial('glossy_plastic', 0x112244)  // dark blue panel
+  if (compId.startsWith('power_'))
+    return getMaterial('pcb_green')
+  if (compId.startsWith('structural_'))
+    return getMaterial('anodized_aluminum')
+  if (compId.startsWith('transmission_bearing'))
+    return getMaterial('brushed_steel')
+  if (compId.startsWith('transmission_'))
+    return getMaterial('anodized_aluminum')
+  if (compId.startsWith('effector_'))
+    return getMaterial('anodized_aluminum', 0x556677)  // teal-ish metal
+  if (compId.startsWith('mobility_wheel') || compId.startsWith('mobility_mecanum') || compId.startsWith('mobility_omni'))
+    return getMaterial('rubber_black')
+  if (compId.startsWith('mobility_'))
+    return getMaterial('matte_plastic')
+  return getMaterial('anodized_aluminum')  // generic fallback
+}
 
 interface ParsedRobotLike {
   group: THREE.Group
@@ -56,6 +103,27 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
  * Apply rich visuals to all preset-derived links in the parsed robot.
  * Call this after parseURDFToScene() and after adding the group to the scene.
  */
+// Cache loaded STEP meshes so they survive reparse cycles
+const meshCache = new Map<string, THREE.Group>()  // compId → cloneable mesh group
+const loadingInProgress = new Set<string>()  // prevent duplicate loads
+// Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
+// Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
+export const SLOW_MESH_BLACKLIST = new Set([
+  // No GLB (STEP files blacklisted from conversion: >25MB)
+  'compute_sbc_gpu',                   // sbc_gpu.stp — 71MB STEP
+  'mobility_track_tread_system',       // mobility_track.step — 50MB STEP
+  // GLB still >10MB (too slow to fetch+parse at runtime)
+  'actuator_bldc_small',               // bldc_outrunner.glb — 15MB
+  'actuator_bldc_large',               // bldc_outrunner.glb — 15MB
+  'motor_hub_80mm',                    // motor_hub.glb — 11MB
+  'motor_hub_120mm',                   // motor_hub.glb — 11MB
+  'compute_foc_controller',            // compute_foc_controller.glb — 11MB
+  // Wrong STEP file or broken geometry
+  'transmission_rack_pinion_set',      // STEP is industrial-scale (2.4m), not robotics
+  'motor_harmonic_drive_compact',      // STEP is a disc servo, not a harmonic drive
+  'motor_harmonic_drive_large',        // same mislabeled STEP
+])
+
 export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
   for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
     const compId = extractComponentId(linkName)
@@ -67,7 +135,25 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
     // Measure existing primitive geometry to get dimensions
     const dims = measureLinkDims(linkGroup)
 
-    // Generate rich visual group
+    // Check for real mesh override (STEP file from manufacturer)
+    const meshUrl = getMeshOverrideUrl(compId)
+    if (meshUrl && !SLOW_MESH_BLACKLIST.has(compId)) {
+      // Check cache first — reuse previously loaded STEP mesh
+      if (meshCache.has(compId)) {
+        const cached = meshCache.get(compId)!
+        const clone = cached.clone(true)
+        applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+        continue
+      }
+      // Async load — use parametric until STEP is ready
+      if (!loadingInProgress.has(compId)) {
+        loadingInProgress.add(compId)
+        loadMeshOverride(meshUrl, linkName, linkGroup, dims, compId)
+      }
+      // Fall through to parametric generation as placeholder
+    }
+
+    // Generate rich visual group (parametric fallback)
     let richGroup: THREE.Group
     try {
       richGroup = generator(compId, dims)
@@ -132,4 +218,159 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
       }
     }
   }
+}
+
+/** Apply a cached mesh group to a link, handling scaling and raycasting tags. */
+function applyMeshToLink(
+  meshGroup: THREE.Group,
+  linkName: string,
+  linkGroup: THREE.Group,
+  dims: GeneratorDims,
+  compId: string,
+) {
+  // Use GLB embedded materials (from STEP colors) when available.
+  // Only fall back to category material for meshes with default gray (0x888888).
+  const catMat = getCategoryMaterial(compId)
+  meshGroup.traverse(child => {
+    if (child instanceof THREE.Mesh) {
+      const mat = child.material as THREE.MeshStandardMaterial
+      const isDefaultGray = mat?.color &&
+        Math.abs(mat.color.r - 0.533) < 0.05 &&
+        Math.abs(mat.color.g - 0.533) < 0.05 &&
+        Math.abs(mat.color.b - 0.533) < 0.05
+      if (isDefaultGray) {
+        child.material = catMat
+      }
+      child.castShadow = true
+      child.receiveShadow = true
+      ;(child.userData as Record<string, unknown>).urdfLinkName = linkName
+    }
+  })
+
+  // Normalize units: GLB files from our STEP converter are in mm.
+  // Detect by comparing raw mesh size to expected size (in meters).
+  // If mesh is >10x larger than expected, assume mm → convert to m.
+  // Do NOT force-fit to the URDF primitive box — the GLB IS the real geometry.
+  const meshBox = new THREE.Box3().setFromObject(meshGroup)
+  const meshSize = new THREE.Vector3()
+  meshBox.getSize(meshSize)
+  const maxMeshDim = Math.max(meshSize.x, meshSize.y, meshSize.z)
+  const maxExpectedDim = Math.max(dims.x, dims.y, dims.z)
+
+  if (maxMeshDim > 0.0001) {
+    if (maxMeshDim > maxExpectedDim * 10) {
+      meshGroup.scale.setScalar(0.001) // mm → m
+    }
+
+    // Center the mesh on origin so it sits properly in the link frame
+    meshBox.setFromObject(meshGroup)
+    const center = new THREE.Vector3()
+    meshBox.getCenter(center)
+    meshGroup.position.sub(center)
+  }
+
+  // Replace geometry in link group
+  const geometryChild = linkGroup.children.find(c => {
+    if (!(c instanceof THREE.Group)) return false
+    let hasMesh = false
+    c.traverse(gc => { if (gc instanceof THREE.Mesh) hasMesh = true })
+    return hasMesh
+  }) as THREE.Group | undefined
+
+  if (geometryChild) {
+    while (geometryChild.children.length > 0) {
+      geometryChild.remove(geometryChild.children[0])
+    }
+    geometryChild.add(meshGroup)
+  }
+}
+
+/**
+ * Async load a mesh (GLB preferred, STEP fallback), cache it, and apply to the link.
+ */
+async function loadMeshOverride(
+  meshUrl: string,
+  linkName: string,
+  linkGroup: THREE.Group,
+  dims: GeneratorDims,
+  compId: string,
+): Promise<void> {
+  const ext = meshUrl.split('.').pop()?.toLowerCase() || ''
+  try {
+    let meshGroup: THREE.Group
+
+    if (ext === 'glb' || ext === 'gltf') {
+      // Load GLB — fast path (~100ms)
+      meshGroup = await loadGLB(meshUrl)
+    } else {
+      // STEP/STP fallback — slow path (5-15s)
+      meshGroup = await loadSTEP(meshUrl)
+    }
+
+    // Cache the raw parsed mesh (before material/scaling)
+    meshCache.set(compId, meshGroup)
+    loadingInProgress.delete(compId)
+
+    // Apply to the current link
+    const clone = meshGroup.clone(true)
+    applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+
+    console.log(`[richVisuals] Mesh loaded and cached: ${compId} (${meshUrl})`)
+  } catch (e) {
+    // If GLB failed, try STEP fallback
+    if (ext === 'glb' || ext === 'gltf') {
+      const stepUrl = getStepFallbackUrl(compId)
+      if (stepUrl) {
+        console.warn(`[richVisuals] GLB failed for ${compId}, trying STEP fallback...`)
+        try {
+          const meshGroup = await loadSTEP(stepUrl)
+          meshCache.set(compId, meshGroup)
+          loadingInProgress.delete(compId)
+          const clone = meshGroup.clone(true)
+          applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+          console.log(`[richVisuals] STEP fallback loaded: ${compId}`)
+          return
+        } catch (e2) {
+          console.warn(`[richVisuals] STEP fallback also failed for ${compId}:`, e2)
+        }
+      }
+    }
+    console.warn(`[richVisuals] Mesh failed for ${compId}, parametric fallback:`, e)
+    loadingInProgress.delete(compId)
+  }
+}
+
+/** Load a GLB file and return a Three.js Group. */
+async function loadGLB(url: string): Promise<THREE.Group> {
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
+  const loader = new GLTFLoader()
+  return new Promise((resolve, reject) => {
+    loader.load(
+      url,
+      (gltf) => {
+        const group = new THREE.Group()
+        // Move all children from the scene into our group
+        while (gltf.scene.children.length > 0) {
+          group.add(gltf.scene.children[0])
+        }
+        resolve(group)
+      },
+      undefined,
+      (err) => reject(err),
+    )
+  })
+}
+
+/** Load a STEP file via OpenCascade WASM and return a Three.js Group. */
+async function loadSTEP(url: string): Promise<THREE.Group> {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const buffer = await response.arrayBuffer()
+
+  if (buffer.byteLength > 20 * 1024 * 1024) {
+    throw new Error(`STEP file too large (${(buffer.byteLength / 1024 / 1024).toFixed(1)}MB)`)
+  }
+
+  const { parseSTEP } = await import('../stepLoader')
+  return parseSTEP(buffer)
 }
