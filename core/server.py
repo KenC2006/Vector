@@ -419,11 +419,15 @@ class JSONRPCServer:
 
             self._emit_progress("done", "Complete")
 
-            return {
+            response = {
                 "explanation": result.get("explanation", "Edit applied"),
                 "new_urdf": result.get("new_urdf", urdf_content),
                 "stats": result.get("stats", "Edit complete"),
             }
+            # Pass through assembly_graph if present (Option C — frontend resolves placement)
+            if "assembly_graph" in result:
+                response["assembly_graph"] = result["assembly_graph"]
+            return response
         except Exception as e:
             raise ValueError(f"AI edit failed: {e}")
 

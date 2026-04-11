@@ -818,12 +818,16 @@ User Request: {prompt}"""
     # Try to extract JSON from the response (handle markdown code blocks)
     result = _parse_json_response(response_text)
 
-    # Check for Option C: assembly graph
+    # Check for Option C: assembly graph — pass through to frontend for placement
     if "assembly" in result and result["assembly"]:
-        print(f"[ai_edit] Claude assembly JSON: {json.dumps(result['assembly'], indent=2)}", file=sys.stderr)
-        new_urdf = _assemble_from_graph(result["assembly"])
-        print(f"[ai_edit] Using assembly graph ({len(result['assembly'].get('components', []))} components)", file=sys.stderr)
-        new_urdf = _validate_and_log(new_urdf)
+        assembly = result["assembly"]
+        print(f"[ai_edit] Passing assembly graph to frontend ({len(assembly.get('components', []))} components)", file=sys.stderr)
+        return {
+            "explanation": result.get("explanation", "Assembly designed"),
+            "assembly_graph": assembly,
+            "new_urdf": current_urdf,  # keep current URDF unchanged; frontend will resolve
+            "stats": result.get("changes_summary", "Assembly ready"),
+        }
     # Check if response uses full_urdf (Option B: complete replacement)
     elif "full_urdf" in result and result["full_urdf"]:
         new_urdf = result["full_urdf"]
@@ -927,12 +931,16 @@ User Request: {prompt}"""
     # Parse and apply
     result = _parse_json_response(response_text)
 
-    # Check for Option C: assembly graph
+    # Check for Option C: assembly graph — pass through to frontend
     if "assembly" in result and result["assembly"]:
-        print(f"[ai_edit] Claude assembly JSON: {json.dumps(result['assembly'], indent=2)}", file=sys.stderr)
-        new_urdf = _assemble_from_graph(result["assembly"])
-        print(f"[ai_edit] Using assembly graph ({len(result['assembly'].get('components', []))} components)", file=sys.stderr)
-        new_urdf = _validate_and_log(new_urdf)
+        assembly = result["assembly"]
+        print(f"[ai_edit] Passing assembly graph to frontend ({len(assembly.get('components', []))} components)", file=sys.stderr)
+        return {
+            "explanation": result.get("explanation", "Assembly designed"),
+            "assembly_graph": assembly,
+            "new_urdf": current_urdf,
+            "stats": result.get("changes_summary", "Assembly ready"),
+        }
     elif "full_urdf" in result and result["full_urdf"]:
         new_urdf = result["full_urdf"]
         print(f"[ai_edit] WARNING: Claude used Option B (raw URDF) instead of Option C", file=sys.stderr)

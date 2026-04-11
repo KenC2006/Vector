@@ -2878,18 +2878,35 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
       urdfContent: currentUrdf,
       kinematicContext: kinematicContext,
       sessionId: currentChatId,
-    }) as { explanation: string; new_urdf: string; stats: string }
+    }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
 
     thinking.remove()
 
-    const diff = computeSimpleDiff(currentUrdf, result.new_urdf)
+    // Check if this is an assembly graph (Option C) — resolve via frontend snap system
+    if (result.assembly_graph && urdfAssemblyApi) {
+      console.log('[AI] Received assembly_graph — resolving via frontend snap system')
+      const assemblyResult = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      if (assemblyResult) {
+        const diff = computeSimpleDiff(currentUrdf, assemblyResult)
+        addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          diff,
+          newUrdf: assemblyResult,
+        })
+        showInlineDiff(currentUrdf, assemblyResult, assemblyResult)
+      } else {
+        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed. Try a simpler design.</span>`)
+      }
+    } else {
+      // Standard path: direct URDF replacement (Option A/B)
+      const diff = computeSimpleDiff(currentUrdf, result.new_urdf)
 
-    addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
-      diff,
-      newUrdf: result.new_urdf,
-    })
+      addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+        diff,
+        newUrdf: result.new_urdf,
+      })
 
-    showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+      showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+    }
 
   } catch (err) {
     thinking.remove()
