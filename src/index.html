@@ -15,12 +15,6 @@
           <!-- Tabs are rendered dynamically by main.ts -->
           <button class="tab-new" title="New file">+</button>
         </div>
-        <div id="titlebar-right">
-          <div id="status-badge">
-            <span id="status-dot"></span>
-            <span id="status-text">ready</span>
-          </div>
-        </div>
       </div>
 
       <div id="workspace">
@@ -28,6 +22,9 @@
         <div id="activity-bar">
           <div class="ab-btn active" data-panel="explorer" title="Explorer (Ctrl+Shift+E)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7V17a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-8l-2-2H5a2 2 0 00-2 2z"/></svg>
+          </div>
+          <div class="ab-btn" data-panel="focus" title="Focused component (Inspect mode)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke-linecap="round"/></svg>
           </div>
           <div class="ab-btn" data-panel="build" title="Robot Structure">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><path d="M7 13V9a4 4 0 014-4h2" stroke-linecap="round"/></svg>
@@ -99,6 +96,20 @@
                 <button type="button" class="ba-btn" id="btn-create-checkpoint" style="width:100%">Create Checkpoint</button>
               </div>
               <div id="checkpoints-list"></div>
+            </div>
+          </div>
+
+          <div class="sidebar-panel hidden" id="panel-focus">
+            <div class="sp-title">Focused part</div>
+            <div id="focus-empty" class="insp-empty">In Inspect mode, click a part in 3D to focus it here.</div>
+            <div id="focus-body" class="focus-body hidden">
+              <div class="focus-link-name" id="focus-link-name"></div>
+              <div class="focus-meta" id="focus-meta"></div>
+              <div class="focus-actions">
+                <button type="button" class="ba-btn" id="focus-btn-frame">Frame again</button>
+                <button type="button" class="ba-btn" id="focus-btn-inspector">Open properties</button>
+                <button type="button" class="ba-btn" id="focus-btn-clear">Clear focus</button>
+              </div>
             </div>
           </div>
 
@@ -247,13 +258,17 @@
                 <button class="vp-tab" data-view="chat">AI Chat</button>
               </div>
               <div id="viewport-controls">
-                <button class="vp-btn active" id="toggle-axes" title="Axes (A)">
+                <button type="button" class="vp-btn vp-mode-toggle active" id="toggle-vp-mode" title="Build: place &amp; snap. Inspect: click part to focus, dim others, open dashboard.">
+                  <span id="vp-mode-label">Build</span>
+                </button>
+                <div class="vp-sep"></div>
+                <button class="vp-btn active" id="toggle-axes" title="Axes (Shift+A)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 14L2 2M2 14L14 14M2 14L6 10" stroke-linecap="round"/></svg>
                 </button>
                 <button class="vp-btn" id="toggle-com" title="Center of Mass (C)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="3"/><path d="M8 2v3M8 11v3M2 8h3M11 8h3" stroke-linecap="round"/></svg>
                 </button>
-                <button class="vp-btn" id="toggle-wireframe" title="Wireframe (W)">
+                <button class="vp-btn" id="toggle-wireframe" title="Wireframe (Shift+W)">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M2 8h12M8 2v12"/></svg>
                 </button>
                 <button class="vp-btn" id="toggle-grid" title="Grid (G)">
@@ -267,6 +282,18 @@
                     <circle cx="8" cy="8" r="4.5"/>
                     <ellipse cx="8" cy="8" rx="2.5" ry="4.5"/>
                     <ellipse cx="8" cy="8" rx="4.5" ry="2.5"/>
+                  </svg>
+                </button>
+                <button class="vp-btn" id="toggle-mount-rings" title="Snap-point axis rings (RGB = X Y Z on each face node)">
+                  <svg viewBox="0 0 16 16" fill="none" stroke-width="1.2">
+                    <ellipse cx="5" cy="8" rx="2.8" ry="4" stroke="#f66"/>
+                    <ellipse cx="8" cy="8" rx="4" ry="2.8" stroke="#6c6"/>
+                    <ellipse cx="11" cy="8" rx="2.8" ry="4" stroke="#6af" transform="rotate(90 11 8)"/>
+                  </svg>
+                </button>
+                <button class="vp-btn" id="toggle-collision" title="Collision Bodies (X)">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5">
+                    <rect x="2.5" y="2.5" width="11" height="11" rx="1"/>
                   </svg>
                 </button>
                 <div class="vp-sep"></div>

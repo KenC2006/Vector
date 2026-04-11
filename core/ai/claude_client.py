@@ -348,7 +348,7 @@ User Request: {prompt}"""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=64000,
+        max_tokens=64000,  # API hard limit (65536 rejected)
         system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
         messages=messages,
         timeout=180.0,
@@ -424,7 +424,7 @@ User Request: {prompt}"""
     try:
         with client.messages.stream(
             model="claude-sonnet-4-20250514",
-            max_tokens=64000,
+            max_tokens=64000,  # API hard limit (65536 rejected)
             system=SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog()),
             messages=messages,
         ) as stream:

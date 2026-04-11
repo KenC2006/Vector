@@ -8,18 +8,31 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { initUrdfAssembly } from './urdfAssembly'
+import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
 import { applyRichVisuals } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
 import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
 import { initGitPanel } from './gitPanel'
-import { initValidation } from './validation'
+import { initValidation, validateXMLStructure, validateURDFPerLink } from './validation'
+import type { ValResult } from './validation'
 import { parseURDFToScene, buildKinematicGraphFromURDF, setPathResolver, defaultMat } from './urdfParser'
 import { initNodeGraph } from './nodeGraph'
 import { initViewportControls } from './viewportControls'
+import {
+  applyInspectDimming,
+  cameraPoseForBox,
+  computeLinkWorldBox,
+  restoreInspectMaterials,
+  stepCameraFocusTween,
+  type CameraFocusTween,
+} from './inspectMode'
 
-/** Raise the robot group so its lowest geometry point touches Y=0 (ground). */
+/**
+ * Raise the assembly root group so the lowest geometry point touches Y=0.
+ * Call when loading / switching URDF documents or after reset — not on every edit reparse,
+ * or the whole robot jumps whenever a new part dips below the floor plane.
+ */
 function groundRobot(robotGroup: THREE.Group) {
   robotGroup.updateMatrixWorld(true)
   const box = new THREE.Box3().setFromObject(robotGroup)
@@ -227,9 +240,6 @@ if (chatHistory.length > 0) {
 } else {
   startNewChat()
 }
-
-// Use currentChatId as the session ID for the AI backend
-const aiSessionId = currentChatId
 
 // State for managing completion requests
 let inlineCompletionSettings = {
@@ -495,14 +505,6 @@ function getMonacoLang(filename: string): string {
   return langs[ext] || 'plaintext'
 }
 
-function getTabIconClass(filename: string): string {
-  const ext = getFileExt(filename)
-  if (ext === 'urdf' || ext === 'xml' || ext === 'sdf' || ext === 'mjcf') return 'tab-icon-urdf'
-  if (ext === 'json') return 'tab-icon-json'
-  if (ext === 'yaml' || ext === 'yml') return 'tab-icon-yaml'
-  return 'tab-icon-urdf'
-}
-
 function renderTabs() {
   // Remove all existing tab elements (keep the + button)
   tabBar.querySelectorAll('.tab').forEach(t => t.remove())
@@ -589,7 +591,10 @@ function switchToFile(filename: string) {
 
   // Reparse 3D viewport if switching to a URDF/XML file
   if (isUrdfLike(filename)) {
+    // Fresh world offset per document; then ground once (not on every in-editor reparse).
+    robot.position.set(0, 0, 0)
     reparseURDF()
+    groundRobot(robot)
     urdfAssemblyApi?.onModelUpdated()
     runLocalValidation()
 
@@ -799,6 +804,34 @@ controls.mouseButtons = {
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
 
+// 3D vs AI chat tab (tabs wired later). Declared here so animate() can read it.
+let activeViewportView: '3d' | 'chat' = '3d'
+
+const viewportNavClock = new THREE.Clock()
+const keysViewportPan = { w: false, a: false, s: false, d: false }
+let shiftViewportPanHeld = false
+
+document.addEventListener(
+  'keydown',
+  e => {
+    if (e.key === 'Shift') shiftViewportPanHeld = true
+  },
+  true,
+)
+document.addEventListener(
+  'keyup',
+  e => {
+    if (e.key === 'Shift') shiftViewportPanHeld = false
+  },
+  true,
+)
+window.addEventListener('blur', () => {
+  keysViewportPan.w = keysViewportPan.a = keysViewportPan.s = keysViewportPan.d = false
+  shiftViewportPanHeld = false
+})
+
+let cameraFocusTween: CameraFocusTween | null = null
+
 // ── Post-processing pipeline (SSAO + output) ───────────────────────────────
 
 const composer = new EffectComposer(renderer)
@@ -929,7 +962,7 @@ robot.add(wireframeGroup)
 
 // ── Joint axis lines ─────────────────────────────────────────────────────────
 
-let jointAxisVisible = false
+const jointAxisState = { visible: false }
 const axisVisuals: THREE.Object3D[] = []
 
 function addJointAxis(parent: THREE.Object3D, dir: THREE.Vector3, color: number) {
@@ -952,7 +985,7 @@ function addJointAxis(parent: THREE.Object3D, dir: THREE.Vector3, color: number)
   const group = new THREE.Group()
   group.add(line)
   group.add(ring)
-  group.visible = jointAxisVisible
+  group.visible = jointAxisState.visible
   parent.add(group)
   axisVisuals.push(group)
 }
@@ -1006,28 +1039,134 @@ function updateComMarker() {
     comZ /= totalMass
   }
 
-  const comMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), comMat)
+const comMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), comMat)
   comMarker.position.set(comX, comY, comZ)
-  comGroup.add(comMarker)
+comGroup.add(comMarker)
 
   const comLinePts = [new THREE.Vector3(comX, comY, comZ), new THREE.Vector3(comX, 0, comZ)]
-  const comLineGeo = new THREE.BufferGeometry().setFromPoints(comLinePts)
-  const comLineMat = new THREE.LineDashedMaterial({ color: 0xe5c07b, dashSize: 0.02, gapSize: 0.01, transparent: true, opacity: 0.7 })
-  const comLine = new THREE.Line(comLineGeo, comLineMat)
-  comLine.computeLineDistances()
-  comGroup.add(comLine)
+const comLineGeo = new THREE.BufferGeometry().setFromPoints(comLinePts)
+const comLineMat = new THREE.LineDashedMaterial({ color: 0xe5c07b, dashSize: 0.02, gapSize: 0.01, transparent: true, opacity: 0.7 })
+const comLine = new THREE.Line(comLineGeo, comLineMat)
+comLine.computeLineDistances()
+comGroup.add(comLine)
 
-  // CoM label ring
-  const comRingGround = new THREE.Mesh(
-    new THREE.RingGeometry(0.035, 0.045, 24),
-    new THREE.MeshBasicMaterial({ color: 0xe5c07b, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
-  )
-  comRingGround.rotation.x = -Math.PI / 2
+// CoM label ring
+const comRingGround = new THREE.Mesh(
+  new THREE.RingGeometry(0.035, 0.045, 24),
+  new THREE.MeshBasicMaterial({ color: 0xe5c07b, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+)
+comRingGround.rotation.x = -Math.PI / 2
   comRingGround.position.set(comX, 0.001, comZ)
-  comGroup.add(comRingGround)
+comGroup.add(comRingGround)
 }
 
 updateComMarker()
+
+// ── Collision body visuals ────────────────────────────────────────────────────
+
+const collisionMat = new THREE.MeshBasicMaterial({
+  color: 0xff4444,
+  transparent: true,
+  opacity: 0.22,
+  depthTest: true,
+  side: THREE.DoubleSide,
+})
+const collisionEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.5 })
+
+let showCollision = false
+
+function rebuildCollisionVisuals(urdfText: string) {
+  // Strip any existing collision meshes from all link groups
+  parsedRobot.group.traverse(obj => {
+    if ((obj as any).userData?.isCollision) obj.parent?.remove(obj)
+  })
+  if (!urdfText.trim()) return
+
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(urdfText, 'application/xml')
+    if (doc.documentElement.nodeName === 'parsererror') return
+  } catch { return }
+
+  for (const linkEl of Array.from(doc.querySelectorAll('link'))) {
+    const linkName = linkEl.getAttribute('name')
+    if (!linkName) continue
+    const linkGroup = parsedRobot.linkGroups.get(linkName)
+    if (!linkGroup) continue
+
+    for (const collisionEl of Array.from(linkEl.querySelectorAll('collision'))) {
+      const geomEl = collisionEl.querySelector('geometry')
+      if (!geomEl) continue
+
+      let geo: THREE.BufferGeometry | null = null
+      const boxEl = geomEl.querySelector('box')
+      const cylEl = geomEl.querySelector('cylinder')
+      const sphEl = geomEl.querySelector('sphere')
+
+      if (boxEl) {
+        const s = (boxEl.getAttribute('size') || '0.1 0.1 0.1').split(/\s+/).map(parseFloat)
+        geo = new THREE.BoxGeometry(s[0] || 0.1, s[1] || 0.1, s[2] || 0.1)
+      } else if (cylEl) {
+        const r = parseFloat(cylEl.getAttribute('radius') || '0.05')
+        const h = parseFloat(cylEl.getAttribute('length') || '0.1')
+        geo = new THREE.CylinderGeometry(r, r, h, 16)
+      } else if (sphEl) {
+        const r = parseFloat(sphEl.getAttribute('radius') || '0.05')
+        geo = new THREE.SphereGeometry(r, 12, 8)
+      }
+      if (!geo) continue
+
+      const mesh = new THREE.Mesh(geo, collisionMat)
+      mesh.userData.isCollision = true
+      mesh.visible = showCollision
+
+      // Cylinder in Three.js is along Y; URDF cylinder is along Z — match visual parser
+      if (cylEl) mesh.rotation.x = Math.PI / 2
+
+      // Apply collision origin (same convention as visual parser: ZYX euler)
+      const originEl = collisionEl.querySelector('origin')
+      if (originEl) {
+        const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
+        const rpy = (originEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
+        mesh.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
+        // Compose origin rpy on top of cylinder rotation using a parent group
+        const wrapper = new THREE.Group()
+        wrapper.userData.isCollision = true
+        wrapper.visible = showCollision
+        const euler = new THREE.Euler(rpy[0] || 0, rpy[1] || 0, rpy[2] || 0, 'ZYX')
+        wrapper.quaternion.setFromEuler(euler)
+        wrapper.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
+        mesh.position.set(0, 0, 0)
+        wrapper.add(mesh)
+        // Edges for clarity
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), collisionEdgeMat)
+        edges.userData.isCollision = true
+        edges.visible = showCollision
+        if (cylEl) edges.rotation.x = Math.PI / 2
+        wrapper.add(edges)
+        linkGroup.add(wrapper)
+        continue
+      }
+
+      // No origin — add mesh directly
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), collisionEdgeMat)
+      edges.userData.isCollision = true
+      edges.visible = showCollision
+      if (cylEl) edges.rotation.x = Math.PI / 2
+      linkGroup.add(mesh)
+      linkGroup.add(edges)
+    }
+  }
+}
+
+const toggleCollisionBtn = document.getElementById('toggle-collision') as HTMLButtonElement | null
+toggleCollisionBtn?.addEventListener('click', () => {
+  showCollision = !showCollision
+  parsedRobot.group.traverse(obj => {
+    if ((obj as any).userData?.isCollision) (obj as THREE.Object3D).visible = showCollision
+  })
+  toggleCollisionBtn.classList.toggle('active', showCollision)
+})
 
 // ── Sim mode ─────────────────────────────────────────────────────────────────
 
@@ -1060,7 +1199,7 @@ const editorPanel = document.getElementById('editor-panel') as HTMLDivElement
 
 const vpControls = initViewportControls({
   camera, renderer, controls, robot, scene, canvas, viewportPanel, editorPanel, handle,
-  originAxes, grid, comGroup, wireframeGroup, axisVisuals,
+  originAxes, grid, comGroup, wireframeGroup, axisVisuals, jointAxisState,
   simBar,
   simActive: () => simActive,
   parsedRobot: () => parsedRobot,
@@ -1078,23 +1217,51 @@ function rebuildWireframes() {
   wireframeGroup.clear()
   wireframeBuilt = false
 
-  robot.traverse(child => {
+    robot.traverse(child => {
     if (child instanceof THREE.Mesh && child.material !== wireMat && child.material !== defaultMat && child.geometry) {
-      const clone = new THREE.Mesh(child.geometry, wireMat)
-      child.getWorldPosition(clone.position)
-      child.getWorldQuaternion(clone.quaternion)
-      wireframeGroup.add(clone)
-    }
-  })
+        const clone = new THREE.Mesh(child.geometry, wireMat)
+        child.getWorldPosition(clone.position)
+        child.getWorldQuaternion(clone.quaternion)
+        wireframeGroup.add(clone)
+      }
+    })
   wireframeBuilt = true
 }
 
 function animate() {
   requestAnimationFrame(animate)
 
+  const navDt = Math.min(viewportNavClock.getDelta(), 0.05)
+
   // Build wireframes once
   if (!wireframeBuilt) {
     rebuildWireframes()
+  }
+
+  if (
+    activeViewportView === '3d' &&
+    (keysViewportPan.w || keysViewportPan.a || keysViewportPan.s || keysViewportPan.d)
+  ) {
+    const forward = new THREE.Vector3().subVectors(controls.target, camera.position)
+    forward.y = 0
+    if (forward.lengthSq() < 1e-10) forward.set(0, 0, -1)
+    else forward.normalize()
+    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
+    const move = new THREE.Vector3()
+    if (keysViewportPan.w) move.add(forward)
+    if (keysViewportPan.s) move.sub(forward)
+    if (keysViewportPan.d) move.add(right)
+    if (keysViewportPan.a) move.sub(right)
+    if (move.lengthSq() > 0) {
+      const speed = (shiftViewportPanHeld ? 5.0 : 2.2) * navDt
+      move.normalize().multiplyScalar(speed)
+      camera.position.add(move)
+      controls.target.add(move)
+    }
+  }
+
+  if (cameraFocusTween) {
+    cameraFocusTween = stepCameraFocusTween(cameraFocusTween, camera, controls, performance.now())
   }
 
   controls.update()
@@ -1106,31 +1273,34 @@ function animate() {
     }
   }
 
-  // Sim animation
-  if (simRunning) {
+  // Three.js preview animation — only when MuJoCo physics core is NOT running.
+  // When simCoreRunning, updateRobotFromSimState() drives joints from real physics.
+  if (simRunning && !simCoreRunning) {
     simTime += 1 / 60
     updateSimUI()
     const t = simTime
-
-    // Animate revolute joints with smooth sinusoidal motion
-    const jointMotion: Record<string, number> = {
-      'shoulder_pan': Math.sin(t * 0.8) * 0.6,
-      'shoulder_lift': Math.sin(t * 0.6 + 0.5) * 0.3 - 0.2,
-      'elbow': Math.sin(t * 1.2) * 0.5 + 0.3,
-      'finger_left_joint': Math.sin(t * 2) * 0.5 + 0.5,
-      'finger_right_joint': Math.sin(t * 2) * 0.5 + 0.5,
-    }
-
-    // Apply motion to parsed joints
-    for (const [jointName, motion] of Object.entries(jointMotion)) {
-      const jointInfo = parsedRobot.joints.get(jointName)
-      if (jointInfo) {
-        const axis = jointInfo.axis
-        // Create rotation based on axis direction
-        const quat = new THREE.Quaternion()
-        quat.setFromAxisAngle(axis, motion)
-        jointInfo.group.quaternion.copy(quat)
+    let i = 0
+    for (const [jointName, jointInfo] of parsedRobot.joints) {
+      const jType = jointInfo.type
+      if (jType !== 'revolute' && jType !== 'continuous' && jType !== 'prismatic') { i++; continue }
+      // Spread phase so joints don't all move in lockstep
+      const phase = i * 1.3
+      const quat = new THREE.Quaternion()
+      const limits = simPreviewLimits.get(jointName)
+      if (jType === 'continuous') {
+        // Continuous joints (wheels etc.) — just spin
+        quat.setFromAxisAngle(jointInfo.axis, t * 1.5 + phase)
+      } else if (limits) {
+        // Revolute/prismatic with known limits — sweep full range sinusoidally
+        const mid = (limits.lower + limits.upper) / 2
+        const amp = (limits.upper - limits.lower) / 2
+        quat.setFromAxisAngle(jointInfo.axis, mid + Math.sin(t * 0.7 + phase) * amp)
+      } else {
+        // No limits found — gentle ±45° sweep
+        quat.setFromAxisAngle(jointInfo.axis, Math.sin(t * 0.7 + phase) * (Math.PI / 4))
       }
+      jointInfo.group.quaternion.copy(quat)
+      i++
     }
   }
 
@@ -1271,7 +1441,16 @@ function buildKinematicContext(): string {
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
-let urdfAssemblyApi: { onModelUpdated(): void; recordUndoExternal(content: string): void } | null = null
+let urdfAssemblyApi: UrdfAssemblyApi | null = null
+
+function rebuildJointAxisVisuals() {
+  axisVisuals.length = 0
+  let colorIdx = 0
+  for (const [, jointInfo] of parsedRobot.joints) {
+    const color = axisColors[colorIdx++ % axisColors.length]
+    addJointAxis(jointInfo.group, jointInfo.axis, color)
+  }
+}
 
 function reparseURDF() {
   try {
@@ -1279,8 +1458,10 @@ function reparseURDF() {
     if (!model) return  // no file open
     let urdfContent = model.getValue()
 
-    // If this is a xacro file, preprocess it first
-    const isXacro = activeFile.endsWith('.xacro') || urdfContent.includes('xacro:')
+    // True xacro only: file extension or actual <xacro:…> tags.
+    // Do NOT use urdfContent.includes('xacro:') — that matches xmlns:xacro on plain URDF
+    // and wrongly runs the preprocessor (often breaking AI-generated robots).
+    const isXacro = activeFile.endsWith('.xacro') || /<xacro:/i.test(urdfContent)
     if (isXacro) {
       // Async xacro processing — fire and forget, reparse when done
       processXacro(urdfContent, {
@@ -1307,16 +1488,23 @@ function reparseURDF() {
           robot.add(parsedRobot.group)
           applyRichVisuals(parsedRobot)
           addEdgeLines(parsedRobot)
-          groundRobot(robot)
+          rebuildJointAxisVisuals()
           updateComMarker()
           rebuildWireframes()
-          vpControls.updateViewportInfo()
+          rebuildCollisionVisuals(processed)
+          updateViewportInfo()
+          buildKinematicTreeUI()
           urdfAssemblyApi?.onModelUpdated()
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
+          showToast(
+            `URDF parse failed after xacro: ${e instanceof Error ? e.message : String(e)}`,
+            'error',
+          )
         }
       }).catch(e => {
         console.warn('[xacro] Preprocessing failed:', e)
+        showToast(`Xacro preprocessing failed: ${e instanceof Error ? e.message : String(e)}`, 'error')
       })
       return // async — will reparse when done
     }
@@ -1339,21 +1527,15 @@ function reparseURDF() {
     robot.add(parsedRobot.group)
     applyRichVisuals(parsedRobot)
     addEdgeLines(parsedRobot)
-    groundRobot(robot)
 
-    // Rebuild axis visuals
-    const axisColors = [0x4a9eff, 0x4ec9b0, 0xf48771, 0xce9178]
-    let colorIdx = 0
-    for (const [, jointInfo] of parsedRobot.joints) {
-      const color = axisColors[colorIdx++ % axisColors.length]
-      addJointAxis(jointInfo.group, jointInfo.axis, color)
-    }
+    rebuildJointAxisVisuals()
 
     // Update CoM marker
     updateComMarker()
 
-    // Rebuild wireframes
+    // Rebuild wireframes and collision visuals
     rebuildWireframes()
+    rebuildCollisionVisuals(urdfContent)
 
     // Update viewport info
     updateViewportInfo()
@@ -1365,6 +1547,7 @@ function reparseURDF() {
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
     console.error('[URDF] Parse error:', e)
+    showToast(`URDF parse failed — 3D not updated: ${e instanceof Error ? e.message : String(e)}`, 'error')
     // Keep old geometry on parse error
   }
 }
@@ -1557,15 +1740,34 @@ document.addEventListener('keydown', (e) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
   if ((e.target as HTMLElement).closest('.monaco-editor')) return
 
+  // WASD: pan camera on the ground plane (orbit target moves with camera). Shift = faster.
+  if (activeViewportView === '3d') {
+    const pk = e.key.toLowerCase()
+    if (
+      (pk === 'w' || pk === 'a' || pk === 's' || pk === 'd') &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey
+    ) {
+      keysViewportPan[pk] = true
+      e.preventDefault()
+          return
+        }
+      }
+
   switch (e.key.toLowerCase()) {
     case 'a':
-      document.getElementById('toggle-axes')?.click()
+      if (e.shiftKey) document.getElementById('toggle-axes')?.click()
       break
     case 'c':
       document.getElementById('toggle-com')?.click()
       break
     case 'w':
-      document.getElementById('toggle-wireframe')?.click()
+      if (e.shiftKey) document.getElementById('toggle-wireframe')?.click()
+      break
+    case 'x':
+      document.getElementById('toggle-collision')?.click()
       break
     case 'g':
       if (!e.ctrlKey && !e.metaKey) {
@@ -1596,6 +1798,16 @@ document.addEventListener('keydown', (e) => {
   }
 })
 
+document.addEventListener('keyup', e => {
+  const tag = (e.target as HTMLElement).tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  if ((e.target as HTMLElement).closest('.monaco-editor')) return
+  const k = e.key.toLowerCase()
+  if (k === 'w' || k === 'a' || k === 's' || k === 'd') {
+    keysViewportPan[k] = false
+  }
+})
+
 // ── Git Source Control Panel ────────────────────────────────────────────────
 const { refreshGitStatus } = initGitPanel({ invoke, showToast })
 
@@ -1603,6 +1815,7 @@ const { refreshGitStatus } = initGitPanel({ invoke, showToast })
 
 const panels: Record<string, HTMLElement> = {
   explorer: document.getElementById('panel-explorer')!,
+  focus: document.getElementById('panel-focus')!,
   build: document.getElementById('panel-build')!,
   inspector: document.getElementById('panel-inspector')!,
   toolbox: document.getElementById('panel-toolbox')!,
@@ -1613,11 +1826,17 @@ const panels: Record<string, HTMLElement> = {
 }
 
 function openSidebarPanel(panel: string) {
-  if ((panel === 'build' || panel === 'toolbox' || panel === 'inspector') && activeViewportView !== '3d') {
+  if (
+    (panel === 'build' || panel === 'toolbox' || panel === 'inspector' || panel === 'focus') &&
+    activeViewportView !== '3d'
+  ) {
     switchViewportView('3d')
     showToast('Switched to 3D Preview for URDF editing', 'info')
   }
-  if ((panel === 'build' || panel === 'toolbox' || panel === 'inspector') && nodeGraph.isVisible()) {
+  if (
+    (panel === 'build' || panel === 'toolbox' || panel === 'inspector' || panel === 'focus') &&
+    nodeGraph.isVisible()
+  ) {
     nodeGraph.hide()
   }
   document.querySelectorAll('.ab-btn').forEach(b => b.classList.remove('active'))
@@ -1638,8 +1857,8 @@ document.querySelectorAll('.ab-btn').forEach(btn => {
     if (!panel) return
     const wasActive = btn.classList.contains('active')
     if (wasActive) {
-      document.querySelectorAll('.ab-btn').forEach(b => b.classList.remove('active'))
-      Object.values(panels).forEach(p => p.classList.add('hidden'))
+    document.querySelectorAll('.ab-btn').forEach(b => b.classList.remove('active'))
+    Object.values(panels).forEach(p => p.classList.add('hidden'))
     } else {
       openSidebarPanel(panel)
     }
@@ -1831,19 +2050,6 @@ function showToast(message: string, type: 'success' | 'warning' | 'error' | 'inf
   }, 3000)
 }
 
-// ── Status badge ─────────────────────────────────────────────────────────────
-const statusText = document.getElementById('status-text') as HTMLSpanElement
-const statusDot = document.getElementById('status-dot') as HTMLSpanElement
-const statusBadge = document.getElementById('status-badge') as HTMLDivElement
-
-function setStatus(text: string, color: string) {
-  statusText.textContent = text
-  statusDot.style.background = color
-  statusBadge.style.color = color
-  statusBadge.style.borderColor = color + '33'
-  statusBadge.style.background = color + '15'
-}
-
 // ── Init toast ───────────────────────────────────────────────────────────────
 setTimeout(() => showToast(`Loaded robot.urdf — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success'), 500)
 setTimeout(() => showToast('Validation: 5 passed, 1 warning (CoM near edge)', 'warning'), 1200)
@@ -1904,8 +2110,6 @@ const vcMessages = document.getElementById('vc-messages')!
 const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
 const vcSend = document.getElementById('vc-send') as HTMLButtonElement
 const viewportTabs = document.querySelectorAll('.vp-tab')
-// @ts-ignore — read by external debug tools
-let activeViewportView: '3d' | 'chat' = '3d'
 
 // Initialize chat UI from stored history or show default message
 if (currentChatMessages.length > 0) {
@@ -1931,6 +2135,9 @@ vcNewChatBtn?.addEventListener('click', () => startNewChat())
 
 function switchViewportView(view: '3d' | 'chat') {
   activeViewportView = view
+  if (view !== '3d') {
+    keysViewportPan.w = keysViewportPan.a = keysViewportPan.s = keysViewportPan.d = false
+  }
   viewportTabs.forEach(tab => {
     tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view)
   })
@@ -2223,7 +2430,6 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
   }
 
   vcSend.disabled = true
-  setStatus('thinking', '#569cd6')
 
   const thinking = addVCThinking()
 
@@ -2284,7 +2490,6 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
   } finally {
     unlisten?.()
     vcSend.disabled = false
-    setStatus('ready', '#608b4e')
   }
 }
 
@@ -2380,6 +2585,31 @@ let simStepIntervalId: number | null = null
 // Store original joint poses before sim so we can restore on exit
 const originalJointPoses = new Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion }>()
 
+// Per-joint limits cached from URDF for the Three.js preview animation.
+// Only populated for revolute/prismatic joints that have a <limit> element.
+const simPreviewLimits = new Map<string, { lower: number; upper: number }>()
+
+function refreshSimPreviewLimits() {
+  simPreviewLimits.clear()
+  const urdf = monacoEditor.getModel()?.getValue() ?? ''
+  if (!urdf.trim()) return
+  try {
+    const doc = new DOMParser().parseFromString(urdf, 'application/xml')
+    for (const joint of Array.from(doc.querySelectorAll('joint'))) {
+      const name = joint.getAttribute('name')
+      const type = joint.getAttribute('type')
+      if (!name || (type !== 'revolute' && type !== 'prismatic')) continue
+      const limitEl = joint.querySelector('limit')
+      if (!limitEl) continue
+      const lower = parseFloat(limitEl.getAttribute('lower') || '0')
+      const upper = parseFloat(limitEl.getAttribute('upper') || '0')
+      if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
+        simPreviewLimits.set(name, { lower, upper })
+      }
+    }
+  } catch { /* ignore parse errors */ }
+}
+
 // Joint state display
 const simStateDisplay = document.createElement('div')
 simStateDisplay.id = 'sim-state-display'
@@ -2404,47 +2634,138 @@ simStateDisplay.style.cssText = `
 `
 viewportPanel.appendChild(simStateDisplay)
 
-async function initializeSimulation() {
-  try {
-    console.log('[Sim] Initializing simulation core...')
-    // Try to start core — if already running, that's fine
-    try {
-      await invoke('start_core')
-      console.log('[Sim] Core started successfully')
-    } catch (coreErr) {
-      const msg = String(coreErr).toLowerCase()
-      if (msg.includes('already running') || msg.includes('already started')) {
-        console.log('[Sim] Core already running, continuing...')
-      } else {
-        throw coreErr // Re-throw if it's a different error
+/** Path to last staging URDF written for sim_load (cleaned up on exit). */
+let lastSimStagingPath: string | null = null
+
+/** MuJoCo `get_state` returns `joint_states` array; UI expects `joints` map by name. */
+function normalizeMuJoCoState(state: unknown): Record<string, unknown> {
+  if (!state || typeof state !== 'object') return state as Record<string, unknown>
+  const s = state as Record<string, unknown>
+  if (s.joints && typeof s.joints === 'object') return s
+  const jointStates = s.joint_states
+  if (!Array.isArray(jointStates)) return s
+  const joints: Record<string, { position: number; velocity: number }> = {}
+  for (const j of jointStates) {
+    if (j && typeof j === 'object' && typeof (j as { name?: string }).name === 'string') {
+      const row = j as { name: string; position?: number; velocity?: number }
+      joints[row.name] = {
+        position: typeof row.position === 'number' ? row.position : 0,
+        velocity: typeof row.velocity === 'number' ? row.velocity : 0,
       }
     }
-    simCoreRunning = true
+  }
+  return { ...s, joints }
+}
 
-    console.log('[Sim] Loading robot model...')
-    try {
-      // TODO: Load the active URDF file path instead of hardcoded test file
-      const simPath = currentFilePath || 'core/test_data/simple_arm.urdf'
-      await invoke('sim_load', { path: simPath })
-      console.log('[Sim] Robot model loaded')
-    } catch (loadErr) {
-      console.warn('[Sim] Could not load model (sim features limited):', loadErr)
+function summarizeValidationErrors(results: ValResult[]): string {
+  const errs = results.filter(r => r.severity === 'error')
+  if (errs.length === 0) return 'URDF validation failed'
+  return errs
+    .slice(0, 6)
+    .map(r => `${r.name}: ${r.message}`)
+    .join('\n')
+}
+
+/** Throws if URDF must not be loaded into MuJoCo (XML or backend validation errors). */
+async function assertUrdfReadyForSim(urdf: string): Promise<void> {
+  const xmlErrors = validateXMLStructure(urdf)
+  if (xmlErrors.length > 0) {
+    throw new Error(summarizeValidationErrors(xmlErrors))
+  }
+
+  // Client-side per-link checks (no backend needed)
+  const perLinkResults = validateURDFPerLink(urdf)
+  const perLinkErrors = perLinkResults.filter(r => r.severity === 'error')
+  const perLinkWarns  = perLinkResults.filter(r => r.severity === 'warn')
+  if (perLinkErrors.length > 0) {
+    throw new Error(summarizeValidationErrors(perLinkErrors))
+  }
+  if (perLinkWarns.length > 0) {
+    showToast(`URDF has ${perLinkWarns.length} completeness warning(s) — check Validation panel.`, 'warning')
+  }
+
+  let result: { results?: ValResult[]; summary?: { error?: number; warn?: number } }
+  try {
+    result = await invoke('validate_urdf_content', { urdf_content: urdf }) as typeof result
+  } catch (_e) {
+    // Backend not available — per-link checks already ran above, allow sim to continue.
+    return
+  }
+  const summary = result.summary
+  const results = result.results ?? []
+  if (summary && summary.error && summary.error > 0) {
+    throw new Error(summarizeValidationErrors(results))
+  }
+  if (summary && summary.warn && summary.warn > 0) {
+    showToast(`URDF has ${summary.warn} validation warning(s); continuing to simulation.`, 'warning')
+  }
+}
+
+async function initializeSimulation() {
+    console.log('[Sim] Initializing simulation core...')
+  // Try to start core — if already running, that's fine
+  try {
+    await invoke('start_core')
+    console.log('[Sim] Core started successfully')
+  } catch (coreErr) {
+    const msg = String(coreErr).toLowerCase()
+    if (msg.includes('already running') || msg.includes('already started')) {
+      console.log('[Sim] Core already running, continuing...')
+    } else {
+      throw coreErr
     }
+  }
+
+  const urdf = monacoEditor.getModel()?.getValue() ?? ''
+  if (!urdf.trim()) {
+    throw new Error('URDF editor is empty')
+  }
+
+  await assertUrdfReadyForSim(urdf)
+
+  const neighborPath = (filePaths[activeFile] || currentFilePath || '').trim()
+  const neighborUrdfPath =
+    neighborPath && /\.urdf$/i.test(neighborPath) ? neighborPath : null
+
+  if (lastSimStagingPath) {
+    try {
+      await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath })
+    } catch {
+      /* ignore */
+    }
+    lastSimStagingPath = null
+  }
+
+  const simPath = await invoke<string>('write_sim_staging_urdf', {
+    content: urdf,
+    neighbor_urdf_path: neighborUrdfPath,
+  })
+
+  console.log('[Sim] Loading robot model from', simPath)
+  try {
+    await invoke('sim_load', { path: simPath })
+  } catch (loadErr) {
+    try {
+      await invoke('remove_sim_staging_urdf', { path: simPath })
+    } catch {
+      /* ignore */
+    }
+    throw loadErr
+  }
+  lastSimStagingPath = simPath
+    console.log('[Sim] Robot model loaded')
+
+  simCoreRunning = true
 
     console.log('[Sim] Getting initial state...')
-    try {
-      const initialState = await invoke('sim_get_state')
-      console.log('[Sim] Initial state:', initialState)
-      simStateDisplay.style.display = 'block'
-      updateSimStateDisplay(initialState)
-    } catch (stateErr) {
-      console.warn('[Sim] Could not get initial state:', stateErr)
-    }
-  } catch (error) {
-    console.error('[Sim] Error initializing simulation:', error)
-    showToast(`Simulation error: ${String(error)}`, 'error')
-    simCoreRunning = false
+  const initialState = normalizeMuJoCoState(await invoke('sim_get_state'))
+    console.log('[Sim] Initial state:', initialState)
+  if (typeof initialState.time === 'number' && !Number.isNaN(initialState.time)) {
+    simTime = initialState.time
   }
+    simStateDisplay.style.display = 'block'
+    updateSimStateDisplay(initialState)
+  updateSimUI()
 }
 
 async function shutdownSimulation() {
@@ -2452,6 +2773,14 @@ async function shutdownSimulation() {
     if (simStepIntervalId !== null) {
       clearInterval(simStepIntervalId)
       simStepIntervalId = null
+    }
+    if (lastSimStagingPath) {
+      try {
+        await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath })
+      } catch {
+        /* ignore */
+      }
+      lastSimStagingPath = null
     }
     await invoke('stop_core')
     simCoreRunning = false
@@ -2467,9 +2796,13 @@ async function stepSimulation() {
   if (!simCoreRunning) return
   try {
     await invoke('sim_step', { n_steps: 1 })
-    const state = await invoke('sim_get_state')
+    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
+    if (typeof state.time === 'number' && !Number.isNaN(state.time)) {
+      simTime = state.time
+    }
     updateSimStateDisplay(state)
     updateRobotFromSimState(state)
+    updateSimUI()
   } catch (error) {
     console.error('[Sim] Error stepping simulation:', error)
   }
@@ -2558,15 +2891,20 @@ simToggle.addEventListener('click', async () => {
         quaternion: jointInfo.group.quaternion.clone()
       })
     }
+    // Cache joint limits from URDF for the Three.js preview animation
+    refreshSimPreviewLimits()
     try {
       await initializeSimulation()
       showToast('Entered simulation mode (MuJoCo)', 'success')
     } catch (error) {
       console.error('[Sim] Failed to initialize:', error)
       simActive = false
+      simCoreRunning = false
       simToggle.classList.remove('running')
       simBar.classList.add('hidden')
-      showToast('Failed to initialize simulation', 'error')
+      simToggle.querySelector('span')!.textContent = 'Simulate'
+      viewportLabel.textContent = '3D Preview'
+      showToast(`Simulation: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
   } else {
     // Exit simulation mode
@@ -2624,30 +2962,159 @@ simReset.addEventListener('click', async () => {
   }
   try {
     await invoke('sim_reset')
-    const state = await invoke('sim_get_state')
+    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
     updateRobotFromSimState(state)
-    simTime = 0
+    simTime = typeof state.time === 'number' && !Number.isNaN(state.time) ? state.time : 0
     updateSimUI()
   } catch (error) {
     console.error('[Sim] Reset error:', error)
   }
 })
 
-// Optional: Test core integration on page load
-async function testCoreIntegration() {
-  try {
-    console.log('[Test] Core integration available (invoke function loaded)')
-  } catch (error) {
-    console.warn('[Test] Tauri invoke not available in this context')
+let viewportInteractionMode: 'build' | 'inspect' = 'build'
+let inspectFocusedLink: string | null = null
+
+function cancelCameraFocusTween() {
+  cameraFocusTween = null
+}
+
+canvas.addEventListener('pointerdown', () => {
+  cameraFocusTween = null
+})
+
+function syncViewportModeButton() {
+  const btn = document.getElementById('toggle-vp-mode')
+  const label = document.getElementById('vp-mode-label')
+  if (!btn || !label) return
+  btn.classList.toggle('active', viewportInteractionMode === 'build')
+  label.textContent = viewportInteractionMode === 'build' ? 'Build' : 'Inspect'
+}
+
+function updateFocusPanelVisibility() {
+  const emptyEl = document.getElementById('focus-empty')
+  const bodyEl = document.getElementById('focus-body')
+  if (!emptyEl || !bodyEl) return
+  const has = Boolean(inspectFocusedLink)
+  emptyEl.classList.toggle('hidden', has)
+  bodyEl.classList.toggle('hidden', !has)
+}
+
+function renderFocusDashboard(linkName: string) {
+  const nameEl = document.getElementById('focus-link-name')
+  const metaEl = document.getElementById('focus-meta')
+  if (!nameEl || !metaEl) return
+  nameEl.textContent = linkName
+  const graph = kinematicGraph[linkName]
+  const m = graph?.mass ?? 0
+  const massStr = m >= 1 ? `${m.toFixed(2)} kg` : `${Math.round(m * 1000)} g`
+  const joint = Object.values(kinematicJoints).find(j => j.childLink === linkName)
+  let parentLine = ''
+  if (joint) {
+    const ax = joint.axis && joint.axis !== '--' ? `, axis ${joint.axis}` : ''
+    parentLine = `Parent: ${joint.parentLink} · ${joint.name} (${joint.type}${ax})`
+} else {
+    parentLine = 'Kinematic root (no parent joint)'
+  }
+  const children = (graph?.children ?? []).filter(c => !c.includes('__mount__'))
+  const childLine = children.length ? `Children: ${children.join(', ')}` : 'No child links'
+  metaEl.replaceChildren()
+  for (const line of [`Mass: ${massStr}`, parentLine, childLine]) {
+    const row = document.createElement('div')
+    row.textContent = line
+    row.style.marginBottom = '6px'
+    metaEl.appendChild(row)
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(testCoreIntegration, 500)
-  })
-} else {
-  setTimeout(testCoreIntegration, 500)
+function startFocusCameraOnLink(linkName: string) {
+  const box = computeLinkWorldBox(parsedRobot.group, linkName)
+  if (!box || box.isEmpty()) {
+    showToast('No mesh bounds for this link', 'warning')
+    return
+  }
+  const pose = cameraPoseForBox(box, camera, controls)
+  cameraFocusTween = {
+    startMs: performance.now(),
+    durationMs: 420,
+    fromPos: camera.position.clone(),
+    toPos: pose.position,
+    fromTarget: controls.target.clone(),
+    toTarget: pose.target,
+  }
+}
+
+function clearInspectFocus() {
+  inspectFocusedLink = null
+  cancelCameraFocusTween()
+  restoreInspectMaterials(parsedRobot.group)
+  const nameEl = document.getElementById('focus-link-name')
+  const metaEl = document.getElementById('focus-meta')
+  if (nameEl) nameEl.textContent = ''
+  if (metaEl) metaEl.replaceChildren()
+  updateFocusPanelVisibility()
+}
+
+function handleInspectLinkFocused(linkName: string | null) {
+  if (viewportInteractionMode !== 'inspect') return
+  if (!linkName) {
+    clearInspectFocus()
+    return
+  }
+  if (!parsedRobot.linkGroups.has(linkName)) return
+  inspectFocusedLink = linkName
+  restoreInspectMaterials(parsedRobot.group)
+  applyInspectDimming(parsedRobot.group, linkName)
+  startFocusCameraOnLink(linkName)
+  renderFocusDashboard(linkName)
+  updateFocusPanelVisibility()
+  openSidebarPanel('focus')
+}
+
+function refreshInspectAfterModelUpdate() {
+  if (viewportInteractionMode !== 'inspect' || !inspectFocusedLink) return
+  if (!parsedRobot.linkGroups.has(inspectFocusedLink)) {
+    clearInspectFocus()
+    showToast('Focused link was removed', 'info')
+    return
+  }
+  restoreInspectMaterials(parsedRobot.group)
+  applyInspectDimming(parsedRobot.group, inspectFocusedLink)
+  renderFocusDashboard(inspectFocusedLink)
+}
+
+document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
+  viewportInteractionMode = viewportInteractionMode === 'build' ? 'inspect' : 'build'
+  syncViewportModeButton()
+  urdfAssemblyApi?.onInteractionModeChanged(viewportInteractionMode)
+  if (viewportInteractionMode === 'build') {
+    clearInspectFocus()
+  }
+})
+syncViewportModeButton()
+
+document.getElementById('focus-btn-clear')?.addEventListener('click', () => {
+  clearInspectFocus()
+})
+
+document.getElementById('focus-btn-frame')?.addEventListener('click', () => {
+  if (inspectFocusedLink) startFocusCameraOnLink(inspectFocusedLink)
+})
+
+document.getElementById('focus-btn-inspector')?.addEventListener('click', () => {
+  const link = inspectFocusedLink
+  if (!link || !urdfAssemblyApi) return
+  viewportInteractionMode = 'build'
+  syncViewportModeButton()
+  clearInspectFocus()
+  urdfAssemblyApi.setSelectedLink(link)
+  openSidebarPanel('inspector')
+})
+
+// Ensure Monaco always has at least the default robot.urdf open so placement
+// and AI edits always have a valid URDF to read/write (prevents "Cannot edit
+// invalid URDF" on first component drag when no file has been opened yet).
+if (openFiles.length === 0) {
+  createNewFile('robot.urdf', SAMPLE_URDF, null)
 }
 
 urdfAssemblyApi = initUrdfAssembly({
@@ -2657,11 +3124,25 @@ urdfAssemblyApi = initUrdfAssembly({
   controls,
   showToast,
   switchPanel: openSidebarPanel,
-  getUrdfText: () => monacoEditor.getModel()?.getValue() || '',
-  setUrdfText: (content: string) => { if (monacoEditor.getModel()) monacoEditor.setValue(content) },
+  getUrdfText: () => monacoEditor.getModel()?.getValue() || SAMPLE_URDF,
+  setUrdfText: (content: string) => {
+    if (monacoEditor.getModel()) {
+      monacoEditor.setValue(content)
+    } else {
+      // Fallback safety: auto-create robot.urdf if somehow still no model
+      createNewFile('robot.urdf', content, null)
+    }
+  },
   reparseUrdf: reparseURDF,
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
   isViewport3D: () => activeViewportView === '3d',
+  getInteractionMode: () => viewportInteractionMode,
+  onInspectLinkFocused: handleInspectLinkFocused,
+  onAfterModelUpdated: refreshInspectAfterModelUpdate,
+  zeroAssemblyWorldPosition: () => {
+    robot.position.set(0, 0, 0)
+  },
+  groundAssembly: () => groundRobot(robot),
 })

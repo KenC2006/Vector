@@ -1,7 +1,9 @@
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Command, Child, Stdio};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{State, Emitter, AppHandle};
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
@@ -437,6 +439,47 @@ async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_li
     }
 }
 
+/// Write editor URDF to a staging file for `sim_load`. If `neighbor_urdf_path` is set (path to an
+/// on-disk URDF), the staging file is written in the same directory so mesh `filename="meshes/..."`
+/// resolves like the neighbor file. Otherwise uses the system temp directory.
+#[tauri::command]
+async fn write_sim_staging_urdf(content: String, neighbor_urdf_path: Option<String>) -> Result<String, String> {
+    let dest = if let Some(ref p) = neighbor_urdf_path {
+        let trimmed = p.trim();
+        if trimmed.is_empty() {
+            return Err("neighbor_urdf_path is empty".to_string());
+        }
+        let path = Path::new(trimmed);
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Could not get parent directory of {}", trimmed))?;
+        parent.join(".vector_sim_staging.urdf")
+    } else {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        std::env::temp_dir().join(format!("vector_sim_{nanos}.urdf"))
+    };
+
+    fs::write(&dest, content.as_bytes())
+        .map_err(|e| format!("Failed to write staging URDF: {}", e))?;
+
+    dest.to_str()
+        .ok_or_else(|| "Staging path is not valid UTF-8".to_string())
+        .map(|s| s.to_string())
+}
+
+/// Best-effort cleanup of a staging URDF written by `write_sim_staging_urdf`.
+#[tauri::command]
+async fn remove_sim_staging_urdf(path: String) -> Result<(), String> {
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to remove staging URDF: {}", e)),
+    }
+}
+
 /// Save file to disk
 #[tauri::command]
 async fn save_file(path: String, content: String) -> Result<String, String> {
@@ -854,6 +897,8 @@ pub fn run() {
             save_file,
             open_file,
             read_binary_file,
+            write_sim_staging_urdf,
+            remove_sim_staging_urdf,
             open_file_dialog,
             open_folder_dialog,
             list_directory,

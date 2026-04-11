@@ -126,3 +126,30 @@ export function distanceScore(a: THREE.Vector3, b: THREE.Vector3): number {
   return a.distanceTo(b)
 }
 
+/**
+ * Returns true if two node classes can mate with each other.
+ * Compatibility table:
+ *   mount_face ↔ mount_face
+ *   shaft      ↔ bore        (and bore ↔ shaft)
+ *   rail       ↔ rail
+ *   generic    ↔ anything    (fallback)
+ *   anything   ↔ generic     (fallback)
+ */
+export function nodesCompatible(srcCls: AttachmentNodeClass, targetCls: AttachmentNodeClass): boolean {
+  if (srcCls === 'generic' || targetCls === 'generic') return true
+  if (srcCls === 'mount_face' && targetCls === 'mount_face') return true
+  if (srcCls === 'rail'       && targetCls === 'rail')       return true
+  if (srcCls === 'shaft'      && targetCls === 'bore')       return true
+  if (srcCls === 'bore'       && targetCls === 'shaft')      return true
+  return false
+}
+
+/**
+ * Human-readable description of why two classes don't mate.
+ * Returns '' when they are compatible.
+ */
+export function incompatibleReason(srcCls: AttachmentNodeClass, targetCls: AttachmentNodeClass): string {
+  if (nodesCompatible(srcCls, targetCls)) return ''
+  return `${srcCls} ↔ ${targetCls} incompatible`
+}
+

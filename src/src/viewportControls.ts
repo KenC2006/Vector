@@ -17,6 +17,7 @@ export function initViewportControls(deps: {
   comGroup: THREE.Group
   wireframeGroup: THREE.Group
   axisVisuals: THREE.Object3D[]
+  jointAxisState: { visible: boolean }
   simBar: HTMLDivElement
   simActive: () => boolean
   parsedRobot: () => ParsedRobot
@@ -35,7 +36,7 @@ export function initViewportControls(deps: {
   const {
     camera, renderer, controls, robot,
     viewportPanel, editorPanel, handle,
-    originAxes, grid, comGroup, wireframeGroup, axisVisuals,
+    originAxes, grid, comGroup, wireframeGroup, axisVisuals, jointAxisState,
     simBar, simActive, parsedRobot,
   } = deps
 
@@ -49,7 +50,6 @@ export function initViewportControls(deps: {
 
   let axesVisible = true
   let gridVisible = true
-  let jointAxisVisible = false
 
   toggleAxesBtn.addEventListener('click', () => {
     axesVisible = !axesVisible
@@ -58,10 +58,14 @@ export function initViewportControls(deps: {
   })
 
   toggleJointAxisBtn?.addEventListener('click', () => {
-    jointAxisVisible = !jointAxisVisible
-    for (const obj of axisVisuals) obj.visible = jointAxisVisible
-    toggleJointAxisBtn.classList.toggle('active', jointAxisVisible)
+    jointAxisState.visible = !jointAxisState.visible
+    for (const obj of axisVisuals) obj.visible = jointAxisState.visible
+    toggleJointAxisBtn.classList.toggle('active', jointAxisState.visible)
   })
+  if (toggleJointAxisBtn) {
+    for (const obj of axisVisuals) obj.visible = jointAxisState.visible
+    toggleJointAxisBtn.classList.toggle('active', jointAxisState.visible)
+  }
 
   toggleComBtn.addEventListener('click', () => {
     comGroup.visible = !comGroup.visible

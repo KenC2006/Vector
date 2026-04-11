@@ -5,7 +5,8 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
-import { isMountLinkName } from './attachmentNodes'
+import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCompatible, incompatibleReason } from './attachmentNodes'
+import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST } from './richVisuals/index'
 
@@ -29,6 +30,16 @@ export interface UrdfAssemblyContext {
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
   isViewport3D: () => boolean
+  /** `build` = place & snap; `inspect` = click mesh to focus & dashboard (no carry). */
+  getInteractionMode: () => 'build' | 'inspect'
+  /** Inspect mode: user clicked a URDF link mesh (or null = empty space). */
+  onInspectLinkFocused: (linkName: string | null) => void
+  /** After URDF reparse / model refresh (restore inspect dimming if needed). */
+  onAfterModelUpdated?: () => void
+  /** Clear scene root translation before a full replace (e.g. reset). */
+  zeroAssemblyWorldPosition?: () => void
+  /** Seat assembly on Y=0 after load/reset (not called on every reparse). */
+  groundAssembly?: () => void
 }
 
 // ── Preset types ──────────────────────────────────────────────────────────────
@@ -63,6 +74,10 @@ interface PresetData {
 export interface UrdfAssemblyApi {
   onModelUpdated(): void
   recordUndoExternal(content: string): void
+  exitCarryMode(): void
+  onInteractionModeChanged(mode: 'build' | 'inspect'): void
+  /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
+  setSelectedLink(linkName: string | null): void
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -97,6 +112,35 @@ function isTypingTarget(t: EventTarget | null): boolean {
   return false
 }
 
+/** Kinematic roots (no parent). Prefer base_link when world is the only virtual root — matches ROS fixed-base URDFs. */
+/** Lift a box-shaped carry ghost in world space so its AABB clears y ≈ 0 (floor). */
+function clampCarryMatrixAboveFloor(worldMat: THREE.Matrix4, hx: number, hy: number, hz: number): THREE.Matrix4 {
+  const m = worldMat.clone()
+  let minY = Infinity
+  for (const sx of [-1, 1] as const) {
+    for (const sy of [-1, 1] as const) {
+      for (const sz of [-1, 1] as const) {
+        const v = new THREE.Vector3(sx * hx, sy * hy, sz * hz).applyMatrix4(m)
+        minY = Math.min(minY, v.y)
+      }
+    }
+  }
+  const margin = 0.002
+  if (minY >= margin) return m
+  const lift = margin - minY
+  return new THREE.Matrix4().multiplyMatrices(new THREE.Matrix4().makeTranslation(0, lift, 0), m)
+}
+
+function resolveFreePlacementParent(graph: Record<string, { name: string; parent?: string }>): string {
+  const roots = Object.values(graph).filter(
+    l => l?.name && !isMountLinkName(l.name) && !l.parent,
+  )
+  const primary = roots[0]?.name
+  if (!primary) return 'base_link'
+  if (primary === 'world' && graph['base_link']) return 'base_link'
+  return primary
+}
+
 export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const gizmo = new TransformControls(ctx.camera, ctx.canvas)
   gizmo.setMode('translate')
@@ -120,17 +164,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ctx.scene.add(nodeRingsGroup)
   const nodeMeshByMount = new Map<string, THREE.Mesh>()
   const nodeRingsByMount = new Map<string, THREE.Group>()
-  // Synthesized attachment face nodes. `mountLink` is a unique synthetic key
-  // of the form `<parentLinkName>::<faceId>` and is NOT a real URDF link.
+  // Synthesized attachment face nodes. `mountLink` uses the canonical key format
+  // `<parentLinkName>__mount__<faceId>` from attachmentNodes.ts (NOT a real URDF link).
   // `localPos` is the face center in the parent link's local frame.
-  let mountNodes: Array<{
-    mountLink: string
-    parentLink: string
-    nodeId: string
+  interface MountNodeEntry extends AttachmentNodeRuntime {
     localPos: THREE.Vector3
-    worldPos: THREE.Vector3
-    worldQuat: THREE.Quaternion
-  }> = []
+  }
+  let mountNodes: MountNodeEntry[] = []
   const occupiedNodeKeys = new Set<string>()
 
   const NODE_MAT_NEUTRAL = new THREE.MeshBasicMaterial({ color: 0x2f7bff, transparent: true, opacity: 0.95, depthTest: false })
@@ -190,21 +230,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return a.angleTo(b)
   }
 
-  function nodeClassFromId(nodeId: string): 'mount_face' | 'generic' {
-    if (nodeId === 'top' || nodeId === 'bottom' || nodeId === 'x_plus' || nodeId === 'x_minus' || nodeId === 'y_plus' || nodeId === 'y_minus') return 'mount_face'
-    return 'generic'
-  }
-
   function validateSnapTarget(
     movingLink: string,
-    sourceNodeClass: 'mount_face' | 'generic',
+    sourceNodeClass: AttachmentNodeClass,
     sourceWorldPos: THREE.Vector3,
     sourceWorldQuat: THREE.Quaternion,
-    target: { mountLink: string; parentLink: string; nodeId: string; worldPos: THREE.Vector3; worldQuat: THREE.Quaternion },
+    target: { mountLink: string; parentLink: string; nodeId: string; cls: AttachmentNodeClass; worldPosition: THREE.Vector3; worldQuaternion: THREE.Quaternion },
   ): { ok: boolean; reason: string; dist: number } {
     if (target.parentLink === movingLink) return { ok: false, reason: 'same-component', dist: Infinity }
     if (isMountOccupied(target.mountLink)) return { ok: false, reason: 'occupied', dist: Infinity }
-    const dist = target.worldPos.distanceTo(sourceWorldPos)
+    const dist = target.worldPosition.distanceTo(sourceWorldPos)
     if (dist > SNAP_RADIUS_M) return { ok: false, reason: 'too-far', dist }
 
     // Topology: do not attach into own subtree.
@@ -219,14 +254,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       for (const ch of graph[cur]?.children ?? []) stack.push(ch)
     }
 
-    // Type compatibility (v1): face nodes connect to face nodes; generic accepts generic.
-    const tClass = nodeClassFromId(target.nodeId)
-    const sClass = sourceNodeClass
-    if (!(sClass === tClass || tClass === 'generic')) {
-      return { ok: false, reason: 'type-mismatch', dist }
+    // Type compatibility via nodesCompatible table.
+    if (!nodesCompatible(sourceNodeClass, target.cls)) {
+      return { ok: false, reason: incompatibleReason(sourceNodeClass, target.cls), dist }
     }
 
-    const ang = angleBetweenNodes(sourceWorldQuat, target.worldQuat)
+    const ang = angleBetweenNodes(sourceWorldQuat, target.worldQuaternion)
     if (ang > SNAP_ANGLE_RAD) return { ok: false, reason: 'orientation', dist }
 
     return { ok: true, reason: 'ok', dist }
@@ -238,7 +271,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     worldPos: THREE.Vector3
     worldQuat: THREE.Quaternion
     localToSelected: THREE.Matrix4
-    cls: 'mount_face' | 'generic'
+    cls: AttachmentNodeClass
   }> {
     if (!selectedLink) return []
     const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
@@ -252,7 +285,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       worldPos: THREE.Vector3
       worldQuat: THREE.Quaternion
       localToSelected: THREE.Matrix4
-      cls: 'mount_face' | 'generic'
+      cls: AttachmentNodeClass
     }> = []
     for (const n of mountNodes) {
       if (n.parentLink !== selectedLink) continue
@@ -260,10 +293,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       out.push({
         mountLink: n.mountLink,
         nodeId: n.nodeId,
-        worldPos: n.worldPos.clone(),
-        worldQuat: n.worldQuat.clone(),
+        worldPos: n.worldPosition.clone(),
+        worldQuat: n.worldQuaternion.clone(),
         localToSelected,
-        cls: nodeClassFromId(n.nodeId),
+        cls: n.cls,
       })
     }
     return out
@@ -271,6 +304,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function updateBestCandidateDuringDrag(_pivot: THREE.Group) {
     refreshNodeWorldTransforms()
+    refreshMountNodeVisibility()
     bestMountCandidate = null
     if (mountNodes.length === 0) {
       clearBestCandidateHighlight()
@@ -302,13 +336,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     for (const srcNode of sourceNodes) {
       for (const target of mountNodes) {
         if (target.parentLink === selectedLink) continue
+        if (!nodeMeshByMount.get(target.mountLink)?.visible) continue
         const verdict = validateSnapTarget(selectedLink, srcNode.cls, srcNode.worldPos, srcNode.worldQuat, target)
         if (!verdict.ok) {
           if (!firstFailureReason) firstFailureReason = verdict.reason
           continue
         }
         const sourceLocalInv = srcNode.localToSelected.clone().invert()
-        const targetWorld = new THREE.Matrix4().compose(target.worldPos, target.worldQuat, new THREE.Vector3(1, 1, 1))
+        const targetWorld = new THREE.Matrix4().compose(target.worldPosition, target.worldQuaternion, new THREE.Vector3(1, 1, 1))
         const desiredLinkWorld = targetWorld.clone().multiply(sourceLocalInv)
         if (!best || verdict.dist < best.dist) {
           best = {
@@ -407,14 +442,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const kinJoints = ctx.getKinematicJoints()
     const parsed = ctx.getParsedRobot()
 
-    const FACE_DIRS: Array<{ id: string; axis: [number, number, number] }> = [
-      { id: 'top',     axis: [ 0,  0,  1] },
-      { id: 'bottom',  axis: [ 0,  0, -1] },
-      { id: 'x_plus',  axis: [ 1,  0,  0] },
-      { id: 'x_minus', axis: [-1,  0,  0] },
-      { id: 'y_plus',  axis: [ 0,  1,  0] },
-      { id: 'y_minus', axis: [ 0, -1,  0] },
-    ]
     const OCCUPIED_DIST_M = 0.025
 
     for (const linkName of Object.keys(graph)) {
@@ -447,15 +474,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const linkWorldQuat = new THREE.Quaternion()
       lg.matrixWorld.decompose(new THREE.Vector3(), linkWorldQuat, new THREE.Vector3())
 
-      for (const f of FACE_DIRS) {
+      const faceDefs = defaultFaceNodesForBoxDims(half.x, half.y, half.z)
+
+      for (const f of faceDefs) {
         const localPos = new THREE.Vector3(
-          center.x + f.axis[0] * half.x,
-          center.y + f.axis[1] * half.y,
-          center.z + f.axis[2] * half.z,
+          center.x + f.origin_xyz[0],
+          center.y + f.origin_xyz[1],
+          center.z + f.origin_xyz[2],
         )
-        const nodeKey = `${linkName}::${f.id}`
-        const worldPos = localPos.clone().applyMatrix4(lg.matrixWorld)
-        const worldQuat = linkWorldQuat.clone()
+        const nodeKey = makeMountLinkName(linkName, f.nodeId)
+        const worldPosition = localPos.clone().applyMatrix4(lg.matrixWorld)
+        const worldQuaternion = linkWorldQuat.clone()
 
         // Occupancy: is there a child joint whose origin sits near this face?
         let occupied = false
@@ -467,22 +496,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         mountNodes.push({
           mountLink: nodeKey,
           parentLink: linkName,
-          nodeId: f.id,
+          nodeId: f.nodeId,
+          label: f.label,
+          cls: f.cls,
+          single: f.single,
           localPos,
-          worldPos,
-          worldQuat,
+          worldPosition,
+          worldQuaternion,
         })
 
         const mesh = new THREE.Mesh(NODE_GEO, occupied ? NODE_MAT_OCCUPIED : NODE_MAT_NEUTRAL)
-        mesh.position.copy(worldPos)
-        mesh.quaternion.copy(worldQuat)
+        mesh.position.copy(worldPosition)
+        mesh.quaternion.copy(worldQuaternion)
         mesh.renderOrder = 999
         nodesGroup.add(mesh)
         nodeMeshByMount.set(nodeKey, mesh)
 
         const rings = makeNodeAxisRings()
-        rings.position.copy(worldPos)
-        rings.quaternion.copy(worldQuat)
+        rings.position.copy(worldPosition)
+        rings.quaternion.copy(worldQuaternion)
         nodeRingsGroup.add(rings)
         nodeRingsByMount.set(nodeKey, rings)
       }
@@ -503,19 +535,41 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (!lg) continue
       lg.updateMatrixWorld(true)
       lg.matrixWorld.decompose(worldPosTmp, worldQuatTmp, worldScaleTmp)
-      n.worldQuat.copy(worldQuatTmp)
-      n.worldPos.copy(n.localPos).applyMatrix4(lg.matrixWorld)
+      n.worldQuaternion.copy(worldQuatTmp)
+      n.worldPosition.copy(n.localPos).applyMatrix4(lg.matrixWorld)
 
       const mesh = nodeMeshByMount.get(n.mountLink)
       if (mesh) {
-        mesh.position.copy(n.worldPos)
-        mesh.quaternion.copy(n.worldQuat)
+        mesh.position.copy(n.worldPosition)
+        mesh.quaternion.copy(n.worldQuaternion)
       }
       const rings = nodeRingsByMount.get(n.mountLink)
       if (rings) {
-        rings.position.copy(n.worldPos)
-        rings.quaternion.copy(n.worldQuat)
+        rings.position.copy(n.worldPosition)
+        rings.quaternion.copy(n.worldQuaternion)
       }
+    }
+  }
+
+  // Raycasts from the camera to each mount node; hides nodes (and rings) that
+  // are occluded by robot geometry. Must be called after refreshNodeWorldTransforms().
+  function refreshMountNodeVisibility() {
+    const occluders: THREE.Mesh[] = []
+    ctx.getParsedRobot().group.traverse(o => {
+      if (o instanceof THREE.Mesh && o.geometry) occluders.push(o)
+    })
+    const ray = new THREE.Raycaster()
+    const EPS = 0.005
+    for (const n of mountNodes) {
+      const dir = new THREE.Vector3().subVectors(n.worldPosition, ctx.camera.position)
+      const dist = dir.length()
+      ray.set(ctx.camera.position, dir.normalize())
+      const hits = ray.intersectObjects(occluders, false)
+      const visible = hits.every(h => h.distance >= dist - EPS)
+      const mesh = nodeMeshByMount.get(n.mountLink)
+      if (mesh) mesh.visible = visible
+      const rings = nodeRingsByMount.get(n.mountLink)
+      if (rings) rings.visible = visible && showNodeRings
     }
   }
 
@@ -529,7 +583,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const toolboxSearch = document.getElementById('toolbox-search') as HTMLInputElement | null
   const btnFocusBase = document.getElementById('btn-load-example') as HTMLButtonElement | null
   const btnResetRobot = document.getElementById('btn-clear-assembly') as HTMLButtonElement | null
-  const btnToggleNodeRings = document.getElementById('toggle-node-rings') as HTMLButtonElement | null
+  const toggleMountRingsBtn = document.getElementById('toggle-mount-rings') as HTMLButtonElement | null
   let showNodeRings = false
 
   function makeNodeAxisRings(): THREE.Group {
@@ -553,7 +607,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function applyNodeRingVisibility() {
     nodeRingsGroup.visible = showNodeRings
-    btnToggleNodeRings?.classList.toggle('active', showNodeRings)
   }
 
   function recordUndo() {
@@ -1066,12 +1119,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(visual)
   }
 
-  function addComponent(comp: PresetComponent) {
-    if (!selectedLink) {
-      ctx.showToast('Select a parent link first', 'warning')
-      return
-    }
-    const parentLink = selectedLink
+  // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
+  function addComponentCore(
+    comp: PresetComponent,
+    parentLink: string,
+    xyzStr: string,
+    rpyStr: string,
+  ): boolean {
     const graph = ctx.getKinematicGraph()
     const nextIdx = Object.keys(graph).length + 1
     const childName = `${comp.id}_${nextIdx}`
@@ -1081,13 +1135,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
     const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
     const shape = phys.inertia_primitive || 'box'
-
-    // Convert mm to meters for URDF
     const xm = (bb[0] ?? 40) / 1000
     const ym = (bb[1] ?? 40) / 1000
     const zm = (bb[2] ?? 40) / 1000
 
-    // Compute inertia (for physics — uses bounding primitive)
     let inertia: { ixx: number; iyy: number; izz: number }
     if (shape === 'cylinder') {
       inertia = computeCylinderInertia(mass, Math.max(xm, ym) / 2, zm)
@@ -1097,7 +1148,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       inertia = computeBoxInertia(mass, xm, ym, zm)
     }
 
-    // Generate parametric visuals
     const catName = findCategory(comp)
     const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
 
@@ -1105,11 +1155,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const robot = doc.querySelector('robot')
       if (!robot) return false
 
-      // Create link
       const link = doc.createElement('link')
       link.setAttribute('name', childName)
 
-      // Inertial
       const inertialEl = doc.createElement('inertial')
       const massEl = doc.createElement('mass')
       massEl.setAttribute('value', mass.toFixed(4))
@@ -1117,21 +1165,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       inertiaEl.setAttribute('ixx', inertia.ixx.toFixed(6))
       inertiaEl.setAttribute('iyy', inertia.iyy.toFixed(6))
       inertiaEl.setAttribute('izz', inertia.izz.toFixed(6))
-      inertiaEl.setAttribute('ixy', '0')
-      inertiaEl.setAttribute('ixz', '0')
-      inertiaEl.setAttribute('iyz', '0')
-      inertialEl.appendChild(massEl)
-      inertialEl.appendChild(inertiaEl)
+      inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
+      inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
       link.appendChild(inertialEl)
 
-      // Multiple visual elements from parametric generator
       visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
 
-      // Single collision primitive (bounding shape for physics)
       const collision = doc.createElement('collision')
       const co = doc.createElement('origin')
-      co.setAttribute('xyz', '0 0 0')
-      co.setAttribute('rpy', '0 0 0')
+      co.setAttribute('xyz', '0 0 0'); co.setAttribute('rpy', '0 0 0')
       const collGeom = doc.createElement('geometry')
       if (shape === 'cylinder') {
         const el = doc.createElement('cylinder')
@@ -1147,55 +1189,345 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         el.setAttribute('size', `${xm.toFixed(6)} ${ym.toFixed(6)} ${zm.toFixed(6)}`)
         collGeom.appendChild(el)
       }
-      collision.appendChild(co)
-      collision.appendChild(collGeom)
+      collision.appendChild(co); collision.appendChild(collGeom)
       link.appendChild(collision)
 
-      // Joint
       const joint = doc.createElement('joint')
       joint.setAttribute('name', jointName)
       const category = comp.id.split('_')[0]
       const isActuated = category === 'actuator' || category === 'motor'
       joint.setAttribute('type', isActuated ? 'revolute' : 'fixed')
 
-      const parent = doc.createElement('parent')
-      parent.setAttribute('link', parentLink)
-      const child = doc.createElement('child')
-      child.setAttribute('link', childName)
-      // Smart placement based on parent geometry + mounting logic
+      const parentEl = doc.createElement('parent'); parentEl.setAttribute('link', parentLink)
+      const childEl = doc.createElement('child'); childEl.setAttribute('link', childName)
       const origin = doc.createElement('origin')
-      const placement = computePlacement(doc, parentLink, comp, xm, ym, zm)
-      origin.setAttribute('xyz', placement.xyz)
-      origin.setAttribute('rpy', placement.rpy)
-      joint.appendChild(parent)
-      joint.appendChild(child)
-      joint.appendChild(origin)
+      origin.setAttribute('xyz', xyzStr); origin.setAttribute('rpy', rpyStr)
+      joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin)
 
       if (isActuated) {
-        const axis = doc.createElement('axis')
-        axis.setAttribute('xyz', '0 0 1')
+        const axis = doc.createElement('axis'); axis.setAttribute('xyz', '0 0 1')
         joint.appendChild(axis)
         const limit = doc.createElement('limit')
-        limit.setAttribute('lower', '-3.14159')
-        limit.setAttribute('upper', '3.14159')
+        limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
         const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
                           (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
-        limit.setAttribute('effort', String(maxTorque))
-        limit.setAttribute('velocity', '3.14')
+        limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
         joint.appendChild(limit)
       }
-
-      robot.appendChild(link)
-      robot.appendChild(joint)
-
-      // Attachment face nodes are synthesized on-the-fly from link bounding boxes
-      // during rebuildMountNodes(); no persisted mount-frame links are needed here.
+      robot.appendChild(link); robot.appendChild(joint)
       return true
     })
 
     if (changed) {
       ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
       selectLink(childName)
+    }
+    return changed
+  }
+
+  function addComponent(comp: PresetComponent) {
+    if (!selectedLink) {
+      ctx.showToast('Select a parent link first, or drag from toolbox to place', 'warning')
+      return
+    }
+    const parentLink = selectedLink
+    const phys = comp.physical
+    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    const xm = (bb[0] ?? 40) / 1000
+    const ym = (bb[1] ?? 40) / 1000
+    const zm = (bb[2] ?? 40) / 1000
+    const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
+    const placement = computePlacement(doc, parentLink, comp, xm, ym, zm)
+    addComponentCore(comp, parentLink, placement.xyz, placement.rpy)
+  }
+
+  // ── Carry mode ───────────────────────────────────────────────────────────────
+
+  let carryComp: PresetComponent | null = null
+  let carryGroup: THREE.Group | null = null
+  let carryWorldPos = new THREE.Vector3()
+  let carryFrozen = false          // true after manual nudge — mouse no longer drives position
+  let carryRotStep = 0             // 0..3 → 0°, 90°X, 90°Y, 90°Z
+  interface SnapCandidate {
+    mountLink: string
+    targetParentLink: string
+    dist: number
+    desiredGhostWorld: THREE.Matrix4
+    srcNodeId: string
+    targetNodeId: string
+  }
+  let carrySnapCandidates: SnapCandidate[] = []
+  let carrySnapIdx = 0
+  let carryBestMount: {
+    targetParentLink: string
+    mountLink: string
+    desiredGhostWorld: THREE.Matrix4
+  } | null = null
+
+  const carryGhostMat = new THREE.MeshBasicMaterial({
+    color: 0x44aaff, transparent: true, opacity: 0.35, depthTest: true, side: THREE.DoubleSide,
+  })
+  const carryEdgeMat = new THREE.LineBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.75 })
+  const carryGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+
+  // Carry HUD
+  const carryHud = document.createElement('div')
+  carryHud.id = 'carry-hud'
+  carryHud.style.cssText = `
+    position:absolute; bottom:48px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,0.72); color:#d4d4d4; font-size:12px;
+    padding:6px 14px; border-radius:6px; pointer-events:none;
+    display:none; white-space:nowrap; z-index:100;
+    border:1px solid rgba(255,255,255,0.12);
+  `
+  ctx.canvas.parentElement?.appendChild(carryHud)
+
+  function setCarryHud(msg: string) { carryHud.style.display = msg ? 'block' : 'none'; carryHud.textContent = msg }
+
+  function carryRotQuat(): THREE.Quaternion {
+    const q = new THREE.Quaternion()
+    if (carryRotStep === 1) q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2)
+    else if (carryRotStep === 2) q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)
+    else if (carryRotStep === 3) q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
+    return q
+  }
+
+  function updateCarryHudText() {
+    if (!carryComp || !carryGroup) return
+    const p = carryGroup.position
+    const rotLabel = ['0°', '+90°X', '+90°Y', '+90°Z'][carryRotStep]
+    let snapHint = ''
+    if (carryBestMount) {
+      const n = carrySnapCandidates.length
+      const idxLabel = n > 1 ? ` [${carrySnapIdx + 1}/${n}]` : ''
+      snapHint = `Snap→${carryBestMount.targetParentLink}${idxLabel}  `
+    }
+    const tabHint = carrySnapCandidates.length > 1 ? '  Tab=cycle' : ''
+    setCarryHud(
+      `${snapHint}${carryComp.name}  x:${p.x.toFixed(3)} y:${p.y.toFixed(3)} z:${p.z.toFixed(3)}  rot:${rotLabel}` +
+      `${tabHint}  ←→↑↓ nudge  Shift=10×  R rotate  Enter commit  Esc cancel`
+    )
+  }
+
+  function enterCarryMode(comp: PresetComponent) {
+    if (carryGroup) exitCarryMode()
+    carryComp = comp
+    carryFrozen = false
+    carryRotStep = 0
+    carrySnapCandidates = []
+    carrySnapIdx = 0
+
+    const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
+    const xm = (bb[0] ?? 40) / 1000
+    const ym = (bb[1] ?? 40) / 1000
+    const zm = (bb[2] ?? 40) / 1000
+
+    const geo = new THREE.BoxGeometry(xm, ym, zm)
+    const mesh = new THREE.Mesh(geo, carryGhostMat)
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), carryEdgeMat)
+    carryGroup = new THREE.Group()
+    carryGroup.name = 'carry_ghost'
+    carryGroup.add(mesh, edges)
+    ctx.scene.add(carryGroup)
+
+    rebuildMountNodes()
+    nodesGroup.visible = true
+    applyNodeRingVisibility()
+    setCarryHud(`Placing ${comp.name} — hover to snap, click or Enter to commit, Esc to cancel`)
+    requestAnimationFrame(() => {
+      if (!carryComp || !carryGroup) return
+      const r = ctx.canvas.getBoundingClientRect()
+      updateCarryFromMouse({
+        clientX: r.left + r.width * 0.5,
+        clientY: r.top + r.height * 0.5,
+      } as MouseEvent)
+    })
+  }
+
+  function exitCarryMode() {
+    if (carryGroup) { ctx.scene.remove(carryGroup); carryGroup = null }
+    carryComp = null
+    carryBestMount = null
+    carryFrozen = false
+    carryRotStep = 0
+    carrySnapCandidates = []
+    carrySnapIdx = 0
+    nodesGroup.visible = false
+    ghostGroup.visible = false
+    clearBestCandidateHighlight()
+    applyNodeRingVisibility()
+    setCarryHud('')
+    ctx.canvas.style.cursor = ''
+  }
+
+  function getCarrySourceNodes() {
+    if (!carryComp || !carryGroup) return []
+    const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
+    const hx = (bb[0] ?? 40) / 2000
+    const hy = (bb[1] ?? 40) / 2000
+    const hz = (bb[2] ?? 40) / 2000
+    carryGroup.updateMatrixWorld(true)
+    return defaultFaceNodesForBoxDims(hx, hy, hz).map(f => {
+      const localFacePos = new THREE.Vector3(...f.origin_xyz)
+      const worldPos = localFacePos.clone().applyMatrix4(carryGroup!.matrixWorld)
+      const worldQuat = new THREE.Quaternion().setFromRotationMatrix(carryGroup!.matrixWorld)
+      const localToGhost = new THREE.Matrix4().makeTranslation(f.origin_xyz[0], f.origin_xyz[1], f.origin_xyz[2])
+      return { nodeId: f.nodeId, cls: f.cls, worldPos, worldQuat, localToGhost }
+    })
+  }
+
+  function updateCarrySnap() {
+    if (!carryComp || !carryGroup) return
+    refreshNodeWorldTransforms()
+    refreshMountNodeVisibility()
+    const sourceNodes = getCarrySourceNodes()
+
+    // Collect all valid candidates, sorted closest-first
+    const candidates: SnapCandidate[] = []
+    for (const src of sourceNodes) {
+      for (const target of mountNodes) {
+        if (isMountOccupied(target.mountLink)) continue
+        if (!nodeMeshByMount.get(target.mountLink)?.visible) continue
+        const dist = target.worldPosition.distanceTo(src.worldPos)
+        if (dist > SNAP_RADIUS_M) continue
+        if (!nodesCompatible(src.cls, target.cls)) continue
+        // No angle check for carry mode — the ghost can be freely rotated with R key.
+        const targetMat = new THREE.Matrix4().compose(target.worldPosition, target.worldQuaternion, new THREE.Vector3(1, 1, 1))
+        const desiredGhostWorld = targetMat.clone().multiply(src.localToGhost.clone().invert())
+        candidates.push({ mountLink: target.mountLink, targetParentLink: target.parentLink, dist, desiredGhostWorld, srcNodeId: src.nodeId, targetNodeId: target.nodeId })
+      }
+    }
+    candidates.sort((a, b) => a.dist - b.dist)
+
+    // Update candidate list; preserve idx when candidates haven't changed
+    const prevCount = carrySnapCandidates.length
+    carrySnapCandidates = candidates
+    if (carrySnapIdx >= candidates.length) carrySnapIdx = 0
+    if (!carryFrozen) {
+      // Auto-mode: always use best (idx 0), allow idx reset if count changed
+      if (prevCount !== candidates.length) carrySnapIdx = 0
+    }
+
+    clearBestCandidateHighlight()
+    for (const t of mountNodes) setNodeMeshState(t.mountLink, isMountOccupied(t.mountLink) ? 'occupied' : 'neutral')
+
+    if (candidates.length === 0) {
+      carryBestMount = null
+      updateCarryHudText()
+      return
+    }
+
+    const chosen = candidates[carrySnapIdx]
+    setNodeMeshState(chosen.mountLink, 'best')
+    carryBestMount = { targetParentLink: chosen.targetParentLink, mountLink: chosen.mountLink, desiredGhostWorld: chosen.desiredGhostWorld }
+
+    // Move ghost only when not frozen (manual nudge/rotate beats solver)
+    if (!carryFrozen) {
+      const snapPos = new THREE.Vector3(); const snapQuat = new THREE.Quaternion()
+      chosen.desiredGhostWorld.decompose(snapPos, snapQuat, new THREE.Vector3())
+      carryGroup.position.copy(snapPos); carryGroup.quaternion.copy(snapQuat)
+      carryGroup.updateMatrixWorld(true)
+    }
+    updateCarryHudText()
+  }
+
+  function updateCarryFromMouse(e: MouseEvent) {
+    if (!carryComp || !carryGroup) return
+    if (!carryFrozen) {
+      const ray = makeRaycaster(e)
+      const hits = ray.intersectObjects(getPickTargets(), false)
+      if (hits.length > 0) {
+        carryWorldPos.copy(hits[0].point)
+      } else {
+        const planeHit = new THREE.Vector3()
+        if (ray.ray.intersectPlane(carryGroundPlane, planeHit)) carryWorldPos.copy(planeHit)
+      }
+      carryGroup.position.copy(carryWorldPos)
+      carryGroup.quaternion.copy(carryRotQuat())
+      carryGroup.updateMatrixWorld(true)
+
+      // Clamp ghost so its AABB bottom never clips below the floor (Y=0).
+      // The hit point is the surface the cursor is over; the ghost center is placed
+      // there, so without a lift the lower half always goes underground.
+      const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
+      const hx = (bb[0] ?? 40) / 2000
+      const hy = (bb[1] ?? 40) / 2000
+      const hz = (bb[2] ?? 40) / 2000
+      const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz)
+      carryGroup.position.setFromMatrixPosition(lifted)
+      carryGroup.updateMatrixWorld(true)
+
+      carrySnapIdx = 0  // reset to auto-best when mouse drives
+      updateCarrySnap()
+    }
+    ctx.canvas.style.cursor = 'crosshair'
+    updateCarryHudText()
+  }
+
+  function commitCarry() {
+    if (!carryComp) return
+    const comp = carryComp
+    const mount = carryBestMount
+    const ghostWorldFree = !mount && carryGroup ? carryGroup.matrixWorld.clone() : null
+    exitCarryMode()
+
+    if (mount) {
+      const parentLinkGroup = ctx.getParsedRobot().linkGroups.get(mount.targetParentLink)
+      if (!parentLinkGroup) {
+        ctx.showToast(
+          `Could not attach: 3D group missing for parent link "${mount.targetParentLink}" (try reparse or reload)`,
+          'error',
+        )
+        return
+      }
+      parentLinkGroup.updateMatrixWorld(true)
+      const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
+      const childLocal = parentWorldInv.clone().multiply(mount.desiredGhostWorld.clone())
+      const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
+      const localQuat = new THREE.Quaternion()
+      childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
+      const localEuler = new THREE.Euler().setFromQuaternion(localQuat, 'XYZ')
+      addComponentCore(comp, mount.targetParentLink,
+        `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
+        `${fmt(localEuler.x)} ${fmt(localEuler.y)} ${fmt(localEuler.z)}`)
+    } else if (ghostWorldFree) {
+      // Free-space: joint pose from ghost in world → parent link frame (carry mode does not depend on selection)
+      const graph = ctx.getKinematicGraph()
+      const parent = resolveFreePlacementParent(graph)
+      const parentLinkGroup = ctx.getParsedRobot().linkGroups.get(parent)
+      if (!parentLinkGroup) {
+        ctx.showToast(
+          `Could not attach: 3D group missing for parent link "${parent}" (try reparse or reload)`,
+          'error',
+        )
+        return
+      }
+      const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
+      const xm = (bb[0] ?? 40) / 1000
+      const ym = (bb[1] ?? 40) / 1000
+      const zm = (bb[2] ?? 40) / 1000
+      const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, xm / 2, ym / 2, zm / 2)
+      parentLinkGroup.updateMatrixWorld(true)
+      const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
+      const childLocal = parentWorldInv.clone().multiply(ghostAdjusted)
+      const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
+      const localQuat = new THREE.Quaternion()
+      childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
+      const localEuler = new THREE.Euler().setFromQuaternion(localQuat, 'XYZ')
+      addComponentCore(comp, parent,
+        `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
+        `${fmt(localEuler.x)} ${fmt(localEuler.y)} ${fmt(localEuler.z)}`)
+    } else {
+      const graph = ctx.getKinematicGraph()
+      const parent = resolveFreePlacementParent(graph)
+      const phys = comp.physical
+      const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+      const xm = (bb[0] ?? 40) / 1000
+      const ym = (bb[1] ?? 40) / 1000
+      const zm = (bb[2] ?? 40) / 1000
+      const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
+      const placement = computePlacement(doc, parent, comp, xm, ym, zm)
+      addComponentCore(comp, parent, placement.xyz, placement.rpy)
     }
   }
 
@@ -1298,13 +1630,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           </div>
         `
         el.addEventListener('click', () => {
+          if (ctx.getInteractionMode() === 'inspect') {
+            ctx.showToast('Switch to Build mode to place components', 'info')
+            return
+          }
           // Show detail
           renderComponentDetail(comp)
           // Highlight
           compItems!.querySelectorAll('.tb-item').forEach(i => i.classList.remove('selected'))
           el.classList.add('selected')
-          // Insert into assembly
-          addComponent(comp)
+          // Enter carry mode — ghost follows mouse until committed
+          enterCarryMode(comp)
         })
         listEl.appendChild(el)
       }
@@ -1336,8 +1672,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!confirm('Reset robot to a minimal base_link URDF?')) return
     recordUndo()
     const empty = `<?xml version="1.0"?><robot name="robot"><link name="base_link"><inertial><mass value="0.1"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/></inertial><visual><geometry><box size="0.1 0.1 0.05"/></geometry></visual></link></robot>`
+    ctx.zeroAssemblyWorldPosition?.()
     ctx.setUrdfText(empty)
     ctx.reparseUrdf()
+    ctx.groundAssembly?.()
     selectLink('base_link')
     ctx.showToast('Robot reset', 'info')
   })
@@ -1383,6 +1721,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const btnExportStl = document.getElementById('btn-export-stl')
   btnExportStl?.addEventListener('click', exportFullRobotSTL)
   toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
+
+  toggleMountRingsBtn?.addEventListener('click', () => {
+    showNodeRings = !showNodeRings
+    toggleMountRingsBtn.classList.toggle('active', showNodeRings)
+    applyNodeRingVisibility()
+  })
 
   gizmo.addEventListener('dragging-changed', ev => {
     const on = Boolean((ev as unknown as { value: boolean }).value)
@@ -1465,16 +1809,56 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         childLocalInParent.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
         const newLocalEuler = new THREE.Euler().setFromQuaternion(newLocalQuat, 'XYZ')
 
+        // Capture old pivot world orientation before commitUrdf triggers a reparse.
+        const oldPivotWorldQuat = new THREE.Quaternion()
+        pivot.matrixWorld.decompose(new THREE.Vector3(), oldPivotWorldQuat, new THREE.Vector3())
+        const parentWorldQuat = new THREE.Quaternion()
+        parentLinkGroup.matrixWorld.decompose(new THREE.Vector3(), parentWorldQuat, new THREE.Vector3())
+
         const ok = commitUrdf(documentXml => {
           const jointEl = documentXml.querySelector(`joint[name="${parentJoint.name}"]`)
           if (!jointEl) return false
-          jointEl.setAttribute('type', 'fixed')
+          // Preserve the existing joint type (revolute, prismatic, fixed, etc.)
+          // so snapping a motor/actuator keeps it actuated.
           const pEl = jointEl.querySelector('parent')
           if (!pEl) return false
           pEl.setAttribute('link', targetParent)
           const origin = ensureOrigin(jointEl, documentXml)
           origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
           origin.setAttribute('rpy', `${fmt(newLocalEuler.x)} ${fmt(newLocalEuler.y)} ${fmt(newLocalEuler.z)}`)
+
+          // Reconcile joint axis for revolute / prismatic / continuous joints.
+          // <axis xyz> is expressed in the joint frame. When we reparent and reorient
+          // the joint we must re-express the same physical world-space axis in the
+          // new joint frame, otherwise the motor spins around the wrong direction.
+          const jType = jointEl.getAttribute('type') || 'fixed'
+          if (jType === 'revolute' || jType === 'prismatic' || jType === 'continuous') {
+            const axisEl = jointEl.querySelector('axis')
+            const axisStr = axisEl?.getAttribute('xyz') || '0 0 1'
+            const axisArr = axisStr.trim().split(/\s+/).map(Number)
+            const axisInOldJoint = new THREE.Vector3(
+              Number.isFinite(axisArr[0]) ? axisArr[0] : 0,
+              Number.isFinite(axisArr[1]) ? axisArr[1] : 0,
+              Number.isFinite(axisArr[2]) ? axisArr[2] : 1,
+            ).normalize()
+
+            // 1. Lift axis into world space using the old joint frame orientation.
+            const axisWorld = axisInOldJoint.clone().applyQuaternion(oldPivotWorldQuat)
+
+            // 2. New joint world orientation = new parent world quat × new local quat.
+            const newJointWorldQuat = parentWorldQuat.clone().multiply(newLocalQuat)
+
+            // 3. Pull axis back down into the new joint frame.
+            const newAxisInJoint = axisWorld.clone()
+              .applyQuaternion(newJointWorldQuat.clone().invert())
+              .normalize()
+
+            const axisElToWrite = axisEl ?? documentXml.createElement('axis')
+            axisElToWrite.setAttribute('xyz',
+              `${fmt(newAxisInJoint.x)} ${fmt(newAxisInJoint.y)} ${fmt(newAxisInJoint.z)}`)
+            if (!axisEl) jointEl.appendChild(axisElToWrite)
+          }
+
           return true
         })
         bestMountCandidate = null
@@ -1555,15 +1939,42 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     updateBestCandidateDuringDrag(pivot)
   })
 
+  // Re-run visibility culling whenever the camera orbits/pans/zooms so that
+  // node cubes update even when the user is not moving the carry ghost.
+  ctx.controls.addEventListener('change', () => {
+    if (nodesGroup.visible) refreshMountNodeVisibility()
+  })
+
   ctx.canvas.addEventListener('pointerdown', e => {
     pointerDown.set(e.clientX, e.clientY)
   })
 
   ctx.canvas.addEventListener('click', e => {
     if (!ctx.isViewport3D()) return
-    if (Math.abs(e.clientX - pointerDown.x) > 8 || Math.abs(e.clientY - pointerDown.y) > 8) return
+    const moved = Math.abs(e.clientX - pointerDown.x) > 8 || Math.abs(e.clientY - pointerDown.y) > 8
+    const movedCarry = Math.abs(e.clientX - pointerDown.x) > 22 || Math.abs(e.clientY - pointerDown.y) > 22
+    if (carryComp) {
+      if (movedCarry) return
+      commitCarry()
+      return
+    }
+    if (moved) return
     const ray = makeRaycaster(e)
     const hits = ray.intersectObjects(getPickTargets(), false)
+    if (ctx.getInteractionMode() === 'inspect') {
+      if (hits.length === 0) {
+        ctx.onInspectLinkFocused(null)
+        return
+      }
+      const first = hits[0].object
+      const link = (first.userData as Record<string, unknown>).urdfLinkName
+      if (typeof link === 'string' && link && !isMountLinkName(link)) {
+        ctx.onInspectLinkFocused(link)
+      } else {
+        ctx.onInspectLinkFocused(null)
+      }
+      return
+    }
     if (hits.length === 0) {
       selectLink(null)
       return
@@ -1577,6 +1988,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   ctx.canvas.addEventListener('mousemove', e => {
     if (!ctx.isViewport3D()) return
+    if (carryComp) { updateCarryFromMouse(e); return }
     const ray = makeRaycaster(e)
     const hits = ray.intersectObjects(getPickTargets(), false)
     ctx.canvas.style.cursor = hits.length > 0 ? 'pointer' : ''
@@ -1608,6 +2020,67 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.showToast('Redo', 'info')
       return
     }
+    if (k === 'escape' && carryComp) { exitCarryMode(); return }
+    if (k === 'enter' && carryComp) {
+      e.preventDefault()
+      commitCarry()
+      return
+    }
+
+    // ── Carry mode nudge / rotate ──
+    if (carryComp && carryGroup) {
+      const isNudgeKey = ['arrowleft','arrowright','arrowup','arrowdown','pageup','pagedown'].includes(k)
+      if (isNudgeKey) {
+        e.preventDefault()
+        const step = e.shiftKey ? 0.01 : 0.001
+        if (k === 'arrowleft')  carryGroup.position.x -= step
+        if (k === 'arrowright') carryGroup.position.x += step
+        if (k === 'arrowup')    carryGroup.position.z -= step
+        if (k === 'arrowdown')  carryGroup.position.z += step
+        if (k === 'pageup')     carryGroup.position.y += step
+        if (k === 'pagedown')   carryGroup.position.y -= step
+        carryWorldPos.copy(carryGroup.position)
+        carryFrozen = true
+        carryGroup.updateMatrixWorld(true)
+        updateCarrySnap()
+        updateCarryHudText()
+        return
+      }
+      if (k === 'r') {
+        e.preventDefault()
+        carryRotStep = (carryRotStep + 1) % 4
+        carryGroup.quaternion.copy(carryRotQuat())
+        carryFrozen = true
+        carryGroup.updateMatrixWorld(true)
+        updateCarrySnap()
+        updateCarryHudText()
+        return
+      }
+      if (k === 'tab') {
+        e.preventDefault()
+        if (carrySnapCandidates.length > 0) {
+          carrySnapIdx = e.shiftKey
+            ? (carrySnapIdx - 1 + carrySnapCandidates.length) % carrySnapCandidates.length
+            : (carrySnapIdx + 1) % carrySnapCandidates.length
+          const chosen = carrySnapCandidates[carrySnapIdx]
+          carryBestMount = { targetParentLink: chosen.targetParentLink, mountLink: chosen.mountLink, desiredGhostWorld: chosen.desiredGhostWorld }
+          carryFrozen = true
+          const snapPos = new THREE.Vector3(); const snapQuat = new THREE.Quaternion()
+          chosen.desiredGhostWorld.decompose(snapPos, snapQuat, new THREE.Vector3())
+          carryGroup!.position.copy(snapPos); carryGroup!.quaternion.copy(snapQuat)
+          carryGroup!.updateMatrixWorld(true)
+          clearBestCandidateHighlight()
+          for (const t of mountNodes) setNodeMeshState(t.mountLink, isMountOccupied(t.mountLink) ? 'occupied' : 'neutral')
+          setNodeMeshState(chosen.mountLink, 'best')
+        } else {
+          carryFrozen = false
+          updateCarrySnap()
+        }
+        updateCarryHudText()
+        return
+      }
+    }
+
     if (k === 'i') { ctx.switchPanel('inspector'); return }
     if (k === 't') { ctx.switchPanel('toolbox'); return }
     if (k === 'r' && selectedLink && gizmo.object) {
@@ -1643,6 +2116,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     rebuildMountNodes()
     refreshBuildPanel()
     renderInspector()
+    ctx.onAfterModelUpdated?.()
+  }
+
+  function onInteractionModeChanged(mode: 'build' | 'inspect') {
+    if (mode === 'inspect') {
+      exitCarryMode()
+      selectLink(null)
+      gizmo.detach()
+      refreshBuildPanel()
+      renderInspector()
+    }
   }
 
   refreshBuildPanel()
@@ -1655,6 +2139,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (urdfUndo.length > 80) urdfUndo.shift()
       urdfRedo = []
     },
+    exitCarryMode,
+    onInteractionModeChanged,
+    setSelectedLink: selectLink,
   }
 }
 

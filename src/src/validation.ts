@@ -10,6 +10,139 @@ export interface ValResult {
   column?: number
 }
 
+/** Parse a URDF string and return structural validation errors. Exported for use outside initValidation. */
+export function validateXMLStructure(content: string): ValResult[] {
+  const errors: ValResult[] = []
+  const parser = new DOMParser()
+  const xmlDoc = parser.parseFromString(content, 'text/xml')
+
+  if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+    const parserError = xmlDoc.getElementsByTagName('parsererror')[0]
+    errors.push({ name: 'XML Parse Error', severity: 'error', message: parserError.textContent || 'Unknown XML parse error', category: 'Structural' })
+    return errors
+  }
+  if (xmlDoc.documentElement.tagName !== 'robot') {
+    errors.push({ name: 'Invalid root element', severity: 'error', message: `Expected root element <robot>, got <${xmlDoc.documentElement.tagName}>`, category: 'Structural' })
+    return errors
+  }
+  const robotName = xmlDoc.documentElement.getAttribute('name')
+  if (!robotName) errors.push({ name: 'Robot missing name', severity: 'error', message: 'Root <robot> element must have a "name" attribute', category: 'Structural' })
+
+  const links = xmlDoc.getElementsByTagName('link')
+  if (links.length === 0) {
+    errors.push({ name: 'No links defined', severity: 'error', message: 'URDF must contain at least one <link> element', category: 'Structural' })
+    return errors
+  }
+  const linkNames = new Set<string>()
+  for (let i = 0; i < links.length; i++) {
+    const name = links[i].getAttribute('name')
+    if (name) {
+      if (linkNames.has(name)) errors.push({ name: 'Duplicate link name', severity: 'error', message: `Link "${name}" is defined multiple times`, category: 'Structural' })
+      linkNames.add(name)
+    }
+  }
+  const joints = xmlDoc.getElementsByTagName('joint')
+  const jointNames = new Set<string>()
+  for (let i = 0; i < joints.length; i++) {
+    const joint = joints[i]
+    const jointName = joint.getAttribute('name')
+    if (jointName) {
+      if (jointNames.has(jointName)) errors.push({ name: 'Duplicate joint name', severity: 'error', message: `Joint "${jointName}" is defined multiple times`, category: 'Structural' })
+      jointNames.add(jointName)
+    }
+    const parent = joint.querySelector('parent')
+    const child = joint.querySelector('child')
+    if (!parent || !child) { errors.push({ name: `Joint ${jointName || 'unknown'} missing parent/child`, severity: 'error', message: 'Joint must have both <parent> and <child> elements', category: 'Structural' }); continue }
+    const parentLink = parent.getAttribute('link')
+    const childLink = child.getAttribute('link')
+    if (!parentLink || !linkNames.has(parentLink)) errors.push({ name: `Invalid parent link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Parent link "${parentLink}" is not defined`, category: 'Structural' })
+    if (!childLink || !linkNames.has(childLink)) errors.push({ name: `Invalid child link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Child link "${childLink}" is not defined`, category: 'Structural' })
+  }
+  if (errors.length === 0) errors.push({ name: 'XML structure valid', severity: 'pass', message: `${links.length} links, ${joints.length} joints`, category: 'Structural' })
+  return errors
+}
+
+/**
+ * Per-link completeness checks: collision geometry, inertial mass.
+ * Skips mount-node links (containing __mount__).
+ * Returns one result per category (not per link) to keep the list short,
+ * plus individual warnings for each offending link.
+ */
+export function validateURDFPerLink(content: string): ValResult[] {
+  const results: ValResult[] = []
+  const parser = new DOMParser()
+  const xmlDoc = parser.parseFromString(content, 'text/xml')
+  if (xmlDoc.getElementsByTagName('parsererror').length > 0) return results
+
+  const links = Array.from(xmlDoc.getElementsByTagName('link'))
+    .filter(l => !l.getAttribute('name')?.includes('__mount__'))
+
+  // Find root link (not referenced as a child in any joint)
+  const childLinks = new Set(
+    Array.from(xmlDoc.getElementsByTagName('joint'))
+      .map(j => j.querySelector('child')?.getAttribute('link') ?? '')
+      .filter(Boolean)
+  )
+  const isRoot = (name: string) => !childLinks.has(name)
+
+  // ── Collision geometry check ──
+  const noCollision: string[] = []
+  for (const link of links) {
+    const name = link.getAttribute('name') ?? ''
+    if (isRoot(name)) continue
+    if (!link.querySelector('collision')) noCollision.push(name)
+  }
+  if (noCollision.length === 0) {
+    results.push({ name: 'Collision geometry', severity: 'pass', message: 'All non-root links have collision geometry', category: 'Physics' })
+  } else {
+    results.push({ name: 'Missing collision geometry', severity: 'warn', message: `${noCollision.length} link(s) lack <collision>: ${noCollision.join(', ')}`, category: 'Physics' })
+  }
+
+  // ── Inertial / mass check ──
+  const noInertial: string[] = []
+  const zeroMass: string[] = []
+  for (const link of links) {
+    const name = link.getAttribute('name') ?? ''
+    if (isRoot(name)) continue
+    const inertial = link.querySelector('inertial')
+    if (!inertial) { noInertial.push(name); continue }
+    const massEl = inertial.querySelector('mass')
+    const mass = parseFloat(massEl?.getAttribute('value') ?? '0')
+    if (!Number.isFinite(mass) || mass <= 0) zeroMass.push(name)
+  }
+
+  if (noInertial.length > 0) {
+    results.push({ name: 'Missing inertial', severity: 'warn', message: `${noInertial.length} link(s) lack <inertial>: ${noInertial.join(', ')}`, category: 'Physics' })
+  }
+  if (zeroMass.length > 0) {
+    results.push({ name: 'Zero/missing mass', severity: 'warn', message: `Zero or missing mass on: ${zeroMass.join(', ')}`, category: 'Physics' })
+  }
+  if (noInertial.length === 0 && zeroMass.length === 0) {
+    results.push({ name: 'Inertial properties', severity: 'pass', message: 'All non-root links have mass > 0', category: 'Physics' })
+  }
+
+  // ── Joint limits check ──
+  const joints = Array.from(xmlDoc.getElementsByTagName('joint'))
+  const missingLimits: string[] = []
+  for (const joint of joints) {
+    const type = joint.getAttribute('type') ?? ''
+    if (type !== 'revolute' && type !== 'prismatic') continue
+    const limit = joint.querySelector('limit')
+    const lower = parseFloat(limit?.getAttribute('lower') ?? 'NaN')
+    const upper = parseFloat(limit?.getAttribute('upper') ?? 'NaN')
+    if (!limit || !Number.isFinite(lower) || !Number.isFinite(upper) || lower >= upper) {
+      missingLimits.push(joint.getAttribute('name') ?? 'unnamed')
+    }
+  }
+  if (missingLimits.length > 0) {
+    results.push({ name: 'Joint limits', severity: 'warn', message: `Actuated joints with invalid limits: ${missingLimits.join(', ')}`, category: 'Actuators' })
+  } else if (joints.filter(j => ['revolute','prismatic'].includes(j.getAttribute('type') ?? '')).length > 0) {
+    results.push({ name: 'Joint limits', severity: 'pass', message: 'All actuated joints have valid limits', category: 'Actuators' })
+  }
+
+  return results
+}
+
 export function initValidation(deps: {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
   monacoEditor: monaco.editor.IStandaloneCodeEditor
@@ -141,145 +274,6 @@ export function initValidation(deps: {
     }
   }
 
-  // ── XML structure validation ──
-
-  function validateXMLStructure(content: string): ValResult[] {
-    const errors: ValResult[] = []
-
-    const parser = new DOMParser()
-    const xmlDoc = parser.parseFromString(content, 'text/xml')
-
-    // Check for parse errors
-    if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
-      const parserError = xmlDoc.getElementsByTagName('parsererror')[0]
-      const errorText = parserError.textContent || 'Unknown XML parse error'
-      errors.push({
-        name: 'XML Parse Error',
-        severity: 'error',
-        message: errorText,
-        category: 'Structural',
-      })
-      return errors
-    }
-
-    // Check root element is 'robot'
-    if (xmlDoc.documentElement.tagName !== 'robot') {
-      errors.push({
-        name: 'Invalid root element',
-        severity: 'error',
-        message: `Expected root element <robot>, got <${xmlDoc.documentElement.tagName}>`,
-        category: 'Structural',
-      })
-      return errors
-    }
-
-    // Check required attributes on robot
-    const robotName = xmlDoc.documentElement.getAttribute('name')
-    if (!robotName) {
-      errors.push({
-        name: 'Robot missing name',
-        severity: 'error',
-        message: 'Root <robot> element must have a "name" attribute',
-        category: 'Structural',
-      })
-    }
-
-    // Check for at least one link
-    const links = xmlDoc.getElementsByTagName('link')
-    if (links.length === 0) {
-      errors.push({
-        name: 'No links defined',
-        severity: 'error',
-        message: 'URDF must contain at least one <link> element',
-        category: 'Structural',
-      })
-      return errors
-    }
-
-    // Build set of link names for joint validation
-    const linkNames = new Set<string>()
-    for (let i = 0; i < links.length; i++) {
-      const name = links[i].getAttribute('name')
-      if (name) {
-        if (linkNames.has(name)) {
-          errors.push({
-            name: 'Duplicate link name',
-            severity: 'error',
-            message: `Link "${name}" is defined multiple times`,
-            category: 'Structural',
-          })
-        }
-        linkNames.add(name)
-      }
-    }
-
-    // Check joints reference valid links
-    const joints = xmlDoc.getElementsByTagName('joint')
-    const jointNames = new Set<string>()
-    for (let i = 0; i < joints.length; i++) {
-      const joint = joints[i]
-      const jointName = joint.getAttribute('name')
-
-      if (jointName) {
-        if (jointNames.has(jointName)) {
-          errors.push({
-            name: 'Duplicate joint name',
-            severity: 'error',
-            message: `Joint "${jointName}" is defined multiple times`,
-            category: 'Structural',
-          })
-        }
-        jointNames.add(jointName)
-      }
-
-      const parent = joint.querySelector('parent')
-      const child = joint.querySelector('child')
-
-      if (!parent || !child) {
-        errors.push({
-          name: `Joint ${jointName || 'unknown'} missing parent/child`,
-          severity: 'error',
-          message: 'Joint must have both <parent> and <child> elements',
-          category: 'Structural',
-        })
-        continue
-      }
-
-      const parentLink = parent.getAttribute('link')
-      const childLink = child.getAttribute('link')
-
-      if (!parentLink || !linkNames.has(parentLink)) {
-        errors.push({
-          name: `Invalid parent link in joint ${jointName || 'unknown'}`,
-          severity: 'error',
-          message: `Parent link "${parentLink}" is not defined`,
-          category: 'Structural',
-        })
-      }
-
-      if (!childLink || !linkNames.has(childLink)) {
-        errors.push({
-          name: `Invalid child link in joint ${jointName || 'unknown'}`,
-          severity: 'error',
-          message: `Child link "${childLink}" is not defined`,
-          category: 'Structural',
-        })
-      }
-    }
-
-    // If no errors found, return pass message
-    if (errors.length === 0) {
-      errors.push({
-        name: 'XML structure valid',
-        severity: 'pass',
-        message: `${links.length} links, ${joints.length} joints`,
-        category: 'Structural',
-      })
-    }
-
-    return errors
-  }
-
   // ── Run full validation (client-side XML + Python backend) ──
 
   async function runValidation() {
@@ -299,19 +293,28 @@ export function initValidation(deps: {
         renderValidationResults(xmlErrors, summary)
         setValidationMarkers(xmlErrors)
       } else {
-        // XML is valid, try full validation from Python backend
+        // XML is valid — run per-link client-side checks immediately,
+        // then try to augment with the Python backend.
+        const perLinkResults = validateURDFPerLink(urdfContent)
+
         try {
           const result = await invoke('validate_urdf_content', {
             urdf_content: urdfContent
           })
 
           if (result && (result as any).results) {
-            renderValidationResults((result as any).results, (result as any).summary)
-            setValidationMarkers((result as any).results)
+            // Merge: use Python results as primary, add any per-link results not already covered.
+            const backendResults: ValResult[] = (result as any).results
+            const backendCategories = new Set(backendResults.map(r => r.category))
+            const extra = perLinkResults.filter(r => !backendCategories.has(r.category))
+            const merged = [...backendResults, ...extra]
+            const summary = buildSummary(merged)
+            renderValidationResults(merged, summary)
+            setValidationMarkers(merged)
           }
         } catch (_e) {
-          // Python backend failed or not available, use local validation
-          runLocalValidation()
+          // Python backend not available — combine local graph checks with per-link XML checks.
+          runLocalValidationWith(perLinkResults)
         }
       }
     } catch (_e) {
@@ -323,26 +326,37 @@ export function initValidation(deps: {
     btnRevalidate.textContent = 'Run Checks'
   }
 
+  // ── Shared summary builder ──
+
+  function buildSummary(results: ValResult[]) {
+    const summary = { pass: 0, warn: 0, error: 0, info: 0 }
+    for (const r of results) {
+      if (r.severity in summary) summary[r.severity as keyof typeof summary]++
+    }
+    return summary
+  }
+
   // ── Local validation fallback (runs in browser against the in-memory graph) ──
 
-  function runLocalValidation() {
+  function buildLocalResults(): ValResult[] {
     const kinematicGraph = getKinematicGraph()
     const kinematicJoints = getKinematicJoints()
     const results: ValResult[] = []
 
     // ── Structural checks ──
-    const linkNames = Object.keys(kinematicGraph)
-    const hasRoot = kinematicGraph['base_link'] !== undefined
+    const linkNames = Object.keys(kinematicGraph).filter(n => !n.includes('__mount__'))
+    const rootLink = Object.values(kinematicGraph).find(l => !l.parent)?.name ?? 'base_link'
+    const hasRoot = linkNames.includes(rootLink)
 
     results.push({
       name: 'Root link defined',
       severity: hasRoot ? 'pass' : 'error',
-      message: hasRoot ? "Root link 'base_link' exists" : 'No root link found',
+      message: hasRoot ? `Root link '${rootLink}' exists` : 'No root link found',
       category: 'Structural',
     })
 
-    // Orphan check
-    const orphans = linkNames.filter(n => n !== 'base_link' && !kinematicGraph[n].parent)
+    // Orphan check (exclude mount nodes)
+    const orphans = linkNames.filter(n => n !== rootLink && !kinematicGraph[n].parent)
     results.push({
       name: 'No orphan links',
       severity: orphans.length === 0 ? 'pass' : 'error',
@@ -350,7 +364,7 @@ export function initValidation(deps: {
       category: 'Structural',
     })
 
-    // Tree structure (simple cycle check via DFS)
+    // Cycle check via DFS
     let hasCycle = false
     const visited = new Set<string>()
     function dfs(name: string, path: Set<string>) {
@@ -359,11 +373,11 @@ export function initValidation(deps: {
       visited.add(name)
       path.add(name)
       for (const child of kinematicGraph[name]?.children || []) {
-        dfs(child, path)
+        if (!child.includes('__mount__')) dfs(child, path)
       }
       path.delete(name)
     }
-    dfs('base_link', new Set())
+    dfs(rootLink, new Set())
 
     results.push({
       name: 'Tree structure OK',
@@ -380,7 +394,7 @@ export function initValidation(deps: {
     })
 
     // ── Physics checks ──
-    const zeroMassLinks = linkNames.filter(n => n !== 'base_link' && kinematicGraph[n].mass === 0)
+    const zeroMassLinks = linkNames.filter(n => n !== rootLink && kinematicGraph[n].mass === 0)
     results.push({
       name: 'Link masses set',
       severity: zeroMassLinks.length > 0 ? 'warn' : 'pass',
@@ -399,30 +413,15 @@ export function initValidation(deps: {
     })
 
     // ── Actuator checks ──
-    const jointNamesList = Object.keys(kinematicJoints)
+    const jointNamesList = Object.keys(kinematicJoints).filter(j => !kinematicJoints[j].childLink.includes('__mount__'))
     const actuated = jointNamesList.filter(j => kinematicJoints[j].type !== 'fixed')
     const fixed = jointNamesList.filter(j => kinematicJoints[j].type === 'fixed')
-
-    results.push({
-      name: 'Joint limits valid',
-      severity: 'pass',
-      message: 'All actuated joints have valid limits',
-      category: 'Actuators',
-    })
 
     results.push({
       name: 'Joint summary',
       severity: 'info',
       message: `${actuated.length} actuated, ${fixed.length} fixed joints`,
       category: 'Actuators',
-    })
-
-    // ── Mesh checks ──
-    results.push({
-      name: 'Collision geometry',
-      severity: 'pass',
-      message: 'All non-root links have collision geometry',
-      category: 'Mesh',
     })
 
     results.push({
@@ -432,14 +431,19 @@ export function initValidation(deps: {
       category: 'Mesh',
     })
 
-    // Build summary
-    const summary = { pass: 0, warn: 0, error: 0, info: 0 }
-    for (const r of results) {
-      if (r.severity in summary) summary[r.severity as keyof typeof summary]++
-    }
+    return results
+  }
 
+  /** Run local validation, optionally merging in pre-computed per-link XML results. */
+  function runLocalValidationWith(extraResults: ValResult[] = []) {
+    const results = [...buildLocalResults(), ...extraResults]
+    const summary = buildSummary(results)
     renderValidationResults(results, summary)
     setValidationMarkers(results)
+  }
+
+  function runLocalValidation() {
+    runLocalValidationWith([])
   }
 
   // ── Revalidate button click handler ──
