@@ -597,7 +597,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function applyNodeRingVisibility() {
-    nodeRingsGroup.visible = showNodeRings
+    nodeRingsGroup.visible = showNodeRings && nodesGroup.visible
   }
 
   function recordUndo() {
@@ -1009,6 +1009,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (name && isMountLinkName(name)) {
       selectedLink = null
       gizmo.detach()
+      nodesGroup.visible = false
+      applyNodeRingVisibility()
+      ghostGroup.visible = false
+      bestMountCandidate = null
+      clearBestCandidateHighlight()
       refreshBuildPanel()
       renderInspector()
       updateParentIndicator()
@@ -1029,6 +1034,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
     }
     if (!name) {
+      nodesGroup.visible = false
+      applyNodeRingVisibility()
       ghostGroup.visible = false
       bestMountCandidate = null
       clearBestCandidateHighlight()
