@@ -127,6 +127,7 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: number
+  urdfSnapshot?: string
 }
 
 interface ChatConversation {
@@ -262,10 +263,14 @@ function loadChat(chatId: string) {
   vcMsgs.innerHTML = `<div class="ai-msg system">
     <div class="ai-msg-content">Describe changes to your robot in natural language.</div>
   </div>`
-  for (const msg of chat.messages) {
+  for (let i = 0; i < chat.messages.length; i++) {
+    const msg = chat.messages[i]
     const el = document.createElement('div')
     el.className = `ai-msg ${msg.role}`
     el.innerHTML = `<div class="ai-msg-content">${msg.role === 'user' ? escapeHtml(msg.content) : msg.content}</div>`
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      attachRewindButton(el, i)
+    }
     vcMsgs.appendChild(el)
   }
   vcMsgs.scrollTop = vcMsgs.scrollHeight
@@ -273,7 +278,8 @@ function loadChat(chatId: string) {
 }
 
 function recordChatMessage(role: 'user' | 'assistant' | 'system', content: string) {
-  const msg: ChatMessage = { role, content, timestamp: Date.now() }
+  const urdfSnapshot = monacoEditor.getModel()?.getValue() || ''
+  const msg: ChatMessage = { role, content, timestamp: Date.now(), urdfSnapshot }
   currentChatMessages.push(msg)
 
   const chat = getCurrentChat()
@@ -288,6 +294,83 @@ function recordChatMessage(role: 'user' | 'assistant' | 'system', content: strin
     updateChatDropdown()
   }
 }
+
+// ── Chat rewind ──────────────────────────────────────────────────────────────
+
+function rewindChatTo(msgIndex: number, mode: 'conversation' | 'code' | 'both') {
+  const chat = getCurrentChat()
+  if (!chat) return
+
+  const targetMsg = currentChatMessages[msgIndex]
+  if (!targetMsg) return
+
+  if (mode === 'code' || mode === 'both') {
+    if (targetMsg.urdfSnapshot) {
+      monacoEditor.setValue(targetMsg.urdfSnapshot)
+    }
+  }
+
+  if (mode === 'conversation' || mode === 'both') {
+    // Keep messages up to and including the target index
+    currentChatMessages.length = msgIndex + 1
+    chat.messages = currentChatMessages
+    chat.updatedAt = Date.now()
+    saveChatHistory()
+    loadChat(currentChatId)
+  }
+}
+
+function attachRewindButton(msgEl: HTMLElement, msgIndex: number) {
+  const wrap = document.createElement('div')
+  wrap.className = 'chat-rewind-wrap'
+
+  const btn = document.createElement('button')
+  btn.className = 'chat-rewind-btn'
+  btn.title = 'Rewind to here'
+  btn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8a6 6 0 1 1 1.8 4.3" stroke-linecap="round"/><path d="M2 12V8h4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+  const popover = document.createElement('div')
+  popover.className = 'chat-rewind-popover hidden'
+  popover.innerHTML = `
+    <button class="crp-option" data-mode="conversation">Rewind conversation</button>
+    <button class="crp-option" data-mode="code">Rewind code only</button>
+    <button class="crp-option" data-mode="both">Rewind both</button>
+  `
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    // Close any other open popovers
+    document.querySelectorAll('.chat-rewind-popover').forEach(p => {
+      if (p !== popover) p.classList.add('hidden')
+    })
+    popover.classList.toggle('hidden')
+  })
+
+  popover.querySelectorAll('.crp-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const mode = (opt as HTMLElement).dataset.mode as 'conversation' | 'code' | 'both'
+      popover.classList.add('hidden')
+      rewindChatTo(msgIndex, mode)
+    })
+  })
+
+  wrap.appendChild(btn)
+  wrap.appendChild(popover)
+  // Attach inside the .ai-msg-content bubble
+  const bubble = msgEl.querySelector('.ai-msg-content')
+  if (bubble) {
+    (bubble as HTMLElement).style.position = 'relative'
+    bubble.appendChild(wrap)
+  } else {
+    msgEl.appendChild(wrap)
+  }
+}
+
+// Close rewind popovers on outside click
+document.addEventListener('click', () => {
+  document.querySelectorAll('.chat-rewind-popover').forEach(p => p.classList.add('hidden'))
+})
 
 // Initialize: load most recent chat or create new one
 if (chatHistory.length > 0) {
@@ -2547,6 +2630,10 @@ function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, ex
     }
   } else {
     msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
+  }
+
+  if (role === 'user' || role === 'assistant') {
+    attachRewindButton(msg, currentChatMessages.length - 1)
   }
 
   vcMessages.appendChild(msg)

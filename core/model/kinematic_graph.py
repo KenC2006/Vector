@@ -105,6 +105,80 @@ class KinematicGraph:
         new_kg.root_link = link_name
         return new_kg
 
+    def compute_world_frames(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Walk the kinematic tree from root, accumulating joint origin offsets
+        to compute each link's approximate world-frame position and the
+        bounding box extent in that frame.
+
+        Returns dict keyed by link name:
+          { "world_xyz": [x,y,z], "bbox_m": [lx,ly,lz] | None }
+        """
+        import math
+        frames: Dict[str, Dict[str, Any]] = {}
+
+        def _bbox_meters(link_data) -> Optional[List[float]]:
+            """Extract bounding box in meters from visual geometry."""
+            vg = link_data.visual_geometry if link_data else None
+            if not vg:
+                return None
+            gtype = vg.get("type")
+            params = vg.get("params", {})
+            if gtype == "box":
+                size = params.get("size", [0.05, 0.05, 0.05])
+                return [float(s) for s in size]
+            elif gtype == "cylinder":
+                r = float(params.get("radius", 0.025))
+                h = float(params.get("length", 0.05))
+                return [r * 2, r * 2, h]
+            elif gtype == "sphere":
+                r = float(params.get("radius", 0.025))
+                return [r * 2, r * 2, r * 2]
+            return None
+
+        def _rpy_rotate(xyz, rpy):
+            """Simple RPY rotation (roll-pitch-yaw) of a point. Approximate for context."""
+            r, p, y = rpy
+            # Yaw
+            cos_y, sin_y = math.cos(y), math.sin(y)
+            x1 = xyz[0] * cos_y - xyz[1] * sin_y
+            y1 = xyz[0] * sin_y + xyz[1] * cos_y
+            z1 = xyz[2]
+            # Pitch
+            cos_p, sin_p = math.cos(p), math.sin(p)
+            x2 = x1 * cos_p + z1 * sin_p
+            y2 = y1
+            z2 = -x1 * sin_p + z1 * cos_p
+            # Roll
+            cos_r, sin_r = math.cos(r), math.sin(r)
+            x3 = x2
+            y3 = y2 * cos_r - z2 * sin_r
+            z3 = y2 * sin_r + z2 * cos_r
+            return [x3, y3, z3]
+
+        def walk(link_name: str, parent_world_xyz: List[float]):
+            link_data = self.get_link_data(link_name)
+            frames[link_name] = {
+                "world_xyz": [round(v, 4) for v in parent_world_xyz],
+                "bbox_m": _bbox_meters(link_data),
+            }
+            for child_name in self.get_children_links(link_name):
+                edge_data = self.graph[link_name][child_name]["data"]
+                origin = list(edge_data.origin_xyz)
+                rpy = list(edge_data.origin_rpy)
+                # Rotate the joint offset by parent orientation (simplified)
+                child_xyz = [
+                    parent_world_xyz[0] + origin[0],
+                    parent_world_xyz[1] + origin[1],
+                    parent_world_xyz[2] + origin[2],
+                ]
+                walk(child_name, child_xyz)
+
+        if self.root_link and self.root_link in self.graph:
+            walk(self.root_link, [0.0, 0.0, 0.0])
+
+        return frames
+
     def to_json(self) -> Dict[str, Any]:
         """
         Serialize the entire graph to a JSON-serializable dict.
