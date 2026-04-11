@@ -164,6 +164,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ctx.scene.add(nodeRingsGroup)
   const nodeMeshByMount = new Map<string, THREE.Mesh>()
   const nodeRingsByMount = new Map<string, THREE.Group>()
+  // Cached occluder list for visibility raycasting — rebuilt with the node graph,
+  // not re-collected on every camera-change event.
+  // Per-link bounding-box cache. Invalidated in rebuildMountNodes() (called only
+  // when the URDF model changes), so computeLinkLocalBoundingBox() does real work
+  // only once per model update rather than once per click.
+  const linkBBoxCache = new Map<string, THREE.Box3 | null>()
   // Synthesized attachment face nodes. `mountLink` uses the canonical key format
   // `<parentLinkName>__mount__<faceId>` from attachmentNodes.ts (NOT a real URDF link).
   // `localPos` is the face center in the parent link's local frame.
@@ -304,7 +310,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function updateBestCandidateDuringDrag(_pivot: THREE.Group) {
     refreshNodeWorldTransforms()
-    refreshMountNodeVisibility()
     bestMountCandidate = null
     if (mountNodes.length === 0) {
       clearBestCandidateHighlight()
@@ -336,7 +341,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     for (const srcNode of sourceNodes) {
       for (const target of mountNodes) {
         if (target.parentLink === selectedLink) continue
-        if (!nodeMeshByMount.get(target.mountLink)?.visible) continue
         const verdict = validateSnapTarget(selectedLink, srcNode.cls, srcNode.worldPos, srcNode.worldQuat, target)
         if (!verdict.ok) {
           if (!firstFailureReason) firstFailureReason = verdict.reason
@@ -437,6 +441,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     nodeRingsByMount.clear()
     mountNodes = []
     occupiedNodeKeys.clear()
+    linkBBoxCache.clear()
 
     const graph = ctx.getKinematicGraph()
     const kinJoints = ctx.getKinematicJoints()
@@ -448,7 +453,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (isMountLinkName(linkName)) continue
       const lg = parsed.linkGroups.get(linkName)
       if (!lg) continue
-      const localBox = computeLinkLocalBoundingBox(lg)
+      let localBox: THREE.Box3 | null
+      if (linkBBoxCache.has(linkName)) {
+        localBox = linkBBoxCache.get(linkName)!
+      } else {
+        localBox = computeLinkLocalBoundingBox(lg)
+        linkBBoxCache.set(linkName, localBox)
+      }
       if (!localBox || localBox.isEmpty()) continue
 
       const center = localBox.getCenter(new THREE.Vector3())
@@ -523,6 +534,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // handler flips this on/off. Keep the group hidden by default.
     nodesGroup.visible = false
     applyNodeRingVisibility()
+
   }
 
   function refreshNodeWorldTransforms() {
@@ -551,27 +563,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
   }
 
-  // Raycasts from the camera to each mount node; hides nodes (and rings) that
-  // are occluded by robot geometry. Must be called after refreshNodeWorldTransforms().
-  function refreshMountNodeVisibility() {
-    const occluders: THREE.Mesh[] = []
-    ctx.getParsedRobot().group.traverse(o => {
-      if (o instanceof THREE.Mesh && o.geometry) occluders.push(o)
-    })
-    const ray = new THREE.Raycaster()
-    const EPS = 0.005
-    for (const n of mountNodes) {
-      const dir = new THREE.Vector3().subVectors(n.worldPosition, ctx.camera.position)
-      const dist = dir.length()
-      ray.set(ctx.camera.position, dir.normalize())
-      const hits = ray.intersectObjects(occluders, false)
-      const visible = hits.every(h => h.distance >= dist - EPS)
-      const mesh = nodeMeshByMount.get(n.mountLink)
-      if (mesh) mesh.visible = visible
-      const rings = nodeRingsByMount.get(n.mountLink)
-      if (rings) rings.visible = visible && showNodeRings
-    }
-  }
 
   const buildTree = document.getElementById('build-tree') as HTMLDivElement | null
   const buildEmpty = document.getElementById('build-empty') as HTMLDivElement | null
@@ -940,14 +931,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         rootDragWarned = true
       }
     }
-    if (name) {
-      rebuildMountNodes()
-    } else {
+    if (!name) {
       ghostGroup.visible = false
       bestMountCandidate = null
       clearBestCandidateHighlight()
-      rebuildMountNodes()
     }
+    // rebuildMountNodes() is NOT called here — node geometry only changes when
+    // the URDF model changes (onModelUpdated) or carry/drag starts. Calling it
+    // on every click was recreating all geometry and recomputing all bounding
+    // boxes even though the structure hadn't changed, causing visible stutter.
     refreshBuildPanel()
     renderInspector()
     updateParentIndicator()
@@ -1379,7 +1371,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function updateCarrySnap() {
     if (!carryComp || !carryGroup) return
     refreshNodeWorldTransforms()
-    refreshMountNodeVisibility()
     const sourceNodes = getCarrySourceNodes()
 
     // Collect all valid candidates, sorted closest-first
@@ -1387,7 +1378,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     for (const src of sourceNodes) {
       for (const target of mountNodes) {
         if (isMountOccupied(target.mountLink)) continue
-        if (!nodeMeshByMount.get(target.mountLink)?.visible) continue
         const dist = target.worldPosition.distanceTo(src.worldPos)
         if (dist > SNAP_RADIUS_M) continue
         if (!nodesCompatible(src.cls, target.cls)) continue
@@ -1937,12 +1927,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const pivot = getPivotGroupForLink(selectedLink)
     if (!pivot) return
     updateBestCandidateDuringDrag(pivot)
-  })
-
-  // Re-run visibility culling whenever the camera orbits/pans/zooms so that
-  // node cubes update even when the user is not moving the carry ghost.
-  ctx.controls.addEventListener('change', () => {
-    if (nodesGroup.visible) refreshMountNodeVisibility()
   })
 
   ctx.canvas.addEventListener('pointerdown', e => {
