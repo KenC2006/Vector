@@ -43,15 +43,64 @@ _conversation_history: dict[str, list] = defaultdict(list)
 _MAX_HISTORY_MESSAGES = 20
 
 
+# Component IDs that have verified GLB meshes available in the UI.
+# Must match meshOverrides.ts minus SLOW_MESH_BLACKLIST in richVisuals/index.ts.
+_ALLOWED_COMPONENT_IDS = {
+    # Actuators
+    'actuator_servo_micro', 'actuator_servo_standard', 'actuator_servo_high_torque',
+    'actuator_servo_heavy_duty', 'actuator_stepper_nema17', 'actuator_stepper_nema23',
+    'actuator_linear_small', 'actuator_linear_heavy', 'actuator_micro_linear_servo',
+    'actuator_continuous_rotation_servo', 'actuator_high_speed_mini_servo',
+    # Motors
+    'motor_dc_small_130', 'motor_dc_medium_540', 'motor_dc_large_775',
+    'motor_gear_small_n20', 'motor_gear_medium_37mm', 'motor_gear_heavy_50mm',
+    'motor_coreless_dc', 'motor_worm_gear',
+    # Sensors
+    'sensor_depth_camera_small', 'sensor_depth_camera_wide',
+    'sensor_lidar_2d', 'sensor_lidar_3d',
+    'sensor_imu_6dof', 'sensor_imu_9dof',
+    'sensor_ultrasonic', 'sensor_tof',
+    'sensor_force_torque_6axis', 'sensor_joint_encoder_absolute',
+    'sensor_limit_switch', 'sensor_load_cell',
+    # Compute
+    'compute_mcu_small', 'compute_sbc_small',
+    'compute_motor_driver_dual', 'compute_fpga_dev_board',
+    'compute_can_transceiver', 'compute_gps_gnss',
+    # Power
+    'power_lipo_3s_2200', 'power_lipo_4s_5000', 'power_lipo_6s_10000',
+    'power_buck_converter_5v', 'power_buck_converter_12v',
+    'power_distribution_unit', 'power_solar_panel_small', 'power_estop_switch',
+    # Structural
+    'structural_extrusion_2020', 'structural_extrusion_4040',
+    'structural_bracket_l', 'structural_bracket_u',
+    'structural_shaft_collar', 'structural_linear_rail_mgn12',
+    'structural_din_rail_35mm',
+    # Transmission
+    'transmission_timing_belt_gt2', 'transmission_leadscrew_8mm',
+    'transmission_bearing_deep_groove', 'transmission_bearing_large',
+    'transmission_planetary_gearbox',
+    'transmission_flexible_coupling_jaw', 'transmission_rigid_shaft_coupling',
+    # End Effectors
+    'effector_parallel_gripper_small', 'effector_parallel_gripper_large',
+    'effector_3finger_adaptive', 'effector_suction_cup', 'effector_pen_marker_holder',
+    # Mobility
+    'mobility_wheel_driven', 'mobility_caster_wheel',
+    'mobility_mecanum_wheel', 'mobility_omni_wheel', 'mobility_rubber_foot_pad',
+}
+
+
 def _build_component_catalog() -> str:
-    """Build a compact summary of available preset components for the AI system prompt."""
+    """Build a compact summary of available preset components for the AI system prompt.
+    Only includes components with verified GLB meshes shown in the UI."""
     try:
         from core.presets import list_components, get_all_categories, get_category
         lines = []
         for cat_name in get_all_categories():
             cat = get_category(cat_name)
             label = cat_name.replace("_", " ").title()
-            comps = cat["components"]
+            comps = [c for c in cat["components"] if c["id"] in _ALLOWED_COMPONENT_IDS]
+            if not comps:
+                continue
             items = []
             for c in comps:
                 phys = c["physical"]
