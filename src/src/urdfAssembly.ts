@@ -780,6 +780,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       <div class="insp-actions-group">
         ${parentJoint ? '<button type="button" class="bi-action-btn apply-btn" id="urdf-apply-origin">Apply Changes</button>' : ''}
         <button type="button" class="bi-action-btn" id="btn-export-link-stl" style="width:100%">Export Link STL</button>
+        <button type="button" class="bi-action-btn" id="btn-duplicate-link" style="width:100%">Duplicate Subtree</button>
         <button type="button" class="bi-action-btn danger-btn" id="urdf-delete-link">Delete Link</button>
       </div>
     `
@@ -788,6 +789,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (deleteBtn && selectedLink) {
       const linkToDelete = selectedLink
       deleteBtn.addEventListener('click', () => deleteLink(linkToDelete))
+    }
+    // Wire up duplicate button
+    const dupBtn = document.getElementById('btn-duplicate-link')
+    if (dupBtn && selectedLink) {
+      const linkToDup = selectedLink
+      dupBtn.addEventListener('click', () => duplicateSubtree(linkToDup))
     }
 
     // Wire up detach buttons
@@ -905,6 +912,96 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.showToast(`Deleted ${label}`, 'success')
       refreshBuildPanel()
       renderInspector()
+    }
+  }
+
+  function duplicateSubtree(linkName: string) {
+    if (!linkName) return
+    const graph = ctx.getKinematicGraph()
+    const node = graph[linkName]
+    if (!node) return
+
+    // Collect subtree links in BFS order (skip synthesized mount nodes)
+    const subtreeLinks: string[] = []
+    const walkDup = (name: string) => {
+      if (isMountLinkName(name)) return
+      subtreeLinks.push(name)
+      const n = graph[name]
+      if (n) n.children.filter(c => !isMountLinkName(c)).forEach(walkDup)
+    }
+    walkDup(linkName)
+
+    // Build a unique suffix: find a free index
+    let suffix = 2
+    while (graph[`${linkName}_dup${suffix}`]) suffix++
+
+    // Build name mapping: old -> new
+    const nameMap = new Map<string, string>()
+    for (const name of subtreeLinks) {
+      // Derive new name by appending dup suffix to the base of each link
+      nameMap.set(name, `${name}_dup${suffix}`)
+    }
+
+    const changed = commitUrdf(doc => {
+      const robot = doc.querySelector('robot')
+      if (!robot) return false
+
+      // Clone and rename each link in subtree
+      for (const name of subtreeLinks) {
+        const linkEl = doc.querySelector(`link[name="${name}"]`)
+        if (!linkEl) continue
+        const cloned = linkEl.cloneNode(true) as Element
+        cloned.setAttribute('name', nameMap.get(name)!)
+        // Also rename any mount link children that reference this link
+        robot.appendChild(cloned)
+      }
+
+      // Clone all joints that connect nodes within the subtree,
+      // plus the parent joint for the root link
+      const joints = Array.from(doc.querySelectorAll('joint'))
+      const subtreeSet = new Set(subtreeLinks)
+      for (const j of joints) {
+        const parentAttr = j.querySelector('parent')?.getAttribute('link') ?? ''
+        const childAttr = j.querySelector('child')?.getAttribute('link') ?? ''
+        const parentInSubtree = subtreeSet.has(parentAttr)
+        const childInSubtree = subtreeSet.has(childAttr)
+
+        if (!childInSubtree) continue  // only clone joints whose child is in the subtree
+
+        const cloned = j.cloneNode(true) as Element
+        // Rename the joint itself
+        cloned.setAttribute('name', `${j.getAttribute('name')}_dup${suffix}`)
+        // Update parent link reference (if in subtree, remap; otherwise keep original parent)
+        const newParentEl = cloned.querySelector('parent')
+        if (newParentEl) {
+          const mappedParent = nameMap.get(parentAttr)
+          newParentEl.setAttribute('link', mappedParent ?? parentAttr)
+        }
+        // Update child link reference
+        const newChildEl = cloned.querySelector('child')
+        if (newChildEl) {
+          newChildEl.setAttribute('link', nameMap.get(childAttr) ?? childAttr)
+        }
+        // For the root joint (parent NOT in subtree), offset position slightly so it doesn't overlap
+        if (!parentInSubtree) {
+          const originEl = cloned.querySelector('origin') ?? (() => {
+            const o = doc.createElement('origin'); cloned.appendChild(o); return o
+          })()
+          const xyz = (originEl.getAttribute('xyz') ?? '0 0 0').split(' ').map(Number)
+          xyz[2] = (xyz[2] || 0) + 0.05  // nudge +5cm in Z so the duplicate is visible
+          originEl.setAttribute('xyz', xyz.map(v => v.toFixed(4)).join(' '))
+        }
+        robot.appendChild(cloned)
+      }
+
+      return true
+    })
+
+    if (changed) {
+      const newRoot = nameMap.get(linkName)!
+      ctx.showToast(`Duplicated "${linkName}" → "${newRoot}"`, 'success')
+      selectLink(newRoot)
+      refreshBuildPanel()
     }
   }
 
@@ -1707,9 +1804,46 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     await saveStlToFile(robot.group, 'robot.stl')
   }
 
+  async function exportUrdfPackage() {
+    const urdf = ctx.getUrdfText().trim()
+    if (!urdf) { ctx.showToast('Nothing to export — URDF is empty', 'warning'); return }
+
+    const folder = await invoke<string | null>('open_folder_dialog')
+    if (!folder) return
+
+    // Derive robot name from <robot name="..."> or fallback
+    const nameMatch = urdf.match(/<robot[^>]+name="([^"]+)"/)
+    const robotName = nameMatch ? nameMatch[1] : 'robot'
+
+    // Write URDF
+    const urdfPath = `${folder}/${robotName}.urdf`
+    await invoke('save_file', { path: urdfPath, content: urdf })
+
+    // Write minimal package.xml (ROS 2 format)
+    const pkgXml = `<?xml version="1.0"?>
+<package format="3">
+  <name>${robotName}</name>
+  <version>0.0.1</version>
+  <description>${robotName} robot description</description>
+  <maintainer email="robot@example.com">Vector Builder</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+`
+    await invoke('save_file', { path: `${folder}/package.xml`, content: pkgXml })
+
+    ctx.showToast(`Exported URDF package to ${folder}`, 'success')
+  }
+
   // Wire export buttons
   const btnExportStl = document.getElementById('btn-export-stl')
   btnExportStl?.addEventListener('click', exportFullRobotSTL)
+  const btnExportPkg = document.getElementById('btn-export-urdf-pkg')
+  btnExportPkg?.addEventListener('click', () => { void exportUrdfPackage() })
   toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
 
   toggleMountRingsBtn?.addEventListener('click', () => {

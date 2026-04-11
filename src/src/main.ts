@@ -749,9 +749,12 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
       if (activeFile === fn) {
         if (reparseTimeout !== null) clearTimeout(reparseTimeout)
         reparseTimeout = window.setTimeout(() => {
+          reparseTimeout = null
+          // Suppress auto-reparse while an AI inline diff is pending —
+          // the explicit reparseURDF() in acceptInlineDiff/dismissInlineDiff handles it.
+          if (pendingOldText !== null) return
           reparseURDF()
           urdfAssemblyApi?.onModelUpdated()
-          reparseTimeout = null
         }, 500)
       }
     })
@@ -1615,9 +1618,10 @@ if (monacoModels['robot.urdf']) {
     if (activeFile === 'robot.urdf') {
       if (reparseTimeout !== null) clearTimeout(reparseTimeout)
       reparseTimeout = window.setTimeout(() => {
+        reparseTimeout = null
+        if (pendingOldText !== null) return
         reparseURDF()
         urdfAssemblyApi?.onModelUpdated()
-        reparseTimeout = null
       }, 500)
     }
   })
@@ -2584,8 +2588,15 @@ function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
   `
   const editorEl = document.getElementById('monaco-container')!
   const rect = editorEl.getBoundingClientRect()
-  bar.style.top = (rect.top + 8) + 'px'
-  bar.style.right = (window.innerWidth - rect.right + 20) + 'px'
+  if (rect.width > 0) {
+    // Monaco is visible — anchor bar to top of editor panel
+    bar.style.top = (rect.top + 8) + 'px'
+    bar.style.right = (window.innerWidth - rect.right + 20) + 'px'
+  } else {
+    // Monaco is hidden (fullscreen/focus mode) — pin to top-right of viewport
+    bar.style.top = '10px'
+    bar.style.right = '10px'
+  }
   document.body.appendChild(bar)
   inlineDiffWidget = bar
 
@@ -2612,13 +2623,17 @@ function acceptInlineDiff() {
   }
 
   clearInlineDiff()
-  pendingOldText = null
+  pendingOldText = null  // clear before reparse so debounce guard is lifted
+
+  // Cancel any debounce that was triggered by showInlineDiff's setValue call
+  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
+
   showToast('Changes accepted', 'success')
 
   // Sync chat buttons to show "Applied"
   syncChatActions('accept')
 
-  // Sync the 3D viewport with the accepted URDF
+  // Apply the accepted URDF to the 3D viewport
   if (editor) {
     reparseURDF()
 
@@ -2629,11 +2644,19 @@ function acceptInlineDiff() {
 
 function dismissInlineDiff() {
   const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-  if (editor && pendingOldText !== null) {
-    editor.setValue(pendingOldText)
-  }
+  const oldText = pendingOldText  // capture before clearing
+
   clearInlineDiff()
-  pendingOldText = null
+  pendingOldText = null  // clear before setValue so the debounce guard is lifted
+
+  // Cancel any pending debounce before restoring (avoid a second reparse race)
+  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
+
+  if (editor && oldText !== null) {
+    editor.setValue(oldText)
+    reparseURDF()  // revert 3D immediately — no 500ms wait
+  }
+
   showToast('Changes dismissed', 'info')
 
   // Sync chat buttons to show "Dismissed"
