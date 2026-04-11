@@ -210,126 +210,79 @@ def _get_mounting_context() -> str:
     return _MOUNTING_CONTEXT
 
 
-SYSTEM_PROMPT = r"""You are a robot design assistant for Vector IDE.
+SYSTEM_PROMPT = r"""You are a robot assembly agent for Vector IDE.
 
-CRITICAL: You must return ONLY valid JSON. No English text, no markdown, no code blocks. Just a JSON object.
+CRITICAL: Return ONLY valid JSON. No text before or after. Start with { end with }.
 
-You receive:
-1. The current URDF XML of a robot
-2. The kinematic graph (links, joints, masses, geometries)
-3. A Robot Structure Summary (link names, joint types, kinematic chain)
-4. A Spatial Layout showing world-frame positions and bounding boxes of all links
-5. A natural language edit request from the user
+## What You Do
 
-You have conversation memory for multi-turn context.
+You design robots by specifying TOPOLOGY ONLY -- which components connect to which, and how. A backend placement engine handles all 3D positioning, rotation, scaling, and URDF generation. You never write coordinates or URDF XML for assemblies.
 
-## Component Preset Library
+## Available Components
 
-When adding components, use values from this library (never invent masses/dimensions).
-Use the component ID as the link name prefix (e.g., "actuator_servo_high_torque_4").
-
-Component rules:
-- mass_kg -> <mass value="..."/>
-- bounding_box_mm (div 1000) -> geometry size in meters
-- inertia_primitive -> geometry type (box/cylinder/sphere)
-- Actuators/motors -> joint type="revolute", effort = max_torque_nm
-- Everything else -> joint type="fixed"
-- Inertia: Box Ixx=m/12*(h^2+d^2), Cylinder Ixx=m/12*(3r^2+h^2), Sphere Ixx=2/5*m*r^2
-
-Available components:
 {COMPONENT_CATALOG}
 
-## Mounting Rules
+## Assembly Output (Option C)
 
-Components connect through compatible mounting interfaces. Use these rules to determine valid connections:
+For any "build", "create", "design", or "make" request, return this JSON:
+{"explanation": "describe what you're building and why", "assembly": {"base_link": "structural_baseplate_1", "ground_offset": true, "components": [...]}, "changes_summary": "N components, M DOF"}
 
-Compatible pairs:
-- axial_shaft <-> hub_bore: actuator output shaft into transmission bore (coaxial)
-- face_mount <-> face_mount: bolt-circle flanged connection (planar)
-- side_rail_mount <-> rail_slot: slide onto extrusion T-slot
-- bracket_mount <-> bracket_mount: L/U-bracket with through-holes
-- tool_changer_master <-> tool_changer_slave: quick-change plate interface
-- press_fit <-> bore: bearing/bushing pressed into housing
-
-Component mounting interfaces:
-{MOUNTING_CONTEXT}
-
-## Few-Shot Example (Option C)
-
-CRITICAL: Study this example. You only specify TOPOLOGY -- the backend handles all positioning, rotation, and sizing.
-
-User request: "Build a 2-DOF arm with a gripper on a baseplate"
-
-Correct response (ENTIRE response is this single JSON object, nothing before or after):
-{"explanation": "2-DOF arm: base plate on ground, shoulder servo yaw on top, upper arm extrusion horizontal, elbow servo pitch at end, gripper at tip", "assembly": {"base_link": "structural_baseplate_1", "ground_offset": true, "components": [
-  {"link_name": "structural_baseplate_1", "component_id": "structural_baseplate", "attach_to": null, "attach_face": null, "joint_type": "fixed", "joint_axis": "z"},
-  {"link_name": "actuator_servo_high_torque_1", "component_id": "actuator_servo_high_torque", "attach_to": "structural_baseplate_1", "attach_face": "top", "joint_type": "revolute", "joint_axis": "z"},
-  {"link_name": "structural_extrusion_2020_1", "component_id": "structural_extrusion_2020", "attach_to": "actuator_servo_high_torque_1", "attach_face": "top", "joint_type": "fixed", "joint_axis": "z", "length_mm": 200},
-  {"link_name": "actuator_servo_standard_1", "component_id": "actuator_servo_standard", "attach_to": "structural_extrusion_2020_1", "attach_face": "front", "joint_type": "revolute", "joint_axis": "y"},
-  {"link_name": "effector_parallel_gripper_small_1", "component_id": "effector_parallel_gripper_small", "attach_to": "actuator_servo_standard_1", "attach_face": "front", "joint_type": "fixed", "joint_axis": "z"}
-]}, "changes_summary": "5 components, 2 DOF"}
-
-## Key Rules
-
-1. **You only specify topology**: component_id, attach_to, attach_face, joint_type, joint_axis. NO coordinates, NO rpy values.
-2. **joint_axis**: Just use "x", "y", or "z". The backend resolves to numeric vectors.
-3. **attach_face**: "top", "bottom", "front", "back", "left", "right". The backend computes offsets and rotations automatically.
-4. **Extrusions auto-rotate**: When an extrusion attaches to "top", the backend automatically rotates it horizontal. Use attach_face="front" for the next component to put it at the tip.
-5. **length_mm**: Optional for extrusions. Default is 100mm. Use 150-300mm for arm segments.
-6. **ground_offset**: Set to true in the assembly object so the robot sits on the ground plane.
-7. **Arm pattern**: baseplate -> servo(top, revolute z) -> extrusion(top, fixed) -> servo(front, revolute y) -> extrusion(top, fixed) -> gripper(front, fixed)
-8. **Always start with a base**: Every robot MUST have a structural_baseplate as the root component. Never use an extrusion as root.
-9. **Include ALL components the user mentions**. Do not skip or simplify. If the user says "baseplate", include a baseplate. If they say "3 servos", include 3 servos.
-10. **Think through the kinematic chain before writing JSON**, but put your reasoning INSIDE the "explanation" field, NOT as separate text before the JSON. Your entire response must be a single JSON object.
-
-## Output Format
-
-Return ONLY this JSON structure (no other text). You have THREE options:
-
-Option A -- For modifications to existing URDF (adding/removing/changing parts):
-{"explanation": "...", "edits": [{"search": "exact text", "replace": "replacement"}, ...], "changes_summary": "..."}
-
-Option B -- For creating a new robot from scratch or replacing the entire URDF:
-{"explanation": "...", "full_urdf": "<?xml version=\"1.0\"?>\n<robot name=\"...\">...</robot>", "changes_summary": "..."}
-
-Option C -- For multi-component assemblies. You specify ONLY topology -- the backend computes all positions and rotations:
-{"explanation": "...", "assembly": {"base_link": "root_link_name", "ground_offset": true, "components": [{"link_name": "...", "component_id": "...", "attach_to": "parent_link", "attach_face": "top", "joint_type": "fixed", "joint_axis": "z"}, ...]}, "changes_summary": "..."}
-
-Per-component fields:
-- link_name: unique name (use component_id prefix + number, e.g. "actuator_servo_high_torque_1")
-- component_id: ID from the component library above
-- attach_to: parent link_name (null for root)
+Each component in the array:
+- link_name: unique name using component_id + number (e.g., "actuator_servo_high_torque_1")
+- component_id: exact ID from the library above
+- attach_to: parent's link_name (null for root)
 - attach_face: "top", "bottom", "front", "back", "left", "right"
 - joint_type: "fixed", "revolute", or "prismatic"
-- joint_axis: "x", "y", or "z" (the backend resolves to [1,0,0], [0,1,0], or [0,0,1])
-- length_mm: (optional, extrusions only) Override default 100mm. Use 150-300mm for arm links.
-DO NOT include coordinates, rpy values, or any numbers except length_mm. The backend handles ALL geometry.
+- joint_axis: "x", "y", or "z"
+- length_mm: (optional, extrusions only) default 100mm, use 150-300 for arm links
+- orientation: (optional, extrusions only) "horizontal", "vertical", or "auto"
+  - "horizontal": extends along +X (use for arm links)
+  - "vertical": extends along +Z (use for legs, vertical posts)
+  - "auto" (default): horizontal on "top" face, vertical on "bottom" face
 
-CRITICAL: ALWAYS use Option C when the user wants to build, create, design, or make a robot — regardless of how many components. Option C uses the backend compute engine for correct placement. NEVER write raw URDF coordinates yourself.
-Use Option A ONLY for small edits to an existing robot (e.g., "change the arm length", "remove the sensor").
-Option B is DEPRECATED — do not use it. Use Option C instead.
+## What the Backend Handles Automatically
 
-Edit rules (Option A only):
-- "search" must be an EXACT substring of the current URDF (verbatim, including whitespace)
-- "replace" is what replaces it
-- Edits are applied in order, each on the result of the previous
-- Keep edits minimal -- only change what's needed
+- All xyz coordinates and rpy rotations
+- Elongated parts use the orientation hint to determine rotation direction
+- Multiple children on the same face are distributed to corners (e.g., 4 wheels on "bottom" go to 4 corners)
+- Ground offset so the robot sits on the floor
+- Collision geometry, inertia computation, visual materials
+- GLB mesh loading for realistic 3D rendering
 
-Rules:
-- ALWAYS use component preset values for physical properties
-- Maintain valid URDF XML structure
-- Use SI units: meters, kilograms, radians
-- For Option A edits: keep edits minimal, maintain existing structure
-- For Option C assemblies: the backend handles ALL positioning -- do NOT calculate coordinates
+## Topology Rules
 
-CRITICAL OUTPUT SIZE RULES (Option A/B only):
-- NO XML comments in URDF output
-- NO collision elements (they will be auto-generated)
-- Minimal whitespace -- no blank lines between elements
-- Link names MUST use the full component ID prefix (e.g., "actuator_servo_high_torque_1")
-- For inertia, use simple diagonal values only
+1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
+2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
+3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
+4. attach_face="front" means the tip/end of an arm link (+X direction after auto-rotation).
+5. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
+6. Include ALL components the user mentions. Do not skip or simplify.
 
-REMINDER: Return ONLY JSON. No English preamble. Start your response with { and end with }.
+## Common Patterns (topology only -- no coordinates needed)
+
+Arms: baseplate -> servo(top, revolute z) -> extrusion(top, fixed, 200mm, horizontal) -> servo(front, revolute y) -> extrusion(top, fixed, 150mm, horizontal) -> gripper(front, fixed)
+
+Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- backend places them at corners automatically
+
+Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(top, fixed, 100mm, vertical) -> 4x knee_servo(front, revolute y) -> 4x lower_leg_extrusion(top, fixed, 80mm, vertical)
+
+Sensor mount: any_link -> sensor(top/front/left/right, fixed)
+
+## Edit Output (Option A)
+
+For small edits to existing robots ("change arm length", "remove sensor", "add a camera"):
+{"explanation": "...", "edits": [{"search": "exact text in URDF", "replace": "replacement"}], "changes_summary": "..."}
+
+Rules: search must be exact substring, edits applied in order, keep minimal.
+
+## Critical Rules
+
+- ALWAYS use Option C (assembly) for building robots. NEVER write raw URDF.
+- Put reasoning in the "explanation" field, not outside the JSON.
+- Use component IDs exactly as listed in the library.
+- The backend handles ALL geometry. You handle ALL design decisions.
+
+REMINDER: Return ONLY JSON. Start with { end with }.
 """
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
@@ -715,6 +668,439 @@ def _assemble_from_graph(assembly: dict) -> str:
     indent(robot)
     xml_str = '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
     return xml_str
+
+
+# ── Tool-Use Assembly Agent ─────────────────────────────────────────────────
+
+ASSEMBLY_TOOLS = [
+    {
+        "name": "add_component",
+        "description": "Add a component to the robot assembly. The placement engine computes exact 3D position from the face specification. Returns the updated assembly state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "component_id": {"type": "string", "description": "ID from the component library (e.g., 'actuator_servo_high_torque')"},
+                "parent_link": {"type": "string", "description": "Name of the parent link to attach to. Use null for the root/first component.", "nullable": True},
+                "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"], "description": "Which face of the parent to attach to"},
+                "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic"], "description": "Joint type connecting to parent"},
+                "joint_axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Rotation/translation axis. z=yaw/spin, y=pitch, x=roll"},
+                "length_mm": {"type": "number", "description": "Optional: override length for extrusions (default 100mm). Use 150-300 for arm links."},
+                "orientation": {"type": "string", "enum": ["horizontal", "vertical", "auto"], "description": "Orientation hint for elongated parts. 'horizontal' extends along +X, 'vertical' stays along +Z, 'auto' lets the engine decide."},
+            },
+            "required": ["component_id", "parent_link", "attach_face", "joint_type", "joint_axis"],
+        },
+    },
+    {
+        "name": "get_state",
+        "description": "Get the current assembly state including all links, their world positions, and bounding boxes. Use this to verify placement before adding more components.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "finish",
+        "description": "Signal that the assembly is complete. Call this when all components have been placed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "Brief description of the completed robot"},
+            },
+            "required": ["summary"],
+        },
+    },
+]
+
+ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by calling tools — one component at a time.
+
+## How It Works
+
+1. Call add_component for each part, starting with the base
+2. After each call, you receive the updated assembly state (all links, positions, bounding boxes)
+3. Use the state to verify placement before adding the next component
+4. Call finish when done
+
+## Available Components
+
+{COMPONENT_CATALOG}
+
+## Placement Rules (the engine handles these, but you should understand them)
+
+- "top" face = +Z direction. "front" = +X. "bottom" = -Z.
+- Elongated parts (extrusions) on "top" with orientation="horizontal" extend along +X
+- Elongated parts with orientation="vertical" stay along +Z (for legs)
+- Multiple children on the same face are auto-distributed to corners
+- Ground plane is at Z=0
+
+## Design Rules
+
+- ALWAYS start with structural_baseplate as the first component (parent_link=null)
+- Actuators/motors use joint_type="revolute". Structural/sensors use "fixed".
+- joint_axis: "z" for yaw/spin, "y" for pitch, "x" for roll
+- For arms: servo(revolute z) -> extrusion(horizontal) -> servo(revolute y) -> extrusion(horizontal) -> gripper
+- For legs: servo(revolute y) on bottom -> extrusion(vertical) -> servo(revolute y) -> extrusion(vertical)
+- For wheels: wheel on bottom face with revolute y
+- Use length_mm=150-250 for arm/leg extrusions
+
+## Important
+
+- Place components ONE AT A TIME. Check the state after each placement.
+- If something looks wrong in the state (overlap, wrong position), you can adjust by adding a corrective component.
+- Call finish when the robot is complete.
+"""
+
+
+def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
+    """Execute an add_component tool call, updating the assembly state."""
+    try:
+        from core.presets import get_component
+    except ImportError:
+        return {"error": "Preset library not available"}
+
+    comp_id = tool_input["component_id"]
+    parent_link = tool_input.get("parent_link")
+    attach_face = tool_input.get("attach_face", "top")
+    joint_type = tool_input.get("joint_type", "fixed")
+    joint_axis_str = tool_input.get("joint_axis", "z")
+    length_mm = tool_input.get("length_mm")
+    orientation = tool_input.get("orientation", "auto")
+
+    preset = get_component(comp_id)
+    if not preset:
+        return {"error": f"Unknown component_id: {comp_id}"}
+
+    phys = preset.get("physical", {})
+    bb = phys.get("bounding_box_mm")
+    if bb and len(bb) >= 3:
+        bbox_m = [b / 1000.0 for b in bb]
+    else:
+        cs = phys.get("cross_section_mm")
+        if cs and len(cs) >= 2:
+            bbox_m = [cs[0] / 1000.0, cs[1] / 1000.0, 0.1]
+        else:
+            bbox_m = [0.05, 0.05, 0.05]
+
+    if length_mm and phys.get("cross_section_mm"):
+        bbox_m[2] = length_mm / 1000.0
+
+    mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm") or 0.1
+
+    # Determine link name
+    links = assembly_state.get("links", {})
+    idx = len(links) + 1
+    link_name = f"{comp_id}_{idx}"
+
+    # Compute placement
+    import math
+    axis_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
+    joint_axis = axis_map.get(joint_axis_str, [0, 0, 1])
+
+    gap = 0.005
+    px, py, pz = 0.05, 0.05, 0.05  # default parent half-extents
+    origin_xyz = [0, 0, 0]
+    origin_rpy = [0, 0, 0]
+
+    if parent_link and parent_link in links:
+        parent_info = links[parent_link]
+        p_bbox = parent_info.get("bbox_m", [0.1, 0.1, 0.1])
+        px, py, pz = p_bbox[0] / 2, p_bbox[1] / 2, p_bbox[2] / 2
+        parent_world = parent_info.get("world_xyz", [0, 0, 0])
+    else:
+        parent_world = [0, 0, 0]
+
+    cx, cy, cz = bbox_m[0] / 2, bbox_m[1] / 2, bbox_m[2] / 2
+
+    # Check if child is elongated (rod-shaped)
+    sorted_dims = sorted(bbox_m)
+    is_elongated = sorted_dims[2] > sorted_dims[0] * 2.5 and sorted_dims[1] < sorted_dims[0] * 2.0
+
+    # Determine if we should rotate the elongated part
+    should_rotate_horizontal = False
+    if is_elongated:
+        if orientation == "horizontal":
+            should_rotate_horizontal = True
+        elif orientation == "vertical":
+            should_rotate_horizontal = False
+        else:  # auto
+            # Auto: horizontal for "top" face (arms), vertical for "bottom" face (legs)
+            should_rotate_horizontal = attach_face in ("top", "front", "back")
+
+    if should_rotate_horizontal:
+        origin_rpy = [0, math.pi / 2, 0]
+        # After rotation, Z extent maps to X, X extent maps to Z
+        cz_eff = cx  # cross-section becomes Z extent
+    else:
+        cz_eff = cz
+
+    # Count how many children are already on this face of this parent
+    face_key = f"{parent_link}:{attach_face}"
+    existing_on_face = assembly_state.get("face_counts", {}).get(face_key, 0)
+    total_on_face = existing_on_face + 1  # including this one
+
+    # Compute tangential offset for multi-child distribution
+    tu, tv = 0, 0
+    if existing_on_face > 0:
+        # Simple offset: alternate sides
+        inset = 0.7
+        if existing_on_face == 1:
+            tu = -inset * px if attach_face in ("top", "bottom") else -inset * py
+        elif existing_on_face == 2:
+            tv = inset * py if attach_face in ("top", "bottom") else inset * pz
+        elif existing_on_face == 3:
+            tu = -inset * px if attach_face in ("top", "bottom") else -inset * py
+            tv = -inset * py if attach_face in ("top", "bottom") else -inset * pz
+
+    # Face-based offset
+    face_offsets = {
+        "top":    [tu, tv, pz + cz_eff + gap],
+        "bottom": [tu, tv, -(pz + cz_eff + gap)],
+        "front":  [px + cx + gap, tu, tv],
+        "back":   [-(px + cx + gap), tu, tv],
+        "right":  [tu, py + cy + gap, tv],
+        "left":   [tu, -(py + cy + gap), tv],
+    }
+    origin_xyz = face_offsets.get(attach_face, [0, 0, pz + cz_eff + gap])
+
+    # Compute world position
+    world_xyz = [
+        parent_world[0] + origin_xyz[0],
+        parent_world[1] + origin_xyz[1],
+        parent_world[2] + origin_xyz[2],
+    ]
+
+    # Update assembly state
+    links[link_name] = {
+        "component_id": comp_id,
+        "parent": parent_link,
+        "attach_face": attach_face,
+        "joint_type": joint_type,
+        "joint_axis": joint_axis,
+        "origin_xyz": [round(v, 4) for v in origin_xyz],
+        "origin_rpy": [round(v, 4) for v in origin_rpy],
+        "bbox_m": [round(v, 4) for v in bbox_m],
+        "world_xyz": [round(v, 4) for v in world_xyz],
+        "mass_kg": mass,
+    }
+    assembly_state["links"] = links
+
+    # Update face counts
+    face_counts = assembly_state.get("face_counts", {})
+    face_counts[face_key] = existing_on_face + 1
+    assembly_state["face_counts"] = face_counts
+
+    # Build state summary for Claude
+    state_lines = []
+    for lname, linfo in links.items():
+        pos = linfo["world_xyz"]
+        bb = linfo["bbox_m"]
+        state_lines.append(f"  {lname}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}] bbox={bb[0]:.3f}x{bb[1]:.3f}x{bb[2]:.3f}m parent={linfo.get('parent','none')}")
+
+    return {
+        "success": True,
+        "link_name": link_name,
+        "placed_at": {"xyz": origin_xyz, "rpy": origin_rpy, "world_xyz": world_xyz},
+        "total_links": len(links),
+        "assembly_state": "\n".join(state_lines),
+    }
+
+
+def _build_urdf_from_state(assembly_state: dict) -> str:
+    """Generate URDF XML from the assembly state dict."""
+    import xml.etree.ElementTree as ET
+    import math
+
+    try:
+        from core.presets import get_component
+    except ImportError:
+        return ""
+
+    links = assembly_state.get("links", {})
+    robot = ET.Element("robot", name="assembled_robot")
+
+    for link_name, info in links.items():
+        preset = get_component(info["component_id"])
+        if not preset:
+            continue
+
+        phys = preset.get("physical", {})
+        bbox_m = info["bbox_m"]
+        mass = info["mass_kg"]
+        shape = phys.get("inertia_primitive", "box")
+
+        # Link element
+        link_el = ET.SubElement(robot, "link", name=link_name)
+        inertial = ET.SubElement(link_el, "inertial")
+        ET.SubElement(inertial, "mass", value=f"{mass:.4f}")
+        ET.SubElement(inertial, "origin", xyz="0 0 0", rpy="0 0 0")
+
+        if shape == "cylinder":
+            r = max(bbox_m[0], bbox_m[1]) / 2
+            h = bbox_m[2]
+            ixx = mass / 12 * (3 * r * r + h * h)
+            izz = mass / 2 * r * r
+            ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{ixx:.6f}", izz=f"{izz:.6f}", ixy="0", ixz="0", iyz="0")
+        else:
+            lx, ly, lz = bbox_m
+            ixx = mass / 12 * (ly * ly + lz * lz)
+            iyy = mass / 12 * (lx * lx + lz * lz)
+            izz = mass / 12 * (lx * lx + ly * ly)
+            ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{iyy:.6f}", izz=f"{izz:.6f}", ixy="0", ixz="0", iyz="0")
+
+        visual = ET.SubElement(link_el, "visual")
+        ET.SubElement(visual, "origin", xyz="0 0 0", rpy="0 0 0")
+        geom = ET.SubElement(visual, "geometry")
+        if shape == "cylinder":
+            r = max(bbox_m[0], bbox_m[1]) / 2
+            ET.SubElement(geom, "cylinder", radius=f"{r:.4f}", length=f"{bbox_m[2]:.4f}")
+        else:
+            ET.SubElement(geom, "box", size=f"{bbox_m[0]:.4f} {bbox_m[1]:.4f} {bbox_m[2]:.4f}")
+        mat = ET.SubElement(visual, "material", name=f"mat_{link_name}")
+        ET.SubElement(mat, "color", rgba="0.7 0.7 0.7 1")
+
+        # Joint (skip for root)
+        parent = info.get("parent")
+        if parent and parent in links:
+            oxyz = info["origin_xyz"]
+            orpy = info["origin_rpy"]
+            joint_el = ET.SubElement(robot, "joint", name=f"j_{link_name}", type=info["joint_type"])
+            ET.SubElement(joint_el, "parent", link=parent)
+            ET.SubElement(joint_el, "child", link=link_name)
+            ET.SubElement(joint_el, "origin",
+                         xyz=f"{oxyz[0]:.4f} {oxyz[1]:.4f} {oxyz[2]:.4f}",
+                         rpy=f"{orpy[0]:.4f} {orpy[1]:.4f} {orpy[2]:.4f}")
+            ax = info["joint_axis"]
+            ET.SubElement(joint_el, "axis", xyz=f"{ax[0]} {ax[1]} {ax[2]}")
+            if info["joint_type"] in ("revolute", "prismatic"):
+                me = preset.get("mechanical_electrical", {})
+                effort = me.get("max_torque_nm") or me.get("holding_torque_nm") or 10
+                ET.SubElement(joint_el, "limit", lower="-3.14159", upper="3.14159",
+                             effort=f"{effort}", velocity="1.0")
+
+    # Pretty print
+    def indent(elem, level=0):
+        i = "\n" + level * "  "
+        if len(elem):
+            if not elem.text or not elem.text.strip(): elem.text = i + "  "
+            if not elem.tail or not elem.tail.strip(): elem.tail = i
+            for child in elem: indent(child, level + 1)
+            if not child.tail or not child.tail.strip(): child.tail = i
+        else:
+            if level and (not elem.tail or not elem.tail.strip()): elem.tail = i
+        if not level: elem.tail = "\n"
+
+    indent(robot)
+    return '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
+
+
+def generate_assembly_with_tools(prompt: str, session_id: str = "default",
+                                  on_progress=None) -> dict:
+    """
+    Use Claude's tool-use API to build a robot iteratively.
+    Claude calls add_component one at a time, seeing the state after each placement.
+    Returns the final URDF when Claude calls finish.
+    """
+    client = _get_client()
+
+    system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+
+    messages = [{"role": "user", "content": f"Build this robot: {prompt}"}]
+    assembly_state = {"links": {}, "face_counts": {}}
+
+    max_rounds = 30  # safety limit
+    round_num = 0
+
+    if on_progress:
+        on_progress("thinking", "Planning robot design...")
+
+    while round_num < max_rounds:
+        round_num += 1
+        print(f"[tool-agent] Round {round_num}, {len(assembly_state['links'])} links placed", file=sys.stderr)
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            system=system_prompt,
+            messages=messages,
+            tools=ASSEMBLY_TOOLS,
+            timeout=60.0,
+        )
+
+        # Process response content blocks
+        assistant_content = response.content
+        messages.append({"role": "assistant", "content": assistant_content})
+
+        # Check if there are any tool_use blocks
+        tool_uses = [block for block in assistant_content if block.type == "tool_use"]
+
+        if not tool_uses:
+            # No tool calls — Claude is done (returned final text)
+            text_blocks = [block.text for block in assistant_content if hasattr(block, "text")]
+            explanation = " ".join(text_blocks) if text_blocks else "Assembly complete"
+            break
+
+        # Execute each tool call
+        tool_results = []
+        for tool_use in tool_uses:
+            tool_name = tool_use.name
+            tool_input = tool_use.input
+
+            print(f"[tool-agent] Tool call: {tool_name}({json.dumps(tool_input, indent=None)})", file=sys.stderr)
+
+            if tool_name == "add_component":
+                result = _execute_add_component(assembly_state, tool_input)
+                if on_progress:
+                    n = len(assembly_state["links"])
+                    on_progress("generating", f"Placing component {n}...")
+
+            elif tool_name == "get_state":
+                state_lines = []
+                for lname, linfo in assembly_state.get("links", {}).items():
+                    pos = linfo["world_xyz"]
+                    bb = linfo["bbox_m"]
+                    state_lines.append(f"  {lname}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}] bbox={bb[0]:.3f}x{bb[1]:.3f}x{bb[2]:.3f}m")
+                result = {"total_links": len(assembly_state["links"]), "state": "\n".join(state_lines)}
+
+            elif tool_name == "finish":
+                result = {"success": True, "summary": tool_input.get("summary", "Complete")}
+                # Build final URDF
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": json.dumps(result),
+                })
+                messages.append({"role": "user", "content": tool_results})
+
+                explanation = tool_input.get("summary", "Robot assembly complete")
+                # Break out of the loop
+                round_num = max_rounds  # force exit
+                break
+            else:
+                result = {"error": f"Unknown tool: {tool_name}"}
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_use.id,
+                "content": json.dumps(result),
+            })
+
+        if round_num >= max_rounds:
+            break
+
+        # Send tool results back to Claude
+        messages.append({"role": "user", "content": tool_results})
+
+    # Generate URDF from final state
+    new_urdf = _build_urdf_from_state(assembly_state)
+    n_links = len(assembly_state["links"])
+    n_joints = sum(1 for l in assembly_state["links"].values() if l.get("parent"))
+
+    if on_progress:
+        on_progress("done", "Assembly complete")
+
+    print(f"[tool-agent] Done: {n_links} links, {n_joints} joints, {round_num} rounds", file=sys.stderr)
+
+    return {
+        "explanation": explanation if 'explanation' in dir() else "Assembly complete",
+        "new_urdf": new_urdf,
+        "stats": f"{n_links} components, {n_joints} joints, {round_num} rounds",
+    }
 
 
 def _validate_and_log(urdf: str) -> str:

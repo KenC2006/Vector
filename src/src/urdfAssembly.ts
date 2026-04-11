@@ -79,6 +79,7 @@ export interface AssemblyComponent {
   joint_type: string
   joint_axis: string
   length_mm?: number
+  orientation?: 'horizontal' | 'vertical' | 'auto'
 }
 
 export interface AssemblyGraph {
@@ -1252,42 +1253,132 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   /**
    * Face-based placement for AI assembly resolver.
    * Uses the explicit attach_face from Claude's topology instead of mounting_logic.
+   * Supports multiple children on the same face with automatic offset distribution.
+   *
+   * @param childIndex - which child this is on this face (0-based)
+   * @param totalOnFace - total children that will be on this face
    */
   function computeFacePlacement(
     doc: Document, parentLinkName: string,
     childX: number, childY: number, childZ: number,
     attachFace: string | null,
     isChildElongated: boolean = false,
+    childIndex: number = 0,
+    totalOnFace: number = 1,
+    orientation: string = 'auto',
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0.005
 
     const face = attachFace || 'top'
 
-    // For elongated children (extrusions) on "top", auto-rotate to horizontal.
-    // After pitch 90°, the child's local Z axis points along world +X,
-    // so use the child's cross-section (X) for the Z offset, not its length.
-    if (face === 'top' && isChildElongated) {
-      const oz = parent.hz + childX / 2 + gap  // cross-section becomes Z extent after rotation
-      return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 1.5708 0' }
+    // Compute tangential offsets for multi-child distribution on the same face
+    let tu = 0, tv = 0
+    if (totalOnFace > 1) {
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face)
+      tu = offsets.u
+      tv = offsets.v
     }
 
+    // Determine if we should rotate the elongated child to horizontal
+    let shouldRotateHorizontal = false
+    if (isChildElongated) {
+      if (orientation === 'horizontal') {
+        shouldRotateHorizontal = true
+      } else if (orientation === 'vertical') {
+        shouldRotateHorizontal = false
+      } else {
+        // Auto: horizontal for top/front/back faces (arms), vertical for bottom (legs)
+        shouldRotateHorizontal = face === 'top'
+      }
+    }
+
+    if (shouldRotateHorizontal && face === 'top') {
+      const oz = parent.hz + childX / 2 + gap  // cross-section becomes Z extent after rotation
+      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: '0 1.5708 0' }
+    }
+
+    // Face normal offset + tangential multi-child offset
     switch (face) {
       case 'top':
-        return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
       case 'bottom':
-        return { xyz: `0 0 ${(-(parent.hz + childZ / 2 + gap)).toFixed(4)}`, rpy: '0 0 0' }
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${(-(parent.hz + childZ / 2 + gap)).toFixed(4)}`, rpy: '0 0 0' }
       case 'front':
-        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} 0 0`, rpy: '0 0 0' }
+        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
       case 'back':
-        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} 0 0`, rpy: '0 0 0' }
+        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
       case 'right':
-        return { xyz: `0 ${(parent.hy + childY / 2 + gap).toFixed(4)} 0`, rpy: '0 0 0' }
+        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
       case 'left':
-        return { xyz: `0 ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} 0`, rpy: '0 0 0' }
+        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
       default:
         return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
     }
+  }
+
+  /**
+   * Compute tangential UV offsets for distributing multiple children on a face.
+   * Returns offsets along the face's two tangent axes.
+   */
+  function _computeMultiChildOffsets(
+    total: number, index: number,
+    parent: { hx: number; hy: number; hz: number },
+    face: string,
+  ): { u: number; v: number } {
+    // Determine the face's tangent extents (how much room to spread children)
+    let extU: number, extV: number
+    switch (face) {
+      case 'top': case 'bottom':
+        extU = parent.hx; extV = parent.hy; break
+      case 'front': case 'back':
+        extU = parent.hy; extV = parent.hz; break
+      case 'left': case 'right':
+        extU = parent.hx; extV = parent.hz; break
+      default:
+        extU = parent.hx; extV = parent.hy
+    }
+
+    // Inset from edge (70% of half-extent so children are near corners but not at the very edge)
+    const inset = 0.7
+
+    if (total === 2) {
+      // Side by side along U axis
+      const positions = [-inset, inset]
+      return { u: positions[index] * extU, v: 0 }
+    }
+    if (total === 3) {
+      // Triangle pattern
+      const positions = [
+        { u: 0, v: inset },
+        { u: -inset, v: -inset * 0.5 },
+        { u: inset, v: -inset * 0.5 },
+      ]
+      return { u: positions[index].u * extU, v: positions[index].v * extV }
+    }
+    if (total === 4) {
+      // Four corners
+      const positions = [
+        { u: inset, v: inset },    // front-right
+        { u: -inset, v: inset },   // front-left
+        { u: inset, v: -inset },   // back-right
+        { u: -inset, v: -inset },  // back-left
+      ]
+      return { u: positions[index].u * extU, v: positions[index].v * extV }
+    }
+    if (total === 6) {
+      // 2x3 grid
+      const col = index % 3
+      const row = Math.floor(index / 3)
+      const u = (col - 1) * inset * extU
+      const v = (row === 0 ? inset : -inset) * extV
+      return { u, v }
+    }
+
+    // Generic: spread linearly along U axis
+    const step = (2 * inset * extU) / Math.max(total - 1, 1)
+    const u = -inset * extU + index * step
+    return { u, v: 0 }
   }
 
   // Resolve which category a component belongs to
@@ -2548,6 +2639,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     placedCount++
     console.log(`[assembly] Root placed: ${rootLinkName} (${root.component_id})`)
 
+    // Pre-compute how many children attach to each parent:face pair
+    // so we can distribute them (e.g., 4 wheels on bottom corners)
+    const faceChildCounts = new Map<string, number>()
+    const faceChildIndex = new Map<string, number>()
+    for (const comp of components) {
+      if (!comp.attach_to) continue
+      const key = `${comp.attach_to}:${comp.attach_face || 'top'}`
+      faceChildCounts.set(key, (faceChildCounts.get(key) || 0) + 1)
+      faceChildIndex.set(key, 0) // will increment as we place
+    }
+    console.log('[assembly] Face child distribution:', Object.fromEntries(faceChildCounts))
+
     // Now iterate remaining components in dependency order
     const remaining = components.filter(c => c.attach_to !== null)
     let maxIter = remaining.length * 2 // safety valve
@@ -2568,7 +2671,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Select the parent link so addComponentCore attaches to it
       selectLink(parentLinkName)
 
-      // Use computePlacement for positioning (same as manual add)
+      // Compute child dimensions
       const cPhys = preset.physical
       const cBb = cPhys.bounding_box_mm ?? cPhys.cross_section_mm ?? [40, 40, 40]
       const cxm = (cBb[0] ?? 40) / 1000
@@ -2578,12 +2681,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         czm = comp.length_mm / 1000
       }
 
+      // Get multi-child placement info
+      const faceKey = `${comp.attach_to}:${comp.attach_face || 'top'}`
+      const totalOnFace = faceChildCounts.get(faceKey) || 1
+      const childIdx = faceChildIndex.get(faceKey) || 0
+      faceChildIndex.set(faceKey, childIdx + 1)
+
       const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
       // Detect rod-shaped components (two short dims, one long)
       const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
       const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated)
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, elongated=${isElongated}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
+      const orientation = comp.orientation || 'auto'
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation)
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }

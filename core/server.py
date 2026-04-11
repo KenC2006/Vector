@@ -71,8 +71,9 @@ _generate_edit_streaming = None
 _generate_completion = None
 _ai_import_error = None
 
+_generate_assembly_with_tools = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -399,6 +400,22 @@ class JSONRPCServer:
             raise ValueError("Parameter 'urdf_content' must be a string")
 
         try:
+            # Tool-use assembly agent (disabled by default — too many API calls / expensive)
+            # To enable: pass "use_tools": true in params
+            if params.get("use_tools") and _generate_assembly_with_tools is not None:
+                print(f"[ai_edit] Using tool-use assembly agent for: {prompt[:80]}", file=sys.stderr)
+                result = _generate_assembly_with_tools(
+                    prompt, session_id,
+                    on_progress=self._emit_progress,
+                )
+                self._emit_progress("done", "Complete")
+                return {
+                    "explanation": result.get("explanation", "Assembly complete"),
+                    "new_urdf": result.get("new_urdf", urdf_content),
+                    "stats": result.get("stats", "Assembly complete"),
+                }
+
+            # Standard edit path
             kg_json = {}
             try:
                 if _parse_urdf_string is not None:
@@ -407,7 +424,6 @@ class JSONRPCServer:
             except Exception as parse_err:
                 print(f"[ai_edit] URDF pre-parse skipped: {parse_err}", file=sys.stderr)
 
-            # Use streaming if available, fallback to non-streaming
             if _generate_edit_streaming is not None:
                 result = _generate_edit_streaming(
                     prompt, urdf_content, kg_json, kinematic_context, session_id,
@@ -424,7 +440,6 @@ class JSONRPCServer:
                 "new_urdf": result.get("new_urdf", urdf_content),
                 "stats": result.get("stats", "Edit complete"),
             }
-            # Pass through assembly_graph if present (Option C — frontend resolves placement)
             if "assembly_graph" in result:
                 response["assembly_graph"] = result["assembly_graph"]
             return response

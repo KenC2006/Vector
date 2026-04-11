@@ -2887,6 +2887,24 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
       console.log('[AI] Received assembly_graph — resolving via frontend snap system')
       const assemblyResult = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
       if (assemblyResult) {
+        // Run post-assembly validation
+        let validationIssues: string[] = []
+        try {
+          const valResult = await invoke('validate_urdf_content', { urdfContent: assemblyResult }) as {
+            results: { name: string; severity: string; message: string; category: string }[]
+          }
+          validationIssues = valResult.results
+            .filter(r => r.severity === 'warn' || r.severity === 'error')
+            .filter(r => r.category === 'Spatial')
+            .map(r => `[${r.severity}] ${r.name}: ${r.message}`)
+        } catch {
+          // validation endpoint may not be available — non-blocking
+        }
+
+        if (validationIssues.length > 0) {
+          console.log(`[AI] Post-assembly validation found ${validationIssues.length} spatial issues:`, validationIssues)
+        }
+
         const diff = computeSimpleDiff(currentUrdf, assemblyResult)
         addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
           diff,
