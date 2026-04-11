@@ -29,9 +29,11 @@ export function initViewportControls(deps: {
   zoomCamera: (factor: number) => void
   setViewportCollapsed: (collapsed: boolean) => void
   setViewportFullscreen: (full: boolean) => void
+  setFocusMode: (on: boolean) => void
   updateViewportInfo: () => void
   viewportCollapsed: () => boolean
   viewportFullscreen: () => boolean
+  focusMode: () => boolean
 } {
   const {
     camera, renderer, controls, robot,
@@ -223,14 +225,41 @@ export function initViewportControls(deps: {
   // Double-click resize handle to toggle fullscreen
   handle.addEventListener('dblclick', () => setViewportFullscreen(!_viewportFullscreen))
 
+  // ── Focus mode (sidebar + viewport, no editor) ────────────────────────────
+
+  let _focusMode = false
+
+  function setFocusMode(on: boolean) {
+    if (on && _viewportFullscreen) setViewportFullscreen(false)
+    if (on && _viewportCollapsed) setViewportCollapsed(false)
+    _focusMode = on
+    if (on) {
+      savedEditorWidth = editorPanel.style.width || '50%'
+      editorPanel.style.display = 'none'
+      handle.style.display = 'none'
+      viewportPanel.style.flex = '1'
+    } else {
+      editorPanel.style.display = ''
+      handle.style.display = ''
+      viewportPanel.style.flex = ''
+      editorPanel.style.width = savedEditorWidth
+    }
+    requestAnimationFrame(() => {
+      resize()
+      if ((window as any).__vectorEditor) (window as any).__vectorEditor.layout()
+    })
+  }
+
   return {
     resize,
     focusOnRobot,
     zoomCamera,
     setViewportCollapsed,
     setViewportFullscreen,
+    setFocusMode,
     updateViewportInfo,
     viewportCollapsed: () => _viewportCollapsed,
     viewportFullscreen: () => _viewportFullscreen,
+    focusMode: () => _focusMode,
   }
 }
