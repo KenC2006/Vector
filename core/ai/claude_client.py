@@ -254,25 +254,6 @@ Compatible pairs:
 Component mounting interfaces:
 {MOUNTING_CONTEXT}
 
-## Spatial Placement Rules
-
-CRITICAL: When adding components, you MUST calculate correct joint origin offsets.
-
-1. **Check the Spatial Layout** -- it shows world-frame [x,y,z] position and bounding box of every existing link. Use this to avoid overlaps and calculate correct offsets.
-
-2. **Joint origin = offset from parent link's frame to child link's frame.** To attach a child to the END of a parent:
-   - If parent is a vertical link with bbox LxWxH: offset Z by H/2 (half the parent height) + child_H/2 (half the child height)
-   - If parent is a horizontal link: offset X or Y by the appropriate half-extents
-   - The child's geometry center will be at the joint origin relative to parent
-
-3. **Stacking rule**: For a chain A->B->C, if A is at world [0,0,0] and is 0.1m tall, B's joint origin should be [0,0,0.05] to sit on top. If B is 0.08m tall, C's joint origin should be [0,0,0.08] (relative to B, which is B's full extent since B's frame is at B's center).
-
-4. **Wheels/feet**: Place at Z offsets that put the contact point at Z=0 in world frame. Work backwards: if base is at height H, wheel joints need origin Z = -H.
-
-5. **Side-mounted components** (sensors, cameras): Use X or Y offsets, not just Z. E.g., a camera on the left side: offset Y = parent_width/2 + camera_width/2.
-
-6. **NEVER use origin xyz="0 0 0" for non-root joints** -- this stacks everything at the same point.
-
 ## Few-Shot Example (Option C)
 
 CRITICAL: Study this example. You only specify TOPOLOGY -- the backend handles all positioning, rotation, and sizing.
@@ -296,8 +277,10 @@ Correct response (ENTIRE response is this single JSON object, nothing before or 
 4. **Extrusions auto-rotate**: When an extrusion attaches to "top", the backend automatically rotates it horizontal. Use attach_face="front" for the next component to put it at the tip.
 5. **length_mm**: Optional for extrusions. Default is 100mm. Use 150-300mm for arm segments.
 6. **ground_offset**: Set to true in the assembly object so the robot sits on the ground plane.
-7. **Arm pattern**: base -> servo(top, revolute z) -> extrusion(top, fixed) -> servo(front, revolute y) -> extrusion(top, fixed) -> gripper(front, fixed)
-8. **Think through the kinematic chain before writing JSON**, but put your reasoning INSIDE the "explanation" field, NOT as separate text before the JSON. Your entire response must be a single JSON object.
+7. **Arm pattern**: baseplate -> servo(top, revolute z) -> extrusion(top, fixed) -> servo(front, revolute y) -> extrusion(top, fixed) -> gripper(front, fixed)
+8. **Always start with a base**: Every robot MUST have a structural_baseplate as the root component. Never use an extrusion as root.
+9. **Include ALL components the user mentions**. Do not skip or simplify. If the user says "baseplate", include a baseplate. If they say "3 servos", include 3 servos.
+10. **Think through the kinematic chain before writing JSON**, but put your reasoning INSIDE the "explanation" field, NOT as separate text before the JSON. Your entire response must be a single JSON object.
 
 ## Output Format
 
@@ -336,17 +319,15 @@ Rules:
 - ALWAYS use component preset values for physical properties
 - Maintain valid URDF XML structure
 - Use SI units: meters, kilograms, radians
-- If adding links, include inertial, visual, and collision elements
-- Position robots so the ground contact points (feet, wheels, base) are at Z=0 and the body is ABOVE the ground. The grid plane is at Z=0 -- nothing should be below it.
-- For legged robots: set joint origins so the legs are in a natural standing pose at rest (knees slightly bent, not straight). Use negative Z offsets from hip to knee to foot. The body should be at a realistic height above ground.
+- For Option A edits: keep edits minimal, maintain existing structure
+- For Option C assemblies: the backend handles ALL positioning -- do NOT calculate coordinates
 
-CRITICAL OUTPUT SIZE RULES:
+CRITICAL OUTPUT SIZE RULES (Option A/B only):
 - NO XML comments in URDF output
 - NO collision elements (they will be auto-generated)
 - Minimal whitespace -- no blank lines between elements
-- Omit optional attributes that use default values
-- Keep joint names short but link names MUST use the full component ID prefix (e.g., "actuator_servo_high_torque_1")
-- For inertia, use simple diagonal values only (ixy=ixz=iyz=0 can be omitted)
+- Link names MUST use the full component ID prefix (e.g., "actuator_servo_high_torque_1")
+- For inertia, use simple diagonal values only
 
 REMINDER: Return ONLY JSON. No English preamble. Start your response with { and end with }.
 """
@@ -448,6 +429,36 @@ def _assemble_from_graph(assembly: dict) -> str:
 
     components = assembly.get("components", [])
     base_link = assembly.get("base_link", components[0]["link_name"] if components else "base_link")
+
+    # Auto-prepend a baseplate if the root component isn't a plate-shaped component
+    if components:
+        root_comp = components[0]
+        root_preset = get_component(root_comp.get("component_id", ""))
+        if root_preset:
+            root_bbox = root_preset.get("physical", {}).get("bounding_box_mm", [50, 50, 50])
+            # Check if root is plate-shaped (one dim much smaller than others)
+            if root_bbox and len(root_bbox) >= 3:
+                sorted_bb = sorted(root_bbox)
+                is_plate = sorted_bb[0] < sorted_bb[1] * 0.2  # thinnest dim < 20% of middle
+            else:
+                is_plate = False
+            if not is_plate:
+                print(f"[assembly] Root '{root_comp['component_id']}' is not a plate — auto-prepending baseplate", file=sys.stderr)
+                bp_name = "structural_baseplate_auto"
+                baseplate_comp = {
+                    "link_name": bp_name,
+                    "component_id": "structural_baseplate",
+                    "attach_to": None,
+                    "attach_face": None,
+                    "joint_type": "fixed",
+                    "joint_axis": "z",
+                }
+                # Re-parent the original root onto the baseplate
+                root_comp["attach_to"] = bp_name
+                root_comp["attach_face"] = root_comp.get("attach_face") or "top"
+                components.insert(0, baseplate_comp)
+                base_link = bp_name
+                assembly["ground_offset"] = True
 
     # Build a lookup: link_name -> component definition
     comp_lookup = {}
@@ -575,10 +586,12 @@ def _assemble_from_graph(assembly: dict) -> str:
         shape = phys.get("inertia_primitive", "box")
         is_rod = _is_elongated(bbox_m)
 
-        # For rods, offset visual in local +Z so geometry extends forward from the joint.
-        # After the joint's rpy rotation (pitch 90°), local Z becomes world X,
-        # so this offset correctly pushes the rod forward along the arm direction.
-        local_visual_offset = f"0 0 {bbox_m[2]/2:.4f}" if is_rod else "0 0 0"
+        # For rods that have a parent (i.e., attached to something), offset visual in
+        # local +Z so geometry extends forward from the joint. After the joint's rpy
+        # rotation (pitch 90°), local Z becomes world X.
+        # Root rods (no parent) should NOT be offset — they sit centered at origin.
+        has_parent = comp.get("attach_to") is not None
+        local_visual_offset = f"0 0 {bbox_m[2]/2:.4f}" if (is_rod and has_parent) else "0 0 0"
 
         # Link element
         link_el = ET.SubElement(robot, "link", name=link_name)
