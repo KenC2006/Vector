@@ -185,6 +185,7 @@ const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'toggleGrid', label: 'Toggle Grid', defaultKey: 'G', context: 'Viewport' },
   { id: 'toggleGraph', label: 'Toggle Node Graph', defaultKey: 'N', context: 'Viewport' },
   { id: 'togglePreview', label: 'Toggle 3D Preview', defaultKey: 'P', context: 'Viewport' },
+  { id: 'focusMode', label: 'Focus Mode (Sidebar + 3D)', defaultKey: 'Shift+F', context: 'Viewport' },
   { id: 'undo', label: 'Undo', defaultKey: 'Ctrl+Z', context: 'Viewport' },
   { id: 'redo', label: 'Redo', defaultKey: 'Ctrl+Y', context: 'Viewport' },
   { id: 'inspector', label: 'Open Inspector', defaultKey: 'I', context: 'Viewport' },

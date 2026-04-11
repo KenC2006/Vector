@@ -155,18 +155,74 @@ function getCurrentChat(): ChatConversation | undefined {
 }
 
 function updateChatDropdown() {
+  // Update hidden select for compatibility
   const select = document.getElementById('vc-chat-select') as HTMLSelectElement | null
-  if (!select) return
-  select.innerHTML = ''
-  // Newest first
+  if (select) {
+    select.innerHTML = ''
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      const chat = chatHistory[i]
+      const opt = document.createElement('option')
+      opt.value = chat.id
+      opt.textContent = chat.title || 'Untitled'
+      if (chat.id === currentChatId) opt.selected = true
+      select.appendChild(opt)
+    }
+  }
+
+  // Update custom dropdown
+  const label = document.getElementById('vc-chat-dropdown-label')
+  const list = document.getElementById('vc-chat-dropdown-list')
+  if (!label || !list) return
+
+  const current = chatHistory.find(c => c.id === currentChatId)
+  label.textContent = current?.title || 'New Chat'
+
+  list.innerHTML = ''
   for (let i = chatHistory.length - 1; i >= 0; i--) {
     const chat = chatHistory[i]
-    const opt = document.createElement('option')
-    opt.value = chat.id
-    opt.textContent = chat.title || 'Untitled'
-    if (chat.id === currentChatId) opt.selected = true
-    select.appendChild(opt)
+    const item = document.createElement('div')
+    item.className = 'vc-dd-item' + (chat.id === currentChatId ? ' active' : '')
+
+    const lbl = document.createElement('span')
+    lbl.className = 'vc-dd-item-label'
+    lbl.textContent = chat.title || 'Untitled'
+
+    const del = document.createElement('button')
+    del.className = 'vc-dd-delete'
+    del.title = 'Delete chat'
+    del.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6.5 7v4M9.5 7v4M4.5 4l.5 9a1 1 0 001 1h4a1 1 0 001-1l.5-9" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      deleteChat(chat.id)
+    })
+
+    item.addEventListener('click', () => {
+      loadChat(chat.id)
+      updateChatDropdown()
+      list.classList.add('hidden')
+    })
+
+    item.appendChild(lbl)
+    item.appendChild(del)
+    list.appendChild(item)
   }
+}
+
+function deleteChat(chatId: string) {
+  const idx = chatHistory.findIndex(c => c.id === chatId)
+  if (idx === -1) return
+  chatHistory.splice(idx, 1)
+  saveChatHistory()
+
+  if (chatId === currentChatId) {
+    // Deleted the active chat — switch to another or start fresh
+    if (chatHistory.length > 0) {
+      loadChat(chatHistory[chatHistory.length - 1].id)
+    } else {
+      startNewChat()
+    }
+  }
+  updateChatDropdown()
 }
 
 function startNewChat() {
@@ -1207,7 +1263,7 @@ const vpControls = initViewportControls({
   onResize: (w, h) => { composer.setSize(w, h); composer.setPixelRatio(renderer.getPixelRatio()) },
 })
 
-const { resize, focusOnRobot, zoomCamera, setViewportCollapsed, setViewportFullscreen, updateViewportInfo } = vpControls
+const { resize, focusOnRobot, zoomCamera, setViewportCollapsed, setViewportFullscreen, setFocusMode, updateViewportInfo } = vpControls
 
 // ── Animate ──────────────────────────────────────────────────────────────────
 
@@ -1710,6 +1766,62 @@ toggleGraphBtn.addEventListener('click', () => {
   nodeGraph.toggle()
 })
 
+// ── Display popover ──────────────────────────────────────────────────────────
+{
+  const popoverBtn = document.getElementById('display-popover-btn')!
+  const popover = document.getElementById('display-popover')!
+  const items = popover.querySelectorAll('.dp-item') as NodeListOf<HTMLElement>
+
+  popoverBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    popover.classList.toggle('hidden')
+  })
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (!popover.contains(e.target as Node) && e.target !== popoverBtn) {
+      popover.classList.add('hidden')
+    }
+  })
+
+  // Sync checkmarks with the hidden toggle buttons
+  function syncChecks() {
+    items.forEach(item => {
+      const targetId = item.dataset.target!
+      const btn = document.getElementById(targetId)
+      const check = item.querySelector('.dp-check')!
+      check.classList.toggle('active', btn?.classList.contains('active') ?? false)
+    })
+    // Tint the popover trigger if any toggle is non-default
+    const anyActive = Array.from(items).some(item => {
+      const btn = document.getElementById(item.dataset.target!)
+      return btn?.classList.contains('active') ?? false
+    })
+    popoverBtn.classList.toggle('has-active', anyActive)
+  }
+
+  items.forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const targetId = item.dataset.target!
+      const btn = document.getElementById(targetId)
+      btn?.click()
+      // Sync after a microtask so the click handler has toggled .active
+      requestAnimationFrame(syncChecks)
+    })
+  })
+
+  // Initial sync
+  requestAnimationFrame(syncChecks)
+
+  // Also sync when keyboard shortcuts toggle visibility
+  const observer = new MutationObserver(syncChecks)
+  items.forEach(item => {
+    const btn = document.getElementById(item.dataset.target!)
+    if (btn) observer.observe(btn, { attributes: true, attributeFilter: ['class'] })
+  })
+}
+
 // ── Keyboard shortcuts for viewport toggles ─────────────────────────────────
 document.addEventListener('keydown', (e) => {
   // File I/O shortcuts (work even in editor)
@@ -1784,9 +1896,17 @@ document.addEventListener('keydown', (e) => {
       setViewportCollapsed(!vpControls.viewportCollapsed())
       break
     case 'f':
-      setViewportFullscreen(!vpControls.viewportFullscreen())
+      if (e.shiftKey) {
+        setFocusMode(!vpControls.focusMode())
+      } else {
+        setViewportFullscreen(!vpControls.viewportFullscreen())
+      }
       break
     case 'escape':
+      if (vpControls.focusMode()) {
+        setFocusMode(false)
+        break
+      }
       if (vpControls.viewportFullscreen()) {
         setViewportFullscreen(false)
         break
@@ -1864,6 +1984,127 @@ document.querySelectorAll('.ab-btn').forEach(btn => {
     }
   })
 })
+
+// ── Activity bar drag-and-drop reorder ────────────────────────────────────────
+{
+  const activityBar = document.getElementById('activity-bar')!
+  const STORAGE_KEY = 'vector_ab_order'
+  const spacer = activityBar.querySelector('.ab-spacer')!
+
+  function getDraggableBtns(): HTMLElement[] {
+    return Array.from(activityBar.querySelectorAll('.ab-btn.ab-draggable')) as HTMLElement[]
+  }
+
+  // Mark draggable buttons (all except settings)
+  activityBar.querySelectorAll('.ab-btn[draggable="true"]').forEach(btn => {
+    (btn as HTMLElement).removeAttribute('draggable')
+    btn.classList.add('ab-draggable')
+  })
+
+  // Restore saved order on load
+  const savedOrder: string[] | null = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+  if (savedOrder) {
+    const btnMap = new Map<string, HTMLElement>()
+    getDraggableBtns().forEach(btn => btnMap.set(btn.dataset.panel!, btn))
+    for (const panel of savedOrder) {
+      const btn = btnMap.get(panel)
+      if (btn) activityBar.insertBefore(btn, spacer)
+    }
+  }
+
+  function saveOrder() {
+    const order = getDraggableBtns().map(btn => btn.dataset.panel!)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
+  }
+
+  let draggedBtn: HTMLElement | null = null
+  let isDragging = false
+  let startY = 0
+  const DRAG_THRESHOLD = 5
+
+  // Create a reusable drop indicator line
+  const indicator = document.createElement('div')
+  indicator.className = 'ab-drag-indicator'
+  indicator.style.display = 'none'
+  activityBar.style.position = 'relative'
+  activityBar.appendChild(indicator)
+
+  function findHoverTarget(clientY: number): HTMLElement | null {
+    for (const btn of getDraggableBtns()) {
+      if (btn === draggedBtn) continue
+      const rect = btn.getBoundingClientRect()
+      if (clientY >= rect.top && clientY <= rect.bottom) return btn
+    }
+    return null
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    // Find the .ab-draggable ancestor from whatever was clicked (svg, path, etc.)
+    const btn = (e.target as HTMLElement).closest?.('.ab-draggable') as HTMLElement | null
+    if (!btn) return
+    draggedBtn = btn
+    startY = e.clientY
+    isDragging = false
+    document.addEventListener('pointermove', onPointerMove)
+    document.addEventListener('pointerup', onPointerUp)
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!draggedBtn) return
+
+    if (!isDragging) {
+      if (Math.abs(e.clientY - startY) < DRAG_THRESHOLD) return
+      isDragging = true
+      draggedBtn.classList.add('ab-dragging')
+      draggedBtn.setPointerCapture(e.pointerId)
+    }
+
+    const target = findHoverTarget(e.clientY)
+    if (!target) {
+      indicator.style.display = 'none'
+      return
+    }
+
+    const rect = target.getBoundingClientRect()
+    const barRect = activityBar.getBoundingClientRect()
+    const midY = rect.top + rect.height / 2
+    const above = e.clientY < midY
+    const y = (above ? rect.top : rect.bottom) - barRect.top
+
+    indicator.style.display = 'block'
+    indicator.style.top = `${y - 1}px`
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    document.removeEventListener('pointermove', onPointerMove)
+    document.removeEventListener('pointerup', onPointerUp)
+    indicator.style.display = 'none'
+
+    if (!draggedBtn) return
+
+    if (isDragging) {
+      draggedBtn.releasePointerCapture(e.pointerId)
+      draggedBtn.classList.remove('ab-dragging')
+
+      const target = findHoverTarget(e.clientY)
+      if (target && target !== draggedBtn) {
+        const rect = target.getBoundingClientRect()
+        const midY = rect.top + rect.height / 2
+        if (e.clientY < midY) {
+          activityBar.insertBefore(draggedBtn, target)
+        } else {
+          activityBar.insertBefore(draggedBtn, target.nextElementSibling)
+        }
+        saveOrder()
+      }
+    }
+
+    draggedBtn = null
+    isDragging = false
+  }
+
+  activityBar.addEventListener('pointerdown', onPointerDown)
+}
 
 // Collapsible sidebar sections
 document.querySelectorAll('.sb-header').forEach(header => {
@@ -2132,6 +2373,19 @@ vcChatSelect?.addEventListener('change', () => {
 })
 
 vcNewChatBtn?.addEventListener('click', () => startNewChat())
+
+// Wire custom chat dropdown toggle
+const vcDropdownBtn = document.getElementById('vc-chat-dropdown-btn')
+const vcDropdownList = document.getElementById('vc-chat-dropdown-list')
+vcDropdownBtn?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  vcDropdownList?.classList.toggle('hidden')
+})
+document.addEventListener('click', (e) => {
+  if (vcDropdownList && !vcDropdownList.contains(e.target as Node) && e.target !== vcDropdownBtn) {
+    vcDropdownList.classList.add('hidden')
+  }
+})
 
 function switchViewportView(view: '3d' | 'chat') {
   activeViewportView = view
