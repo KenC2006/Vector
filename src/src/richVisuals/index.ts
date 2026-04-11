@@ -84,13 +84,19 @@ function extractComponentId(linkName: string): string | null {
  */
 function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
   const box = new THREE.Box3()
-  linkGroup.traverse(child => {
-    if (child instanceof THREE.Mesh) {
-      child.updateWorldMatrix(true, false)
-      const childBox = new THREE.Box3().setFromObject(child)
-      box.union(childBox)
-    }
-  })
+  // Only measure meshes directly belonging to this link's geometry group (first child),
+  // NOT child link groups added via joint pivot groups. This prevents the bounding box
+  // from including the entire subtree when child components are attached.
+  const geometryGroup = linkGroup.children[0]
+  if (geometryGroup) {
+    geometryGroup.traverse(child => {
+      if (child instanceof THREE.Mesh) {
+        child.updateWorldMatrix(true, false)
+        const childBox = new THREE.Box3().setFromObject(child)
+        box.union(childBox)
+      }
+    })
+  }
 
   if (box.isEmpty()) return { x: 0.04, y: 0.04, z: 0.04 }
 
