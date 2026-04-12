@@ -606,6 +606,29 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     urdfRedo = []
   }
 
+  /** Pretty-print an XML Document with 2-space indentation. */
+  function formatXml(doc: Document): string {
+    const INDENT = '  '
+    function indent(node: Node, depth: number): void {
+      const children = Array.from(node.childNodes)
+      // Remove existing text-only whitespace nodes so we can re-insert our own.
+      for (const child of children) {
+        if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim() === '') {
+          node.removeChild(child)
+        }
+      }
+      const elements = Array.from(node.childNodes).filter(c => c.nodeType === Node.ELEMENT_NODE)
+      if (elements.length === 0) return
+      for (const el of elements) {
+        node.insertBefore(doc.createTextNode('\n' + INDENT.repeat(depth + 1)), el)
+        indent(el, depth + 1)
+      }
+      node.appendChild(doc.createTextNode('\n' + INDENT.repeat(depth)))
+    }
+    indent(doc.documentElement, 0)
+    return new XMLSerializer().serializeToString(doc)
+  }
+
   function commitUrdf(mutator: (doc: Document) => boolean, opts?: { defer?: boolean }): boolean {
     const current = ctx.getUrdfText()
     const parser = new DOMParser()
@@ -620,7 +643,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       urdfUndo.pop()
       return false
     }
-    const xml = new XMLSerializer().serializeToString(doc)
+    const xml = formatXml(doc)
     ctx.setUrdfText(xml)
     // Defer to next animation frame when called from pointer-up handlers to avoid
     // blocking the frame that clears the drag (full scene rebuild can take 100+ ms).
