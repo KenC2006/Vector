@@ -3349,10 +3349,9 @@ function clearSimViz() {
 
 // ── Phase C: Camera Follow ────────────────────────────────────────────────────
 
-const simCameraFollowEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
-
 /** Smooth camera follow — called from animate() each frame when sim is active. */
 function tickCameraFollow() {
+  const simCameraFollowEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
   if (!simCameraFollowEl?.checked || !simActive) return
   const worldPos = new THREE.Vector3()
   robot.getWorldPosition(worldPos)
@@ -3574,7 +3573,7 @@ function summarizeValidationErrors(results: ValResult[]): string {
 
 /** Throws if URDF must not be loaded into MuJoCo (XML or backend validation errors). */
 async function assertUrdfReadyForSim(urdf: string): Promise<void> {
-  const xmlErrors = validateXMLStructure(urdf)
+  const xmlErrors = validateXMLStructure(urdf).filter(r => r.severity === 'error')
   if (xmlErrors.length > 0) {
     throw new Error(summarizeValidationErrors(xmlErrors))
   }
