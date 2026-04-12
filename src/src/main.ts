@@ -2009,6 +2009,7 @@ const panels: Record<string, HTMLElement> = {
   toolbox: document.getElementById('panel-toolbox')!,
   validation: document.getElementById('panel-validation')!,
   kinematic: document.getElementById('panel-kinematic')!,
+  sim: document.getElementById('panel-sim')!,
   git: document.getElementById('panel-git')!,
   settings: document.getElementById('panel-settings')!,
 }
@@ -2923,6 +2924,12 @@ async function saveFileAs() {
 // Simulation state
 let simCoreRunning = false
 let simStepIntervalId: number | null = null
+/** Model timestep from MuJoCo (seconds). Used for fixed-timestep substep loop. */
+let simModelDt = 0.002
+/** Wall-clock time of the last substep batch, for real-time pacing. */
+let simLastStepWallTime = 0
+/** Whether the sim loop is in an error state (paused after a physics blow-up). */
+let simErrorState = false
 // Store original joint poses before sim so we can restore on exit
 const originalJointPoses = new Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion }>()
 
@@ -2950,6 +2957,228 @@ function refreshSimPreviewLimits() {
     }
   } catch { /* ignore parse errors */ }
 }
+
+// ── Sim Panel (B8-B12) ─────────────────────────────────────────────��──────────
+
+const simNotActive = document.getElementById('sim-not-active')!
+const simControlsBody = document.getElementById('sim-controls-body')!
+const simJointSliders = document.getElementById('sim-joint-sliders')!
+const simKfList = document.getElementById('sim-kf-list')!
+const simGravityEnabled = document.getElementById('sim-gravity-enabled') as HTMLInputElement
+
+/** Map jointName → { lower, upper, effort } from URDF limits for slider range */
+const simJointLimits = new Map<string, { lower: number; upper: number; effort: number }>()
+
+/** Keyframe store: name → (jointName → position). Persisted in localStorage. */
+let simKeyframes: Record<string, Record<string, number>> = {}
+/** Current joint positions as reported by last state update. */
+const simCurrentPositions = new Map<string, number>()
+
+function loadSimKeyframes() {
+  const key = `sim_keyframes::${currentFilePath || '__default__'}`
+  try {
+    const raw = localStorage.getItem(key)
+    simKeyframes = raw ? JSON.parse(raw) : {}
+  } catch { simKeyframes = {} }
+}
+
+function saveSimKeyframesStorage() {
+  const key = `sim_keyframes::${currentFilePath || '__default__'}`
+  try { localStorage.setItem(key, JSON.stringify(simKeyframes)) } catch { /* ignore */ }
+}
+
+function buildSimPanel() {
+  simJointLimits.clear()
+  simCurrentPositions.clear()
+  simJointSliders.innerHTML = ''
+
+  const urdf = monacoEditor.getModel()?.getValue() ?? ''
+  const doc = new DOMParser().parseFromString(urdf, 'application/xml')
+
+  for (const [jointName, jointInfo] of parsedRobot.joints) {
+    if (jointInfo.type === 'fixed') continue
+    const effort = (() => {
+      const jEl = Array.from(doc.querySelectorAll('joint')).find(j => j.getAttribute('name') === jointName)
+      const lEl = jEl?.querySelector('limit')
+      const e = parseFloat(lEl?.getAttribute('effort') || '10')
+      return Number.isFinite(e) && e > 0 ? e : 10
+    })()
+    const lim = simPreviewLimits.get(jointName)
+    const lower = lim?.lower ?? -Math.PI
+    const upper = lim?.upper ?? Math.PI
+    simJointLimits.set(jointName, { lower, upper, effort })
+
+    const row = document.createElement('div')
+    row.className = 'sim-slider-row'
+    row.dataset.joint = jointName
+    row.innerHTML = `
+      <div class="sim-slider-label">
+        <span class="sim-slider-name">${jointName}</span>
+        <span class="sim-slider-val" id="sslv-${jointName}">0.000</span>
+      </div>
+      <input type="range" class="sim-slider" id="ssl-${jointName}"
+        min="${lower.toFixed(4)}" max="${upper.toFixed(4)}" step="0.001" value="0"
+        data-joint="${jointName}" data-effort="${effort}">
+      <div class="sim-torque-row">
+        <span class="sim-torque-label">Torque</span>
+        <input type="range" class="sim-torque-slider" id="sst-${jointName}"
+          min="${-effort}" max="${effort}" step="${(effort / 50).toFixed(4)}" value="0"
+          data-joint="${jointName}">
+        <button class="sim-torque-zero" data-joint="${jointName}" title="Zero torque">✕</button>
+      </div>
+    `
+    simJointSliders.appendChild(row)
+  }
+
+  // Wire torque sliders → sim_set_control
+  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(slider => {
+    slider.addEventListener('input', () => sendSimControl())
+  })
+  simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-torque-zero').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const joint = btn.dataset.joint!
+      const s = document.getElementById(`sst-${joint}`) as HTMLInputElement | null
+      if (s) s.value = '0'
+      sendSimControl()
+    })
+  })
+
+  refreshSimKeyframeList()
+}
+
+function sendSimControl() {
+  if (!simCoreRunning) return
+  const controls: Record<string, number> = {}
+  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => {
+    controls[s.dataset.joint!] = parseFloat(s.value) || 0
+  })
+  invoke('sim_set_control', { controls }).catch(() => { /* ignore */ })
+}
+
+function updateSimSliders(state: Record<string, unknown>) {
+  const joints = state.joints as Record<string, { position: number; velocity: number }> | undefined
+  if (!joints) return
+  for (const [name, j] of Object.entries(joints)) {
+    simCurrentPositions.set(name, j.position)
+    const valEl = document.getElementById(`sslv-${name}`)
+    const posSlider = document.getElementById(`ssl-${name}`) as HTMLInputElement | null
+    if (valEl) valEl.textContent = j.position.toFixed(3)
+    if (posSlider) posSlider.value = String(j.position)
+  }
+}
+
+function refreshSimKeyframeList() {
+  simKfList.innerHTML = ''
+  const names = Object.keys(simKeyframes)
+  if (names.length === 0) {
+    simKfList.innerHTML = '<div class="sim-kf-empty">No keyframes saved</div>'
+    return
+  }
+  for (const name of names) {
+    const row = document.createElement('div')
+    row.className = 'sim-kf-row'
+    row.innerHTML = `
+      <span class="sim-kf-name">${name}</span>
+      <button class="sim-kf-load" data-kf="${name}" title="Load keyframe">Load</button>
+      <button class="sim-kf-del" data-kf="${name}" title="Delete">✕</button>
+    `
+    simKfList.appendChild(row)
+  }
+  simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-load').forEach(btn => {
+    btn.addEventListener('click', () => loadKeyframe(btn.dataset.kf!))
+  })
+  simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-del').forEach(btn => {
+    btn.addEventListener('click', () => {
+      delete simKeyframes[btn.dataset.kf!]
+      saveSimKeyframesStorage()
+      refreshSimKeyframeList()
+    })
+  })
+}
+
+function loadKeyframe(name: string) {
+  if (!simCoreRunning) return
+  const kf = simKeyframes[name]
+  if (!kf) return
+  // Apply as torque drive — not ideal but simple; real IK comes later
+  const controls: Record<string, number> = {}
+  for (const [joint, pos] of Object.entries(kf)) {
+    const torqueSlider = document.getElementById(`sst-${joint}`) as HTMLInputElement | null
+    // Send zero torque but update position sliders display
+    controls[joint] = 0
+    const posSlider = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
+    if (posSlider) posSlider.value = String(pos)
+  }
+  // Reset sim to home then the user can observe; proper position servo in Phase C
+  showToast(`Keyframe "${name}" loaded as target reference`, 'info')
+}
+
+function enterSimPanel() {
+  simNotActive.classList.add('hidden')
+  simControlsBody.classList.remove('hidden')
+  buildSimPanel()
+  loadSimKeyframes()
+}
+
+function exitSimPanel() {
+  simNotActive.classList.remove('hidden')
+  simControlsBody.classList.add('hidden')
+  simJointSliders.innerHTML = ''
+}
+
+// Save keyframe button
+document.getElementById('sim-kf-save')?.addEventListener('click', () => {
+  if (!simCoreRunning) return
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const name = `kf-${timestamp}`
+  const snapshot: Record<string, number> = {}
+  simCurrentPositions.forEach((pos, joint) => { snapshot[joint] = pos })
+  simKeyframes[name] = snapshot
+  saveSimKeyframesStorage()
+  refreshSimKeyframeList()
+  showToast(`Keyframe "${name}" saved`, 'success')
+})
+
+// Reset pose buttons
+document.getElementById('sim-reset-home')?.addEventListener('click', async () => {
+  if (!simCoreRunning) return
+  simRunning = false
+  if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+  try {
+    await invoke('sim_reset')
+    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
+    updateRobotFromSimState(state)
+    simTime = 0
+    clearSimError()
+    updateSimUI()
+  } catch (e) { showToast(`Reset failed: ${e}`, 'error') }
+})
+
+document.getElementById('sim-reset-editor')?.addEventListener('click', async () => {
+  if (!simCoreRunning) return
+  // Restore original URDF joint poses visually; sim stays at home (no MJCF keyframe support yet)
+  for (const [jointName, jointInfo] of parsedRobot.joints) {
+    const original = originalJointPoses.get(jointName)
+    if (original) {
+      jointInfo.group.position.copy(original.position)
+      jointInfo.group.quaternion.copy(original.quaternion)
+    }
+  }
+  // Zero all controls
+  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => { s.value = '0' })
+  sendSimControl()
+  showToast('Restored editor pose (visual only; physics at home)', 'info')
+})
+
+// Gravity toggle
+simGravityEnabled?.addEventListener('change', async () => {
+  if (!simCoreRunning) return
+  const grav = simGravityEnabled.checked ? [0, 0, -9.81] : [0, 0, 0]
+  try {
+    await invoke('sim_set_gravity', { gravity: grav })
+    showToast(simGravityEnabled.checked ? 'Gravity enabled' : 'Zero-G mode', 'info')
+  } catch (e) { showToast(`Gravity toggle failed: ${e}`, 'error') }
+})
 
 // Joint state display
 const simStateDisplay = document.createElement('div')
@@ -3083,8 +3312,10 @@ async function initializeSimulation() {
   })
 
   console.log('[Sim] Loading robot model from', simPath)
+  const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
+  let modelInfo: Record<string, unknown> = {}
   try {
-    await invoke('sim_load', { path: simPath })
+    modelInfo = await invoke<Record<string, unknown>>('sim_load', { path: simPath, freeBase })
   } catch (loadErr) {
     try {
       await invoke('remove_sim_staging_urdf', { path: simPath })
@@ -3094,7 +3325,14 @@ async function initializeSimulation() {
     throw loadErr
   }
   lastSimStagingPath = simPath
-    console.log('[Sim] Robot model loaded')
+  // Capture model timestep for fixed-rate substepping
+  if (typeof modelInfo?.timestep === 'number' && modelInfo.timestep > 0) {
+    simModelDt = modelInfo.timestep
+  } else {
+    simModelDt = 0.002 // 500 Hz default
+  }
+  simErrorState = false
+  console.log('[Sim] Robot model loaded, dt =', simModelDt)
 
   simCoreRunning = true
 
@@ -3134,19 +3372,52 @@ async function shutdownSimulation() {
 }
 
 async function stepSimulation() {
-  if (!simCoreRunning) return
+  if (!simCoreRunning || simErrorState) return
+
+  // Fixed-timestep substep: advance enough steps to stay real-time.
+  const now = performance.now()
+  const elapsed = simLastStepWallTime > 0 ? Math.min(now - simLastStepWallTime, 100) : simModelDt * 1000
+  simLastStepWallTime = now
+  const nSteps = Math.max(1, Math.min(Math.floor(elapsed / (simModelDt * 1000)), 20))
+
   try {
-    await invoke('sim_step', { n_steps: 1 })
-    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
+    // sim_step now returns the state directly — one round-trip instead of two
+    const rawState = await invoke('sim_step', { n_steps: nSteps })
+    const state = normalizeMuJoCoState(rawState)
     if (typeof state.time === 'number' && !Number.isNaN(state.time)) {
       simTime = state.time
     }
     updateSimStateDisplay(state)
     updateRobotFromSimState(state)
+    updateSimSliders(state)
     updateSimUI()
+    clearSimError()
   } catch (error) {
     console.error('[Sim] Error stepping simulation:', error)
+    showSimError(String(error))
   }
+}
+
+function showSimError(msg: string) {
+  simErrorState = true
+  simRunning = false
+  if (simStepIntervalId !== null) {
+    clearInterval(simStepIntervalId)
+    simStepIntervalId = null
+  }
+  const errEl = document.getElementById('sim-error-overlay')
+  if (errEl) {
+    errEl.textContent = `⚠ Sim error: ${msg}`
+    errEl.classList.remove('hidden')
+  }
+  updateSimUI()
+}
+
+function clearSimError() {
+  if (!simErrorState) return
+  simErrorState = false
+  const errEl = document.getElementById('sim-error-overlay')
+  if (errEl) errEl.classList.add('hidden')
 }
 
 function updateSimStateDisplay(state: any) {
@@ -3200,14 +3471,32 @@ function updateRobotFromSimState(state: any) {
 
     const joints = state.joints as any
 
-    // Update parsed joints from simulation state
     for (const [jointName, jointInfo] of parsedRobot.joints) {
-      if (joints[jointName]?.position !== undefined) {
-        const position = joints[jointName].position as number
-        // Create rotation based on axis
+      if (joints[jointName]?.position === undefined) continue
+      const position = joints[jointName].position as number
+
+      if (jointInfo.type === 'prismatic') {
+        // Prismatic: translate along axis from rest position
+        const original = originalJointPoses.get(jointName)
+        const basePos = original ? original.position : jointInfo.group.position
+        jointInfo.group.position.copy(basePos).addScaledVector(jointInfo.axis, position)
+      } else {
+        // Revolute (hinge): rotate around axis
         const quat = new THREE.Quaternion()
         quat.setFromAxisAngle(jointInfo.axis, position)
         jointInfo.group.quaternion.copy(quat)
+      }
+    }
+
+    // Free-floating base: if state has body_positions, apply root body pose to robot group
+    const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
+    if (freeBase && Array.isArray(state.body_positions) && state.body_positions.length > 0) {
+      const rootBody = state.body_positions[0] as { position?: number[]; rotation?: number[] }
+      if (rootBody?.position && rootBody?.rotation) {
+        const [px, py, pz] = rootBody.position
+        const [qw, qx, qy, qz] = rootBody.rotation // MuJoCo: [w, x, y, z]
+        robot.position.set(px, py, pz)
+        robot.quaternion.set(qx, qy, qz, qw)
       }
     }
   } catch (e) {
@@ -3236,6 +3525,8 @@ simToggle.addEventListener('click', async () => {
     refreshSimPreviewLimits()
     try {
       await initializeSimulation()
+      enterSimPanel()
+      openSidebarPanel('sim')
       showToast('Entered simulation mode (MuJoCo)', 'success')
     } catch (error) {
       console.error('[Sim] Failed to initialize:', error)
@@ -3265,6 +3556,7 @@ simToggle.addEventListener('click', async () => {
       }
     }
     originalJointPoses.clear()
+    exitSimPanel()
     updateSimUI()
     showToast('Exited simulation mode', 'info')
   }
@@ -3274,11 +3566,13 @@ simToggle.addEventListener('click', async () => {
 // Update play/pause to use persistent stepping
 simPlay.addEventListener('click', () => {
   if (!simCoreRunning) return
+  clearSimError()
   simRunning = true
+  simLastStepWallTime = 0 // reset so first frame doesn't over-substep
   if (simStepIntervalId !== null) {
     clearInterval(simStepIntervalId)
   }
-  // Step at ~60 Hz
+  // Step at ~60 Hz; each call substeps enough to stay real-time
   simStepIntervalId = setInterval(async () => {
     await stepSimulation()
   }, 1000 / 60) as unknown as number
@@ -3297,6 +3591,7 @@ simPause.addEventListener('click', () => {
 simReset.addEventListener('click', async () => {
   if (!simCoreRunning) return
   simRunning = false
+  simErrorState = false
   if (simStepIntervalId !== null) {
     clearInterval(simStepIntervalId)
     simStepIntervalId = null
@@ -3304,8 +3599,17 @@ simReset.addEventListener('click', async () => {
   try {
     await invoke('sim_reset')
     const state = normalizeMuJoCoState(await invoke('sim_get_state'))
+    // Restore original joint poses on reset (don't let physics drift linger)
+    for (const [jointName, jointInfo] of parsedRobot.joints) {
+      const original = originalJointPoses.get(jointName)
+      if (original) {
+        jointInfo.group.position.copy(original.position)
+        jointInfo.group.quaternion.copy(original.quaternion)
+      }
+    }
     updateRobotFromSimState(state)
     simTime = typeof state.time === 'number' && !Number.isNaN(state.time) ? state.time : 0
+    clearSimError()
     updateSimUI()
   } catch (error) {
     console.error('[Sim] Reset error:', error)
@@ -3480,6 +3784,7 @@ urdfAssemblyApi = initUrdfAssembly({
   getKinematicJoints: () => kinematicJoints,
   isViewport3D: () => activeViewportView === '3d',
   getInteractionMode: () => viewportInteractionMode,
+  isSimActive: () => simActive,
   onInspectLinkFocused: handleInspectLinkFocused,
   onAfterModelUpdated: refreshInspectAfterModelUpdate,
   zeroAssemblyWorldPosition: () => {

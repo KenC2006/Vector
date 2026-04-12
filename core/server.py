@@ -96,6 +96,7 @@ class JSONRPCServer:
             "sim_set_control": self.handle_sim_set_control,
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
+            "sim_set_gravity": self.handle_sim_set_gravity,
             "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
@@ -255,8 +256,9 @@ class JSONRPCServer:
         if not isinstance(path, str):
             raise ValueError("Parameter 'path' must be a string")
 
+        free_base = bool(params.get("free_base", False))
         try:
-            return self.simulator.load_urdf(path)
+            return self.simulator.load_urdf(path, free_base=free_base)
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
         except Exception as e:
@@ -322,6 +324,22 @@ class JSONRPCServer:
             self.simulator.set_control(controls)
         except Exception as e:
             raise ValueError(f"Failed to set controls: {e}")
+
+    def handle_sim_set_gravity(self, params: Dict[str, Any]) -> None:
+        """
+        Set gravity vector.
+
+        Params:
+            gravity (list[float]): [gx, gy, gz] in m/s². Pass [0,0,0] for zero-G.
+        """
+        self._require_simulator()
+        gravity = params.get("gravity", [0.0, 0.0, -9.81])
+        if not isinstance(gravity, list) or len(gravity) != 3:
+            raise ValueError("Parameter 'gravity' must be a list of 3 floats")
+        try:
+            self.simulator.set_gravity([float(g) for g in gravity])
+        except Exception as e:
+            raise ValueError(f"Failed to set gravity: {e}")
 
     def handle_sim_get_state(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """

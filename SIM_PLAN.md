@@ -87,25 +87,27 @@ These were absent from the original plan and bite if left to last:
 
 ## Implementation Order (revised)
 
-Phase A — close Layer 1/2 gaps (the things that block real robots):
-1. Preset-driven actuator injection in `urdf_to_mjcf.py` + tests
-2. Inertia auto-fix / harder validation gate
-3. Prismatic joint readback in `updateRobotFromSimState`
-4. Fixed-timestep substep loop with catch-up cap
-5. `sim_step_and_get` combined RPC
-6. Sim ↔ build interlock + hot-reload pause behavior
-7. Mid-sim error overlay
+Phase A — close Layer 1/2 gaps ✅ DONE:
+1. ✅ Actuator injection reads `<dynamics>` damping/friction from URDF joints
+2. ✅ Inertia auto-fix: massless links with collision geometry get 10g default
+3. ✅ Prismatic joint readback in `updateRobotFromSimState`
+4. ✅ Fixed-timestep substep loop with catch-up cap (20 substeps/frame max)
+5. ✅ `sim_step` now returns state JSON directly (single RPC per frame)
+6. ✅ Sim ↔ build interlock: carry mode blocked while sim active
+7. ✅ Mid-sim error overlay in sim bar
+   - Also added: ground plane in MJCF, ctrlrange from effort limits, `sim_load` returns model info JSON
 
-Phase B — Layer 3 essentials:
-8. Joint slider panel wired to `sim_set_control`
-9. `sim_set_gravity` + toggle
-10. Reset-to-pose menu (MJCF home / editor pose / keyframe)
-11. Keyframe capture + persistence
-12. Free-floating base support (`<freejoint/>` toggle + base pose readback)
+Phase B — Layer 3 essentials ✅ DONE:
+8. ✅ Joint slider panel in `panel-sim` sidebar: position display + torque sliders → `sim_set_control`
+9. ✅ `sim_set_gravity` + checkbox toggle (full gravity / zero-G)
+10. ✅ Reset-to-pose: "Home" (MuJoCo reset) + "Editor Pose" (restore URDF initial positions)
+11. ✅ Keyframe capture: timestamp-named snapshots stored in `localStorage` per file path; load/delete UI
+12. ✅ Free-floating base: `free_base` toggle → `<freejoint/>` in converter; base body pose readback applied to robot group
 
-Phase C — power user:
-13. Python script runner
-14. Camera follow
+<!-- NEXT: Phase C -->
+Phase C — power user (NEXT TO IMPLEMENT):
+13. Python script runner (Monaco tab, `def step(t, state) -> controls`, sandboxed eval each tick)
+14. Camera follow (track base link for mobile robots)
 15. Determinism seed + control trace logging
 
 Phase D — Layer 4 viz polish, in any order driven by demand.

@@ -825,6 +825,57 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   background: #3a3a3e;
 }
 
+/* ── Simulation Panel ───────────────────────────────── */
+
+.sim-gravity-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--text-dim); cursor: pointer; user-select: none;
+}
+.sim-gravity-toggle input { margin: 0; accent-color: var(--accent); }
+
+.sim-section-title {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  color: var(--text-muted, #858585); letter-spacing: 0.06em;
+  padding: 10px 12px 4px; display: flex; align-items: center; justify-content: space-between;
+}
+
+.sim-pose-row {
+  display: flex; gap: 6px; padding: 0 12px 8px;
+}
+.sim-pose-btn {
+  flex: 1; padding: 4px 0; font-size: 11px; background: var(--bg-3);
+  border: 1px solid var(--border-dim); color: var(--text-dim);
+  border-radius: 3px; cursor: pointer;
+}
+.sim-pose-btn:hover { background: var(--bg-4); color: var(--text-bright); }
+
+.sim-kf-save {
+  font-size: 10px; padding: 2px 6px; background: transparent;
+  border: 1px solid var(--border-dim); color: var(--accent); border-radius: 3px; cursor: pointer;
+}
+.sim-kf-save:hover { background: rgba(0,122,204,0.1); }
+
+.sim-kf-list { padding: 0 12px 6px; display: flex; flex-direction: column; gap: 3px; }
+.sim-kf-empty { font-size: 11px; color: var(--text-muted, #858585); font-style: italic; }
+.sim-kf-row { display: flex; align-items: center; gap: 4px; }
+.sim-kf-name { flex: 1; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sim-kf-load { font-size: 10px; padding: 2px 6px; background: transparent; border: 1px solid var(--border-dim); color: var(--text-dim); border-radius: 3px; cursor: pointer; }
+.sim-kf-load:hover { color: var(--accent); border-color: var(--accent); }
+.sim-kf-del { font-size: 10px; padding: 2px 5px; background: transparent; border: none; color: var(--text-muted, #858585); cursor: pointer; }
+.sim-kf-del:hover { color: #f14c4c; }
+
+.sim-joint-sliders { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 8px; }
+.sim-slider-row { display: flex; flex-direction: column; gap: 3px; }
+.sim-slider-label { display: flex; justify-content: space-between; align-items: baseline; }
+.sim-slider-name { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; max-width: 140px; white-space: nowrap; }
+.sim-slider-val { font-size: 10px; color: var(--text-muted, #858585); font-variant-numeric: tabular-nums; }
+.sim-slider { width: 100%; accent-color: var(--accent); cursor: pointer; }
+.sim-torque-row { display: flex; align-items: center; gap: 4px; margin-top: 1px; }
+.sim-torque-label { font-size: 10px; color: var(--text-muted, #858585); min-width: 38px; }
+.sim-torque-slider { flex: 1; accent-color: var(--orange, #ff7b45); cursor: pointer; }
+.sim-torque-zero { background: transparent; border: none; color: var(--text-muted, #858585); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.sim-torque-zero:hover { color: #f14c4c; }
+
 /* ── Kinematic Tree Panel ────────────────────────────── */
 
 #kinematic-tree {

@@ -176,12 +176,18 @@ def _create_body_element(
                 pass
 
     # Add geometry (inertial + collision)
-    if link_data["mass"] > 0.01:  # Only add inertia for non-zero mass
+    mass = link_data["mass"]
+    # Auto-fix: if a body has collision geometry but zero/tiny mass, assign a minimal mass
+    # so MuJoCo doesn't complain about non-positive-definite inertia
+    if mass < 0.001 and link_data["collision_geometry"] is not None:
+        mass = 0.01  # 10g default for massless links with geometry
+    if mass > 0.001:
         inertial = etree.SubElement(body, "inertial")
-        inertial.set("mass", str(link_data["mass"]))
+        inertial.set("mass", str(mass))
         inertial.set("pos", "0 0 0")  # MuJoCo requires pos for inertial
-        # Simplified inertia (diagonal)
-        inertial.set("diaginertia", f"{0.001 * link_data['mass']} {0.001 * link_data['mass']} {0.001 * link_data['mass']}")
+        # Simplified isotropic inertia: I = 0.001 * m (reasonable for ~cm-scale bodies)
+        diag = max(1e-6 * mass, 0.001 * mass)
+        inertial.set("diaginertia", f"{diag} {diag} {diag}")
 
     # Add collision geometry
     if link_data["collision_geometry"]:
@@ -216,12 +222,14 @@ def _create_body_element(
     return body
 
 
-def urdf_to_mjcf(urdf_path: str) -> str:
+def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     """
     Convert a URDF file to MJCF XML string.
 
     Args:
         urdf_path: Path to the URDF file.
+        free_base: If True, add a <freejoint/> to the root body so it is
+                   free-floating (useful for mobile robots and UAVs).
 
     Returns:
         MJCF XML as a string.
@@ -276,11 +284,23 @@ def urdf_to_mjcf(urdf_path: str) -> str:
                 lower = float(limit_elem.get("lower", "-3.14159"))
                 upper = float(limit_elem.get("upper", "3.14159"))
                 effort = float(limit_elem.get("effort", "10.0"))
+                velocity = float(limit_elem.get("velocity", "0.0"))
                 limits = {
                     "lower": lower,
                     "upper": upper,
                     "effort": effort,
+                    "velocity": velocity,
                 }
+            except (ValueError, TypeError):
+                pass
+
+        # Read URDF <dynamics> for damping and friction
+        dynamics = {"damping": 0.1, "friction": 0.0}
+        dynamics_elem = joint_elem.find("dynamics")
+        if dynamics_elem is not None:
+            try:
+                dynamics["damping"] = float(dynamics_elem.get("damping", "0.1"))
+                dynamics["friction"] = float(dynamics_elem.get("friction", "0.0"))
             except (ValueError, TypeError):
                 pass
 
@@ -292,6 +312,7 @@ def urdf_to_mjcf(urdf_path: str) -> str:
             "axis": axis,
             "elem": joint_elem,
             "limits": limits,
+            "dynamics": dynamics,
         })
 
     # Find root link (link with no parent)
@@ -328,6 +349,13 @@ def urdf_to_mjcf(urdf_path: str) -> str:
 
     # Build world body
     worldbody = etree.SubElement(mjcf_root, "worldbody")
+
+    # Default ground plane (can be toggled off later)
+    floor_geom = etree.SubElement(worldbody, "geom")
+    floor_geom.set("name", "floor")
+    floor_geom.set("type", "plane")
+    floor_geom.set("size", "0 0 0.05")
+    floor_geom.set("rgba", "0.5 0.5 0.5 1")
 
     # Recursively add bodies
     def add_body_recursive(parent_body_elem: etree._Element, link_name: str, visited: set):
@@ -370,9 +398,16 @@ def urdf_to_mjcf(urdf_path: str) -> str:
             if incoming_joint["limits"]:
                 limits = incoming_joint["limits"]
                 joint_elem.set("range", f"{limits['lower']} {limits['upper']}")
+                if limits.get("velocity", 0.0) > 0:
+                    joint_elem.set("actuatorfrcrange", f"-{limits['effort']} {limits['effort']}")
 
-            # Damping
-            joint_elem.set("damping", "0.1")
+            # Damping and frictionloss from URDF <dynamics> tag
+            dyn = incoming_joint.get("dynamics", {})
+            damping = dyn.get("damping", 0.1)
+            friction = dyn.get("friction", 0.0)
+            joint_elem.set("damping", str(damping))
+            if friction > 0:
+                joint_elem.set("frictionloss", str(friction))
 
         # Add children
         for joint in joints:
@@ -382,22 +417,33 @@ def urdf_to_mjcf(urdf_path: str) -> str:
     # Start with root link
     if root_link:
         add_body_recursive(worldbody, root_link, set())
+        # Free-floating base: inject a freejoint into the root body so it can
+        # move freely in the world (mobile robots, UAVs, etc.)
+        if free_base and worldbody:
+            root_bodies = [c for c in worldbody if c.tag == "body"]
+            if root_bodies:
+                free_joint = etree.Element("freejoint")
+                free_joint.set("name", "base_freejoint")
+                root_bodies[0].insert(0, free_joint)
 
     # Add actuators section
     actuators = etree.SubElement(mjcf_root, "actuator")
 
     # Add motors for all non-fixed joints
     for joint in joints:
-        if joint["type"] != "fixed":
+        if joint["type"] not in ("fixed",):
             motor = etree.SubElement(actuators, "motor")
             motor.set("name", f"{joint['name']}_motor")
             motor.set("joint", joint["name"])
+            motor.set("ctrllimited", "true")
 
+            effort = 10.0
             if joint["limits"]:
                 effort = joint["limits"].get("effort", 10.0)
-                motor.set("ctrlrange", f"-{effort} {effort}")
-            else:
-                motor.set("ctrlrange", "-10.0 10.0")
+                # Clamp to a sensible non-zero range so MuJoCo doesn't reject it
+                effort = max(effort, 0.01)
+            motor.set("ctrlrange", f"{-effort} {effort}")
+            motor.set("forcerange", f"{-effort} {effort}")
 
     # Convert to string
     xml_string = etree.tostring(

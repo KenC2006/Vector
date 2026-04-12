@@ -326,25 +326,23 @@ async fn validate_urdf_content(state: State<'_, AppState>, urdf_content: String)
 
 /// Load a robot model for simulation
 #[tauri::command]
-async fn sim_load(state: State<'_, AppState>, path: String) -> Result<String, String> {
+async fn sim_load(state: State<'_, AppState>, path: String, free_base: Option<bool>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
-    let result = process.send_rpc("sim_load", json!({ "path": path }), 1)?;
-    Ok(format!("Model loaded: {:?}", result))
+    process.send_rpc("sim_load", json!({ "path": path, "free_base": free_base.unwrap_or(false) }), 1)
 }
 
-/// Step the simulation forward
+/// Step the simulation forward and return the resulting state
 #[tauri::command]
-async fn sim_step(state: State<'_, AppState>, n_steps: Option<u32>) -> Result<String, String> {
+async fn sim_step(state: State<'_, AppState>, n_steps: Option<u32>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
     let params = json!({ "n_steps": n_steps.unwrap_or(1) });
-    let result = process.send_rpc("sim_step", params, 1)?;
-    Ok(format!("Stepped: {:?}", result))
+    process.send_rpc("sim_step", params, 1)
 }
 
 /// Reset the simulation
@@ -377,6 +375,17 @@ async fn sim_set_control(state: State<'_, AppState>, controls: serde_json::Value
 
     let result = process.send_rpc("sim_set_control", controls, 1)?;
     Ok(format!("Controls set: {:?}", result))
+}
+
+/// Set gravity vector ([gx, gy, gz], URDF/MuJoCo Z-up, default [0,0,-9.81])
+#[tauri::command]
+async fn sim_set_gravity(state: State<'_, AppState>, gravity: Vec<f64>) -> Result<String, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    let result = process.send_rpc("sim_set_gravity", json!({ "gravity": gravity }), 1)?;
+    Ok(format!("Gravity set: {:?}", result))
 }
 
 /// Render the simulation viewport to PNG and return base64
@@ -891,6 +900,7 @@ pub fn run() {
             sim_reset,
             sim_get_state,
             sim_set_control,
+            sim_set_gravity,
             sim_render,
             ai_edit,
             ai_complete,

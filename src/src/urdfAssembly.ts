@@ -33,6 +33,8 @@ export interface UrdfAssemblyContext {
   isViewport3D: () => boolean
   /** `build` = place & snap; `inspect` = click mesh to focus & dashboard (no carry). */
   getInteractionMode: () => 'build' | 'inspect'
+  /** Returns true while simulation is running — carry/edit blocked during sim. */
+  isSimActive?: () => boolean
   /** Inspect mode: user clicked a URDF link mesh (or null = empty space). */
   onInspectLinkFocused: (linkName: string | null) => void
   /** After URDF reparse / model refresh (restore inspect dimming if needed). */
@@ -1968,6 +1970,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         el.addEventListener('click', () => {
           if (ctx.getInteractionMode() === 'inspect') {
             ctx.showToast('Switch to Build mode to place components', 'info')
+            return
+          }
+          if (ctx.isSimActive?.()) {
+            ctx.showToast('Exit simulation before placing components', 'info')
             return
           }
           // Show detail

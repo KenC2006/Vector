@@ -30,7 +30,7 @@ class MuJoCoSimulator:
         self.data = None
         self.renderer = None
 
-    def load_urdf(self, urdf_path: str) -> Dict[str, Any]:
+    def load_urdf(self, urdf_path: str, free_base: bool = False) -> Dict[str, Any]:
         """
         Load a URDF file into MuJoCo.
 
@@ -48,7 +48,7 @@ class MuJoCoSimulator:
         """
         try:
             # Convert URDF to MJCF
-            mjcf_xml = urdf_to_mjcf(urdf_path)
+            mjcf_xml = urdf_to_mjcf(urdf_path, free_base=free_base)
 
             # Load into MuJoCo
             self.model = self.mujoco.MjModel.from_xml_string(mjcf_xml)
@@ -144,6 +144,18 @@ class MuJoCoSimulator:
                 })
 
         return state
+
+    def set_gravity(self, gravity: List[float]) -> None:
+        """
+        Set gravity vector.
+
+        Args:
+            gravity: [gx, gy, gz] in m/s². URDF/MuJoCo is Z-up, so default is [0, 0, -9.81].
+        """
+        if self.model is None:
+            raise RuntimeError("No model loaded.")
+        if len(gravity) == 3:
+            self.model.opt.gravity[:] = gravity
 
     def set_control(self, controls: Dict[str, float]) -> None:
         """
