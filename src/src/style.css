@@ -876,6 +876,49 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 .sim-torque-zero { background: transparent; border: none; color: var(--text-muted, #858585); cursor: pointer; font-size: 11px; padding: 0 2px; }
 .sim-torque-zero:hover { color: #f14c4c; }
 
+/* ── Sim viz toggles (Phase D) ──────────────────────── */
+
+.sim-viz-toggles {
+  padding: 4px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* ── Sim script runner (Phase C) ────────────────────── */
+
+.sim-script-editor {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 0 12px 6px;
+  background: #141414;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-family: var(--font);
+  font-size: 11px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  tab-size: 4;
+}
+.sim-script-editor:focus { border-color: var(--accent); }
+.sim-script-editor::placeholder { color: #4a4a4a; }
+
+.sim-script-error {
+  margin: 0 12px 6px;
+  padding: 6px 8px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.35);
+  border-radius: 3px;
+  color: #f14c4c;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* ── Kinematic Tree Panel ────────────────────────────── */
 
 #kinematic-tree {

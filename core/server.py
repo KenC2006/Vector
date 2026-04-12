@@ -87,6 +87,9 @@ class JSONRPCServer:
     def __init__(self):
         """Initialize the server."""
         self.simulator = _MuJoCoSimulator() if _MuJoCoSimulator else None
+        # Script runner state (Phase C)
+        self.sim_script_fn = None   # compiled step(t, state) callable or None
+        self.sim_script_error: Optional[str] = None
         self.methods = {
             "parse_urdf": self.handle_parse_urdf,
             "ping": self.handle_ping,
@@ -97,6 +100,7 @@ class JSONRPCServer:
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
             "sim_set_gravity": self.handle_sim_set_gravity,
+            "sim_set_script": self.handle_sim_set_script,
             "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
@@ -257,7 +261,17 @@ class JSONRPCServer:
             raise ValueError("Parameter 'path' must be a string")
 
         free_base = bool(params.get("free_base", False))
+        seed = params.get("seed", None)
+        # Clear any active script when loading a new model
+        self.sim_script_fn = None
+        self.sim_script_error = None
         try:
+            if seed is not None:
+                try:
+                    import numpy as np
+                    np.random.seed(int(seed))
+                except Exception:
+                    pass
             return self.simulator.load_urdf(path, free_base=free_base)
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
@@ -280,8 +294,22 @@ class JSONRPCServer:
             n_steps = 1
 
         try:
+            # Script runner: observe state → compute controls → apply before advancing
+            script_error: Optional[str] = None
+            if self.sim_script_fn is not None:
+                try:
+                    current_state = self.simulator.get_state()
+                    controls = self.sim_script_fn(current_state["time"], current_state)
+                    if isinstance(controls, dict):
+                        self.simulator.set_control(controls)
+                except Exception as se:
+                    script_error = str(se)
+
             self.simulator.step(n_steps)
-            return self.simulator.get_state()
+            state = self.simulator.get_state()
+            if script_error:
+                state["script_error"] = script_error
+            return state
         except Exception as e:
             raise ValueError(f"Failed to step simulation: {e}")
 
@@ -356,6 +384,36 @@ class JSONRPCServer:
             return self.simulator.get_state()
         except Exception as e:
             raise ValueError(f"Failed to get state: {e}")
+
+    def handle_sim_set_script(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compile and install a Python step-callback script.
+
+        Params:
+            code (str): Python source defining ``def step(t, state) -> dict``.
+                        Pass empty string to clear.
+
+        Returns:
+            {"status": "ok" | "cleared" | "error", "message": str (on error)}
+        """
+        code = params.get("code", "").strip()
+        if not code:
+            self.sim_script_fn = None
+            self.sim_script_error = None
+            return {"status": "cleared"}
+        try:
+            namespace: Dict[str, Any] = {"__builtins__": __builtins__}
+            exec(compile(code, "<sim_script>", "exec"), namespace)
+            fn = namespace.get("step")
+            if fn is None or not callable(fn):
+                raise ValueError("Script must define a callable 'step(t, state)' function")
+            self.sim_script_fn = fn
+            self.sim_script_error = None
+            return {"status": "ok"}
+        except Exception as e:
+            self.sim_script_fn = None
+            self.sim_script_error = str(e)
+            return {"status": "error", "message": str(e)}
 
     def handle_sim_render(self, params: Dict[str, Any]) -> str:
         """

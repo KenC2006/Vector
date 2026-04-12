@@ -104,16 +104,31 @@ Phase B — Layer 3 essentials ✅ DONE:
 11. ✅ Keyframe capture: timestamp-named snapshots stored in `localStorage` per file path; load/delete UI
 12. ✅ Free-floating base: `free_base` toggle → `<freejoint/>` in converter; base body pose readback applied to robot group
 
-<!-- NEXT: Phase C -->
-Phase C — power user (NEXT TO IMPLEMENT):
-13. Python script runner (Monaco tab, `def step(t, state) -> controls`, sandboxed eval each tick)
-14. Camera follow (track base link for mobile robots)
-15. Determinism seed + control trace logging
+Phase C — power user ✅ DONE:
+13. ✅ Python script runner: textarea in sim panel, `def step(t, state) -> controls`; `sim_set_script` RPC compiles and installs callback; backend calls it before each physics step; script errors surfaced in panel without pausing loop
+14. ✅ Camera follow: "Follow Base" checkbox smoothly lerps orbit target to robot world position each frame
+15. ✅ Determinism seed: seed input passed to `sim_load` → `np.random.seed()` before MuJoCo load
+    ✅ Control trace: Record toggle captures (t, controls) on every `sendSimControl`; CSV download button
 
-Phase D — Layer 4 viz polish, in any order driven by demand.
+Phase D — Layer 4 viz polish ✅ DONE:
+16. ✅ Contact-force arrows: `contacts_list` + `n_contacts` added to `get_state()`; pool of 20 ArrowHelpers in worldGroup, positioned/scaled per contact each frame; toggle in sim panel
+17. ✅ CoM trail: rolling 300-point buffer of `com_position` values; rebuilt as THREE.Line each step; cyan color; toggle in sim panel
+18. ✅ Torque heatmap: `actuator_forces` added to `get_state()`; link meshes tinted blue→red by |force|/effort; toggle in sim panel
+19. ✅ Viz toggles UI section added to sim panel
+20. ✅ Viz state cleared on sim exit
 
-## Key Risks (revised)
-- **Converter quality** is still the largest unknown — actuator injection and mesh→hull are the work that decides whether real robots load at all.
-- **IPC overhead** vs 60 Hz: combined-RPC + substep loop is the cheap fix; binary protocol is the expensive fallback.
-- **Frame conventions** post-rotation-plan: trust but verify against an asymmetric test robot before declaring Layer 2 done.
-- **Race conditions** between editor edits and sim loop: solved by the build/sim interlock, not by retry logic.
+## Risk Audit (all addressed)
+
+| Risk | Status |
+|------|--------|
+| **Converter: `continuous` joint** | ✅ Fixed — now maps to `hinge` without range |
+| **Converter: mesh geoms** | ✅ Fixed — `<mesh>` assets declared in `<asset>` section with sanitized names; geoms reference by name |
+| **Converter: actuator injection** | ✅ Done — reads `<dynamics>` damping/friction; ctrlrange from effort limits |
+| **IPC overhead** | ✅ Addressed — single `sim_step` RPC returns state; substep loop caps at 20 |
+| **Frame conventions** | ✅ Correct — worldGroup.rotation.x = -PI/2 wraps Z-up MuJoCo space; joints read in URDF local frame which is unaffected; Phase D viz groups added inside worldGroup |
+| **Hot reload** | ✅ Fixed — `onDidChangeContent` blocks reparse + warns user when sim is active |
+| **Sim ↔ build interlock** | ✅ Done — carry mode blocked during sim (Phase A) |
+| **Race conditions** | ✅ Solved by interlock, not retry logic |
+| **Resource cleanup** | ✅ Staging file removed on sim exit, load failure, and app close (Tauri CloseRequested) |
+| **Determinism** | ✅ Seed knob added (Phase C); control trace available for recording |
+| **Camera follow** | ✅ Done (Phase C) |

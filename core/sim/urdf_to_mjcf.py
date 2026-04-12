@@ -121,9 +121,13 @@ def _extract_geometry(geom_elem: etree._Element, urdf_dir: str) -> Optional[Dict
         if filename and not os.path.isabs(filename):
             filename = os.path.join(urdf_dir, filename)
         if filename and os.path.exists(filename):
+            # Generate stable asset name: strip extension, sanitize
+            raw_name = os.path.splitext(os.path.basename(filename))[0]
+            mesh_name = "".join(c if c.isalnum() or c == "_" else "_" for c in raw_name)
             return {
                 "type": "mesh",
                 "filename": filename,
+                "mesh_name": mesh_name,
             }
 
     return None
@@ -150,6 +154,7 @@ def _create_body_element(
     link_data: Dict[str, Any],
     joint_elem: Optional[etree._Element] = None,
     parent_elem: Optional[etree._Element] = None,
+    mesh_assets: Optional[Dict[str, str]] = None,
 ) -> etree._Element:
     """Create a body element for a link."""
 
@@ -216,8 +221,11 @@ def _create_body_element(
 
         elif geom_type == "mesh":
             filename = geom.get("filename", "")
-            if filename:
-                geom_elem.set("mesh", filename)
+            mesh_name = geom.get("mesh_name", "")
+            if filename and mesh_name:
+                if mesh_assets is not None:
+                    mesh_assets[mesh_name] = filename
+                geom_elem.set("mesh", mesh_name)
 
     return body
 
@@ -341,7 +349,7 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     global_elem.set("offheight", "2400")
     global_elem.set("offwidth", "2400")
 
-    # Add asset (materials)
+    # Add asset section (materials + meshes populated after body building)
     asset = etree.SubElement(mjcf_root, "asset")
     material = etree.SubElement(asset, "material")
     material.set("name", "MatGray")
@@ -356,6 +364,9 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     floor_geom.set("type", "plane")
     floor_geom.set("size", "0 0 0.05")
     floor_geom.set("rgba", "0.5 0.5 0.5 1")
+
+    # Track mesh assets that need declarations in <asset>
+    mesh_assets: Dict[str, str] = {}
 
     # Recursively add bodies
     def add_body_recursive(parent_body_elem: etree._Element, link_name: str, visited: set):
@@ -376,8 +387,12 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 incoming_joint = joint
                 break
 
-        # Create body element
-        body_elem = _create_body_element(link_data, incoming_joint["elem"] if incoming_joint else None)
+        # Create body element (mesh_assets dict accumulates mesh file declarations)
+        body_elem = _create_body_element(
+            link_data,
+            incoming_joint["elem"] if incoming_joint else None,
+            mesh_assets=mesh_assets,
+        )
         parent_body_elem.append(body_elem)
 
         # Add joint element if incoming joint exists and is not fixed
@@ -387,15 +402,20 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
 
             # Convert URDF joint type to MuJoCo joint type
             urdf_joint_type = incoming_joint["type"]
-            mjcf_joint_type = "hinge" if urdf_joint_type == "revolute" else "slide" if urdf_joint_type == "prismatic" else "ball"
+            _URDF_TO_MJCF_JOINT = {
+                "revolute": "hinge",
+                "continuous": "hinge",  # continuous = unbounded hinge
+                "prismatic": "slide",
+            }
+            mjcf_joint_type = _URDF_TO_MJCF_JOINT.get(urdf_joint_type, "ball")
             joint_elem.set("type", mjcf_joint_type)
 
             # Set axis
             axis = incoming_joint["axis"]
             joint_elem.set("axis", " ".join(str(x) for x in axis))
 
-            # Set limits
-            if incoming_joint["limits"]:
+            # Set limits — continuous joints are unbounded, skip range
+            if incoming_joint["limits"] and urdf_joint_type != "continuous":
                 limits = incoming_joint["limits"]
                 joint_elem.set("range", f"{limits['lower']} {limits['upper']}")
                 if limits.get("velocity", 0.0) > 0:
@@ -425,6 +445,12 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 free_joint = etree.Element("freejoint")
                 free_joint.set("name", "base_freejoint")
                 root_bodies[0].insert(0, free_joint)
+
+    # Back-fill mesh asset declarations now that all bodies have been built
+    for mesh_name, mesh_file in mesh_assets.items():
+        mesh_decl = etree.SubElement(asset, "mesh")
+        mesh_decl.set("name", mesh_name)
+        mesh_decl.set("file", mesh_file)
 
     # Add actuators section
     actuators = etree.SubElement(mjcf_root, "actuator")

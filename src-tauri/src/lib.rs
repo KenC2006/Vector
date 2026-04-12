@@ -326,12 +326,16 @@ async fn validate_urdf_content(state: State<'_, AppState>, urdf_content: String)
 
 /// Load a robot model for simulation
 #[tauri::command]
-async fn sim_load(state: State<'_, AppState>, path: String, free_base: Option<bool>) -> Result<serde_json::Value, String> {
+async fn sim_load(state: State<'_, AppState>, path: String, free_base: Option<bool>, seed: Option<u64>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc("sim_load", json!({ "path": path, "free_base": free_base.unwrap_or(false) }), 1)
+    let mut params = json!({ "path": path, "free_base": free_base.unwrap_or(false) });
+    if let Some(s) = seed {
+        params["seed"] = json!(s);
+    }
+    process.send_rpc("sim_load", params, 1)
 }
 
 /// Step the simulation forward and return the resulting state
@@ -386,6 +390,14 @@ async fn sim_set_gravity(state: State<'_, AppState>, gravity: Vec<f64>) -> Resul
 
     let result = process.send_rpc("sim_set_gravity", json!({ "gravity": gravity }), 1)?;
     Ok(format!("Gravity set: {:?}", result))
+}
+
+/// Compile and install a Python step-callback script (Phase C script runner)
+#[tauri::command]
+async fn sim_set_script(state: State<'_, AppState>, code: String) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    process.send_rpc("sim_set_script", json!({ "code": code }), 1)
 }
 
 /// Render the simulation viewport to PNG and return base64
@@ -901,6 +913,7 @@ pub fn run() {
             sim_get_state,
             sim_set_control,
             sim_set_gravity,
+            sim_set_script,
             sim_render,
             ai_edit,
             ai_complete,

@@ -180,6 +180,12 @@
                   <span>Free Base</span>
                 </label>
               </div>
+              <div style="margin-top:8px;display:flex;align-items:center;gap:6px;">
+                <label style="color:#858585;font-size:11px;" title="Determinism seed for numpy random (blank = random)">Seed:
+                  <input type="number" id="sim-seed" min="0" max="2147483647" placeholder="random"
+                    style="width:72px;background:#2d2d2d;color:#ccc;border:1px solid #3c3c3c;border-radius:3px;padding:2px 5px;font-size:11px;">
+                </label>
+              </div>
             </div>
             <div id="sim-controls-body" class="hidden">
               <!-- Pose reset row -->
@@ -188,12 +194,61 @@
                 <button class="sim-pose-btn" id="sim-reset-home" title="Reset to MuJoCo initial state">Home</button>
                 <button class="sim-pose-btn" id="sim-reset-editor" title="Reset to pose from editor">Editor Pose</button>
               </div>
+              <!-- Camera -->
+              <div class="sim-section-title">Camera</div>
+              <div class="sim-pose-row">
+                <label class="sim-gravity-toggle" title="Orbit target tracks the robot base link each frame">
+                  <input type="checkbox" id="sim-camera-follow">
+                  <span>Follow Base</span>
+                </label>
+              </div>
               <!-- Keyframes -->
               <div class="sim-section-title">Keyframes
                 <button class="sim-kf-save" id="sim-kf-save" title="Save current joint positions as a keyframe">+ Save</button>
               </div>
               <div id="sim-kf-list" class="sim-kf-list">
                 <!-- populated by JS -->
+              </div>
+              <!-- Control Trace -->
+              <div class="sim-section-title">Control Trace
+                <button class="sim-pose-btn" id="sim-trace-download" title="Download recorded trace as CSV" disabled style="font-size:10px;padding:2px 6px;">&#8595; CSV</button>
+              </div>
+              <div class="sim-pose-row" style="align-items:center;gap:8px;">
+                <label class="sim-gravity-toggle" title="Record (t, controls) on every sim_set_control call">
+                  <input type="checkbox" id="sim-trace-enabled">
+                  <span>Record</span>
+                </label>
+                <span id="sim-trace-count" style="color:#858585;font-size:10px;">0 samples</span>
+              </div>
+              <!-- Script Runner -->
+              <div class="sim-section-title">Script Runner
+                <button class="sim-pose-btn" id="sim-script-apply" style="font-size:10px;padding:2px 6px;">Apply</button>
+              </div>
+              <div id="sim-script-error" class="sim-script-error hidden"></div>
+              <textarea id="sim-script-editor" class="sim-script-editor" rows="9" spellcheck="false"
+                placeholder="def step(t, state):
+    # t: sim time (s)
+    # state['joints'] → {name: {position, velocity}}
+    # return controls dict
+    return {}"></textarea>
+              <div class="sim-pose-row">
+                <button class="sim-pose-btn" id="sim-script-clear" title="Remove active script">Clear</button>
+              </div>
+              <!-- Visualization overlays (Phase D) -->
+              <div class="sim-section-title">Visualization</div>
+              <div class="sim-viz-toggles">
+                <label class="sim-gravity-toggle" title="Draw CoM position trail while running">
+                  <input type="checkbox" id="sim-viz-com-trail">
+                  <span>CoM Trail</span>
+                </label>
+                <label class="sim-gravity-toggle" title="Show contact-force arrows at collision points">
+                  <input type="checkbox" id="sim-viz-contacts">
+                  <span>Contact Forces</span>
+                </label>
+                <label class="sim-gravity-toggle" title="Tint link colors by actuator force magnitude">
+                  <input type="checkbox" id="sim-viz-heatmap">
+                  <span>Torque Heatmap</span>
+                </label>
               </div>
               <!-- Joint sliders -->
               <div class="sim-section-title">Joint Controls</div>

@@ -790,6 +790,12 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
     const fn = filename // capture for closure
     monacoModels[filename].onDidChangeContent(() => {
       if (activeFile === fn) {
+        // Hot-reload guard: block reparse while sim is running — edits would
+        // diverge from the loaded MJCF. User must restart sim to apply changes.
+        if (simActive) {
+          showToast('Editor changed — restart simulation to apply', 'warning')
+          return
+        }
         if (reparseTimeout !== null) clearTimeout(reparseTimeout)
         reparseTimeout = window.setTimeout(() => {
           reparseTimeout = null
@@ -1385,6 +1391,9 @@ function animate() {
     cameraFocusTween = stepCameraFocusTween(cameraFocusTween, camera, controls, performance.now())
   }
 
+  // Phase C: camera follow — smooth orbit target toward robot base link
+  tickCameraFollow()
+
   controls.update()
 
   // CoM marker spin
@@ -1680,6 +1689,10 @@ function reparseURDF(xmlOverride?: string) {
 if (monacoModels['robot.urdf']) {
   monacoModels['robot.urdf'].onDidChangeContent(() => {
     if (activeFile === 'robot.urdf') {
+      if (simActive) {
+        showToast('Editor changed — restart simulation to apply', 'warning')
+        return
+      }
       if (reparseTimeout !== null) clearTimeout(reparseTimeout)
       reparseTimeout = window.setTimeout(() => {
         reparseTimeout = null
@@ -3052,6 +3065,7 @@ function sendSimControl() {
   simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => {
     controls[s.dataset.joint!] = parseFloat(s.value) || 0
   })
+  recordControlTrace(simTime, controls)
   invoke('sim_set_control', { controls }).catch(() => { /* ignore */ })
 }
 
@@ -3124,7 +3138,315 @@ function exitSimPanel() {
   simNotActive.classList.remove('hidden')
   simControlsBody.classList.add('hidden')
   simJointSliders.innerHTML = ''
+  // Phase C/D cleanup
+  clearScriptError()
+  clearSimViz()
+  // Reset trace recording state
+  simTraceEnabled = false
+  simTraceData.length = 0
+  const traceToggle = document.getElementById('sim-trace-enabled') as HTMLInputElement | null
+  if (traceToggle) traceToggle.checked = false
+  const countEl = document.getElementById('sim-trace-count')
+  if (countEl) countEl.textContent = '0 samples'
+  const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
+  if (dlBtn) dlBtn.disabled = true
+  // Uncheck camera follow
+  const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
+  if (followEl) followEl.checked = false
 }
+
+// ── Phase D: Layer 4 Viz (CoM Trail, Contact Forces, Torque Heatmap) ─────────
+
+// Groups are inside worldGroup so MJCF Z-up coordinates map correctly.
+const simTrailGroup = new THREE.Group()
+simTrailGroup.name = 'sim_com_trail'
+worldGroup.add(simTrailGroup)
+
+const simContactGroup = new THREE.Group()
+simContactGroup.name = 'sim_contacts'
+worldGroup.add(simContactGroup)
+
+// ── CoM Trail ────────────────────────────────────────────────────────────────
+
+const COM_TRAIL_MAX = 300
+const comTrailBuffer: THREE.Vector3[] = []
+let comTrailLine: THREE.Line | null = null
+
+function tickComTrail(state: Record<string, unknown>) {
+  const enabled = (document.getElementById('sim-viz-com-trail') as HTMLInputElement | null)?.checked
+  if (!enabled) {
+    simTrailGroup.visible = false
+    return
+  }
+  simTrailGroup.visible = true
+
+  const com = state.com_position as number[] | undefined
+  if (!com || com.length < 3) return
+
+  comTrailBuffer.push(new THREE.Vector3(com[0], com[1], com[2]))
+  if (comTrailBuffer.length > COM_TRAIL_MAX) comTrailBuffer.shift()
+
+  // Rebuild line geometry each update (cheap for ≤300 points)
+  if (comTrailLine) {
+    simTrailGroup.remove(comTrailLine)
+    comTrailLine.geometry.dispose()
+    ;(comTrailLine.material as THREE.Material).dispose()
+  }
+  if (comTrailBuffer.length < 2) return
+
+  const positions = new Float32Array(comTrailBuffer.length * 3)
+  for (let i = 0; i < comTrailBuffer.length; i++) {
+    positions[i * 3]     = comTrailBuffer[i].x
+    positions[i * 3 + 1] = comTrailBuffer[i].y
+    positions[i * 3 + 2] = comTrailBuffer[i].z
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  const mat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.7 })
+  comTrailLine = new THREE.Line(geo, mat)
+  simTrailGroup.add(comTrailLine)
+}
+
+function clearComTrail() {
+  comTrailBuffer.length = 0
+  if (comTrailLine) {
+    simTrailGroup.remove(comTrailLine)
+    comTrailLine.geometry.dispose()
+    ;(comTrailLine.material as THREE.Material).dispose()
+    comTrailLine = null
+  }
+  simTrailGroup.visible = false
+}
+
+// ── Contact-Force Arrows ──────────────────────────────────────────────────────
+
+const CONTACT_ARROW_POOL = 20
+const contactArrows: THREE.ArrowHelper[] = []
+for (let i = 0; i < CONTACT_ARROW_POOL; i++) {
+  const arrow = new THREE.ArrowHelper(
+    new THREE.Vector3(0, 0, 1),
+    new THREE.Vector3(0, 0, 0),
+    0.1,
+    0xff4444,
+    0.04,
+    0.025,
+  )
+  arrow.visible = false
+  simContactGroup.add(arrow)
+  contactArrows.push(arrow)
+}
+
+function tickContactArrows(state: Record<string, unknown>) {
+  const enabled = (document.getElementById('sim-viz-contacts') as HTMLInputElement | null)?.checked
+  if (!enabled) {
+    contactArrows.forEach(a => { a.visible = false })
+    return
+  }
+
+  const list = state.contacts_list as Array<{
+    pos: number[]; normal: number[]; force: number; body1: string; body2: string
+  }> | undefined
+
+  const contacts = list ?? []
+  for (let i = 0; i < CONTACT_ARROW_POOL; i++) {
+    const arrow = contactArrows[i]
+    const c = contacts[i]
+    if (!c || c.force < 0.001) {
+      arrow.visible = false
+      continue
+    }
+    const [px, py, pz] = c.pos
+    const [nx, ny, nz] = c.normal
+    // Arrow length proportional to force, clamped to [0.02, 0.4] m
+    const len = Math.min(0.4, Math.max(0.02, c.force * 0.002))
+    const dir = new THREE.Vector3(nx, ny, nz).normalize()
+    if (dir.lengthSq() < 0.01) { arrow.visible = false; continue }
+    arrow.position.set(px, py, pz)
+    arrow.setDirection(dir)
+    arrow.setLength(len, len * 0.35, len * 0.2)
+    // Color: white→red based on force magnitude (0–100 N)
+    const t = Math.min(1, c.force / 100)
+    arrow.setColor(new THREE.Color(1, 1 - t, 1 - t))
+    arrow.visible = true
+  }
+}
+
+// ── Torque Heatmap ────────────────────────────────────────────────────────────
+
+/** Map jointName → original emissive color (restored when heatmap disabled). */
+const heatmapOriginalEmissive = new Map<string, THREE.Color>()
+
+function tickTorqueHeatmap(state: Record<string, unknown>) {
+  const enabled = (document.getElementById('sim-viz-heatmap') as HTMLInputElement | null)?.checked
+  const forces = state.actuator_forces as Record<string, number> | undefined
+
+  for (const [jointName, jointInfo] of parsedRobot.joints) {
+    if (jointInfo.type === 'fixed') continue
+    const childLinkGroup = parsedRobot.linkGroups.get((jointInfo as any).childLink)
+    if (!childLinkGroup) continue
+
+    childLinkGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return
+      const mat = obj.material as THREE.MeshStandardMaterial
+      if (!mat || !('emissive' in mat)) return
+
+      if (!enabled) {
+        // Restore original emissive color
+        const orig = heatmapOriginalEmissive.get(obj.uuid)
+        if (orig) { mat.emissive.copy(orig); mat.emissiveIntensity = 0 }
+        return
+      }
+
+      // Save original on first encounter
+      if (!heatmapOriginalEmissive.has(obj.uuid)) {
+        heatmapOriginalEmissive.set(obj.uuid, mat.emissive.clone())
+      }
+
+      const motorName = `${jointName}_motor`
+      const force = forces ? Math.abs(forces[motorName] ?? 0) : 0
+      const effort = simJointLimits.get(jointName)?.effort ?? 10
+      const t = Math.min(1, force / effort)
+      // lerp: blue (cool) → red (hot)
+      mat.emissive.setRGB(t, 0, 1 - t)
+      mat.emissiveIntensity = t * 0.8
+    })
+  }
+}
+
+function clearHeatmap() {
+  for (const [jointName] of parsedRobot.joints) {
+    const childLinkGroup = parsedRobot.linkGroups.get((parsedRobot.joints.get(jointName) as any)?.childLink)
+    if (!childLinkGroup) continue
+    childLinkGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return
+      const mat = obj.material as THREE.MeshStandardMaterial
+      if (!mat || !('emissive' in mat)) return
+      const orig = heatmapOriginalEmissive.get(obj.uuid)
+      if (orig) { mat.emissive.copy(orig); mat.emissiveIntensity = 0 }
+    })
+  }
+  heatmapOriginalEmissive.clear()
+}
+
+/** Called from stepSimulation — drives all Phase D viz each physics tick. */
+function tickSimViz(state: Record<string, unknown>) {
+  tickComTrail(state)
+  tickContactArrows(state)
+  tickTorqueHeatmap(state)
+}
+
+/** Clean up all Phase D viz state on sim exit. */
+function clearSimViz() {
+  clearComTrail()
+  contactArrows.forEach(a => { a.visible = false })
+  clearHeatmap()
+  // Uncheck all viz toggles
+  ;['sim-viz-com-trail', 'sim-viz-contacts', 'sim-viz-heatmap'].forEach(id => {
+    const el = document.getElementById(id) as HTMLInputElement | null
+    if (el) el.checked = false
+  })
+}
+
+// ── Phase C: Camera Follow ────────────────────────────────────────────────────
+
+const simCameraFollowEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
+
+/** Smooth camera follow — called from animate() each frame when sim is active. */
+function tickCameraFollow() {
+  if (!simCameraFollowEl?.checked || !simActive) return
+  const worldPos = new THREE.Vector3()
+  robot.getWorldPosition(worldPos)
+  controls.target.lerp(worldPos, 0.08)
+  controls.update()
+}
+
+// ── Phase C: Control Trace ────────────────────────────────────────────────────
+
+let simTraceEnabled = false
+const simTraceData: Array<{ t: number; controls: Record<string, number> }> = []
+
+function recordControlTrace(t: number, controlSnapshot: Record<string, number>) {
+  if (!simTraceEnabled) return
+  simTraceData.push({ t, controls: { ...controlSnapshot } })
+  const countEl = document.getElementById('sim-trace-count')
+  if (countEl) countEl.textContent = `${simTraceData.length} samples`
+  const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
+  if (dlBtn) dlBtn.disabled = false
+}
+
+document.getElementById('sim-trace-enabled')?.addEventListener('change', (e) => {
+  simTraceEnabled = (e.target as HTMLInputElement).checked
+  if (!simTraceEnabled) {
+    simTraceData.length = 0
+    const countEl = document.getElementById('sim-trace-count')
+    if (countEl) countEl.textContent = '0 samples'
+    const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
+    if (dlBtn) dlBtn.disabled = true
+  }
+})
+
+document.getElementById('sim-trace-download')?.addEventListener('click', () => {
+  if (simTraceData.length === 0) return
+  const allJoints = [...new Set(simTraceData.flatMap(d => Object.keys(d.controls)))]
+  const header = ['t', ...allJoints].join(',')
+  const rows = simTraceData.map(d =>
+    [d.t.toFixed(6), ...allJoints.map(j => (d.controls[j] ?? 0).toFixed(6))].join(',')
+  )
+  const csv = [header, ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'sim_control_trace.csv'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+})
+
+// ── Phase C: Script Runner ────────────────────────────────────────────────────
+
+function showScriptError(msg: string) {
+  const el = document.getElementById('sim-script-error')
+  if (el) { el.textContent = msg; el.classList.remove('hidden') }
+}
+
+function clearScriptError() {
+  const el = document.getElementById('sim-script-error')
+  if (el) el.classList.add('hidden')
+}
+
+document.getElementById('sim-script-apply')?.addEventListener('click', async () => {
+  if (!simCoreRunning) { showToast('Start simulation first', 'warning'); return }
+  const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
+  const code = editor?.value.trim() ?? ''
+  try {
+    const result = await invoke<{ status: string; message?: string }>('sim_set_script', { code })
+    if (result.status === 'error') {
+      showScriptError(result.message ?? 'Script error')
+      showToast('Script error — check panel', 'error')
+    } else if (result.status === 'cleared') {
+      clearScriptError()
+      showToast('Script cleared', 'info')
+    } else {
+      clearScriptError()
+      showToast('Script active', 'success')
+    }
+  } catch (e) {
+    showScriptError(String(e))
+    showToast('Script apply failed', 'error')
+  }
+})
+
+document.getElementById('sim-script-clear')?.addEventListener('click', async () => {
+  const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
+  if (editor) editor.value = ''
+  clearScriptError()
+  if (simCoreRunning) {
+    try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore */ }
+  }
+  showToast('Script cleared', 'info')
+})
 
 // Save keyframe button
 document.getElementById('sim-kf-save')?.addEventListener('click', () => {
@@ -3169,6 +3491,20 @@ document.getElementById('sim-reset-editor')?.addEventListener('click', async () 
   sendSimControl()
   showToast('Restored editor pose (visual only; physics at home)', 'info')
 })
+
+// ── App-close cleanup (risk: staging file left on disk) ──────────────────────
+// Tauri's CloseRequested fires before the window is destroyed; allows async cleanup.
+;(async () => {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    getCurrentWindow().onCloseRequested(async () => {
+      if (lastSimStagingPath) {
+        try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
+        lastSimStagingPath = null
+      }
+    })
+  } catch { /* not in Tauri context */ }
+})()
 
 // Gravity toggle
 simGravityEnabled?.addEventListener('change', async () => {
@@ -3313,9 +3649,15 @@ async function initializeSimulation() {
 
   console.log('[Sim] Loading robot model from', simPath)
   const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
+  const seedRaw = (document.getElementById('sim-seed') as HTMLInputElement | null)?.value ?? ''
+  const seed = seedRaw.trim() !== '' ? parseInt(seedRaw, 10) : undefined
   let modelInfo: Record<string, unknown> = {}
   try {
-    modelInfo = await invoke<Record<string, unknown>>('sim_load', { path: simPath, freeBase })
+    modelInfo = await invoke<Record<string, unknown>>('sim_load', {
+      path: simPath,
+      freeBase,
+      ...(seed !== undefined && Number.isFinite(seed) ? { seed } : {}),
+    })
   } catch (loadErr) {
     try {
       await invoke('remove_sim_staging_urdf', { path: simPath })
@@ -3390,8 +3732,15 @@ async function stepSimulation() {
     updateSimStateDisplay(state)
     updateRobotFromSimState(state)
     updateSimSliders(state)
+    tickSimViz(state)
     updateSimUI()
     clearSimError()
+    // Surface script errors without stopping the loop
+    if (state.script_error) {
+      showScriptError(state.script_error as string)
+    } else {
+      clearScriptError()
+    }
   } catch (error) {
     console.error('[Sim] Error stepping simulation:', error)
     showSimError(String(error))

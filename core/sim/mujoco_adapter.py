@@ -143,6 +143,47 @@ class MuJoCoSimulator:
                     "rotation": rotation,
                 })
 
+        # ── Phase D: contact forces ───────────────────────────────────────────
+        contacts_list: List[Dict[str, Any]] = []
+        try:
+            ncon = int(self.data.ncon)
+            state["n_contacts"] = ncon
+            for i in range(min(ncon, 20)):
+                c = self.data.contact[i]
+                pos = [float(c.pos[0]), float(c.pos[1]), float(c.pos[2])]
+                # Contact frame: first 3 elements are the contact normal (row 0)
+                normal = [float(c.frame[0]), float(c.frame[1]), float(c.frame[2])]
+                # Normal force magnitude from efc_force at efc_address
+                force = 0.0
+                efc_adr = int(c.efc_address)
+                if 0 <= efc_adr < len(self.data.efc_force):
+                    force = abs(float(self.data.efc_force[efc_adr]))
+                b1_id = int(self.model.geom_bodyid[int(c.geom1)])
+                b2_id = int(self.model.geom_bodyid[int(c.geom2)])
+                b1n = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_BODY, b1_id) or ""
+                b2n = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_BODY, b2_id) or ""
+                contacts_list.append({
+                    "pos": pos,
+                    "normal": normal,
+                    "force": force,
+                    "body1": b1n,
+                    "body2": b2n,
+                })
+        except Exception:
+            state["n_contacts"] = 0
+        state["contacts_list"] = contacts_list
+
+        # ── Phase D: actuator forces for torque heatmap ───────────────────────
+        actuator_forces: Dict[str, float] = {}
+        try:
+            for i in range(self.model.nu):
+                act_name = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+                if act_name:
+                    actuator_forces[act_name] = float(self.data.actuator_force[i])
+        except Exception:
+            pass
+        state["actuator_forces"] = actuator_forces
+
         return state
 
     def set_gravity(self, gravity: List[float]) -> None:
