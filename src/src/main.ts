@@ -383,7 +383,7 @@ if (chatHistory.length > 0) {
 
 // State for managing completion requests
 let inlineCompletionSettings = {
-  enabled: true,
+  enabled: false,  // Temporarily disabled to save API credits
   debounceMs: 350,  // Reduced from 500ms — cache handles repeated requests
 }
 
@@ -723,6 +723,17 @@ function switchToFile(filename: string) {
   activeFile = filename
   fileTypeLabel.textContent = getFileType(filename)
 
+  // Clear any pending inline diff and debounced reparse from the previous file —
+  // they shouldn't block rendering of the new file
+  if (pendingOldText !== null) {
+    clearInlineDiff()
+    pendingOldText = null
+  }
+  if (reparseTimeout !== null) {
+    clearTimeout(reparseTimeout)
+    reparseTimeout = null
+  }
+
   hideWelcomeState()
 
   // Switch Monaco model
@@ -870,7 +881,8 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   // Listen for changes on URDF/XML files with debounce
   if (isUrdfLike(filename)) {
     const fn = filename // capture for closure
-    monacoModels[filename].onDidChangeContent(() => {
+    const fnModel = monacoModels[filename] // capture model reference for closure
+    fnModel.onDidChangeContent(() => {
       if (activeFile === fn) {
         if (reparseTimeout !== null) clearTimeout(reparseTimeout)
         reparseTimeout = window.setTimeout(() => {
@@ -878,6 +890,8 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
           // Suppress auto-reparse while an AI inline diff is pending —
           // the explicit reparseURDF() in acceptInlineDiff/dismissInlineDiff handles it.
           if (pendingOldText !== null) return
+          // Only reparse if this file is STILL active (user may have switched tabs during debounce)
+          if (activeFile !== fn) return
           reparseURDF()
           urdfAssemblyApi?.onModelUpdated()
         }, 500)
@@ -1126,6 +1140,7 @@ let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 // URDF uses Z-up, Three.js uses Y-up: rotate the entire robot -90° around X
 parsedRobot.group.rotation.x = -Math.PI / 2
 robot.add(parsedRobot.group)
+robot.updateMatrixWorld(true)
 applyRichVisuals(parsedRobot)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
@@ -1274,10 +1289,14 @@ const collisionEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444, transpar
 let showCollision = false
 
 function rebuildCollisionVisuals(urdfText: string) {
-  // Strip any existing collision meshes from all link groups
+  // Strip any existing collision meshes from all link groups.
+  // Collect first, THEN remove — removing during traverse() corrupts the scene graph
+  // and causes the viewport to stop updating on tab switch.
+  const toRemove: THREE.Object3D[] = []
   parsedRobot.group.traverse(obj => {
-    if ((obj as any).userData?.isCollision) obj.parent?.remove(obj)
+    if ((obj as any).userData?.isCollision) toRemove.push(obj)
   })
+  for (const obj of toRemove) obj.parent?.remove(obj)
   if (!urdfText.trim()) return
 
   let doc: Document
@@ -1689,6 +1708,7 @@ function reparseURDF(xmlOverride?: string) {
           kinematicJoints = newKinematicData.kinematicJoints
           parsedRobot.group.rotation.x = -Math.PI / 2
           robot.add(parsedRobot.group)
+          robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot)
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
@@ -1728,6 +1748,7 @@ function reparseURDF(xmlOverride?: string) {
     // Add new geometry with Z-up → Y-up rotation
     parsedRobot.group.rotation.x = -Math.PI / 2
     robot.add(parsedRobot.group)
+    robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot)
     addEdgeLines(parsedRobot)
 
@@ -1764,6 +1785,8 @@ if (monacoModels['robot.urdf']) {
       reparseTimeout = window.setTimeout(() => {
         reparseTimeout = null
         if (pendingOldText !== null) return
+        // Only reparse if robot.urdf is STILL active (user may have switched tabs)
+        if (activeFile !== 'robot.urdf') return
         reparseURDF()
         urdfAssemblyApi?.onModelUpdated()
       }, 500)
@@ -1992,6 +2015,14 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault()
     const gitBtn = document.querySelector('.ab-btn[data-panel="git"]') as HTMLElement | null
     if (gitBtn) gitBtn.click()
+    return
+  }
+  if (isMacCtrl && e.key === 'b') {
+    e.preventDefault()
+    const sb = document.getElementById('sidebar') as HTMLDivElement | null
+    if (sb) {
+      sb.classList.toggle('hidden')
+    }
     return
   }
 
@@ -2885,24 +2916,97 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
     // Check if this is an assembly graph (Option C) — resolve via frontend snap system
     if (result.assembly_graph && urdfAssemblyApi) {
       console.log('[AI] Received assembly_graph — resolving via frontend snap system')
-      const assemblyResult = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      let assemblyResult = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
       if (assemblyResult) {
-        // Run post-assembly validation
-        let validationIssues: string[] = []
+        // 2nd-pass AI validation: send assembled URDF + viewport screenshot to Claude
         try {
-          const valResult = await invoke('validate_urdf_content', { urdfContent: assemblyResult }) as {
-            results: { name: string; severity: string; message: string; category: string }[]
-          }
-          validationIssues = valResult.results
-            .filter(r => r.severity === 'warn' || r.severity === 'error')
-            .filter(r => r.category === 'Spatial')
-            .map(r => `[${r.severity}] ${r.name}: ${r.message}`)
-        } catch {
-          // validation endpoint may not be available — non-blocking
-        }
+          console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
 
-        if (validationIssues.length > 0) {
-          console.log(`[AI] Post-assembly validation found ${validationIssues.length} spatial issues:`, validationIssues)
+          // Wait for GLB meshes to load before capturing screenshots.
+          // Without this delay, Sonnet sees primitive boxes instead of actual component meshes.
+          await new Promise(r => setTimeout(r, 800))
+
+          // Capture 3 labeled screenshots from canonical angles for visual validation
+          // Research: 3 near-orthogonal views capture all geometry with minimal token cost
+          const savedCamPos = camera.position.clone()
+          const savedTarget = controls.target.clone()
+          const savedAspect = camera.aspect
+
+          const robotBox = new THREE.Box3().setFromObject(robot)
+          if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
+          const robotCenter = new THREE.Vector3()
+          const robotSize = new THREE.Vector3()
+          robotBox.getCenter(robotCenter)
+          robotBox.getSize(robotSize)
+          const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
+          const dist = maxDim * 2.5
+          const captureSize = 512
+          const prevSize = renderer.getSize(new THREE.Vector2())
+
+          // 3 canonical views: front-iso, rear-iso, top-down
+          const viewAngles = [
+            { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },  // front-isometric
+            { label: 'rear-left',   az: -0.75, el: 0.5, depth: -0.75 }, // rear-isometric
+            { label: 'top-down',    az: 0.2, el: 1.2, depth: 0.2 },     // steep overhead
+          ]
+          const screenshots: string[] = []
+
+          // Use a separate offscreen canvas for screenshots so we don't
+          // disrupt the main renderer/composer pipeline (which caused the
+          // viewport to stop updating after screenshot capture)
+          const offCanvas = document.createElement('canvas')
+          offCanvas.width = captureSize
+          offCanvas.height = captureSize
+          const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
+          offRenderer.setSize(captureSize, captureSize)
+          offRenderer.shadowMap.enabled = true
+
+          const offCam = camera.clone()
+          offCam.aspect = 1
+
+          for (const view of viewAngles) {
+            offCam.position.set(
+              robotCenter.x + dist * view.az,
+              robotCenter.y + dist * view.el,
+              robotCenter.z + dist * view.depth
+            )
+            offCam.lookAt(robotCenter)
+            offCam.updateProjectionMatrix()
+            offRenderer.render(scene, offCam)
+            const dataUrl = offCanvas.toDataURL('image/png')
+            screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
+          }
+
+          offRenderer.dispose()
+
+          const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
+          console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
+
+          const valResult = await invoke('ai_validate_assembly', {
+            urdfContent: assemblyResult,
+            originalPrompt: prompt,
+            sessionId: currentChatId,
+            screenshotBase64: screenshots[0],
+            screenshots: screenshots,
+          }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
+
+          // Validation is diagnostic only — no URDF edits (LLMs can't do spatial math).
+          // If validation finds issues, log them. A future iteration could trigger redesign.
+          if (valResult.ok) {
+            console.log(`[AI] Validation passed: ${valResult.notes}`)
+          } else {
+            console.log(`[AI] Validation found issues: ${valResult.notes}`)
+            // Log checklist details
+            const checklist = (valResult as any).checklist
+            if (checklist) {
+              for (const c of checklist) {
+                console.log(`[AI]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
+              }
+            }
+          }
+        } catch (valErr) {
+          console.warn('[AI] Visual validation skipped:', valErr)
+          // Non-blocking — assembly still usable without validation
         }
 
         const diff = computeSimpleDiff(currentUrdf, assemblyResult)
@@ -2911,8 +3015,20 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
           newUrdf: assemblyResult,
         })
         showInlineDiff(currentUrdf, assemblyResult, assemblyResult)
+      } else if (retryCount < 2) {
+        // Error recovery ladder: retry with error context
+        console.log(`[AI] Assembly failed — retrying with error context (attempt ${retryCount + 1}/2)`)
+        addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+
+        // Retry with a simplified prompt that includes the error
+        const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because the topology was invalid or components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
+
+        // Re-send with retry count incremented
+        vcSend.disabled = false
+        unlisten?.()
+        return sendVCMessage(retryPrompt, retryCount + 1)
       } else {
-        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed. Try a simpler design.</span>`)
+        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. The design may be too complex for the current placement engine. Try describing a simpler robot.</span>`)
       }
     } else {
       // Standard path: direct URDF replacement (Option A/B)

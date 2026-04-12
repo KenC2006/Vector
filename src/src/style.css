@@ -205,6 +205,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 #sidebar::-webkit-scrollbar { width: 4px; }
 #sidebar::-webkit-scrollbar-track { background: transparent; }
 #sidebar::-webkit-scrollbar-thumb { background: #424242; border-radius: 2px; }
+#sidebar.hidden { display: none; }
+#sidebar.hidden + #sidebar-resize-handle { display: none; }
 
 .sidebar-panel.hidden { display: none; }
 

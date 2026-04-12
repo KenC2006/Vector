@@ -83,26 +83,54 @@ function extractComponentId(linkName: string): string | null {
  * Used to determine dimensions for the rich generator.
  */
 function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
-  const box = new THREE.Box3()
-  // Only measure meshes directly belonging to this link's geometry group (first child),
-  // NOT child link groups added via joint pivot groups. This prevents the bounding box
-  // from including the entire subtree when child components are attached.
+  // Read dimensions directly from geometry parameters — no world-matrix dependency.
+  // This avoids all first-render timing issues with stale matrixWorld.
+  // Returns dimensions in URDF space (Z-up): x=width, y=depth, z=height.
+  let maxX = 0, maxY = 0, maxZ = 0
+
   const geometryGroup = linkGroup.children[0]
   if (geometryGroup) {
     geometryGroup.traverse(child => {
       if (child instanceof THREE.Mesh) {
-        child.updateWorldMatrix(true, false)
-        const childBox = new THREE.Box3().setFromObject(child)
-        box.union(childBox)
+        const geom = child.geometry
+        const params = (geom as any).parameters
+
+        if (geom instanceof THREE.BoxGeometry && params) {
+          // BoxGeometry(width, height, depth) → URDF: width=X, height=Y, depth=Z
+          maxX = Math.max(maxX, params.width || 0)
+          maxY = Math.max(maxY, params.height || 0)
+          maxZ = Math.max(maxZ, params.depth || 0)
+        } else if (geom instanceof THREE.CylinderGeometry && params) {
+          // CylinderGeometry: radius along XY, length along Y (Three.js)
+          // In URDF parser, cylinders are rotated PI/2 around X to align with Z
+          const r = params.radiusTop || params.radiusBottom || 0
+          const h = params.height || 0
+          maxX = Math.max(maxX, r * 2)
+          maxY = Math.max(maxY, r * 2)
+          maxZ = Math.max(maxZ, h)
+        } else if (geom instanceof THREE.SphereGeometry && params) {
+          const r = params.radius || 0
+          maxX = Math.max(maxX, r * 2)
+          maxY = Math.max(maxY, r * 2)
+          maxZ = Math.max(maxZ, r * 2)
+        } else {
+          // Fallback: compute bounding box from geometry vertices (local space)
+          geom.computeBoundingBox()
+          if (geom.boundingBox) {
+            const s = new THREE.Vector3()
+            geom.boundingBox.getSize(s)
+            maxX = Math.max(maxX, s.x)
+            maxY = Math.max(maxY, s.y)
+            maxZ = Math.max(maxZ, s.z)
+          }
+        }
       }
     })
   }
 
-  if (box.isEmpty()) return { x: 0.04, y: 0.04, z: 0.04 }
+  if (maxX < 0.001 && maxY < 0.001 && maxZ < 0.001) return { x: 0.04, y: 0.04, z: 0.04 }
 
-  const size = new THREE.Vector3()
-  box.getSize(size)
-  return { x: Math.max(size.x, 0.005), y: Math.max(size.y, 0.005), z: Math.max(size.z, 0.005) }
+  return { x: Math.max(maxX, 0.005), y: Math.max(maxY, 0.005), z: Math.max(maxZ, 0.005) }
 }
 
 /**

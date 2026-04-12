@@ -416,6 +416,22 @@ async fn ai_edit(app: AppHandle, state: State<'_, AppState>, prompt: String, urd
     }), 1, &app)
 }
 
+/// Second-pass AI validation of assembled URDF — checks spatial correctness
+#[tauri::command]
+async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc_streaming("ai_validate_assembly", json!({
+        "urdf_content": urdf_content,
+        "original_prompt": original_prompt,
+        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+        "screenshot_base64": screenshot_base64,
+        "screenshots": screenshots
+    }), 1, &app)
+}
+
 /// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing
 #[tauri::command]
 async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_line: u32, cursor_column: u32, prefix: String, kinematic_context: Option<String>) -> Result<String, String> {
@@ -893,6 +909,7 @@ pub fn run() {
             sim_set_control,
             sim_render,
             ai_edit,
+            ai_validate_assembly,
             ai_complete,
             save_file,
             open_file,

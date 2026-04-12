@@ -72,8 +72,9 @@ _generate_completion = None
 _ai_import_error = None
 
 _generate_assembly_with_tools = None
+_validate_assembly = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -101,6 +102,7 @@ class JSONRPCServer:
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
             "ai_complete": self.handle_ai_complete,
+            "ai_validate_assembly": self.handle_ai_validate_assembly,
         }
 
     def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,6 +497,43 @@ class JSONRPCServer:
         # No Claude API available — return empty rather than low-quality local suggestions
         print(f"[server] ai_complete: Claude not available, returning empty", file=sys.stderr)
         return ""
+
+    def handle_ai_validate_assembly(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Second-pass AI validation of an assembled URDF.
+        Sends the URDF back to Claude (Haiku) for spatial correctness checks.
+        Returns corrections if needed (~$0.01-0.02 per call).
+
+        Params:
+            urdf_content (str): The assembled URDF XML.
+            original_prompt (str): The user's original build request.
+            session_id (str, optional): Session identifier.
+
+        Returns:
+            Dict with 'ok' bool, 'notes' str, and optional 'corrected_urdf' str.
+        """
+        if _validate_assembly is None:
+            raise ValueError(
+                f"Claude AI not installed. Run: pip install anthropic\n"
+                f"Error: {_ai_import_error}"
+            )
+
+        if "urdf_content" not in params or "original_prompt" not in params:
+            raise ValueError("Missing required parameters: urdf_content, original_prompt")
+
+        urdf_content = params["urdf_content"]
+        original_prompt = params["original_prompt"]
+        session_id = params.get("session_id", "default")
+        screenshot_base64 = params.get("screenshot_base64")
+        screenshots = params.get("screenshots")  # array of 3 base64 PNGs
+
+        try:
+            self._emit_progress("validating", "Checking assembly with visual feedback...")
+            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots)
+            self._emit_progress("done", "Validation complete")
+            return result
+        except Exception as e:
+            raise ValueError(f"Assembly validation failed: {e}")
 
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """

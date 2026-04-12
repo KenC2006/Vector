@@ -212,78 +212,143 @@ def _get_mounting_context() -> str:
 
 SYSTEM_PROMPT = r"""You are a robot assembly agent for Vector IDE.
 
-CRITICAL: Return ONLY valid JSON. No text before or after. Start with { end with }.
+You design robots by specifying TOPOLOGY ONLY -- which components connect to which, and how. A backend placement engine handles all 3D positioning, rotation, scaling, and URDF generation. You never write coordinates or URDF XML.
 
-## What You Do
+## Coordinate System (URDF standard)
 
-You design robots by specifying TOPOLOGY ONLY -- which components connect to which, and how. A backend placement engine handles all 3D positioning, rotation, scaling, and URDF generation. You never write coordinates or URDF XML for assemblies.
+X = right, Y = forward, Z = up.
+- "top" face = +Z direction (upward)
+- "bottom" face = -Z direction (downward)
+- "front" face = +X direction (forward)
+- "back" face = -X direction (backward)
+- "right" face = +Y direction
+- "left" face = -Y direction
+
+When you specify attach_face, you are choosing which DIRECTION from the parent the child extends.
 
 ## Available Components
 
 {COMPONENT_CATALOG}
 
-## Assembly Output (Option C)
+## Tools
 
-For any "build", "create", "design", or "make" request, return this JSON:
-{"explanation": "describe what you're building and why", "assembly": {"base_link": "structural_baseplate_1", "ground_offset": true, "components": [...]}, "changes_summary": "N components, M DOF"}
-
-Each component in the array:
-- link_name: unique name using component_id + number (e.g., "actuator_servo_high_torque_1")
-- component_id: exact ID from the library above
-- attach_to: parent's link_name (null for root)
-- attach_face: "top", "bottom", "front", "back", "left", "right"
-- joint_type: "fixed", "revolute", or "prismatic"
-- joint_axis: "x", "y", or "z"
-- length_mm: (optional, extrusions only) default 100mm, use 150-300 for arm links
-- orientation: (optional, extrusions only) "horizontal", "vertical", or "auto"
-  - "horizontal": extends along +X (use for arm links)
-  - "vertical": extends along +Z (use for legs, vertical posts)
-  - "auto" (default): horizontal on "top" face, vertical on "bottom" face
+You MUST respond by calling one of the provided tools:
+- **design_robot**: For any "build", "create", "design", or "make" request. Specify the full component topology.
+- **edit_robot**: For small edits to existing robots ("change arm length", "remove sensor", "add a camera"). Use search/replace on the URDF.
 
 ## What the Backend Handles Automatically
 
 - All xyz coordinates and rpy rotations
 - Elongated parts use the orientation hint to determine rotation direction
 - Multiple children on the same face are distributed to corners (e.g., 4 wheels on "bottom" go to 4 corners)
+- Legs on "bottom" face get automatic outward splay (~10°)
 - Ground offset so the robot sits on the floor
 - Collision geometry, inertia computation, visual materials
-- GLB mesh loading for realistic 3D rendering
 
 ## Topology Rules
 
 1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
 2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
 3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
-4. attach_face="front" means the tip/end of an arm link (+X direction after auto-rotation).
-5. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
-6. Include ALL components the user mentions. Do not skip or simplify.
+4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
+5. Include ALL components the user mentions. Do not skip or simplify.
+6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
+7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
+8. For wheels: attach wheels DIRECTLY to the baseplate bottom face (revolute y). Do NOT put servos between baseplate and wheels — wheel components have built-in motor semantics.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
-Arms: baseplate -> servo(top, revolute z) -> extrusion(top, fixed, 200mm, horizontal) -> servo(front, revolute y) -> extrusion(top, fixed, 150mm, horizontal) -> gripper(front, fixed)
+Arms: baseplate -> base_servo(top, revolute z) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
+Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.
 
-Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- backend places them at corners automatically
+Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
 
-Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(top, fixed, 100mm, vertical) -> 4x knee_servo(front, revolute y) -> 4x lower_leg_extrusion(top, fixed, 80mm, vertical)
+Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(bottom, fixed, 100mm, vertical) -> 4x knee_servo(bottom, revolute y) -> 4x lower_leg_extrusion(bottom, fixed, 80mm, vertical)
 
 Sensor mount: any_link -> sensor(top/front/left/right, fixed)
 
-## Edit Output (Option A)
-
-For small edits to existing robots ("change arm length", "remove sensor", "add a camera"):
-{"explanation": "...", "edits": [{"search": "exact text in URDF", "replace": "replacement"}], "changes_summary": "..."}
-
-Rules: search must be exact substring, edits applied in order, keep minimal.
-
 ## Critical Rules
 
-- ALWAYS use Option C (assembly) for building robots. NEVER write raw URDF.
-- Put reasoning in the "explanation" field, not outside the JSON.
+- ALWAYS use design_robot tool for building robots. NEVER write raw URDF.
 - Use component IDs exactly as listed in the library.
 - The backend handles ALL geometry. You handle ALL design decisions.
-
-REMINDER: Return ONLY JSON. Start with { end with }.
 """
+
+# ── Tool schemas for structured output ──────────────────────────────────────
+
+DESIGN_ROBOT_TOOL = {
+    "name": "design_robot",
+    "description": "Design a new robot by specifying the full component topology. The placement engine handles all 3D positioning.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "explanation": {
+                "type": "string",
+                "description": "Describe what you're building and why",
+            },
+            "base_link": {
+                "type": "string",
+                "description": "Name of the root link (usually 'structural_baseplate_1')",
+            },
+            "components": {
+                "type": "array",
+                "description": "List of components in dependency order (root first)",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "link_name": {"type": "string", "description": "Unique name: component_id + number (e.g., 'actuator_servo_high_torque_1')"},
+                        "component_id": {"type": "string", "description": "Exact ID from the component library"},
+                        "attach_to": {"type": ["string", "null"], "description": "Parent's link_name, or null for root"},
+                        "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
+                        "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic"]},
+                        "joint_axis": {"type": "string", "enum": ["x", "y", "z"]},
+                        "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links."},
+                        "orientation": {"type": "string", "enum": ["horizontal", "vertical", "auto"], "description": "horizontal=extend +X (arms), vertical=extend +Z (legs), auto=engine decides"},
+                    },
+                    "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
+                },
+            },
+            "changes_summary": {
+                "type": "string",
+                "description": "Brief summary: N components, M DOF",
+            },
+        },
+        "required": ["explanation", "base_link", "components", "changes_summary"],
+    },
+}
+
+EDIT_ROBOT_TOOL = {
+    "name": "edit_robot",
+    "description": "Make small edits to an existing robot URDF using search/replace operations.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "explanation": {
+                "type": "string",
+                "description": "Describe what you're changing and why",
+            },
+            "edits": {
+                "type": "array",
+                "description": "List of search/replace operations applied in order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "search": {"type": "string", "description": "Exact substring to find in the URDF"},
+                        "replace": {"type": "string", "description": "Replacement text"},
+                    },
+                    "required": ["search", "replace"],
+                },
+            },
+            "changes_summary": {
+                "type": "string",
+                "description": "Brief summary of changes",
+            },
+        },
+        "required": ["explanation", "edits", "changes_summary"],
+    },
+}
+
+ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, EDIT_ROBOT_TOOL]
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
 
@@ -1122,6 +1187,72 @@ def _validate_and_log(urdf: str) -> str:
     return urdf
 
 
+def _extract_tool_result(response, current_urdf: str) -> dict:
+    """Extract structured result from a Claude response with tool-use or text fallback."""
+    # Check for tool_use blocks first (structured output)
+    for block in response.content:
+        if block.type == "tool_use":
+            tool_input = block.input
+            if block.name == "design_robot":
+                assembly = {
+                    "base_link": tool_input.get("base_link", "structural_baseplate_1"),
+                    "ground_offset": True,
+                    "components": tool_input.get("components", []),
+                }
+                n = len(assembly["components"])
+                print(f"[ai_edit] Tool-use design_robot: {n} components (structured output)", file=sys.stderr)
+                return {
+                    "explanation": tool_input.get("explanation", "Assembly designed"),
+                    "assembly_graph": assembly,
+                    "new_urdf": current_urdf,
+                    "stats": tool_input.get("changes_summary", f"{n} components"),
+                }
+            elif block.name == "edit_robot":
+                edits = tool_input.get("edits", [])
+                new_urdf = _apply_edits(current_urdf, edits)
+                print(f"[ai_edit] Tool-use edit_robot: {len(edits)} edits (structured output)", file=sys.stderr)
+                return {
+                    "explanation": tool_input.get("explanation", "Changes applied"),
+                    "new_urdf": new_urdf,
+                    "stats": tool_input.get("changes_summary", "Edit complete"),
+                }
+
+    # Fallback: extract text and parse as JSON (backward compat)
+    response_text = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            response_text += block.text
+
+    if not response_text:
+        return {"explanation": "No response", "new_urdf": current_urdf, "stats": "No changes"}
+
+    print(f"[ai_edit] Falling back to text JSON parsing (no tool_use block)", file=sys.stderr)
+    result = _parse_json_response(response_text)
+
+    if "assembly" in result and result["assembly"]:
+        assembly = result["assembly"]
+        return {
+            "explanation": result.get("explanation", "Assembly designed"),
+            "assembly_graph": assembly,
+            "new_urdf": current_urdf,
+            "stats": result.get("changes_summary", "Assembly ready"),
+        }
+    elif "full_urdf" in result and result["full_urdf"]:
+        return {
+            "explanation": result.get("explanation", "Changes applied"),
+            "new_urdf": result["full_urdf"],
+            "stats": result.get("changes_summary", "Edit complete"),
+        }
+    else:
+        edits = result.get("edits", [])
+        new_urdf = _apply_edits(current_urdf, edits)
+        return {
+            "explanation": result.get("explanation", "Changes applied"),
+            "new_urdf": new_urdf,
+            "stats": result.get("changes_summary", "Edit complete"),
+        }
+
+
 def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                    kinematic_context: str = None, session_id: str = "default") -> dict:
     """
@@ -1180,54 +1311,29 @@ User Request: {prompt}"""
     messages = list(history) + [{"role": "user", "content": user_message}]
 
     system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
-    system_prompt = system_prompt.replace("{MOUNTING_CONTEXT}", _get_mounting_context())
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=64000,  # API hard limit (65536 rejected)
+        max_tokens=64000,
         system=system_prompt,
         messages=messages,
+        tools=ROBOT_TOOLS,
+        tool_choice={"type": "any"},  # Force tool use — guarantees structured output
         timeout=180.0,
     )
 
-    # Parse the response
-    response_text = response.content[0].text
-
-    # Store conversation turn in history (compact: just prompt + explanation, not full URDF)
+    # Store conversation turn in history
     history.append({"role": "user", "content": f"[Edit request] {prompt}"})
-    history.append({"role": "assistant", "content": response_text})
 
-    # Trim history to cap
+    # Handle tool-use response (structured output)
+    result = _extract_tool_result(response, current_urdf)
+
+    # Store assistant response in history
+    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
-    # Try to extract JSON from the response (handle markdown code blocks)
-    result = _parse_json_response(response_text)
-
-    # Check for Option C: assembly graph — pass through to frontend for placement
-    if "assembly" in result and result["assembly"]:
-        assembly = result["assembly"]
-        print(f"[ai_edit] Passing assembly graph to frontend ({len(assembly.get('components', []))} components)", file=sys.stderr)
-        return {
-            "explanation": result.get("explanation", "Assembly designed"),
-            "assembly_graph": assembly,
-            "new_urdf": current_urdf,  # keep current URDF unchanged; frontend will resolve
-            "stats": result.get("changes_summary", "Assembly ready"),
-        }
-    # Check if response uses full_urdf (Option B: complete replacement)
-    elif "full_urdf" in result and result["full_urdf"]:
-        new_urdf = result["full_urdf"]
-        print(f"[ai_edit] WARNING: Claude used Option B (raw URDF) instead of Option C", file=sys.stderr)
-    else:
-        # Apply search/replace edits (Option A: incremental)
-        edits = result.get("edits", [])
-        new_urdf = _apply_edits(current_urdf, edits)
-
-    return {
-        "explanation": result.get("explanation", "Changes applied"),
-        "new_urdf": new_urdf,
-        "stats": result.get("changes_summary", "Edit complete"),
-    }
+    return result
 
 
 def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json: dict,
@@ -1269,76 +1375,49 @@ User Request: {prompt}"""
     messages = list(history) + [{"role": "user", "content": user_message}]
 
     system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
-    system_prompt = system_prompt.replace("{MOUNTING_CONTEXT}", _get_mounting_context())
 
     if on_progress:
         on_progress("thinking", "Analyzing model...")
 
-    # Use streaming API
-    accumulated_text = ""
+    # Use streaming API with tool-use
+    # Stream text for progress, then get final message with tool_use blocks
     try:
         with client.messages.stream(
             model="claude-sonnet-4-20250514",
-            max_tokens=64000,  # API hard limit (65536 rejected)
+            max_tokens=64000,
             system=system_prompt,
             messages=messages,
+            tools=ROBOT_TOOLS,
+            tool_choice={"type": "any"},  # Force tool use — guarantees structured output
         ) as stream:
-            token_count = 0
             sent_generating = False
+            # Consume the stream (drives progress updates)
             for text in stream.text_stream:
-                accumulated_text += text
-                token_count += 1
-
-                if not sent_generating and token_count > 2:
+                if not sent_generating:
                     if on_progress:
                         on_progress("generating", "Generating design...")
                     sent_generating = True
 
-                # Stream partial explanation every ~8 tokens for smooth updates
-                if on_progress and token_count % 8 == 0:
-                    partial = _extract_partial_explanation(accumulated_text)
-                    if partial:
-                        on_progress("streaming", partial)
+            # Get the complete response including tool_use blocks
+            final_response = stream.get_final_message()
 
     except Exception as e:
         raise ValueError(f"Streaming API call failed: {e}")
-
-    response_text = accumulated_text
 
     if on_progress:
         on_progress("applying", "Applying changes...")
 
     # Store conversation history
     history.append({"role": "user", "content": f"[Edit request] {prompt}"})
-    history.append({"role": "assistant", "content": response_text})
+
+    # Extract result from tool-use or text fallback
+    result = _extract_tool_result(final_response, current_urdf)
+
+    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
-    # Parse and apply
-    result = _parse_json_response(response_text)
-
-    # Check for Option C: assembly graph — pass through to frontend
-    if "assembly" in result and result["assembly"]:
-        assembly = result["assembly"]
-        print(f"[ai_edit] Passing assembly graph to frontend ({len(assembly.get('components', []))} components)", file=sys.stderr)
-        return {
-            "explanation": result.get("explanation", "Assembly designed"),
-            "assembly_graph": assembly,
-            "new_urdf": current_urdf,
-            "stats": result.get("changes_summary", "Assembly ready"),
-        }
-    elif "full_urdf" in result and result["full_urdf"]:
-        new_urdf = result["full_urdf"]
-        print(f"[ai_edit] WARNING: Claude used Option B (raw URDF) instead of Option C", file=sys.stderr)
-    else:
-        edits = result.get("edits", [])
-        new_urdf = _apply_edits(current_urdf, edits)
-
-    return {
-        "explanation": result.get("explanation", "Changes applied"),
-        "new_urdf": new_urdf,
-        "stats": result.get("changes_summary", "Edit complete"),
-    }
+    return result
 
 
 def _extract_partial_explanation(text: str) -> str:
@@ -1674,3 +1753,138 @@ def generate_completion(
         oldest_key = next(iter(_completion_cache))
         del _completion_cache[oldest_key]
     return completion_text
+
+
+# ── Assembly Validation (2nd-pass correction) ────────────────────────────────
+
+VALIDATION_SYSTEM_PROMPT = r"""You are a CRITICAL robot assembly validator for Vector IDE. Your job is to find problems, not confirm things look good. Be harsh.
+
+You receive a URDF and a 3D viewport screenshot of the assembled robot. The screenshot shows the ACTUAL rendered result.
+
+## Be Critical — Look for These Problems in the IMAGE
+
+1. **Shape mismatch**: Does it ACTUALLY look like what was requested? An arm should have a clear L-shape (upper arm + elbow bend + forearm), not a straight pole. A dog should have 4 legs, a body, and a head — not a table.
+2. **Components going wrong direction**: Extrusions sticking upward when they should go down, arms pointing into the ground, legs going sideways.
+3. **Overlapping/intersecting parts**: Components clipping through each other, stacked in the same position.
+4. **Missing features**: If user asked for a "robot dog" but there's no head, that's a problem. If they asked for a gripper but there isn't one visible, flag it.
+5. **Proportions**: Legs way too long/short relative to body, arm segments wildly different sizes.
+6. **Floating/buried**: Robot not properly sitting on the ground.
+
+## IMPORTANT: Default to finding problems
+
+Most assemblies have at least one issue. If you say "ok": true, you MUST justify why every aspect is correct. If anything looks even slightly off, return corrections.
+
+## Response Format
+
+Return ONLY valid JSON with a structured checklist:
+
+{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm"}, {"check": "direction", "pass": false, "detail": "forearm extends downward instead of forward"}, {"check": "proportions", "pass": true, "detail": "segments are reasonable sizes"}, {"check": "completeness", "pass": false, "detail": "missing gripper at end"}, {"check": "grounded", "pass": true, "detail": "sitting on floor"}, {"check": "symmetry", "pass": true, "detail": "n/a for arm"}], "notes": "The forearm extends downward instead of forward. The arm needs a different topology — the shoulder and elbow joints should create an L-shape reaching outward.", "needs_redesign": true}
+
+Set "ok" to true ONLY if ALL checks pass. The checklist must always have these 6 checks.
+
+CRITICAL RULES:
+- Do NOT include "edits" with modified xyz/rpy coordinates. You cannot do spatial math — coordinate edits always make things worse.
+- If anything is wrong, set "needs_redesign": true. The system will regenerate the topology from scratch with your feedback.
+- Your job is to DESCRIBE what's wrong, not to fix coordinates.
+
+REMINDER: Return ONLY JSON. Start with { end with }.
+"""
+
+
+def validate_assembly(urdf_content: str, original_prompt: str,
+                      session_id: str = "default",
+                      screenshot_base64: str = None,
+                      screenshots: list = None) -> dict:
+    """
+    Second-pass validation: send assembled URDF + 3 viewport screenshots to Claude.
+    Uses multimodal input so Claude can SEE the assembled robot from multiple angles.
+    Returns dict with 'ok' bool, 'notes' str, and optional 'edits' list.
+    Cost: ~$0.05-0.10 per call (Sonnet with 3 images).
+    """
+    client = _get_client()
+
+    # Build multimodal message content
+    content = []
+    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
+    has_images = False
+
+    # Add 3 labeled screenshots if available
+    if screenshots and len(screenshots) >= 3:
+        for i, (img, label) in enumerate(zip(screenshots[:3], view_labels)):
+            if img:
+                content.append({"type": "text", "text": f"**{label}:**"})
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": img},
+                })
+                has_images = True
+        total_kb = sum(len(s) for s in screenshots[:3]) // 1024
+        print(f"[ai_validate] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
+    elif screenshot_base64:
+        # Fallback: single screenshot
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": screenshot_base64},
+        })
+        has_images = True
+        print(f"[ai_validate] Including 1 viewport screenshot ({len(screenshot_base64) // 1024}KB)", file=sys.stderr)
+
+    content.append({
+        "type": "text",
+        "text": f"""Original user request: "{original_prompt}"
+
+Assembled URDF:
+```xml
+{urdf_content}
+```
+
+{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, symmetry, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}""",
+    })
+
+    t0 = time.time()
+    # Use Sonnet for visual validation — better vision than Haiku, worth the ~$0.05 cost
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        system=VALIDATION_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": content}],
+        timeout=60.0,
+    )
+    elapsed = time.time() - t0
+    if not response.content:
+        return {"ok": True, "notes": "Validation returned empty response"}
+    response_text = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            response_text += block.text
+    if not response_text:
+        return {"ok": True, "notes": "Validation returned no text"}
+    print(f"[ai_validate] Claude responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
+
+    result = _parse_json_response(response_text)
+
+    # Log structured checklist if present
+    checklist = result.get("checklist", [])
+    if checklist:
+        failed = [c for c in checklist if not c.get("pass", True)]
+        passed = [c for c in checklist if c.get("pass", True)]
+        print(f"[ai_validate] Checklist: {len(passed)} passed, {len(failed)} failed", file=sys.stderr)
+        for c in failed:
+            print(f"[ai_validate]   FAIL: {c.get('check')}: {c.get('detail')}", file=sys.stderr)
+
+    if not result.get("ok", True) or result.get("needs_redesign"):
+        # Validation found issues — return diagnostic info for redesign.
+        # Do NOT apply URDF edits — LLMs can't do spatial math.
+        # The frontend will trigger a topology redesign with these notes.
+        return {
+            "ok": False,
+            "notes": result.get("notes", "Needs redesign"),
+            "needs_redesign": True,
+            "checklist": checklist,
+        }
+
+    return {
+        "ok": True,
+        "notes": result.get("notes", "Assembly looks correct"),
+        "checklist": checklist,
+    }
