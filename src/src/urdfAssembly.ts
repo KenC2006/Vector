@@ -113,14 +113,15 @@ function isTypingTarget(t: EventTarget | null): boolean {
 }
 
 /** Kinematic roots (no parent). Prefer base_link when world is the only virtual root — matches ROS fixed-base URDFs. */
-/** Lift a box-shaped carry ghost in world space so its AABB clears y ≈ 0 (floor). */
-function clampCarryMatrixAboveFloor(worldMat: THREE.Matrix4, hx: number, hy: number, hz: number): THREE.Matrix4 {
+/** Lift a box-shaped carry ghost in world space so its AABB clears y ≈ 0 (floor).
+ *  cx/cy/cz are the visual center offset within the carry group's local frame. */
+function clampCarryMatrixAboveFloor(worldMat: THREE.Matrix4, hx: number, hy: number, hz: number, cx = 0, cy = 0, cz = 0): THREE.Matrix4 {
   const m = worldMat.clone()
   let minY = Infinity
   for (const sx of [-1, 1] as const) {
     for (const sy of [-1, 1] as const) {
       for (const sz of [-1, 1] as const) {
-        const v = new THREE.Vector3(sx * hx, sy * hy, sz * hz).applyMatrix4(m)
+        const v = new THREE.Vector3(cx + sx * hx, cy + sy * hy, cz + sz * hz).applyMatrix4(m)
         minY = Math.min(minY, v.y)
       }
     }
@@ -177,6 +178,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     localPos: THREE.Vector3
   }
   let mountNodes: MountNodeEntry[] = []
+  let lastSnapCheckMs = 0
   const occupiedNodeKeys = new Set<string>()
 
   const NODE_MAT_NEUTRAL = new THREE.MeshBasicMaterial({ color: 0x2f7bff, transparent: true, opacity: 0.95, depthTest: false })
@@ -186,6 +188,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const NODE_GEO = new THREE.BoxGeometry(0.012, 0.012, 0.012)
   const SNAP_RADIUS_M = 0.05
   const SNAP_ANGLE_RAD = Math.PI / 4
+  // Scratch objects reused in hot snap loops to avoid per-frame GC pressure
+  const _snapScratchMat = new THREE.Matrix4()
+  const _snapScratchInv = new THREE.Matrix4()
+  const _snapScratchScale = new THREE.Vector3(1, 1, 1)
 
   const ghostGroup = new THREE.Group()
   ghostGroup.name = 'snap_ghost'
@@ -309,7 +315,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function updateBestCandidateDuringDrag(_pivot: THREE.Group) {
-    refreshNodeWorldTransforms()
+    // Only refresh the moving component's nodes — static target nodes don't move
+    // during drag so their world positions from rebuildMountNodes() are still valid.
+    refreshNodeWorldTransforms(selectedLink ?? undefined)
+
+    // Throttle the candidate search to ~20fps — the DFS + distance loop is
+    // expensive on large robots and doesn't need to run every mouse-move frame.
+    const now = performance.now()
+    if (now - lastSnapCheckMs < 50) return
+    lastSnapCheckMs = now
+
     bestMountCandidate = null
     if (mountNodes.length === 0) {
       clearBestCandidateHighlight()
@@ -346,9 +361,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           if (!firstFailureReason) firstFailureReason = verdict.reason
           continue
         }
-        const sourceLocalInv = srcNode.localToSelected.clone().invert()
-        const targetWorld = new THREE.Matrix4().compose(target.worldPosition, target.worldQuaternion, new THREE.Vector3(1, 1, 1))
-        const desiredLinkWorld = targetWorld.clone().multiply(sourceLocalInv)
+        _snapScratchInv.copy(srcNode.localToSelected).invert()
+        _snapScratchMat.compose(target.worldPosition, target.worldQuaternion, _snapScratchScale)
+        const desiredLinkWorld = _snapScratchMat.clone().multiply(_snapScratchInv)
         if (!best || verdict.dist < best.dist) {
           best = {
             mountLink: target.mountLink,
@@ -442,6 +457,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     mountNodes = []
     occupiedNodeKeys.clear()
     linkBBoxCache.clear()
+    _pickTargetCache = null
 
     const graph = ctx.getKinematicGraph()
     const kinJoints = ctx.getKinematicJoints()
@@ -537,15 +553,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   }
 
-  function refreshNodeWorldTransforms() {
+  /** Refresh world transforms for mount nodes.
+   *  Pass `onlyLink` to limit refresh to nodes owned by that link — use this
+   *  during drag where only the selected component is moving and all static
+   *  target nodes already have valid world positions from rebuildMountNodes(). */
+  function refreshNodeWorldTransforms(onlyLink?: string) {
     const parsed = ctx.getParsedRobot()
     const worldQuatTmp = new THREE.Quaternion()
     const worldPosTmp = new THREE.Vector3()
     const worldScaleTmp = new THREE.Vector3()
+    // Avoid redundant updateMatrixWorld calls for the same link (each link has 6 face nodes)
+    const updatedLinks = new Set<string>()
     for (const n of mountNodes) {
+      if (onlyLink !== undefined && n.parentLink !== onlyLink) continue
       const lg = parsed.linkGroups.get(n.parentLink)
       if (!lg) continue
-      lg.updateMatrixWorld(true)
+      if (!updatedLinks.has(n.parentLink)) {
+        lg.updateMatrixWorld(true)
+        updatedLinks.add(n.parentLink)
+      }
       lg.matrixWorld.decompose(worldPosTmp, worldQuatTmp, worldScaleTmp)
       n.worldQuaternion.copy(worldQuatTmp)
       n.worldPosition.copy(n.localPos).applyMatrix4(lg.matrixWorld)
@@ -655,7 +681,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return true
   }
 
+  let _pickTargetCache: THREE.Mesh[] | null = null
   function getPickTargets(): THREE.Mesh[] {
+    if (_pickTargetCache) return _pickTargetCache
     const targets: THREE.Mesh[] = []
     ctx.getParsedRobot().group.traverse(o => {
       if (o instanceof THREE.Mesh) {
@@ -663,6 +691,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (typeof name === 'string' && name && !isMountLinkName(name)) targets.push(o)
       }
     })
+    _pickTargetCache = targets
     return targets
   }
 
@@ -1211,6 +1240,40 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return 'structural'
   }
 
+  /** Compute the AABB of a component's visual geometry descriptors.
+   *  Cylinders are treated as axis-along-Z (matching the URDF parser's rotation.x = PI/2).
+   *  Returns half-extents and center offset in the component link's local frame. */
+  function computeCarryGhostBounds(comp: PresetComponent): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
+    const catName = findCategory(comp)
+    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+    let minX = Infinity, maxX = -Infinity
+    let minY = Infinity, maxY = -Infinity
+    let minZ = Infinity, maxZ = -Infinity
+    for (const vis of visuals) {
+      const [ox, oy, oz] = vis.origin_xyz
+      const g = vis.geometry
+      let ex = 0, ey = 0, ez = 0
+      if (g.type === 'box') { ex = g.size[0] / 2; ey = g.size[1] / 2; ez = g.size[2] / 2 }
+      else if (g.type === 'cylinder') { ex = g.radius; ey = g.radius; ez = g.length / 2 }
+      else if (g.type === 'sphere') { ex = g.radius; ey = g.radius; ez = g.radius }
+      minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
+      minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
+      minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
+    }
+    if (!isFinite(minX)) {
+      const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
+      return { hx: (bb[0] ?? 40) / 2000, hy: (bb[1] ?? 40) / 2000, hz: (bb[2] ?? 40) / 2000, cx: 0, cy: 0, cz: 0 }
+    }
+    return {
+      hx: (maxX - minX) / 2,
+      hy: (maxY - minY) / 2,
+      hz: (maxZ - minZ) / 2,
+      cx: (maxX + minX) / 2,
+      cy: (maxY + minY) / 2,
+      cz: (maxZ + minZ) / 2,
+    }
+  }
+
   function addVisualElement(doc: Document, link: Element, vis: UrdfVisualDesc, matIdx: number) {
     const visual = doc.createElement('visual')
     const vo = doc.createElement('origin')
@@ -1341,7 +1404,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       robot.appendChild(link); robot.appendChild(joint)
       return true
-    })
+    }, { defer: true })
 
     if (changed) {
       ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
@@ -1370,6 +1433,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   let carryComp: PresetComponent | null = null
   let carryGroup: THREE.Group | null = null
+  let carryGhostBounds: { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } | null = null
   let carryWorldPos = new THREE.Vector3()
   let carryFrozen = false          // true after manual nudge — mouse no longer drives position
   let carryRotStep = 0             // 0..3 → 0°, 90°X, 90°Y, 90°Z
@@ -1442,14 +1506,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     carrySnapCandidates = []
     carrySnapIdx = 0
 
-    const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    const zm = (bb[2] ?? 40) / 1000
+    const bounds = computeCarryGhostBounds(comp)
+    carryGhostBounds = bounds
+    const { hx, hy, hz, cx, cy, cz } = bounds
 
-    const geo = new THREE.BoxGeometry(xm, ym, zm)
+    const geo = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2)
     const mesh = new THREE.Mesh(geo, carryGhostMat)
+    mesh.position.set(cx, cy, cz)
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), carryEdgeMat)
+    edges.position.set(cx, cy, cz)
     carryGroup = new THREE.Group()
     carryGroup.name = 'carry_ghost'
     carryGroup.add(mesh, edges)
@@ -1472,6 +1537,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function exitCarryMode() {
     if (carryGroup) { ctx.scene.remove(carryGroup); carryGroup = null }
     carryComp = null
+    carryGhostBounds = null
     carryBestMount = null
     carryFrozen = false
     carryRotStep = 0
@@ -1487,16 +1553,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function getCarrySourceNodes() {
     if (!carryComp || !carryGroup) return []
-    const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
-    const hx = (bb[0] ?? 40) / 2000
-    const hy = (bb[1] ?? 40) / 2000
-    const hz = (bb[2] ?? 40) / 2000
+    const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
     carryGroup.updateMatrixWorld(true)
     return defaultFaceNodesForBoxDims(hx, hy, hz).map(f => {
-      const localFacePos = new THREE.Vector3(...f.origin_xyz)
+      // Face positions are relative to carry group origin — include the visual center offset
+      const lx = cx + f.origin_xyz[0]
+      const ly = cy + f.origin_xyz[1]
+      const lz = cz + f.origin_xyz[2]
+      const localFacePos = new THREE.Vector3(lx, ly, lz)
       const worldPos = localFacePos.clone().applyMatrix4(carryGroup!.matrixWorld)
       const worldQuat = new THREE.Quaternion().setFromRotationMatrix(carryGroup!.matrixWorld)
-      const localToGhost = new THREE.Matrix4().makeTranslation(f.origin_xyz[0], f.origin_xyz[1], f.origin_xyz[2])
+      const localToGhost = new THREE.Matrix4().makeTranslation(lx, ly, lz)
       return { nodeId: f.nodeId, cls: f.cls, worldPos, worldQuat, localToGhost }
     })
   }
@@ -1509,14 +1576,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Collect all valid candidates, sorted closest-first
     const candidates: SnapCandidate[] = []
     for (const src of sourceNodes) {
+      _snapScratchInv.copy(src.localToGhost).invert()
       for (const target of mountNodes) {
         if (isMountOccupied(target.mountLink)) continue
         const dist = target.worldPosition.distanceTo(src.worldPos)
         if (dist > SNAP_RADIUS_M) continue
         if (!nodesCompatible(src.cls, target.cls)) continue
         // No angle check for carry mode — the ghost can be freely rotated with R key.
-        const targetMat = new THREE.Matrix4().compose(target.worldPosition, target.worldQuaternion, new THREE.Vector3(1, 1, 1))
-        const desiredGhostWorld = targetMat.clone().multiply(src.localToGhost.clone().invert())
+        _snapScratchMat.compose(target.worldPosition, target.worldQuaternion, _snapScratchScale)
+        const desiredGhostWorld = _snapScratchMat.clone().multiply(_snapScratchInv)
         candidates.push({ mountLink: target.mountLink, targetParentLink: target.parentLink, dist, desiredGhostWorld, srcNodeId: src.nodeId, targetNodeId: target.nodeId })
       }
     }
@@ -1572,11 +1640,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Clamp ghost so its AABB bottom never clips below the floor (Y=0).
       // The hit point is the surface the cursor is over; the ghost center is placed
       // there, so without a lift the lower half always goes underground.
-      const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
-      const hx = (bb[0] ?? 40) / 2000
-      const hy = (bb[1] ?? 40) / 2000
-      const hz = (bb[2] ?? 40) / 2000
-      const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz)
+      const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
+      const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz, cx, cy, cz)
       carryGroup.position.setFromMatrixPosition(lifted)
       carryGroup.updateMatrixWorld(true)
 
@@ -1625,11 +1690,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         )
         return
       }
-      const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
-      const xm = (bb[0] ?? 40) / 1000
-      const ym = (bb[1] ?? 40) / 1000
-      const zm = (bb[2] ?? 40) / 1000
-      const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, xm / 2, ym / 2, zm / 2)
+      const { hx: ghx, hy: ghy, hz: ghz, cx: gcx, cy: gcy, cz: gcz } = computeCarryGhostBounds(comp)
+      const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, ghx, ghy, ghz, gcx, gcy, gcz)
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
       const childLocal = parentWorldInv.clone().multiply(ghostAdjusted)
@@ -1898,6 +1960,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         gizmoBasePivotWorld.copy(pivot.matrixWorld)
         rebuildMountNodes()
         nodesGroup.visible = true
+        lastSnapCheckMs = 0  // ensure first drag frame runs a snap check immediately
         updateBestCandidateDuringDrag(pivot)
       }
       return
@@ -2219,12 +2282,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (k === 'pagedown') {
           carryGroup.position.y -= step
           // Clamp so the ghost never clips below the floor.
-          const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
-          const hx = (bb[0] ?? 40) / 2000
-          const hy = (bb[1] ?? 40) / 2000
-          const hz = (bb[2] ?? 40) / 2000
+          const { hx: phx, hy: phy, hz: phz, cx: pcx, cy: pcy, cz: pcz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
           carryGroup.updateMatrixWorld(true)
-          const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz)
+          const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, phx, phy, phz, pcx, pcy, pcz)
           carryGroup.position.setFromMatrixPosition(lifted)
         }
         carryWorldPos.copy(carryGroup.position)

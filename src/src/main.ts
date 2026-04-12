@@ -17,6 +17,7 @@ import { initGitPanel } from './gitPanel'
 import { initValidation, validateXMLStructure, validateURDFPerLink } from './validation'
 import type { ValResult } from './validation'
 import { parseURDFToScene, buildKinematicGraphFromURDF, setPathResolver, defaultMat } from './urdfParser'
+import type { ParsedRobot, KinematicLink, KinematicJoint } from './urdfParser'
 import { initNodeGraph } from './nodeGraph'
 import { initViewportControls } from './viewportControls'
 import {
@@ -537,6 +538,13 @@ const openFiles: string[] = []
 const filePaths: Record<string, string | null> = {} // filename → disk path (null = unsaved)
 const viewStates: Record<string, monaco.editor.ICodeEditorViewState | null> = {}
 const cameraStates: Record<string, { pos: [number, number, number]; target: [number, number, number] }> = {}
+interface TabRobotCache {
+  parsedRobot: ParsedRobot
+  kinematicGraph: Record<string, KinematicLink>
+  kinematicJoints: Record<string, KinematicJoint>
+  parsedContent: string
+}
+const tabRobotCache: Record<string, TabRobotCache> = {}
 let untitledCounter = 0
 
 function getFileExt(filename: string): string {
@@ -610,6 +618,16 @@ function switchToFile(filename: string) {
   if (filename === activeFile) return
   if (!monacoModels[filename]) return
 
+  // Save current 3D state so we can restore it when switching back
+  if (activeFile && isUrdfLike(activeFile)) {
+    tabRobotCache[activeFile] = {
+      parsedRobot,
+      kinematicGraph,
+      kinematicJoints,
+      parsedContent: monacoEditor.getModel()?.getValue() || '',
+    }
+  }
+
   // Save current view state (editor + camera)
   viewStates[activeFile] = monacoEditor.saveViewState()
   if (activeFile) {
@@ -645,14 +663,38 @@ function switchToFile(filename: string) {
 
   monacoEditor.focus()
 
-  // Reparse 3D viewport if switching to a URDF/XML file
+  // Update 3D viewport if switching to a URDF/XML file
   if (isUrdfLike(filename)) {
-    // Fresh world offset per document; then ground once (not on every in-editor reparse).
-    robot.position.set(0, 0, 0)
-    reparseURDF()
-    groundRobot(robot)
-    urdfAssemblyApi?.onModelUpdated()
-    runLocalValidation()
+    const currentContent = monacoModels[filename].getValue()
+    const cached = tabRobotCache[filename]
+
+    if (cached && cached.parsedContent === currentContent) {
+      // Content unchanged — restore cached 3D state without reparsing
+      robot.remove(parsedRobot.group)
+      wireframeGroup.clear()
+      axisVisuals.length = 0
+      parsedRobot = cached.parsedRobot
+      kinematicGraph = cached.kinematicGraph
+      kinematicJoints = cached.kinematicJoints
+      robot.position.set(0, 0, 0)
+      robot.add(parsedRobot.group)
+      groundRobot(robot)
+      rebuildWireframes()
+      rebuildJointAxisVisuals()
+      updateComMarker()
+      rebuildCollisionVisuals(currentContent)
+      updateViewportInfo()
+      buildKinematicTreeUI()
+      urdfAssemblyApi?.onModelUpdated()
+      runLocalValidation()
+    } else {
+      // First visit or content changed — full reparse
+      robot.position.set(0, 0, 0)
+      reparseURDF()
+      groundRobot(robot)
+      urdfAssemblyApi?.onModelUpdated()
+      runLocalValidation()
+    }
 
     // Restore saved camera or auto-frame
     const savedCam = cameraStates[filename]
@@ -798,6 +840,20 @@ function closeFile(filename: string) {
     model.dispose()
     delete monacoModels[filename]
   }
+
+  // Dispose cached 3D state (if it's not the currently live parsedRobot)
+  const cached3d = tabRobotCache[filename]
+  if (cached3d && cached3d.parsedRobot !== parsedRobot) {
+    cached3d.parsedRobot.group.traverse(obj => {
+      if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose()
+      if ((obj as THREE.Mesh).material) {
+        const mat = (obj as THREE.Mesh).material
+        if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+        else mat.dispose()
+      }
+    })
+  }
+  delete tabRobotCache[filename]
 
   // Switch to adjacent tab or show welcome if no files left
   if (filename === activeFile) {
