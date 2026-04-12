@@ -1511,11 +1511,16 @@ function rebuildJointAxisVisuals() {
   }
 }
 
-function reparseURDF() {
+function reparseURDF(xmlOverride?: string) {
   try {
-    const model = monacoEditor.getModel()
-    if (!model) return  // no file open
-    let urdfContent = model.getValue()
+    let urdfContent: string
+    if (xmlOverride !== undefined) {
+      urdfContent = xmlOverride
+    } else {
+      const model = monacoEditor.getModel()
+      if (!model) return  // no file open
+      urdfContent = model.getValue()
+    }
 
     // True xacro only: file extension or actual <xacro:…> tags.
     // Do NOT use urdfContent.includes('xacro:') — that matches xmlns:xacro on plain URDF
@@ -3410,7 +3415,7 @@ urdfAssemblyApi = initUrdfAssembly({
       createNewFile('robot.urdf', content, null)
     }
   },
-  reparseUrdf: reparseURDF,
+  reparseUrdf: (xml?: string) => reparseURDF(xml),
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,

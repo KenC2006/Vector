@@ -25,7 +25,7 @@ export interface UrdfAssemblyContext {
   switchPanel: (name: string) => void
   getUrdfText: () => string
   setUrdfText: (content: string) => void
-  reparseUrdf: () => void
+  reparseUrdf: (xmlOverride?: string) => void
   getParsedRobot: () => ParsedRobotLike
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
@@ -606,7 +606,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     urdfRedo = []
   }
 
-  function commitUrdf(mutator: (doc: Document) => boolean): boolean {
+  function commitUrdf(mutator: (doc: Document) => boolean, opts?: { defer?: boolean }): boolean {
     const current = ctx.getUrdfText()
     const parser = new DOMParser()
     const doc = parser.parseFromString(current, 'application/xml')
@@ -622,7 +622,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const xml = new XMLSerializer().serializeToString(doc)
     ctx.setUrdfText(xml)
-    ctx.reparseUrdf()
+    // Defer to next animation frame when called from pointer-up handlers to avoid
+    // blocking the frame that clears the drag (full scene rebuild can take 100+ ms).
+    if (opts?.defer) {
+      requestAnimationFrame(() => ctx.reparseUrdf(xml))
+    } else {
+      ctx.reparseUrdf(xml)
+    }
     return true
   }
 
@@ -884,8 +890,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const label = childCount > 0 ? `"${linkName}" and ${childCount} child link${childCount > 1 ? 's' : ''}` : `"${linkName}"`
 
     const changed = commitUrdf(doc => {
-      const robot = doc.querySelector('robot')
-      if (!robot) return false
+      const robot = doc.documentElement
+      if (!robot || robot.nodeName !== 'robot') return false
 
       // Remove all links in subtree
       for (const name of toRemove) {
@@ -943,8 +949,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     const changed = commitUrdf(doc => {
-      const robot = doc.querySelector('robot')
-      if (!robot) return false
+      const robot = doc.documentElement
+      if (!robot || robot.nodeName !== 'robot') return false
 
       // Clone and rename each link in subtree
       for (const name of subtreeLinks) {
@@ -1248,8 +1254,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
 
     const changed = commitUrdf(doc => {
-      const robot = doc.querySelector('robot')
-      if (!robot) return false
+      const robot = doc.documentElement
+      if (!robot || robot.nodeName !== 'robot') return false
 
       const link = doc.createElement('link')
       link.setAttribute('name', childName)
@@ -1958,6 +1964,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
           origin.setAttribute('rpy', `${fmt(newLocalEuler.x)} ${fmt(newLocalEuler.y)} ${fmt(newLocalEuler.z)}`)
 
+
           // Reconcile joint axis for revolute / prismatic / continuous joints.
           // <axis xyz> is expressed in the joint frame. When we reparent and reorient
           // the joint we must re-express the same physical world-space axis in the
@@ -1991,7 +1998,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           }
 
           return true
-        })
+        }, { defer: true })
         bestMountCandidate = null
         ghostGroup.visible = false
         clearBestCandidateHighlight()
@@ -2056,7 +2063,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const origin = ensureOrigin(jointEl, documentXml)
         origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
         return true
-      })
+      }, { defer: true })
       if (ok) ctx.showToast(`Moved ${selectedLink} (joint origin updated)`, 'success')
       selectLink(selectedLink)
     }
@@ -2067,6 +2074,29 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!ctx.isViewport3D()) return
     const pivot = getPivotGroupForLink(selectedLink)
     if (!pivot) return
+
+    // Floor constraint: keep the lowest vertex of the component's geometry at world Y ≥ 0.
+    // We use Box3.setFromObject to find the true AABB minimum Y (accounts for geometry
+    // offset from pivot origin). Parent rotation means world Y ≠ local Y, so the
+    // correction is converted via the parent's inverse world quaternion.
+    if (gizmo.mode === 'translate' && pivot.parent) {
+      pivot.updateMatrixWorld(true)
+      const aabb = new THREE.Box3().setFromObject(pivot)
+      const minY = aabb.min.y
+      if (minY < 0) {
+        const correctionWorld = new THREE.Vector3(0, -minY, 0)
+        const parentWorldQuat = new THREE.Quaternion()
+        const parentWorldScale = new THREE.Vector3()
+        pivot.parent.updateMatrixWorld(true)
+        pivot.parent.matrixWorld.decompose(new THREE.Vector3(), parentWorldQuat, parentWorldScale)
+        const localDelta = correctionWorld
+          .applyQuaternion(parentWorldQuat.clone().invert())
+          .divide(parentWorldScale)
+        pivot.position.add(localDelta)
+        pivot.updateMatrixWorld(true)
+      }
+    }
+
     updateBestCandidateDuringDrag(pivot)
   })
 
@@ -2163,7 +2193,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (k === 'arrowup')    carryGroup.position.z -= step
         if (k === 'arrowdown')  carryGroup.position.z += step
         if (k === 'pageup')     carryGroup.position.y += step
-        if (k === 'pagedown')   carryGroup.position.y -= step
+        if (k === 'pagedown') {
+          carryGroup.position.y -= step
+          // Clamp so the ghost never clips below the floor.
+          const bb = carryComp.physical.bounding_box_mm ?? carryComp.physical.cross_section_mm ?? [40, 40, 40]
+          const hx = (bb[0] ?? 40) / 2000
+          const hy = (bb[1] ?? 40) / 2000
+          const hz = (bb[2] ?? 40) / 2000
+          carryGroup.updateMatrixWorld(true)
+          const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz)
+          carryGroup.position.setFromMatrixPosition(lifted)
+        }
         carryWorldPos.copy(carryGroup.position)
         carryFrozen = true
         carryGroup.updateMatrixWorld(true)
