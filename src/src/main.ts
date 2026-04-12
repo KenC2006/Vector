@@ -893,6 +893,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
           // Only reparse if this file is STILL active (user may have switched tabs during debounce)
           if (activeFile !== fn) return
           reparseURDF()
+          groundRobot(robot)
           urdfAssemblyApi?.onModelUpdated()
         }, 500)
       }
@@ -1444,6 +1445,7 @@ function rebuildWireframes() {
         const clone = new THREE.Mesh(child.geometry, wireMat)
         child.getWorldPosition(clone.position)
         child.getWorldQuaternion(clone.quaternion)
+        child.getWorldScale(clone.scale)
         wireframeGroup.add(clone)
       }
     })
