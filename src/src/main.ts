@@ -9,7 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
-import { applyRichVisuals } from './richVisuals'
+import { applyRichVisuals, preloadMeshCache } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
 import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
@@ -1135,6 +1135,11 @@ setPathResolver(() => ({
 
 const robot = new THREE.Group()
 scene.add(robot)
+
+// Pre-warm GLB mesh cache so the first real URDF render uses real meshes
+// instead of parametric fallback. Fire-and-forget — runs in parallel with
+// the rest of app init; applyRichVisuals will use cached meshes if ready.
+preloadMeshCache()
 
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 // URDF uses Z-up, Three.js uses Y-up: rotate the entire robot -90° around X

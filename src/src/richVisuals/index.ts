@@ -11,7 +11,7 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getStepFallbackUrl } from './meshOverrides'
+import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
 import { getMaterial } from './materials'
 
 /** Get a category-appropriate material for STEP meshes that lack embedded colors. */
@@ -179,7 +179,7 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
         applyMeshToLink(clone, linkName, linkGroup, dims, compId)
         continue
       }
-      // Async load — use parametric until STEP is ready
+      // Async load — use parametric until GLB is ready
       if (!loadingInProgress.has(compId)) {
         loadingInProgress.add(compId)
         loadMeshOverride(meshUrl, linkName, linkGroup, dims, compId)
@@ -407,4 +407,43 @@ async function loadSTEP(url: string): Promise<THREE.Group> {
 
   const { parseSTEP } = await import('../stepLoader')
   return parseSTEP(buffer)
+}
+
+/**
+ * Pre-warm the GLB mesh cache at app startup so the first applyRichVisuals call
+ * can use real meshes instead of parametric fallback.
+ *
+ * Deduplicates by GLB URL — each unique file is fetched once, then stored in
+ * meshCache for every component ID that maps to it.
+ */
+export async function preloadMeshCache(): Promise<void> {
+  // Build URL → [compId, ...] map, skipping blacklisted components
+  const urlToCompIds = new Map<string, string[]>()
+  for (const compId of Object.keys(MESH_OVERRIDES)) {
+    if (SLOW_MESH_BLACKLIST.has(compId)) continue
+    const url = getMeshOverrideUrl(compId)
+    if (!url) continue
+    const list = urlToCompIds.get(url)
+    if (list) list.push(compId)
+    else urlToCompIds.set(url, [compId])
+  }
+
+  const results = await Promise.allSettled(
+    Array.from(urlToCompIds.entries()).map(async ([url, compIds]) => {
+      const meshGroup = await loadGLB(url)
+      // Store the same parsed mesh for every component ID sharing this GLB
+      for (const compId of compIds) {
+        meshCache.set(compId, meshGroup)
+        loadingInProgress.delete(compId)
+      }
+      return compIds.length
+    }),
+  )
+
+  let loaded = 0, failed = 0
+  for (const r of results) {
+    if (r.status === 'fulfilled') loaded += r.value
+    else failed++
+  }
+  console.log(`[richVisuals] GLB cache preloaded: ${loaded} components from ${results.length - failed} files (${failed} failed)`)
 }
