@@ -4,6 +4,7 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { invoke } from '@tauri-apps/api/core'
+import { rpyToQuat } from './rotationIO'
 
 // ── Loaders ──────────────────────────────────────────────────────────────────
 
@@ -327,8 +328,7 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
         const xyz = (visOriginEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
         const rpy = (visOriginEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
         visualGroup.position.set(xyz[0], xyz[1], xyz[2])
-        const euler = new THREE.Euler(rpy[0], rpy[1], rpy[2], 'ZYX')
-        visualGroup.quaternion.setFromEuler(euler)
+        visualGroup.quaternion.copy(rpyToQuat(rpy))
       }
 
       geometryGroup.add(visualGroup)
@@ -377,8 +377,7 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
         const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
         const rpy = (originEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
         pos = new THREE.Vector3(xyz[0], xyz[1], xyz[2])
-        const euler = new THREE.Euler(rpy[0], rpy[1], rpy[2], 'ZYX')
-        rot.setFromEuler(euler)
+        rot = rpyToQuat(rpy)
       }
 
       jointData.push({

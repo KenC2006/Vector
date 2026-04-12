@@ -17,6 +17,7 @@ import { initGitPanel } from './gitPanel'
 import { initValidation, validateXMLStructure, validateURDFPerLink } from './validation'
 import type { ValResult } from './validation'
 import { parseURDFToScene, buildKinematicGraphFromURDF, setPathResolver, defaultMat } from './urdfParser'
+import { rpyToQuat } from './rotationIO'
 import type { ParsedRobot, KinematicLink, KinematicJoint } from './urdfParser'
 import { initNodeGraph } from './nodeGraph'
 import { initViewportControls } from './viewportControls'
@@ -670,14 +671,14 @@ function switchToFile(filename: string) {
 
     if (cached && cached.parsedContent === currentContent) {
       // Content unchanged — restore cached 3D state without reparsing
-      robot.remove(parsedRobot.group)
+      worldGroup.remove(parsedRobot.group)
       wireframeGroup.clear()
       axisVisuals.length = 0
       parsedRobot = cached.parsedRobot
       kinematicGraph = cached.kinematicGraph
       kinematicJoints = cached.kinematicJoints
       robot.position.set(0, 0, 0)
-      robot.add(parsedRobot.group)
+      worldGroup.add(parsedRobot.group)
       groundRobot(robot)
       rebuildWireframes()
       rebuildJointAxisVisuals()
@@ -1039,10 +1040,16 @@ setPathResolver(() => ({
 const robot = new THREE.Group()
 scene.add(robot)
 
+// worldGroup applies the Z-up → Y-up correction for the scene.
+// parsedRobot.group is kept in pure URDF (Z-up) space so exported
+// transforms match what the parser reads back.
+const worldGroup = new THREE.Group()
+worldGroup.name = 'urdf_world'
+worldGroup.rotation.x = -Math.PI / 2
+robot.add(worldGroup)
+
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
-// URDF uses Z-up, Three.js uses Y-up: rotate the entire robot -90° around X
-parsedRobot.group.rotation.x = -Math.PI / 2
-robot.add(parsedRobot.group)
+worldGroup.add(parsedRobot.group)
 applyRichVisuals(parsedRobot)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
@@ -1248,8 +1255,7 @@ function rebuildCollisionVisuals(urdfText: string) {
         const wrapper = new THREE.Group()
         wrapper.userData.isCollision = true
         wrapper.visible = showCollision
-        const euler = new THREE.Euler(rpy[0] || 0, rpy[1] || 0, rpy[2] || 0, 'ZYX')
-        wrapper.quaternion.setFromEuler(euler)
+        wrapper.quaternion.copy(rpyToQuat(rpy))
         wrapper.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
         mesh.position.set(0, 0, 0)
         wrapper.add(mesh)
@@ -1598,14 +1604,13 @@ function reparseURDF(xmlOverride?: string) {
         try {
           const newParsed = parseURDFToScene(processed)
           const newKinematicData = buildKinematicGraphFromURDF(processed)
-          robot.remove(parsedRobot.group)
+          worldGroup.remove(parsedRobot.group)
           wireframeGroup.clear()
           axisVisuals.length = 0
           parsedRobot = newParsed
           kinematicGraph = newKinematicData.kinematicGraph
           kinematicJoints = newKinematicData.kinematicJoints
-          parsedRobot.group.rotation.x = -Math.PI / 2
-          robot.add(parsedRobot.group)
+          worldGroup.add(parsedRobot.group)
           applyRichVisuals(parsedRobot)
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
@@ -1633,7 +1638,7 @@ function reparseURDF(xmlOverride?: string) {
     const newKinematicData = buildKinematicGraphFromURDF(urdfContent)
 
     // Clear old robot geometry
-    robot.remove(parsedRobot.group)
+    worldGroup.remove(parsedRobot.group)
     wireframeGroup.clear()
     axisVisuals.length = 0
 
@@ -1642,9 +1647,7 @@ function reparseURDF(xmlOverride?: string) {
     kinematicGraph = newKinematicData.kinematicGraph
     kinematicJoints = newKinematicData.kinematicJoints
 
-    // Add new geometry with Z-up → Y-up rotation
-    parsedRobot.group.rotation.x = -Math.PI / 2
-    robot.add(parsedRobot.group)
+    worldGroup.add(parsedRobot.group)
     applyRichVisuals(parsedRobot)
     addEdgeLines(parsedRobot)
 

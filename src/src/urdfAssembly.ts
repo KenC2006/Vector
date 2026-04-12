@@ -9,6 +9,7 @@ import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCo
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST } from './richVisuals/index'
+import { quatToRpy } from './rotationIO'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -104,6 +105,57 @@ function ensureOrigin(el: Element, doc: Document): Element {
   return origin
 }
 
+/**
+ * Re-express a joint's `<axis xyz>` in the new joint frame after the joint has been
+ * moved or reoriented. The physical world-space axis direction is preserved.
+ *
+ * Only applies to revolute / prismatic / continuous joints (fixed joints have no axis).
+ *
+ * TODO: when ball/floating joints are added, a single axis vector is insufficient;
+ *       that will require a per-DOF quaternion stack at the joint level.
+ *
+ * @param jointEl         The `<joint>` XML element to update.
+ * @param doc             The owning Document (used to create the `<axis>` element if missing).
+ * @param oldJointWorldQ  Quaternion of the joint frame BEFORE the move (drag-start snapshot).
+ * @param parentWorldQ    World quaternion of the joint's NEW parent link.
+ * @param newLocalQuat    New local quaternion of the joint in the parent frame.
+ */
+function reconcileJointAxis(
+  jointEl: Element,
+  doc: Document,
+  oldJointWorldQ: THREE.Quaternion,
+  parentWorldQ: THREE.Quaternion,
+  newLocalQuat: THREE.Quaternion,
+): void {
+  const jType = jointEl.getAttribute('type') || 'fixed'
+  if (jType !== 'revolute' && jType !== 'prismatic' && jType !== 'continuous') return
+
+  const axisEl = jointEl.querySelector('axis')
+  const axisStr = axisEl?.getAttribute('xyz') || '0 0 1'
+  const axisArr = axisStr.trim().split(/\s+/).map(Number)
+  const axisInOldJoint = new THREE.Vector3(
+    Number.isFinite(axisArr[0]) ? axisArr[0] : 0,
+    Number.isFinite(axisArr[1]) ? axisArr[1] : 0,
+    Number.isFinite(axisArr[2]) ? axisArr[2] : 1,
+  ).normalize()
+
+  // 1. Lift axis into world space using the old joint frame orientation.
+  const axisWorld = axisInOldJoint.clone().applyQuaternion(oldJointWorldQ)
+
+  // 2. New joint world orientation = new parent world quat × new local quat.
+  const newJointWorldQ = parentWorldQ.clone().multiply(newLocalQuat)
+
+  // 3. Pull axis back into the new joint frame and renormalize to guard float drift.
+  const newAxisInJoint = axisWorld.clone()
+    .applyQuaternion(newJointWorldQ.clone().invert())
+    .normalize()
+
+  const axisElToWrite = axisEl ?? doc.createElement('axis')
+  axisElToWrite.setAttribute('xyz',
+    `${fmt(newAxisInJoint.x)} ${fmt(newAxisInJoint.y)} ${fmt(newAxisInJoint.z)}`)
+  if (!axisEl) jointEl.appendChild(axisElToWrite)
+}
+
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false
   const tag = t.tagName
@@ -186,7 +238,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const NODE_MAT_BEST = new THREE.MeshBasicMaterial({ color: 0x2dff8a, transparent: true, opacity: 1, depthTest: false })
   const NODE_MAT_OCCUPIED = new THREE.MeshBasicMaterial({ color: 0xff5533, transparent: true, opacity: 0.95, depthTest: false })
   const NODE_GEO = new THREE.BoxGeometry(0.012, 0.012, 0.012)
-  const SNAP_RADIUS_M = 0.05
+  let snapRadiusM = 0.05          // adjustable via [ ] in carry mode
   const SNAP_ANGLE_RAD = Math.PI / 4
   // Scratch objects reused in hot snap loops to avoid per-frame GC pressure
   const _snapScratchMat = new THREE.Matrix4()
@@ -252,7 +304,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (target.parentLink === movingLink) return { ok: false, reason: 'same-component', dist: Infinity }
     if (isMountOccupied(target.mountLink)) return { ok: false, reason: 'occupied', dist: Infinity }
     const dist = target.worldPosition.distanceTo(sourceWorldPos)
-    if (dist > SNAP_RADIUS_M) return { ok: false, reason: 'too-far', dist }
+    if (dist > snapRadiusM) return { ok: false, reason: 'too-far', dist }
 
     // Topology: do not attach into own subtree.
     const graph = ctx.getKinematicGraph()
@@ -828,15 +880,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             <input id="urdf-origin-z" class="joint-lim-input" />
           </div>
           <div class="joint-limits-row">
-            <span class="joint-lim-label">Origin RPY</span>
-            <input id="urdf-origin-r" class="joint-lim-input" />
-            <input id="urdf-origin-p" class="joint-lim-input" />
-            <input id="urdf-origin-yaw" class="joint-lim-input" />
+            <span class="joint-lim-label">Origin RPY (°)</span>
+            <input id="urdf-origin-r" class="joint-lim-input" title="Roll (degrees)" />
+            <input id="urdf-origin-p" class="joint-lim-input" title="Pitch (degrees)" />
+            <input id="urdf-origin-yaw" class="joint-lim-input" title="Yaw (degrees)" />
           </div>
         ` : '<div class="insp-empty">Root link has no parent joint origin</div>'}
       </div>
       <div class="insp-actions-group">
-        ${parentJoint ? '<button type="button" class="bi-action-btn apply-btn" id="urdf-apply-origin">Apply Changes</button>' : ''}
+        ${parentJoint ? `
+          <button type="button" class="bi-action-btn apply-btn" id="urdf-apply-origin">Apply Changes</button>
+          <button type="button" class="bi-action-btn" id="urdf-reset-rotation">Reset Rotation</button>
+        ` : ''}
         <button type="button" class="bi-action-btn" id="btn-export-link-stl" style="width:100%">Export Link STL</button>
         <button type="button" class="bi-action-btn" id="btn-duplicate-link" style="width:100%">Duplicate Subtree</button>
         <button type="button" class="bi-action-btn danger-btn" id="urdf-delete-link">Delete Link</button>
@@ -900,20 +955,50 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const p = document.getElementById('urdf-origin-p') as HTMLInputElement | null
     const yw = document.getElementById('urdf-origin-yaw') as HTMLInputElement | null
     if (!x || !y || !z || !r || !p || !yw) return
+    // XYZ in metres; RPY stored in radians, displayed in degrees.
+    const fmtDeg = (rad: number) => String(+(rad * 180 / Math.PI).toFixed(4))
     x.value = String(xyz[0]); y.value = String(xyz[1]); z.value = String(xyz[2])
-    r.value = String(rpy[0]); p.value = String(rpy[1]); yw.value = String(rpy[2])
+    r.value = fmtDeg(rpy[0]); p.value = fmtDeg(rpy[1]); yw.value = fmtDeg(rpy[2])
 
     const applyBtn = document.getElementById('urdf-apply-origin')
     applyBtn?.addEventListener('click', () => {
+      // Convert degrees back to radians before writing URDF.
+      const toRad = (v: string) => Number(v) * Math.PI / 180
       commitUrdf(documentXml => {
         const j = documentXml.querySelector(`joint[name="${parentJoint.name}"]`)
         if (!j) return false
         const o = ensureOrigin(j, documentXml)
         o.setAttribute('xyz', `${fmt(Number(x.value))} ${fmt(Number(y.value))} ${fmt(Number(z.value))}`)
-        o.setAttribute('rpy', `${fmt(Number(r.value))} ${fmt(Number(p.value))} ${fmt(Number(yw.value))}`)
+        o.setAttribute('rpy', `${fmt(toRad(r.value))} ${fmt(toRad(p.value))} ${fmt(toRad(yw.value))}`)
         return true
       })
       ctx.showToast('Updated joint origin in URDF', 'success')
+    })
+
+    const resetRotBtn = document.getElementById('urdf-reset-rotation')
+    resetRotBtn?.addEventListener('click', () => {
+      const pivot = getPivotGroupForLink(selectedLink!)
+      const parentObj = pivot?.parent
+      if (!pivot || !parentObj) return
+      pivot.updateMatrixWorld(true)
+      parentObj.updateMatrixWorld(true)
+
+      // Capture pre-reset orientations so actuated joint axes can be re-expressed.
+      const oldJointWorldQ = new THREE.Quaternion()
+      pivot.matrixWorld.decompose(new THREE.Vector3(), oldJointWorldQ, new THREE.Vector3())
+      const parentWorldQ = new THREE.Quaternion()
+      parentObj.matrixWorld.decompose(new THREE.Vector3(), parentWorldQ, new THREE.Vector3())
+
+      commitUrdf(documentXml => {
+        const j = documentXml.querySelector(`joint[name="${parentJoint.name}"]`)
+        if (!j) return false
+        const o = ensureOrigin(j, documentXml)
+        o.setAttribute('rpy', '0 0 0')
+        // newLocalQuat = identity: joint frame aligns with parent frame after reset.
+        reconcileJointAxis(j, documentXml, oldJointWorldQ, parentWorldQ, new THREE.Quaternion())
+        return true
+      })
+      ctx.showToast('Reset rotation to 0°', 'success')
     })
   }
 
@@ -1436,7 +1521,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   let carryGhostBounds: { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } | null = null
   let carryWorldPos = new THREE.Vector3()
   let carryFrozen = false          // true after manual nudge — mouse no longer drives position
-  let carryRotStep = 0             // 0..3 → 0°, 90°X, 90°Y, 90°Z
+  let carryUserAngle = 0           // accumulated user rotation in radians
+  let carryUserAxis: 'x' | 'y' | 'z' = 'z'  // local axis to rotate around (z = face normal)
   interface SnapCandidate {
     mountLink: string
     targetParentLink: string
@@ -1473,18 +1559,75 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function setCarryHud(msg: string) { carryHud.style.display = msg ? 'block' : 'none'; carryHud.textContent = msg }
 
-  function carryRotQuat(): THREE.Quaternion {
-    const q = new THREE.Quaternion()
-    if (carryRotStep === 1) q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2)
-    else if (carryRotStep === 2) q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)
-    else if (carryRotStep === 3) q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
-    return q
+  // ── Carry rotation arc indicator ─────────────────────────────────────────────
+  const carryArcMat = new THREE.LineBasicMaterial({
+    color: 0xffcc44, transparent: true, opacity: 0.85, depthTest: false,
+  })
+  let carryArcLine: THREE.Line | null = null
+
+  function updateCarryArc() {
+    if (carryArcLine) {
+      carryGroup?.remove(carryArcLine)
+      carryArcLine.geometry.dispose()
+      carryArcLine = null
+    }
+    if (!carryGroup || carryUserAngle === 0 || !carryGhostBounds) return
+
+    const { hx, hy, hz, cx, cy, cz } = carryGhostBounds
+    const r = Math.min(hx, hy, hz) * 0.85
+
+    // Build arc points in the plane perpendicular to the rotation axis.
+    // Wedge shape: center → ref-point → arc → center.
+    const steps = Math.max(2, Math.ceil(Math.abs(carryUserAngle) / (Math.PI / 24)))
+    const pts: THREE.Vector3[] = [new THREE.Vector3(0, 0, 0)]  // center spoke start
+    for (let i = 0; i <= steps; i++) {
+      const a = (carryUserAngle / steps) * i
+      if (carryUserAxis === 'z') {
+        pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0))
+      } else if (carryUserAxis === 'x') {
+        pts.push(new THREE.Vector3(0, Math.cos(a) * r, Math.sin(a) * r))
+      } else {
+        pts.push(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r))
+      }
+    }
+    pts.push(new THREE.Vector3(0, 0, 0))  // close back to center
+
+    const geo = new THREE.BufferGeometry().setFromPoints(pts)
+    carryArcLine = new THREE.Line(geo, carryArcMat)
+    carryArcLine.renderOrder = 1000
+    carryArcLine.position.set(cx, cy, cz)
+    carryGroup.add(carryArcLine)
+  }
+
+  function computeCarryUserQuat(): THREE.Quaternion {
+    if (carryUserAngle === 0) return new THREE.Quaternion()
+    const axis = carryUserAxis === 'x' ? new THREE.Vector3(1, 0, 0)
+      : carryUserAxis === 'y' ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(0, 0, 1)
+    return new THREE.Quaternion().setFromAxisAngle(axis, carryUserAngle)
+  }
+
+  // Apply the current userQuat to carryGroup using the snap base orientation (if snapped)
+  // or free orientation (if not). Call after changing carryUserAngle or carryUserAxis.
+  function applyCarryUserRotation() {
+    if (!carryGroup) return
+    if (carryBestMount) {
+      const snapPos = new THREE.Vector3(); const snapQuat = new THREE.Quaternion()
+      carryBestMount.desiredGhostWorld.clone().decompose(snapPos, snapQuat, new THREE.Vector3())
+      carryGroup.position.copy(snapPos)
+      carryGroup.quaternion.copy(snapQuat.clone().multiply(computeCarryUserQuat()))
+    } else {
+      carryGroup.quaternion.copy(computeCarryUserQuat())
+    }
+    carryGroup.updateMatrixWorld(true)
+    updateCarryArc()
   }
 
   function updateCarryHudText() {
     if (!carryComp || !carryGroup) return
     const p = carryGroup.position
-    const rotLabel = ['0°', '+90°X', '+90°Y', '+90°Z'][carryRotStep]
+    const rotDeg = Math.round(carryUserAngle * 180 / Math.PI)
+    const rotLabel = rotDeg === 0 ? `0°` : `${rotDeg > 0 ? '+' : ''}${rotDeg}°${carryUserAxis.toUpperCase()}`
     let snapHint = ''
     if (carryBestMount) {
       const n = carrySnapCandidates.length
@@ -1492,9 +1635,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       snapHint = `Snap→${carryBestMount.targetParentLink}${idxLabel}  `
     }
     const tabHint = carrySnapCandidates.length > 1 ? '  Tab=cycle' : ''
+    const snapHint2 = snapRadiusM !== 0.05 ? `  snap:${(snapRadiusM * 100).toFixed(0)}cm` : ''
     setCarryHud(
-      `${snapHint}${carryComp.name}  x:${p.x.toFixed(3)} y:${p.y.toFixed(3)} z:${p.z.toFixed(3)}  rot:${rotLabel}` +
-      `${tabHint}  ←→↑↓ nudge  Shift=10×  R rotate  Enter commit  Esc cancel`
+      `${snapHint}${carryComp.name}  x:${p.x.toFixed(3)} y:${p.y.toFixed(3)} z:${p.z.toFixed(3)}  rot:${rotLabel}${snapHint2}` +
+      `${tabHint}  ←→↑↓ nudge  R/Shift+R ±15°  X/Y/Z axis  [/] snap radius  Enter commit  Esc cancel`
     )
   }
 
@@ -1502,7 +1646,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (carryGroup) exitCarryMode()
     carryComp = comp
     carryFrozen = false
-    carryRotStep = 0
+    carryUserAngle = 0
+    carryUserAxis = 'z'
     carrySnapCandidates = []
     carrySnapIdx = 0
 
@@ -1535,12 +1680,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function exitCarryMode() {
+    if (carryArcLine) { carryArcLine.geometry.dispose(); carryArcLine = null }
     if (carryGroup) { ctx.scene.remove(carryGroup); carryGroup = null }
     carryComp = null
     carryGhostBounds = null
     carryBestMount = null
     carryFrozen = false
-    carryRotStep = 0
+    carryUserAngle = 0
+    carryUserAxis = 'z'
     carrySnapCandidates = []
     carrySnapIdx = 0
     nodesGroup.visible = false
@@ -1580,7 +1727,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       for (const target of mountNodes) {
         if (isMountOccupied(target.mountLink)) continue
         const dist = target.worldPosition.distanceTo(src.worldPos)
-        if (dist > SNAP_RADIUS_M) continue
+        if (dist > snapRadiusM) continue
         if (!nodesCompatible(src.cls, target.cls)) continue
         // No angle check for carry mode — the ghost can be freely rotated with R key.
         _snapScratchMat.compose(target.worldPosition, target.worldQuaternion, _snapScratchScale)
@@ -1616,7 +1763,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!carryFrozen) {
       const snapPos = new THREE.Vector3(); const snapQuat = new THREE.Quaternion()
       chosen.desiredGhostWorld.decompose(snapPos, snapQuat, new THREE.Vector3())
-      carryGroup.position.copy(snapPos); carryGroup.quaternion.copy(snapQuat)
+      carryGroup.position.copy(snapPos)
+      carryGroup.quaternion.copy(snapQuat.clone().multiply(computeCarryUserQuat()))
       carryGroup.updateMatrixWorld(true)
     }
     updateCarryHudText()
@@ -1634,7 +1782,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (ray.ray.intersectPlane(carryGroundPlane, planeHit)) carryWorldPos.copy(planeHit)
       }
       carryGroup.position.copy(carryWorldPos)
-      carryGroup.quaternion.copy(carryRotQuat())
+      carryGroup.quaternion.copy(computeCarryUserQuat())
       carryGroup.updateMatrixWorld(true)
 
       // Clamp ghost so its AABB bottom never clips below the floor (Y=0).
@@ -1656,7 +1804,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!carryComp) return
     const comp = carryComp
     const mount = carryBestMount
+    // Capture actual ghost world (includes user rotation) before exitCarryMode clears carryGroup.
     const ghostWorldFree = !mount && carryGroup ? carryGroup.matrixWorld.clone() : null
+    const ghostWorldSnap = mount && carryGroup ? carryGroup.matrixWorld.clone() : null
     exitCarryMode()
 
     if (mount) {
@@ -1670,14 +1820,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
-      const childLocal = parentWorldInv.clone().multiply(mount.desiredGhostWorld.clone())
+      // Use carryGroup's actual matrixWorld (which already includes userQuat).
+      const childLocal = parentWorldInv.clone().multiply(ghostWorldSnap ?? mount.desiredGhostWorld)
       const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
       const localQuat = new THREE.Quaternion()
       childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
-      const localEuler = new THREE.Euler().setFromQuaternion(localQuat, 'XYZ')
+      const [lr, lp, ly] = quatToRpy(localQuat)
       addComponentCore(comp, mount.targetParentLink,
         `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
-        `${fmt(localEuler.x)} ${fmt(localEuler.y)} ${fmt(localEuler.z)}`)
+        `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`)
     } else if (ghostWorldFree) {
       // Free-space: joint pose from ghost in world → parent link frame (carry mode does not depend on selection)
       const graph = ctx.getKinematicGraph()
@@ -1698,10 +1849,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
       const localQuat = new THREE.Quaternion()
       childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
-      const localEuler = new THREE.Euler().setFromQuaternion(localQuat, 'XYZ')
+      const [lr, lp, ly] = quatToRpy(localQuat)
       addComponentCore(comp, parent,
         `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
-        `${fmt(localEuler.x)} ${fmt(localEuler.y)} ${fmt(localEuler.z)}`)
+        `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`)
     } else {
       const graph = ctx.getKinematicGraph()
       const parent = resolveFreePlacementParent(graph)
@@ -2030,7 +2181,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const newLocalPos = new THREE.Vector3().setFromMatrixPosition(childLocalInParent)
         const newLocalQuat = new THREE.Quaternion()
         childLocalInParent.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
-        const newLocalEuler = new THREE.Euler().setFromQuaternion(newLocalQuat, 'XYZ')
+        const [nlr, nlp, nly] = quatToRpy(newLocalQuat)
 
         // Capture old pivot world orientation before commitUrdf triggers a reparse.
         const oldPivotWorldQuat = new THREE.Quaternion()
@@ -2048,40 +2199,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           pEl.setAttribute('link', targetParent)
           const origin = ensureOrigin(jointEl, documentXml)
           origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
-          origin.setAttribute('rpy', `${fmt(newLocalEuler.x)} ${fmt(newLocalEuler.y)} ${fmt(newLocalEuler.z)}`)
+          origin.setAttribute('rpy', `${fmt(nlr)} ${fmt(nlp)} ${fmt(nly)}`)
 
 
-          // Reconcile joint axis for revolute / prismatic / continuous joints.
-          // <axis xyz> is expressed in the joint frame. When we reparent and reorient
-          // the joint we must re-express the same physical world-space axis in the
-          // new joint frame, otherwise the motor spins around the wrong direction.
-          const jType = jointEl.getAttribute('type') || 'fixed'
-          if (jType === 'revolute' || jType === 'prismatic' || jType === 'continuous') {
-            const axisEl = jointEl.querySelector('axis')
-            const axisStr = axisEl?.getAttribute('xyz') || '0 0 1'
-            const axisArr = axisStr.trim().split(/\s+/).map(Number)
-            const axisInOldJoint = new THREE.Vector3(
-              Number.isFinite(axisArr[0]) ? axisArr[0] : 0,
-              Number.isFinite(axisArr[1]) ? axisArr[1] : 0,
-              Number.isFinite(axisArr[2]) ? axisArr[2] : 1,
-            ).normalize()
-
-            // 1. Lift axis into world space using the old joint frame orientation.
-            const axisWorld = axisInOldJoint.clone().applyQuaternion(oldPivotWorldQuat)
-
-            // 2. New joint world orientation = new parent world quat × new local quat.
-            const newJointWorldQuat = parentWorldQuat.clone().multiply(newLocalQuat)
-
-            // 3. Pull axis back down into the new joint frame.
-            const newAxisInJoint = axisWorld.clone()
-              .applyQuaternion(newJointWorldQuat.clone().invert())
-              .normalize()
-
-            const axisElToWrite = axisEl ?? documentXml.createElement('axis')
-            axisElToWrite.setAttribute('xyz',
-              `${fmt(newAxisInJoint.x)} ${fmt(newAxisInJoint.y)} ${fmt(newAxisInJoint.z)}`)
-            if (!axisEl) jointEl.appendChild(axisElToWrite)
-          }
+          // Re-express joint axis in new frame so actuated joints spin correctly.
+          reconcileJointAxis(jointEl, documentXml, oldPivotWorldQuat, parentWorldQuat, newLocalQuat)
 
           return true
         }, { defer: true })
@@ -2105,12 +2227,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ghostGroup.visible = false
       clearBestCandidateHighlight()
 
-      if (gizmo.mode !== 'translate') {
-        ctx.showToast('Rotate persistence is not enabled yet', 'info')
-        selectLink(selectedLink)
-        return
-      }
-
       pivot.updateMatrixWorld(true)
       const parentObj = pivot.parent
       if (!parentObj) {
@@ -2120,7 +2236,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       parentObj.updateMatrixWorld(true)
 
       const parentWorldInv = parentObj.matrixWorld.clone().invert()
-      const childLocal = parentWorldInv.multiply(pivot.matrixWorld.clone())
+      const childLocal = parentWorldInv.clone().multiply(pivot.matrixWorld.clone())
 
       const newLocalPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
 
@@ -2136,6 +2252,42 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         return
       }
       const o = ensureOrigin(j, doc)
+
+      if (gizmo.mode !== 'translate') {
+        // Rotate mode — persist gizmo rotation to URDF joint origin rpy + reconcile axis.
+        const newLocalQuat = new THREE.Quaternion()
+        childLocal.decompose(new THREE.Vector3(), newLocalQuat, new THREE.Vector3())
+        const [nlr, nlp, nly] = quatToRpy(newLocalQuat)
+
+        // Skip trivial drags (pure pivot-point adjustment with no real rotation).
+        const oldRpy = parseNums(o.getAttribute('rpy') || '0 0 0', 3)
+        if (Math.abs(oldRpy[0] - nlr) + Math.abs(oldRpy[1] - nlp) + Math.abs(oldRpy[2] - nly) < 1e-9) {
+          selectLink(selectedLink)
+          return
+        }
+
+        // Old joint world orientation from drag-start snapshot.
+        const oldJointWorldQ = new THREE.Quaternion()
+        gizmoBasePivotWorld.decompose(new THREE.Vector3(), oldJointWorldQ, new THREE.Vector3())
+        const parentWorldQ = new THREE.Quaternion()
+        parentObj.matrixWorld.decompose(new THREE.Vector3(), parentWorldQ, new THREE.Vector3())
+
+        const ok = commitUrdf(documentXml => {
+          const jointEl = documentXml.querySelector(`joint[name="${parentJoint.name}"]`)
+          if (!jointEl) return false
+          const origin = ensureOrigin(jointEl, documentXml)
+          // Write both xyz and rpy — position can shift slightly during a rotate drag.
+          origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
+          origin.setAttribute('rpy', `${fmt(nlr)} ${fmt(nlp)} ${fmt(nly)}`)
+          reconcileJointAxis(jointEl, documentXml, oldJointWorldQ, parentWorldQ, newLocalQuat)
+          return true
+        }, { defer: true })
+        if (ok) ctx.showToast(`Rotated ${selectedLink} (joint origin updated)`, 'success')
+        selectLink(selectedLink)
+        return
+      }
+
+      // Translate mode — write position only.
       const oldLocalPos = parseNums(o.getAttribute('xyz') || '0 0 0', 3)
       const oldPosVec = new THREE.Vector3(oldLocalPos[0], oldLocalPos[1], oldLocalPos[2])
       if (oldPosVec.distanceToSquared(newLocalPos) < 1e-12) {
@@ -2296,10 +2448,29 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       if (k === 'r') {
         e.preventDefault()
-        carryRotStep = (carryRotStep + 1) % 4
-        carryGroup.quaternion.copy(carryRotQuat())
+        carryUserAngle += e.shiftKey ? -Math.PI / 12 : Math.PI / 12  // ±15°
         carryFrozen = true
-        carryGroup.updateMatrixWorld(true)
+        applyCarryUserRotation()
+        updateCarrySnap()
+        updateCarryHudText()
+        return
+      }
+      if (k === '[' || k === ']') {
+        e.preventDefault()
+        const delta = k === '[' ? -0.01 : 0.01
+        snapRadiusM = Math.max(0.01, Math.min(0.30, snapRadiusM + delta))
+        updateCarrySnap()
+        updateCarryHudText()
+        return
+      }
+      if ((k === 'x' || k === 'y' || k === 'z') && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        if (carryUserAxis !== k) {
+          carryUserAxis = k as 'x' | 'y' | 'z'
+          carryUserAngle = 0  // reset angle when switching axis
+        }
+        carryFrozen = true
+        applyCarryUserRotation()
         updateCarrySnap()
         updateCarryHudText()
         return
@@ -2315,7 +2486,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           carryFrozen = true
           const snapPos = new THREE.Vector3(); const snapQuat = new THREE.Quaternion()
           chosen.desiredGhostWorld.decompose(snapPos, snapQuat, new THREE.Vector3())
-          carryGroup!.position.copy(snapPos); carryGroup!.quaternion.copy(snapQuat)
+          carryGroup!.position.copy(snapPos)
+          carryGroup!.quaternion.copy(snapQuat.clone().multiply(computeCarryUserQuat()))
           carryGroup!.updateMatrixWorld(true)
           clearBestCandidateHighlight()
           for (const t of mountNodes) setNodeMeshState(t.mountLink, isMountOccupied(t.mountLink) ? 'occupied' : 'neutral')
