@@ -377,7 +377,7 @@ async fn sim_set_control(state: State<'_, AppState>, controls: serde_json::Value
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
 
-    let result = process.send_rpc("sim_set_control", controls, 1)?;
+    let result = process.send_rpc("sim_set_control", json!({ "controls": controls }), 1)?;
     Ok(format!("Controls set: {:?}", result))
 }
 

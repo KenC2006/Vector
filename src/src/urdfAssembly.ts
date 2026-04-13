@@ -82,7 +82,10 @@ export interface AssemblyComponent {
   joint_type: string
   joint_axis: string
   length_mm?: number
-  orientation?: 'horizontal' | 'vertical' | 'auto'
+  /** 'horizontal' | 'vertical' | 'auto' or a numeric string in degrees (e.g. '45') for yaw rotation around face normal */
+  orientation?: string
+  /** Degrees of upward/downward tilt for side-face (front/back/left/right) attachments. Positive = upward. */
+  elevation_angle?: number
 }
 
 export interface AssemblyGraph {
@@ -1338,6 +1341,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   /**
+   * Returns the appropriate splay angle (radians) for a given number of limbs on the bottom face.
+   * Scales from a gentle tilt for bipods up to a wide stance for hexapods and beyond.
+   */
+  function splayAngleForLegCount(n: number): number {
+    if (n <= 2)  return 0.262  // ~15°
+    if (n === 3) return 0.436  // ~25°
+    if (n === 4) return 0.524  // ~30°
+    if (n <= 6)  return 0.611  // ~35°
+    return 0.698               // ~40° for 7+
+  }
+
+  /**
    * Face-based placement for AI assembly resolver.
    * Uses the explicit attach_face from Claude's topology instead of mounting_logic.
    * Supports multiple children on the same face with automatic offset distribution.
@@ -1355,57 +1370,73 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     orientation: string = 'auto',
     noSplay: boolean = false,
     childComponentId: string = '',
+    elevationAngleDeg: number = 0,
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0.005
 
     const face = attachFace || 'top'
 
-    // Compute tangential offsets for multi-child distribution on the same face
+    // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
+    // Hoist isWheel so it's visible inside the switch below.
+    const isWheel = childComponentId.includes('wheel') || childComponentId.includes('caster')
+    let splayAngle = 0
+    let insetOverride: number | undefined
+    if (face === 'bottom' && !isWheel && !noSplay && totalOnFace >= 2) {
+      splayAngle = splayAngleForLegCount(totalOnFace)
+      // Shrink the corner inset proportionally so post-splay tips stay within parent footprint.
+      // At 0 splay inset=0.7; at ~40° (max) inset≈0.51.
+      insetOverride = Math.max(0.4, 0.7 - (splayAngle / (Math.PI / 2)) * 0.3)
+    }
+
+    // ── Multi-child tangential offsets (uses splay-corrected inset on bottom face) ──
     let tu = 0, tv = 0
     if (totalOnFace > 1) {
-      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face)
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride)
       tu = offsets.u
       tv = offsets.v
     }
 
-    // Determine if we should rotate the elongated child to horizontal
+    // ── 1c: Numeric orientation — yaw rotation around the face normal ──
+    // If orientation is a number string (e.g. '45'), treat it as degrees of yaw on the face.
+    const orientDeg = parseFloat(orientation)
+    const hasNumericOrient = !isNaN(orientDeg) && orientDeg !== 0
+
+    // ── 1c: Horizontal/vertical keyword handling (elongated components on top face) ──
     let shouldRotateHorizontal = false
     if (isChildElongated) {
       if (orientation === 'horizontal') {
         shouldRotateHorizontal = true
-      } else if (orientation === 'vertical') {
-        shouldRotateHorizontal = false
-      } else {
-        // Auto: don't rotate. Only rotate when explicitly "horizontal".
-        // This prevents accumulated rotations in arm chains where each link
-        // inherits the parent's frame orientation.
-        shouldRotateHorizontal = false
       }
+      // 'vertical' and 'auto' keep shouldRotateHorizontal = false (no accumulated rotation)
     }
 
     if (shouldRotateHorizontal && face === 'top') {
       const oz = parent.hz + childX / 2 + gap  // cross-section becomes Z extent after rotation
-      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: '0 1.5708 0' }
+      const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
+      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
     }
 
-    // Face normal offset + tangential multi-child offset
+    // ── 1b: Elevation angle for side faces (degrees → radians) ──
+    const elevRad = elevationAngleDeg * (Math.PI / 180)
+
+    // ── Face normal offset + tangential multi-child offset ──
     switch (face) {
-      case 'top':
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+      case 'top': {
+        const oz = parent.hz + childZ / 2 + gap
+        // 1c: numeric orientation → yaw (Z-rotation) on top face
+        const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
+      }
       case 'bottom': {
         const oz = -(parent.hz + childZ / 2 + gap)
-        // Automatic leg splay: when 3+ children on bottom face at corner positions,
-        // tilt each child slightly outward (~10°) for a natural quadruped stance.
-        // Uses joint RPY so the entire leg chain inherits the tilt.
+        // 1a: topology-aware splay — splayAngle was pre-computed above
         let rpyStr = '0 0 0'
-        const isWheel = childComponentId.includes('wheel') || childComponentId.includes('caster')
         if (isWheel) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
           rpyStr = '-1.5708 0 0'
-        } else if (totalOnFace >= 3 && (tu !== 0 || tv !== 0) && !noSplay) {
-          const splayAngle = 0.175  // ~10 degrees in radians
+        } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
           const roll  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
           const pitch = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
@@ -1413,14 +1444,30 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         }
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
-      case 'front':
-        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
-      case 'back':
-        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
-      case 'right':
-        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
-      case 'left':
-        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
+      case 'front': {
+        // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
+        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
+        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+      }
+      case 'back': {
+        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
+        const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
+        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+      }
+      case 'right': {
+        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        // Right face: elevation is a roll about X
+        const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
+        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+      }
+      case 'left': {
+        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        // Left face: elevation is an inverted roll about X
+        const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
+        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+      }
       default:
         return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
     }
@@ -1434,6 +1481,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     total: number, index: number,
     parent: { hx: number; hy: number; hz: number },
     face: string,
+    insetOverride?: number,
   ): { u: number; v: number } {
     // Determine the face's tangent extents (how much room to spread children)
     let extU: number, extV: number
@@ -1448,8 +1496,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         extU = parent.hx; extV = parent.hy
     }
 
-    // Inset from edge (70% of half-extent so children are near corners but not at the very edge)
-    const inset = 0.7
+    // Inset from edge (70% of half-extent so children are near corners but not at the very edge).
+    // Caller may pass a reduced insetOverride when splay is active to prevent post-splay clipping.
+    const inset = insetOverride ?? 0.7
 
     // Clamp index to valid range to prevent array out-of-bounds
     const safeIndex = Math.min(index, Math.max(total - 1, 0))
@@ -3144,8 +3193,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Detect wheel-related components — these should NOT get leg splay
       const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, isWheelRelated, comp.component_id)
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, noSplay=${isWheelRelated}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
+      const elevAngle = comp.elevation_angle ?? 0
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, isWheelRelated, comp.component_id, elevAngle)
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${isWheelRelated}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }

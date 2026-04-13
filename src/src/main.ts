@@ -45,6 +45,32 @@ function groundRobot(robotGroup: THREE.Group) {
   }
 }
 
+/**
+ * Frame the viewport camera on the assembled robot using its bounding box.
+ * Call after assembly or file-open — NOT on every edit reparse (disorienting).
+ * Uses the same maxDim * 2.5 heuristic as the offscreen screenshot camera.
+ */
+function autoFrameRobot(
+  robotGroup: THREE.Group,
+  cam: THREE.PerspectiveCamera,
+  orbitControls: OrbitControls,
+) {
+  robotGroup.updateMatrixWorld(true)
+  const box = new THREE.Box3().setFromObject(robotGroup)
+  if (box.isEmpty()) return
+  const center = new THREE.Vector3()
+  const size = new THREE.Vector3()
+  box.getCenter(center)
+  box.getSize(size)
+  const maxDim = Math.max(size.x, size.y, size.z, 0.1)
+  const dist = maxDim * 2.5
+  // Front-right isometric view direction (matches offscreen screenshot camera)
+  const dir = new THREE.Vector3(0.75, 0.6, 0.75).normalize()
+  cam.position.copy(center).addScaledVector(dir, dist)
+  orbitControls.target.copy(center)
+  orbitControls.update()
+}
+
 // Wait for Tauri IPC bridge to be ready (injected async by Tauri)
 function waitForTauri(timeoutMs = 5000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -2963,6 +2989,14 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
           // Without this delay, Sonnet sees primitive boxes instead of actual component meshes.
           await new Promise(r => setTimeout(r, 800))
 
+          // Phase 2: Re-ground now that GLB meshes have loaded.
+          // The initial groundAssembly() inside resolveAssemblyGraph runs before
+          // async GLB loads complete, so the bbox may only include primitive boxes.
+          groundRobot(robot)
+
+          // Phase 3: Auto-frame camera on the assembled robot.
+          autoFrameRobot(robot, camera, controls)
+
           // Capture 3 labeled screenshots from canonical angles for visual validation
           // Research: 3 near-orthogonal views capture all geometry with minimal token cost
           const robotBox = new THREE.Box3().setFromObject(robot)
@@ -4178,6 +4212,12 @@ simToggle.addEventListener('click', async () => {
   viewportLabel.textContent = simActive ? 'Simulation' : '3D Preview'
 
   if (simActive) {
+    // Force inspect mode — build mode must not be active during simulation
+    viewportInteractionMode = 'inspect'
+    syncViewportModeButton()
+    urdfAssemblyApi?.onInteractionModeChanged('inspect')
+    clearInspectFocus()
+
     // Enter simulation mode — save original joint poses first
     originalJointPoses.clear()
     for (const [jointName, jointInfo] of parsedRobot.joints) {
@@ -4204,7 +4244,11 @@ simToggle.addEventListener('click', async () => {
       showToast(`Simulation: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
   } else {
-    // Exit simulation mode
+    // Exit simulation mode — restore build mode
+    viewportInteractionMode = 'build'
+    syncViewportModeButton()
+    urdfAssemblyApi?.onInteractionModeChanged('build')
+
     simRunning = false
     simTime = 0
     await shutdownSimulation()
@@ -4393,6 +4437,7 @@ function refreshInspectAfterModelUpdate() {
 }
 
 document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
+  if (simActive) return  // locked to inspect while simulation is running
   viewportInteractionMode = viewportInteractionMode === 'build' ? 'inspect' : 'build'
   syncViewportModeButton()
   urdfAssemblyApi?.onInteractionModeChanged(viewportInteractionMode)
