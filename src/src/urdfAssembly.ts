@@ -5,7 +5,7 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
-import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCompatible, incompatibleReason } from './attachmentNodes'
+import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCompatible, incompatibleReason, componentPortsForPreset, resolveFaceToPort } from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST } from './richVisuals/index'
@@ -74,6 +74,23 @@ interface PresetData {
   categories: Record<string, PresetCategory>
 }
 
+export interface AssemblyComponent {
+  link_name: string
+  component_id: string
+  attach_to: string | null
+  attach_face: string | null
+  joint_type: string
+  joint_axis: string
+  length_mm?: number
+  orientation?: 'horizontal' | 'vertical' | 'auto'
+}
+
+export interface AssemblyGraph {
+  base_link: string
+  ground_offset?: boolean
+  components: AssemblyComponent[]
+}
+
 export interface UrdfAssemblyApi {
   onModelUpdated(): void
   recordUndoExternal(content: string): void
@@ -81,6 +98,8 @@ export interface UrdfAssemblyApi {
   onInteractionModeChanged(mode: 'build' | 'inspect'): void
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
+  /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -1318,6 +1337,162 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
   }
 
+  /**
+   * Face-based placement for AI assembly resolver.
+   * Uses the explicit attach_face from Claude's topology instead of mounting_logic.
+   * Supports multiple children on the same face with automatic offset distribution.
+   *
+   * @param childIndex - which child this is on this face (0-based)
+   * @param totalOnFace - total children that will be on this face
+   */
+  function computeFacePlacement(
+    doc: Document, parentLinkName: string,
+    childX: number, childY: number, childZ: number,
+    attachFace: string | null,
+    isChildElongated: boolean = false,
+    childIndex: number = 0,
+    totalOnFace: number = 1,
+    orientation: string = 'auto',
+    noSplay: boolean = false,
+    childComponentId: string = '',
+  ): { xyz: string; rpy: string } {
+    const parent = getParentBounds(doc, parentLinkName)
+    const gap = 0.005
+
+    const face = attachFace || 'top'
+
+    // Compute tangential offsets for multi-child distribution on the same face
+    let tu = 0, tv = 0
+    if (totalOnFace > 1) {
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face)
+      tu = offsets.u
+      tv = offsets.v
+    }
+
+    // Determine if we should rotate the elongated child to horizontal
+    let shouldRotateHorizontal = false
+    if (isChildElongated) {
+      if (orientation === 'horizontal') {
+        shouldRotateHorizontal = true
+      } else if (orientation === 'vertical') {
+        shouldRotateHorizontal = false
+      } else {
+        // Auto: don't rotate. Only rotate when explicitly "horizontal".
+        // This prevents accumulated rotations in arm chains where each link
+        // inherits the parent's frame orientation.
+        shouldRotateHorizontal = false
+      }
+    }
+
+    if (shouldRotateHorizontal && face === 'top') {
+      const oz = parent.hz + childX / 2 + gap  // cross-section becomes Z extent after rotation
+      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: '0 1.5708 0' }
+    }
+
+    // Face normal offset + tangential multi-child offset
+    switch (face) {
+      case 'top':
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+      case 'bottom': {
+        const oz = -(parent.hz + childZ / 2 + gap)
+        // Automatic leg splay: when 3+ children on bottom face at corner positions,
+        // tilt each child slightly outward (~10°) for a natural quadruped stance.
+        // Uses joint RPY so the entire leg chain inherits the tilt.
+        let rpyStr = '0 0 0'
+        const isWheel = childComponentId.includes('wheel') || childComponentId.includes('caster')
+        if (isWheel) {
+          // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
+          // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
+          rpyStr = '-1.5708 0 0'
+        } else if (totalOnFace >= 3 && (tu !== 0 || tv !== 0) && !noSplay) {
+          const splayAngle = 0.175  // ~10 degrees in radians
+          // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
+          const roll  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
+          const pitch = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
+          rpyStr = `${roll.toFixed(4)} ${pitch.toFixed(4)} 0`
+        }
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
+      }
+      case 'front':
+        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
+      case 'back':
+        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
+      case 'right':
+        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
+      case 'left':
+        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${tv.toFixed(4)}`, rpy: '0 0 0' }
+      default:
+        return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+    }
+  }
+
+  /**
+   * Compute tangential UV offsets for distributing multiple children on a face.
+   * Returns offsets along the face's two tangent axes.
+   */
+  function _computeMultiChildOffsets(
+    total: number, index: number,
+    parent: { hx: number; hy: number; hz: number },
+    face: string,
+  ): { u: number; v: number } {
+    // Determine the face's tangent extents (how much room to spread children)
+    let extU: number, extV: number
+    switch (face) {
+      case 'top': case 'bottom':
+        extU = parent.hx; extV = parent.hy; break
+      case 'front': case 'back':
+        extU = parent.hy; extV = parent.hz; break
+      case 'left': case 'right':
+        extU = parent.hx; extV = parent.hz; break
+      default:
+        extU = parent.hx; extV = parent.hy
+    }
+
+    // Inset from edge (70% of half-extent so children are near corners but not at the very edge)
+    const inset = 0.7
+
+    // Clamp index to valid range to prevent array out-of-bounds
+    const safeIndex = Math.min(index, Math.max(total - 1, 0))
+
+    if (total === 2) {
+      // Side by side along U axis
+      const positions = [-inset, inset]
+      return { u: positions[safeIndex] * extU, v: 0 }
+    }
+    if (total === 3) {
+      // Triangle pattern
+      const positions = [
+        { u: 0, v: inset },
+        { u: -inset, v: -inset * 0.5 },
+        { u: inset, v: -inset * 0.5 },
+      ]
+      return { u: positions[safeIndex].u * extU, v: positions[safeIndex].v * extV }
+    }
+    if (total === 4) {
+      // Four corners
+      const positions = [
+        { u: inset, v: inset },    // front-right
+        { u: -inset, v: inset },   // front-left
+        { u: inset, v: -inset },   // back-right
+        { u: -inset, v: -inset },  // back-left
+      ]
+      return { u: positions[safeIndex].u * extU, v: positions[safeIndex].v * extV }
+    }
+    if (total === 6) {
+      // 2x3 grid
+      const col = safeIndex % 3
+      const row = Math.floor(safeIndex / 3)
+      const u = (col - 1) * inset * extU
+      const v = (row === 0 ? inset : -inset) * extV
+      return { u, v }
+    }
+
+    // Generic: spread linearly along U axis
+    const step = (2 * inset * extU) / Math.max(total - 1, 1)
+    const u = -inset * extU + safeIndex * step
+    return { u, v: 0 }
+  }
+
   // Resolve which category a component belongs to
   function findCategory(comp: PresetComponent): string {
     if (!presetData) return 'structural'
@@ -2017,7 +2192,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     ctx.zeroAssemblyWorldPosition?.()
     ctx.setUrdfText(empty)
     ctx.reparseUrdf()
-    ctx.groundAssembly?.()
+    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
     selectLink('base_link')
     ctx.showToast('Robot reset', 'info')
   })
@@ -2558,6 +2733,589 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   refreshBuildPanel()
   renderInspector()
 
+  // ── AI Assembly Graph Resolver ───────────────────────────────────────────────
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
+    console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
+    console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
+    if (!presetData) {
+      console.error('[assembly] Presets not loaded')
+      ctx.showToast('Component presets not loaded yet', 'error')
+      return { urdf: null }
+    }
+
+    // Find preset component by id
+    function findPreset(componentId: string): PresetComponent | null {
+      for (const cat of Object.values(presetData!.categories)) {
+        for (const comp of cat.components) {
+          if (comp.id === componentId) return comp
+        }
+      }
+      return null
+    }
+
+    // ── Graph grammar validation: reject invalid topologies early ──
+    function validateTopology(comps: typeof graph.components): string[] {
+      const errors: string[] = []
+      const linkNames = new Set(comps.map(c => c.link_name))
+
+      for (const comp of comps) {
+        // Rule 1: every non-root must reference a valid parent
+        if (comp.attach_to && !linkNames.has(comp.attach_to)) {
+          errors.push(`${comp.link_name} references unknown parent "${comp.attach_to}"`)
+        }
+        // Rule 2: component_id must exist in preset library
+        if (!findPreset(comp.component_id)) {
+          errors.push(`Unknown component_id "${comp.component_id}" on ${comp.link_name}`)
+        }
+        // Rule 3: sensors shouldn't be parents of other sensors
+        if (comp.attach_to) {
+          const parentComp = comps.find(c => c.link_name === comp.attach_to)
+          if (parentComp?.component_id.startsWith('sensor_') && comp.component_id.startsWith('sensor_')) {
+            errors.push(`Sensor ${comp.link_name} attached to sensor ${comp.attach_to} — sensors should attach to structural/actuator links`)
+          }
+        }
+        // Rule 4: end effectors should be terminal (no children)
+        if (comp.component_id.startsWith('effector_')) {
+          const hasChildren = comps.some(c => c.attach_to === comp.link_name)
+          if (hasChildren) {
+            errors.push(`End effector ${comp.link_name} has children — effectors should be terminal nodes`)
+          }
+        }
+        // Rule 5: link names must be unique
+        const dupes = comps.filter(c => c.link_name === comp.link_name)
+        if (dupes.length > 1) {
+          errors.push(`Duplicate link_name "${comp.link_name}"`)
+        }
+      }
+
+      // Rule 8: warn about multiple children on single-use shaft ports
+      // (not a hard error — logged as warning for diagnostics)
+      const shaftFaceCounts = new Map<string, number>()
+      let shaftPortsChecked = 0
+      for (const comp of comps) {
+        if (!comp.attach_to) continue
+        const parentDef = comps.find(c => c.link_name === comp.attach_to)
+        if (!parentDef) continue
+        const pp = findPreset(parentDef.component_id)
+        if (!pp) continue
+        const face = comp.attach_face || 'top'
+        const pPhys = pp.physical
+        const pBb = pPhys.bounding_box_mm ?? pPhys.cross_section_mm ?? [40, 40, 40]
+        const ports = componentPortsForPreset(pp.id, (pBb[0] ?? 40) / 2000, (pBb[1] ?? 40) / 2000, (pBb[2] ?? 40) / 2000, pp.mounting_logic)
+        const port = resolveFaceToPort(face, ports)
+        if (port?.cls === 'shaft' && port.single) {
+          shaftPortsChecked++
+          const key = `${comp.attach_to}::${face}`
+          shaftFaceCounts.set(key, (shaftFaceCounts.get(key) || 0) + 1)
+        }
+      }
+      console.log(`[assembly][ports] Rule 8: checked ${shaftPortsChecked} shaft port connections across ${shaftFaceCounts.size} unique ports`)
+      for (const [key, count] of shaftFaceCounts) {
+        if (count > 1) {
+          console.warn(`[assembly][ports] Topology warning: ${key} has ${count} children on a single-use shaft port`)
+        }
+      }
+
+      // Rule 6: must form a tree (exactly one root)
+      const roots = comps.filter(c => !c.attach_to)
+      if (roots.length > 1) {
+        errors.push(`Multiple root components: ${roots.map(r => r.link_name).join(', ')}`)
+      }
+
+      // Rule 7: no cycles (topological sort should complete)
+      const visited = new Set<string>()
+      const remaining = comps.filter(c => c.attach_to)
+      let maxIter = remaining.length * 2
+      const toProcess = [...remaining]
+      if (roots.length > 0) visited.add(roots[0].link_name)
+      while (toProcess.length > 0 && maxIter-- > 0) {
+        const idx = toProcess.findIndex(c => visited.has(c.attach_to!))
+        if (idx === -1) break
+        visited.add(toProcess.splice(idx, 1)[0].link_name)
+      }
+      if (toProcess.length > 0) {
+        errors.push(`Cycle or disconnected components: ${toProcess.map(c => c.link_name).join(', ')}`)
+      }
+
+      return errors
+    }
+
+    // ── Auto-repairs: fix common topology issues before validation ──
+    console.log(`[assembly][autorepair] Scanning ${graph.components.length} components for auto-repairable issues...`)
+    console.log(`[assembly][autorepair] Input link_names: [${graph.components.map(c => c.link_name).join(', ')}]`)
+
+    // Auto-repair 1: Duplicate link_names → append incrementing suffix
+    // Strategy: first occurrence keeps its name. Later duplicates get renamed.
+    // Children that appear AFTER the duplicate (later in array) and reference
+    // the old name are updated to point to the new name, since they likely
+    // intended to reference the duplicate, not the original.
+    const seen = new Set<string>()
+    let dupesFixed = 0
+    for (let i = 0; i < graph.components.length; i++) {
+      const comp = graph.components[i]
+      if (!seen.has(comp.link_name)) {
+        seen.add(comp.link_name)
+        continue
+      }
+      const oldName = comp.link_name
+      const baseName = oldName.replace(/_\d+$/, '')
+      // Find next available suffix
+      let suffix = 2
+      while (seen.has(`${baseName}_${suffix}`)) suffix++
+      const newName = `${baseName}_${suffix}`
+      console.log(`[assembly][autorepair] Duplicate link_name: "${oldName}" → "${newName}"`)
+      // Update children that appear after this component and reference the old name
+      for (let j = i + 1; j < graph.components.length; j++) {
+        if (graph.components[j].attach_to === oldName) {
+          console.log(`[assembly][autorepair]   Updated child "${graph.components[j].link_name}" attach_to: "${oldName}" → "${newName}"`)
+          graph.components[j].attach_to = newName
+        }
+      }
+      comp.link_name = newName
+      seen.add(newName)
+      dupesFixed++
+    }
+    if (dupesFixed > 0) {
+      console.log(`[assembly][autorepair] Fixed ${dupesFixed} duplicate link_name(s). Updated names: [${graph.components.map(c => c.link_name).join(', ')}]`)
+    } else {
+      console.log(`[assembly][autorepair] No duplicate link_names found`)
+    }
+
+    // Auto-repair 2: Effector with children → reparent children to effector's parent
+    let effectorChildrenFixed = 0
+    for (const comp of graph.components) {
+      if (!comp.component_id.startsWith('effector_')) continue
+      const effectorChildren = graph.components.filter(c => c.attach_to === comp.link_name)
+      if (effectorChildren.length === 0) continue
+      console.log(`[assembly][autorepair] Effector "${comp.link_name}" has ${effectorChildren.length} children — reparenting to "${comp.attach_to}"`)
+      for (const child of effectorChildren) {
+        const oldParent = child.attach_to
+        child.attach_to = comp.attach_to
+        console.log(`[assembly][autorepair]   Reparented "${child.link_name}" from "${oldParent}" to "${child.attach_to}"`)
+        effectorChildrenFixed++
+      }
+    }
+    if (effectorChildrenFixed > 0) {
+      console.log(`[assembly][autorepair] Reparented ${effectorChildrenFixed} children off effector nodes`)
+    } else {
+      console.log(`[assembly][autorepair] No effector-with-children issues found`)
+    }
+
+    if (dupesFixed > 0 || effectorChildrenFixed > 0) {
+      console.log(`[assembly][autorepair] Total repairs: ${dupesFixed} duplicate names, ${effectorChildrenFixed} effector children`)
+      console.log(`[assembly][autorepair] Post-repair topology: ${graph.components.map(c => `${c.link_name}→${c.attach_to || 'ROOT'}`).join(', ')}`)
+    } else {
+      console.log(`[assembly][autorepair] No repairs needed — topology clean`)
+    }
+
+    const topologyErrors = validateTopology(graph.components)
+    if (topologyErrors.length > 0) {
+      console.error('[assembly] Topology validation failed:', topologyErrors)
+      ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
+      return { urdf: null, topologyErrors }
+    }
+
+    // Topological sort: process components in dependency order
+    const components = [...graph.components]
+    const processed = new Set<string>()
+    const nameMap = new Map<string, string>() // Claude's link_name -> actual generated link_name
+    let placedCount = 0
+
+    // Process root first (attach_to === null)
+    let root = components.find(c => !c.attach_to)
+    if (!root) {
+      // Auto-prepend baseplate if Claude referenced a base_link but didn't include it
+      const baseLinkName = graph.base_link || 'structural_baseplate_1'
+      console.log(`[assembly] No root component — auto-prepending baseplate as "${baseLinkName}"`)
+      root = {
+        link_name: baseLinkName,
+        component_id: 'structural_baseplate',
+        attach_to: null,
+        attach_face: 'top',
+        joint_type: 'fixed',
+        joint_axis: 'z',
+      }
+      components.unshift(root)
+    }
+
+    // For the root, we need a base link. Start with an empty robot.
+    const rootPreset = findPreset(root.component_id)
+    if (!rootPreset) {
+      ctx.showToast(`Unknown component: ${root.component_id}`, 'error')
+      return { urdf: null }
+    }
+
+    // Create a fresh minimal URDF with just a base_link
+    const phys = rootPreset.physical
+    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    const xm = (bb[0] ?? 40) / 1000
+    const ym = (bb[1] ?? 40) / 1000
+    let zm = (bb[2] ?? 40) / 1000
+    if (root.length_mm && phys.cross_section_mm) {
+      zm = root.length_mm / 1000
+    }
+    const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
+    const shape = phys.inertia_primitive || 'box'
+    let inertia: { ixx: number; iyy: number; izz: number }
+    if (shape === 'cylinder') inertia = computeCylinderInertia(mass, Math.max(xm, ym) / 2, zm)
+    else if (shape === 'sphere') inertia = computeSphereInertia(mass, xm / 2)
+    else inertia = computeBoxInertia(mass, xm, ym, zm)
+
+    const rootLinkName = root.link_name
+    const catName = findCategory(rootPreset)
+    const rootVisualPreset = (root.length_mm && phys.cross_section_mm)
+      ? { ...rootPreset, physical: { ...phys, bounding_box_mm: [bb[0] ?? 40, bb[1] ?? 40, root.length_mm] } }
+      : rootPreset
+    const visuals = generateVisuals(rootVisualPreset as Parameters<typeof generateVisuals>[0], catName)
+
+    // Build root link XML
+    let visualsXml = ''
+    visuals.forEach((vis, i) => {
+      const geomXml = vis.geometry.type === 'box'
+        ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
+        : vis.geometry.type === 'cylinder'
+        ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
+        : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+      visualsXml += `
+    <visual>
+      <origin xyz="${vis.origin_xyz.map(v => v.toFixed(6)).join(' ')}" rpy="${vis.origin_rpy.map(v => v.toFixed(6)).join(' ')}"/>
+      <geometry>${geomXml}</geometry>
+      <material name="comp_mat_${i}"><color rgba="${vis.color_rgba.map(v => v.toFixed(3)).join(' ')}"/></material>
+    </visual>`
+    })
+
+    // Collision geometry
+    const collGeomXml = shape === 'cylinder'
+      ? `<cylinder radius="${(Math.max(xm, ym) / 2).toFixed(6)}" length="${zm.toFixed(6)}"/>`
+      : shape === 'sphere'
+      ? `<sphere radius="${(Math.max(xm, ym, zm) / 2).toFixed(6)}"/>`
+      : `<box size="${xm.toFixed(6)} ${ym.toFixed(6)} ${zm.toFixed(6)}"/>`
+
+    const baseUrdf = `<?xml version="1.0"?>
+<robot name="assembled_robot">
+  <link name="${rootLinkName}">
+    <inertial>
+      <mass value="${mass.toFixed(4)}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="${inertia.ixx.toFixed(6)}" iyy="${inertia.iyy.toFixed(6)}" izz="${inertia.izz.toFixed(6)}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>${visualsXml}
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>${collGeomXml}</geometry>
+    </collision>
+  </link>
+</robot>`
+
+    // Set the editor to this base URDF and reparse
+    const editor = (window as any).__vectorEditor
+    if (!editor) return { urdf: null }
+    editor.setValue(baseUrdf)
+    ctx.reparseUrdf()
+
+    nameMap.set(root.link_name, rootLinkName)
+    processed.add(root.link_name)
+    placedCount++
+    console.log(`[assembly] Root placed: ${rootLinkName} (${root.component_id})`)
+
+    // Pre-compute how many children attach to each parent:face pair
+    // so we can distribute them (e.g., 4 wheels on bottom corners)
+    const faceChildCounts = new Map<string, number>()
+    const faceChildIndex = new Map<string, number>()
+    for (const comp of components) {
+      if (!comp.attach_to) continue
+      const key = `${comp.attach_to}:${comp.attach_face || 'top'}`
+      faceChildCounts.set(key, (faceChildCounts.get(key) || 0) + 1)
+      faceChildIndex.set(key, 0) // will increment as we place
+    }
+    console.log('[assembly] Face child distribution:', Object.fromEntries(faceChildCounts))
+
+    // Track arm chain depth: how many revolute-Y-on-top joints in sequence
+    // Used to apply default rest pose angles (shoulder=45°, elbow=-90°)
+    const armDepth = new Map<string, number>()
+    armDepth.set(root.link_name, 0)
+
+    // Track port occupancy: how many children are connected to each parent port
+    // Key format: "parent_link_name::face_name"
+    const portOccupancy = new Map<string, number>()
+
+    // Opposite face mapping: child's contact surface is opposite of parent's attach face
+    const oppositeFace: Record<string, string> = {
+      top: 'bottom', bottom: 'top',
+      front: 'back', back: 'front',
+      left: 'right', right: 'left',
+    }
+
+    // Now iterate remaining components in dependency order
+    const remaining = components.filter(c => c.attach_to !== null)
+    let maxIter = remaining.length * 2 // safety valve
+    while (remaining.length > 0 && maxIter-- > 0) {
+      const nextIdx = remaining.findIndex(c => processed.has(c.attach_to!))
+      if (nextIdx === -1) break // no more placeable components
+
+      const comp = remaining.splice(nextIdx, 1)[0]
+      const preset = findPreset(comp.component_id)
+      if (!preset) {
+        console.warn(`[assembly] Unknown component: ${comp.component_id}, skipping`)
+        processed.add(comp.link_name)
+        continue
+      }
+
+      const parentLinkName = nameMap.get(comp.attach_to!) || comp.attach_to!
+
+      // Select the parent link so addComponentCore attaches to it
+      selectLink(parentLinkName)
+
+      // Compute child dimensions
+      const cPhys = preset.physical
+      const cBb = cPhys.bounding_box_mm ?? cPhys.cross_section_mm ?? [40, 40, 40]
+      const cxm = (cBb[0] ?? 40) / 1000
+      const cym = (cBb[1] ?? 40) / 1000
+      let czm = (cBb[2] ?? 40) / 1000
+      if (comp.length_mm && cPhys.cross_section_mm) {
+        czm = comp.length_mm / 1000
+      }
+
+      // ── Port-based connection validation ──
+      // Resolve parent and child ports, check compatibility and occupancy.
+      const parentCompDef = components.find(c => c.link_name === comp.attach_to)
+      const parentPreset = findPreset(parentCompDef?.component_id || '')
+      const childPreset = findPreset(comp.component_id)
+      const attachFace = comp.attach_face || 'top'
+      const childFace = oppositeFace[attachFace] || 'bottom'
+
+      let parentPort: ReturnType<typeof resolveFaceToPort> = undefined
+      let childPort: ReturnType<typeof resolveFaceToPort> = undefined
+
+      if (parentPreset) {
+        const pPhys = parentPreset.physical
+        const pBb = pPhys.bounding_box_mm ?? pPhys.cross_section_mm ?? [40, 40, 40]
+        const parentPorts = componentPortsForPreset(
+          parentPreset.id, (pBb[0] ?? 40) / 2000, (pBb[1] ?? 40) / 2000, (pBb[2] ?? 40) / 2000,
+          parentPreset.mounting_logic
+        )
+        parentPort = resolveFaceToPort(attachFace, parentPorts)
+        console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
+
+        if (childPreset) {
+          const cPhysP = childPreset.physical
+          const cBbP = cPhysP.bounding_box_mm ?? cPhysP.cross_section_mm ?? [40, 40, 40]
+          const childPorts = componentPortsForPreset(
+            childPreset.id, (cBbP[0] ?? 40) / 2000, (cBbP[1] ?? 40) / 2000, (cBbP[2] ?? 40) / 2000,
+            childPreset.mounting_logic
+          )
+          childPort = resolveFaceToPort(childFace, childPorts)
+          console.log(`[assembly][ports] Child port resolved: ${childPreset.id}.${childFace} → ${childPort ? `${childPort.nodeId}(${childPort.cls}:${childPort.label})` : 'NOT FOUND'}`)
+        } else {
+          console.warn(`[assembly][ports] Child preset not found for component_id="${comp.component_id}" — cannot resolve child port`)
+        }
+      } else {
+        console.warn(`[assembly][ports] Parent preset not found for component_id="${parentCompDef?.component_id}" (parent of ${comp.component_id}) — cannot resolve ports`)
+      }
+
+      // Log compatibility result
+      if (parentPort && childPort) {
+        const compat = nodesCompatible(childPort.cls, parentPort.cls)
+        const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
+        console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
+      } else {
+        console.log(`[assembly][ports] Connection: ${comp.component_id} → ${comp.attach_to}.${attachFace} — port resolution incomplete (parent=${!!parentPort}, child=${!!childPort})`)
+      }
+
+      // Track per-port occupancy: enforce single-use ports
+      const portOccupancyKey = `${comp.attach_to}::${attachFace}`
+      const currentOccupancy = portOccupancy.get(portOccupancyKey) || 0
+      console.log(`[assembly][ports] Occupancy: ${portOccupancyKey} = ${currentOccupancy} → ${currentOccupancy + 1}${parentPort?.single ? ' (single-use)' : ''}`)
+      if (parentPort?.single && currentOccupancy > 0 && parentPort.cls === 'shaft') {
+        console.warn(`[assembly][ports] WARNING: ${parentPreset!.id}.${parentPort.nodeId} (shaft) already has ${currentOccupancy} child(ren) — multiple children on a shaft output is unusual`)
+      }
+      portOccupancy.set(portOccupancyKey, currentOccupancy + 1)
+
+      // Get multi-child placement info
+      const faceKey = `${comp.attach_to}:${comp.attach_face || 'top'}`
+      const totalOnFace = faceChildCounts.get(faceKey) || 1
+      const childIdx = faceChildIndex.get(faceKey) || 0
+      faceChildIndex.set(faceKey, childIdx + 1)
+
+      const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
+      // Detect rod-shaped components (two short dims, one long)
+      const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
+      const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
+      const orientation = comp.orientation || 'auto'
+      // Detect wheel-related components — these should NOT get leg splay
+      const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
+        || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, isWheelRelated, comp.component_id)
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, noSplay=${isWheelRelated}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
+
+      // Override joint type/axis from the topology
+      const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
+      const jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+
+      // Use addComponentCore but we need to override joint type and axis
+      // Since addComponentCore auto-determines joint type from category,
+      // we'll directly build the URDF element for more control
+      const graph = ctx.getKinematicGraph()
+      const nextIdx2 = Object.keys(graph).length + 1
+      const childName = `${preset.id}_${nextIdx2}`
+      const jointName = `joint_${preset.id}_${nextIdx2}`
+
+      const cMass = cPhys.mass_kg ?? cPhys.mass_kg_per_100mm ?? 0.1
+      const cShape = cPhys.inertia_primitive || 'box'
+      let cInertia: { ixx: number; iyy: number; izz: number }
+      if (cShape === 'cylinder') cInertia = computeCylinderInertia(cMass, Math.max(cxm, cym) / 2, czm)
+      else if (cShape === 'sphere') cInertia = computeSphereInertia(cMass, cxm / 2)
+      else cInertia = computeBoxInertia(cMass, cxm, cym, czm)
+
+      const cCatName = findCategory(preset)
+      // Build a visuals-preset with correct length so generateVisuals sees the full dimension
+      const visualPreset = (comp.length_mm && cPhys.cross_section_mm)
+        ? { ...preset, physical: { ...cPhys, bounding_box_mm: [cBb[0] ?? 40, cBb[1] ?? 40, comp.length_mm] } }
+        : preset
+      const cVisuals = generateVisuals(visualPreset as Parameters<typeof generateVisuals>[0], cCatName)
+
+      const changed = commitUrdf(urdfDoc => {
+        const robot = urdfDoc.querySelector('robot')
+        if (!robot) return false
+
+        const link = urdfDoc.createElement('link')
+        link.setAttribute('name', childName)
+
+        const inertialEl = urdfDoc.createElement('inertial')
+        const massEl = urdfDoc.createElement('mass')
+        massEl.setAttribute('value', cMass.toFixed(4))
+        const inertiaEl = urdfDoc.createElement('inertia')
+        inertiaEl.setAttribute('ixx', cInertia.ixx.toFixed(6))
+        inertiaEl.setAttribute('iyy', cInertia.iyy.toFixed(6))
+        inertiaEl.setAttribute('izz', cInertia.izz.toFixed(6))
+        inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
+        inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
+        link.appendChild(inertialEl)
+
+        cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
+
+        const collision = urdfDoc.createElement('collision')
+        const co = urdfDoc.createElement('origin')
+        co.setAttribute('xyz', '0 0 0'); co.setAttribute('rpy', '0 0 0')
+        const collGeom = urdfDoc.createElement('geometry')
+        if (cShape === 'cylinder') {
+          const el = urdfDoc.createElement('cylinder')
+          el.setAttribute('radius', (Math.max(cxm, cym) / 2).toFixed(6))
+          el.setAttribute('length', czm.toFixed(6))
+          collGeom.appendChild(el)
+        } else if (cShape === 'sphere') {
+          const el = urdfDoc.createElement('sphere')
+          el.setAttribute('radius', (Math.max(cxm, cym, czm) / 2).toFixed(6))
+          collGeom.appendChild(el)
+        } else {
+          const el = urdfDoc.createElement('box')
+          el.setAttribute('size', `${cxm.toFixed(6)} ${cym.toFixed(6)} ${czm.toFixed(6)}`)
+          collGeom.appendChild(el)
+        }
+        collision.appendChild(co); collision.appendChild(collGeom)
+        link.appendChild(collision)
+
+        const joint = urdfDoc.createElement('joint')
+        joint.setAttribute('name', jointName)
+        joint.setAttribute('type', comp.joint_type || 'fixed')
+
+        const parentEl = urdfDoc.createElement('parent'); parentEl.setAttribute('link', parentLinkName)
+        const childEl = urdfDoc.createElement('child'); childEl.setAttribute('link', childName)
+        const origin = urdfDoc.createElement('origin')
+        origin.setAttribute('xyz', placement.xyz)
+        // Apply default arm rest pose: bend revolute-Y joints in vertical chains
+        // so arms look like arms (L-shape) instead of straight poles at rest
+        let finalRpy = placement.rpy
+        const isArmJoint = comp.joint_type === 'revolute'
+          && comp.joint_axis?.toLowerCase() === 'y'
+          && comp.attach_face === 'top'
+        const parentDepth = armDepth.get(comp.attach_to!) || 0
+        if (isArmJoint) {
+          const depth = parentDepth + 1
+          armDepth.set(comp.link_name, depth)
+          // Shoulder (depth 1): pitch forward 45°, Elbow (depth 2): bend back -90°
+          const defaultPitch = depth === 1 ? 0.7854 : depth === 2 ? -1.5708 : 0
+          if (defaultPitch !== 0) {
+            const rpyParts = placement.rpy.split(' ').map(Number)
+            rpyParts[1] = (rpyParts[1] || 0) + defaultPitch
+            finalRpy = rpyParts.map(v => v.toFixed(4)).join(' ')
+            console.log(`[assembly] Arm rest pose: ${comp.link_name} depth=${depth}, added pitch=${defaultPitch.toFixed(2)} rad`)
+          }
+        } else {
+          // Propagate arm depth through non-revolute components (extrusions, grippers)
+          // so the next revolute-Y joint gets the correct depth
+          armDepth.set(comp.link_name, comp.attach_face === 'top' ? parentDepth : 0)
+        }
+        origin.setAttribute('rpy', finalRpy)
+        const axis = urdfDoc.createElement('axis'); axis.setAttribute('xyz', jointAxis)
+        joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin); joint.appendChild(axis)
+
+        if (comp.joint_type === 'revolute' || comp.joint_type === 'prismatic') {
+          const limit = urdfDoc.createElement('limit')
+          limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+          const me = preset.mechanical_electrical || {}
+          const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
+          limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
+          joint.appendChild(limit)
+        }
+
+        robot.appendChild(link); robot.appendChild(joint)
+        return true
+      })
+
+      if (changed) {
+        nameMap.set(comp.link_name, childName)
+        placedCount++
+        console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
+        // Reparse so next component sees updated geometry
+        ctx.reparseUrdf()
+      } else {
+        console.warn(`[assembly] ✗ Failed to place ${comp.component_id} on ${parentLinkName}`)
+      }
+      processed.add(comp.link_name)
+    }
+
+    console.log(`[assembly] Done: ${placedCount}/${graph.components.length} components placed`)
+    if (remaining.length > 0) {
+      console.warn(`[assembly] ${remaining.length} components could not be placed:`, remaining.map(c => c.link_name))
+    }
+
+    // Port occupancy summary
+    console.log(`[assembly][ports] Final occupancy:`, Object.fromEntries(portOccupancy))
+    const shaftOverloads = [...portOccupancy.entries()].filter(([_key, count]) => count > 1)
+    if (shaftOverloads.length > 0) {
+      console.warn(`[assembly][ports] Ports with multiple children:`, shaftOverloads.map(([k, c]) => `${k}=${c}`).join(', '))
+    }
+
+    // Pretty-print the URDF so the editor doesn't show everything on one line.
+    // commitUrdf uses DOM createElement which serializes without whitespace.
+    const rawUrdf = ctx.getUrdfText()
+    const lines = rawUrdf.replace(/></g, '>\n<').replace(/\n\n+/g, '\n').split('\n')
+    let indent = 0
+    const prettyUrdf = lines.map(line => {
+      const trimmed = line.trim()
+      if (!trimmed) return ''
+      // Decrease indent for closing tags
+      if (trimmed.startsWith('</')) indent = Math.max(0, indent - 1)
+      const result = '  '.repeat(indent) + trimmed
+      // Increase indent for opening tags (not self-closing or closing)
+      if (trimmed.startsWith('<') && !trimmed.startsWith('</') && !trimmed.startsWith('<?') && !trimmed.endsWith('/>')) {
+        indent++
+      }
+      return result
+    }).join('\n')
+    const ed = (window as any).__vectorEditor
+    if (ed && prettyUrdf !== rawUrdf) {
+      ed.setValue(prettyUrdf)
+      ctx.reparseUrdf()
+    }
+
+    // Ground the robot so it sits on the floor plane (Y=0 in Three.js)
+    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
+
+    ctx.showToast(`Assembled ${placedCount} components`, 'success')
+    return { urdf: ctx.getUrdfText() }
+  }
+
   return {
     onModelUpdated,
     recordUndoExternal: (content: string) => {
@@ -2568,6 +3326,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     exitCarryMode,
     onInteractionModeChanged,
     setSelectedLink: selectLink,
+    resolveAssemblyGraph,
   }
 }
 

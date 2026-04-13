@@ -205,6 +205,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 #sidebar::-webkit-scrollbar { width: 4px; }
 #sidebar::-webkit-scrollbar-track { background: transparent; }
 #sidebar::-webkit-scrollbar-thumb { background: #424242; border-radius: 2px; }
+#sidebar.hidden { display: none; }
+#sidebar.hidden + #sidebar-resize-handle { display: none; }
 
 .sidebar-panel.hidden { display: none; }
 
@@ -1302,6 +1304,46 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 #vc-messages::-webkit-scrollbar-track { background: transparent; }
 #vc-messages::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
 
+/* ── Chat rewind ────────────────────────────────────────────── */
+.chat-rewind-wrap {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 10;
+}
+.chat-rewind-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 50%;
+  color: var(--text-dim); cursor: pointer;
+  opacity: 0; transition: opacity 0.15s, color 0.12s, background 0.12s;
+}
+.ai-msg-content:hover .chat-rewind-btn { opacity: 0.7; }
+.chat-rewind-btn:hover { opacity: 1 !important; color: var(--accent); background: var(--accent-dim); border-color: rgba(74,158,255,0.3); }
+
+.chat-rewind-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 170px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  z-index: 120;
+}
+.chat-rewind-popover.hidden { display: none; }
+
+.crp-option {
+  display: block; width: 100%;
+  padding: 6px 12px; text-align: left;
+  background: transparent; border: none;
+  color: var(--text-dim); font-size: 11px; font-family: var(--font);
+  cursor: pointer; transition: background 0.1s;
+}
+.crp-option:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
 #vc-messages .ai-msg.user .ai-msg-content {
   max-width: 70%;
   margin-left: auto;
@@ -2041,7 +2083,7 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   border-top: 1px solid var(--border-dim);
 }
 .ba-btn {
-  padding: 6px 0; font-size: 11.5px; font-weight: 600;
+  padding: 6px 14px; font-size: 11.5px; font-weight: 600;
   border: 1px solid var(--border); border-radius: 5px;
   background: rgba(255,255,255,0.04); color: var(--text-dim);
   cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s;

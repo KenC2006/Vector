@@ -9,7 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
-import { applyRichVisuals } from './richVisuals'
+import { applyRichVisuals, preloadMeshCache } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
 import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
@@ -128,6 +128,7 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: number
+  urdfSnapshot?: string
 }
 
 interface ChatConversation {
@@ -263,10 +264,14 @@ function loadChat(chatId: string) {
   vcMsgs.innerHTML = `<div class="ai-msg system">
     <div class="ai-msg-content">Describe changes to your robot in natural language.</div>
   </div>`
-  for (const msg of chat.messages) {
+  for (let i = 0; i < chat.messages.length; i++) {
+    const msg = chat.messages[i]
     const el = document.createElement('div')
     el.className = `ai-msg ${msg.role}`
     el.innerHTML = `<div class="ai-msg-content">${msg.role === 'user' ? escapeHtml(msg.content) : msg.content}</div>`
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      attachRewindButton(el, i)
+    }
     vcMsgs.appendChild(el)
   }
   vcMsgs.scrollTop = vcMsgs.scrollHeight
@@ -274,7 +279,8 @@ function loadChat(chatId: string) {
 }
 
 function recordChatMessage(role: 'user' | 'assistant' | 'system', content: string) {
-  const msg: ChatMessage = { role, content, timestamp: Date.now() }
+  const urdfSnapshot = monacoEditor.getModel()?.getValue() || ''
+  const msg: ChatMessage = { role, content, timestamp: Date.now(), urdfSnapshot }
   currentChatMessages.push(msg)
 
   const chat = getCurrentChat()
@@ -290,6 +296,83 @@ function recordChatMessage(role: 'user' | 'assistant' | 'system', content: strin
   }
 }
 
+// ── Chat rewind ──────────────────────────────────────────────────────────────
+
+function rewindChatTo(msgIndex: number, mode: 'conversation' | 'code' | 'both') {
+  const chat = getCurrentChat()
+  if (!chat) return
+
+  const targetMsg = currentChatMessages[msgIndex]
+  if (!targetMsg) return
+
+  if (mode === 'code' || mode === 'both') {
+    if (targetMsg.urdfSnapshot) {
+      monacoEditor.setValue(targetMsg.urdfSnapshot)
+    }
+  }
+
+  if (mode === 'conversation' || mode === 'both') {
+    // Keep messages up to and including the target index
+    currentChatMessages.length = msgIndex + 1
+    chat.messages = currentChatMessages
+    chat.updatedAt = Date.now()
+    saveChatHistory()
+    loadChat(currentChatId)
+  }
+}
+
+function attachRewindButton(msgEl: HTMLElement, msgIndex: number) {
+  const wrap = document.createElement('div')
+  wrap.className = 'chat-rewind-wrap'
+
+  const btn = document.createElement('button')
+  btn.className = 'chat-rewind-btn'
+  btn.title = 'Rewind to here'
+  btn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8a6 6 0 1 1 1.8 4.3" stroke-linecap="round"/><path d="M2 12V8h4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+  const popover = document.createElement('div')
+  popover.className = 'chat-rewind-popover hidden'
+  popover.innerHTML = `
+    <button class="crp-option" data-mode="conversation">Rewind conversation</button>
+    <button class="crp-option" data-mode="code">Rewind code only</button>
+    <button class="crp-option" data-mode="both">Rewind both</button>
+  `
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    // Close any other open popovers
+    document.querySelectorAll('.chat-rewind-popover').forEach(p => {
+      if (p !== popover) p.classList.add('hidden')
+    })
+    popover.classList.toggle('hidden')
+  })
+
+  popover.querySelectorAll('.crp-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const mode = (opt as HTMLElement).dataset.mode as 'conversation' | 'code' | 'both'
+      popover.classList.add('hidden')
+      rewindChatTo(msgIndex, mode)
+    })
+  })
+
+  wrap.appendChild(btn)
+  wrap.appendChild(popover)
+  // Attach inside the .ai-msg-content bubble
+  const bubble = msgEl.querySelector('.ai-msg-content')
+  if (bubble) {
+    (bubble as HTMLElement).style.position = 'relative'
+    bubble.appendChild(wrap)
+  } else {
+    msgEl.appendChild(wrap)
+  }
+}
+
+// Close rewind popovers on outside click
+document.addEventListener('click', () => {
+  document.querySelectorAll('.chat-rewind-popover').forEach(p => p.classList.add('hidden'))
+})
+
 // Initialize: load most recent chat or create new one
 if (chatHistory.length > 0) {
   const latest = chatHistory[chatHistory.length - 1]
@@ -301,7 +384,7 @@ if (chatHistory.length > 0) {
 
 // State for managing completion requests
 let inlineCompletionSettings = {
-  enabled: true,
+  enabled: false,  // Temporarily disabled to save API credits
   debounceMs: 350,  // Reduced from 500ms — cache handles repeated requests
 }
 
@@ -641,6 +724,17 @@ function switchToFile(filename: string) {
   activeFile = filename
   fileTypeLabel.textContent = getFileType(filename)
 
+  // Clear any pending inline diff and debounced reparse from the previous file —
+  // they shouldn't block rendering of the new file
+  if (pendingOldText !== null) {
+    clearInlineDiff()
+    pendingOldText = null
+  }
+  if (reparseTimeout !== null) {
+    clearTimeout(reparseTimeout)
+    reparseTimeout = null
+  }
+
   hideWelcomeState()
 
   // Switch Monaco model
@@ -788,7 +882,8 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   // Listen for changes on URDF/XML files with debounce
   if (isUrdfLike(filename)) {
     const fn = filename // capture for closure
-    monacoModels[filename].onDidChangeContent(() => {
+    const fnModel = monacoModels[filename] // capture model reference for closure
+    fnModel.onDidChangeContent(() => {
       if (activeFile === fn) {
         // Hot-reload guard: block reparse while sim is running — edits would
         // diverge from the loaded MJCF. User must restart sim to apply changes.
@@ -802,7 +897,10 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
           // Suppress auto-reparse while an AI inline diff is pending —
           // the explicit reparseURDF() in acceptInlineDiff/dismissInlineDiff handles it.
           if (pendingOldText !== null) return
+          // Only reparse if this file is STILL active (user may have switched tabs during debounce)
+          if (activeFile !== fn) return
           reparseURDF()
+          groundRobot(robot)
           urdfAssemblyApi?.onModelUpdated()
         }, 500)
       }
@@ -1046,6 +1144,11 @@ setPathResolver(() => ({
 const robot = new THREE.Group()
 scene.add(robot)
 
+// Pre-warm GLB mesh cache so the first real URDF render uses real meshes
+// instead of parametric fallback. Fire-and-forget — runs in parallel with
+// the rest of app init; applyRichVisuals will use cached meshes if ready.
+preloadMeshCache()
+
 // worldGroup applies the Z-up → Y-up correction for the scene.
 // parsedRobot.group is kept in pure URDF (Z-up) space so exported
 // transforms match what the parser reads back.
@@ -1056,6 +1159,7 @@ robot.add(worldGroup)
 
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
+robot.updateMatrixWorld(true)
 applyRichVisuals(parsedRobot)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
@@ -1204,10 +1308,14 @@ const collisionEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444, transpar
 let showCollision = false
 
 function rebuildCollisionVisuals(urdfText: string) {
-  // Strip any existing collision meshes from all link groups
+  // Strip any existing collision meshes from all link groups.
+  // Collect first, THEN remove — removing during traverse() corrupts the scene graph
+  // and causes the viewport to stop updating on tab switch.
+  const toRemove: THREE.Object3D[] = []
   parsedRobot.group.traverse(obj => {
-    if ((obj as any).userData?.isCollision) obj.parent?.remove(obj)
+    if ((obj as any).userData?.isCollision) toRemove.push(obj)
   })
+  for (const obj of toRemove) obj.parent?.remove(obj)
   if (!urdfText.trim()) return
 
   let doc: Document
@@ -1349,6 +1457,7 @@ function rebuildWireframes() {
         const clone = new THREE.Mesh(child.geometry, wireMat)
         child.getWorldPosition(clone.position)
         child.getWorldQuaternion(clone.quaternion)
+        child.getWorldScale(clone.scale)
         wireframeGroup.add(clone)
       }
     })
@@ -1620,6 +1729,7 @@ function reparseURDF(xmlOverride?: string) {
           kinematicGraph = newKinematicData.kinematicGraph
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
+          robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot)
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
@@ -1657,6 +1767,7 @@ function reparseURDF(xmlOverride?: string) {
     kinematicJoints = newKinematicData.kinematicJoints
 
     worldGroup.add(parsedRobot.group)
+    robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot)
     addEdgeLines(parsedRobot)
 
@@ -1697,6 +1808,8 @@ if (monacoModels['robot.urdf']) {
       reparseTimeout = window.setTimeout(() => {
         reparseTimeout = null
         if (pendingOldText !== null) return
+        // Only reparse if robot.urdf is STILL active (user may have switched tabs)
+        if (activeFile !== 'robot.urdf') return
         reparseURDF()
         urdfAssemblyApi?.onModelUpdated()
       }, 500)
@@ -1925,6 +2038,14 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault()
     const gitBtn = document.querySelector('.ab-btn[data-panel="git"]') as HTMLElement | null
     if (gitBtn) gitBtn.click()
+    return
+  }
+  if (isMacCtrl && e.key === 'b') {
+    e.preventDefault()
+    const sb = document.getElementById('sidebar') as HTMLDivElement | null
+    if (sb) {
+      sb.classList.toggle('hidden')
+    }
     return
   }
 
@@ -2566,6 +2687,10 @@ function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, ex
     msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
   }
 
+  if (role === 'user' || role === 'assistant') {
+    attachRewindButton(msg, currentChatMessages.length - 1)
+  }
+
   vcMessages.appendChild(msg)
   vcMessages.scrollTop = vcMessages.scrollHeight
   return msg
@@ -2800,26 +2925,218 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
 
   try {
     const editor = (window as any).__vectorEditor
-    const currentUrdf = editor?.getValue() || ''
+    const fullUrdf = editor?.getValue() || ''
     const kinematicContext = buildKinematicContext()
+
+    // For redesign retries (retryCount > 0), send minimal payloads to save tokens.
+    // Redesigns create new topologies from scratch — the old URDF and kinematic
+    // graph are dead weight and sending them blows the 10K ITPM rate limit.
+    const isRedesign = retryCount > 0
+    const currentUrdf = isRedesign
+      ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
+      : fullUrdf
+    if (isRedesign) {
+      console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF, ${kinematicContext.length} char kinematic context)`)
+    }
 
     const result = await invoke('ai_edit', {
       prompt: prompt,
       urdfContent: currentUrdf,
-      kinematicContext: kinematicContext,
+      kinematicContext: isRedesign ? '' : kinematicContext,
       sessionId: currentChatId,
-    }) as { explanation: string; new_urdf: string; stats: string }
+    }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
 
     thinking.remove()
 
-    const diff = computeSimpleDiff(currentUrdf, result.new_urdf)
+    // Check if this is an assembly graph (Option C) — resolve via frontend snap system
+    if (result.assembly_graph && urdfAssemblyApi) {
+      console.log('[AI] Received assembly_graph — resolving via frontend snap system')
+      const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      let assemblyResult = assemblyOut.urdf
+      console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+      if (assemblyResult) {
+        // 2nd-pass AI validation: send assembled URDF + viewport screenshot to Claude
+        try {
+          console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
 
-    addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
-      diff,
-      newUrdf: result.new_urdf,
-    })
+          // Wait for GLB meshes to load before capturing screenshots.
+          // Without this delay, Sonnet sees primitive boxes instead of actual component meshes.
+          await new Promise(r => setTimeout(r, 800))
 
-    showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+          // Capture 3 labeled screenshots from canonical angles for visual validation
+          // Research: 3 near-orthogonal views capture all geometry with minimal token cost
+          const robotBox = new THREE.Box3().setFromObject(robot)
+          if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
+          const robotCenter = new THREE.Vector3()
+          const robotSize = new THREE.Vector3()
+          robotBox.getCenter(robotCenter)
+          robotBox.getSize(robotSize)
+          const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
+          const dist = maxDim * 2.5
+          const captureSize = 512
+
+          // 3 canonical views: front-iso, rear-iso, top-down
+          const viewAngles = [
+            { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },  // front-isometric
+            { label: 'rear-left',   az: -0.75, el: 0.5, depth: -0.75 }, // rear-isometric
+            { label: 'top-down',    az: 0.2, el: 1.2, depth: 0.2 },     // steep overhead
+          ]
+          const screenshots: string[] = []
+
+          // Use a separate offscreen canvas for screenshots so we don't
+          // disrupt the main renderer/composer pipeline (which caused the
+          // viewport to stop updating after screenshot capture)
+          const offCanvas = document.createElement('canvas')
+          offCanvas.width = captureSize
+          offCanvas.height = captureSize
+          const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
+          offRenderer.setSize(captureSize, captureSize)
+          offRenderer.shadowMap.enabled = true
+
+          const offCam = camera.clone()
+          offCam.aspect = 1
+
+          for (const view of viewAngles) {
+            offCam.position.set(
+              robotCenter.x + dist * view.az,
+              robotCenter.y + dist * view.el,
+              robotCenter.z + dist * view.depth
+            )
+            offCam.lookAt(robotCenter)
+            offCam.updateProjectionMatrix()
+            offRenderer.render(scene, offCam)
+            const dataUrl = offCanvas.toDataURL('image/png')
+            screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
+          }
+
+          offRenderer.dispose()
+
+          const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
+          console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
+
+          const valResult = await invoke('ai_validate_assembly', {
+            urdfContent: assemblyResult,
+            originalPrompt: prompt,
+            sessionId: currentChatId,
+            screenshotBase64: screenshots[0],
+            screenshots: screenshots,
+          }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
+
+          // Validation is diagnostic only — no URDF coordinate edits (LLMs can't do spatial math).
+          // When validation finds issues and needs_redesign is set, retry with a new topology.
+          console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
+          console.log(`[AI][redesign] Full valResult:`, JSON.stringify(valResult, null, 2))
+
+          if (valResult.ok) {
+            console.log(`[AI][redesign] Validation passed: ${valResult.notes}`)
+          } else {
+            console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
+            const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
+            if (checklist) {
+              const passed = checklist.filter(c => c.pass).length
+              const failed = checklist.filter(c => !c.pass).length
+              console.log(`[AI][redesign] Checklist: ${passed} passed, ${failed} failed`)
+              for (const c of checklist) {
+                console.log(`[AI][redesign]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
+              }
+            } else {
+              console.log(`[AI][redesign] No checklist in response`)
+            }
+
+            // Trigger redesign only for topology-fixable failures (not placement issues)
+            const needsRedesign = (valResult as any).needs_redesign
+            const topoFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology')
+              : []
+            const placementFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement')
+              : []
+            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, topoFailures=${topoFailures.length}, placementFailures=${placementFailures.length}, retryCount=${retryCount}`)
+            console.log(`[AI][redesign] will_retry=${!!(needsRedesign && topoFailures.length > 0 && retryCount < 1)}`)
+
+            if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
+              const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
+              const placementNote = placementFailures.length > 0
+                ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) like positioning/spacing — these are handled by the placement engine, not your topology. Ignore them.)`
+                : ''
+              console.log(`[AI][redesign] Triggering redesign with ${topoFailures.length} topology failures:\n${failures}`)
+              if (placementFailures.length > 0) {
+                console.log(`[AI][redesign] Skipping ${placementFailures.length} placement-only failures:`)
+                for (const pf of placementFailures) {
+                  console.log(`[AI][redesign]   (placement) ${pf.check}: ${pf.detail}`)
+                }
+              }
+              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
+
+              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above. Focus on: correct components, correct connections, nothing missing. The placement engine handles all positioning — do NOT try to fix spacing, angles, or grounding.`
+              console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
+
+              // No proactive delay — validation is on Gemini (separate rate limits).
+              // If the Claude redesign call hits 429, the existing rate limit retry
+              // logic (exponential backoff) handles it automatically.
+              vcSend.disabled = false
+              unlisten?.()
+              return sendVCMessage(redesignPrompt, retryCount + 1)
+            } else if (needsRedesign && topoFailures.length === 0) {
+              console.log(`[AI][redesign] Validation flagged needs_redesign but all ${placementFailures.length} failures are placement-only — skipping redesign (topology is correct)`)
+            } else if (needsRedesign && retryCount >= 1) {
+              console.log(`[AI][redesign] Redesign requested but already retried (retryCount=${retryCount}) — showing result as-is`)
+            }
+          }
+        } catch (valErr) {
+          console.warn('[AI] Visual validation skipped:', valErr)
+          // Non-blocking — assembly still usable without validation
+        }
+
+        const diff = computeSimpleDiff(fullUrdf, assemblyResult)
+        addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          diff,
+          newUrdf: assemblyResult,
+        })
+        showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
+      } else if (retryCount < 2) {
+        // Error recovery ladder: retry with error context
+        const topoErrors = assemblyOut.topologyErrors
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount}, topologyErrors=${topoErrors ? topoErrors.length : 0}, will_retry=true`)
+
+        if (topoErrors && topoErrors.length > 0) {
+          // Topology validation failed — retry with specific error feedback
+          console.log(`[AI][topology] BRANCH: topology-error retry with ${topoErrors.length} specific errors:`)
+          for (const err of topoErrors) {
+            console.log(`[AI][topology]   - ${err}`)
+          }
+          addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
+          const errorList = topoErrors.map(e => `- ${e}`).join('\n')
+          const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design. Remember the forbidden patterns: no sensor→sensor, no children on effectors, no duplicate names, root must be structural_baseplate.`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        } else {
+          // Placement failed (no topology errors) — retry with simplification
+          console.log(`[AI][topology] BRANCH: generic placement-failure retry (no topology errors, urdf was null)`)
+          addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+          const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        }
+      } else {
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount} >= 2, giving up. topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. The design may be too complex for the current placement engine. Try describing a simpler robot.</span>`)
+      }
+    } else {
+      // Standard path: direct URDF replacement (Option A/B)
+      const diff = computeSimpleDiff(fullUrdf, result.new_urdf)
+
+      addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+        diff,
+        newUrdf: result.new_urdf,
+      })
+
+      showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+    }
 
   } catch (err) {
     thinking.remove()

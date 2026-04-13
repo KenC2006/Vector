@@ -49,6 +49,9 @@ def validate_kinematic_graph(kg: KinematicGraph) -> List[Dict[str, str]]:
     # ── Mesh checks ──────────────────────────────────────────────────────
     results.extend(_check_meshes(kg))
 
+    # Spatial checks
+    results.extend(_check_spatial(kg))
+
     return [r.to_dict() for r in results]
 
 
@@ -411,5 +414,123 @@ def _check_meshes(kg: KinematicGraph) -> List[ValidationResult]:
         "Mesh watertight check skipped (requires mesh files)",
         "Mesh",
     ))
+
+    return results
+
+
+# ── Spatial ─────────────────────────────────────────────────────────────────
+
+def _check_spatial(kg: KinematicGraph) -> List[ValidationResult]:
+    """Check for spatial issues: overlapping links, zero-offset joints, links below ground."""
+    results = []
+
+    try:
+        frames = kg.compute_world_frames()
+    except Exception:
+        results.append(ValidationResult(
+            "Spatial analysis",
+            "info",
+            "Spatial analysis skipped (could not compute world frames)",
+            "Spatial",
+        ))
+        return results
+
+    # 1. Check for zero-offset non-root joints (everything stacked at same point)
+    zero_offset_joints = []
+    for u, v in kg.graph.edges():
+        joint_data: JointData = kg.graph[u][v]["data"]
+        if joint_data.joint_type == "fixed" and v == kg.root_link:
+            continue
+        oxyz = joint_data.origin_xyz
+        if abs(oxyz[0]) < 1e-6 and abs(oxyz[1]) < 1e-6 and abs(oxyz[2]) < 1e-6:
+            zero_offset_joints.append(joint_data.name)
+
+    if zero_offset_joints:
+        results.append(ValidationResult(
+            "Joint offsets non-zero",
+            "warn",
+            f"Joints with zero offset (components stacked at same point): {', '.join(zero_offset_joints[:5])}{'...' if len(zero_offset_joints) > 5 else ''}",
+            "Spatial",
+        ))
+    else:
+        results.append(ValidationResult(
+            "Joint offsets non-zero",
+            "pass",
+            "All joints have non-zero offsets",
+            "Spatial",
+        ))
+
+    # 2. Check for links below ground plane (Z < 0)
+    below_ground = []
+    for link_name, frame in frames.items():
+        wz = frame.get("world_xyz", [0, 0, 0])[2]
+        bbox = frame.get("bbox_m")
+        if bbox:
+            bottom_z = wz - bbox[2] / 2
+        else:
+            bottom_z = wz
+        if bottom_z < -0.01:  # 1cm tolerance
+            below_ground.append(f"{link_name} (Z={bottom_z:.3f})")
+
+    if below_ground:
+        results.append(ValidationResult(
+            "Links above ground",
+            "warn",
+            f"Links below ground plane (Z<0): {', '.join(below_ground[:5])}",
+            "Spatial",
+        ))
+    else:
+        results.append(ValidationResult(
+            "Links above ground",
+            "pass",
+            "All links are above or on the ground plane",
+            "Spatial",
+        ))
+
+    # 3. Check for overlapping links (same world position within bbox overlap)
+    link_names = list(frames.keys())
+    overlaps = []
+    for i in range(len(link_names)):
+        for j in range(i + 1, len(link_names)):
+            a_name, b_name = link_names[i], link_names[j]
+            a, b = frames[a_name], frames[b_name]
+            a_xyz = a.get("world_xyz", [0, 0, 0])
+            b_xyz = b.get("world_xyz", [0, 0, 0])
+            a_bbox = a.get("bbox_m")
+            b_bbox = b.get("bbox_m")
+            if not a_bbox or not b_bbox:
+                continue
+            # Check AABB overlap
+            overlap = True
+            for axis in range(3):
+                a_min = a_xyz[axis] - a_bbox[axis] / 2
+                a_max = a_xyz[axis] + a_bbox[axis] / 2
+                b_min = b_xyz[axis] - b_bbox[axis] / 2
+                b_max = b_xyz[axis] + b_bbox[axis] / 2
+                if a_max <= b_min or b_max <= a_min:
+                    overlap = False
+                    break
+            if overlap:
+                # Check if parent-child (expected to be close)
+                parent_a = kg.get_parent_link(a_name)
+                parent_b = kg.get_parent_link(b_name)
+                if parent_a == b_name or parent_b == a_name:
+                    continue  # Parent-child overlap is often intentional
+                overlaps.append(f"{a_name} <-> {b_name}")
+
+    if overlaps:
+        results.append(ValidationResult(
+            "No link overlaps",
+            "warn",
+            f"Potentially overlapping links: {', '.join(overlaps[:5])}{'...' if len(overlaps) > 5 else ''}",
+            "Spatial",
+        ))
+    else:
+        results.append(ValidationResult(
+            "No link overlaps",
+            "pass",
+            "No overlapping link bounding boxes detected",
+            "Spatial",
+        ))
 
     return results

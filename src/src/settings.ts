@@ -193,6 +193,7 @@ const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'gizmoToggle', label: 'Toggle Gizmo Mode', defaultKey: 'R', context: 'Viewport' },
   { id: 'deleteLink', label: 'Delete Selected Link', defaultKey: 'Delete', context: 'Viewport' },
   { id: 'aiChat', label: 'Focus AI Chat', defaultKey: 'Ctrl+L', context: 'Global' },
+  { id: 'toggleSidebar', label: 'Toggle Sidebar', defaultKey: 'Ctrl+B', context: 'Global' },
 ]
 
 const customBindings: Record<string, string> = JSON.parse(localStorage.getItem('vector_shortcuts') || '{}')

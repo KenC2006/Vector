@@ -61,6 +61,67 @@ export function defaultFaceNodesForBoxDims(
   ]
 }
 
+/**
+ * Generate component-specific ports based on component ID and mounting_logic.
+ * Servos get a shaft_output port on top, mounting ports on bottom/sides.
+ * Extrusions get end ports at +Z and -Z tips.
+ * This bridges the AI's face-based topology to the port-based snap system.
+ */
+export function componentPortsForPreset(
+  componentId: string,
+  hx: number, hy: number, hz: number,
+  mountingLogic?: { primary?: string; output?: string; shaft_diameter_mm?: number },
+): AttachmentNodeDef[] {
+  const nodes = defaultFaceNodesForBoxDims(hx, hy, hz)
+
+  // Servos: mark top as shaft output, bottom as bracket mount
+  if (componentId.startsWith('actuator_servo') || componentId.startsWith('actuator_continuous')) {
+    const topNode = nodes.find(n => n.nodeId === 'top')
+    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft Output' }
+    const botNode = nodes.find(n => n.nodeId === 'bottom')
+    if (botNode) { botNode.label = 'Bracket Mount' }
+  }
+
+  // Motors: shaft on top
+  if (componentId.startsWith('motor_') || componentId.startsWith('actuator_bldc')) {
+    const topNode = nodes.find(n => n.nodeId === 'top')
+    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft' }
+  }
+
+  // Extrusions: label ends clearly
+  if (componentId.includes('extrusion')) {
+    const topNode = nodes.find(n => n.nodeId === 'top')
+    if (topNode) topNode.label = 'End A (+Z)'
+    const botNode = nodes.find(n => n.nodeId === 'bottom')
+    if (botNode) botNode.label = 'End B (-Z)'
+  }
+
+  // Grippers/effectors: mark as terminal (single output face)
+  if (componentId.startsWith('effector_')) {
+    const topNode = nodes.find(n => n.nodeId === 'top')
+    if (topNode) topNode.label = 'Tool Output'
+  }
+
+  return nodes
+}
+
+/**
+ * Resolve a face name ("top", "front", etc.) to the corresponding attachment node.
+ * Returns the node's position offset from the component center.
+ */
+export function resolveFaceToPort(
+  face: string,
+  nodes: AttachmentNodeDef[],
+): AttachmentNodeDef | undefined {
+  const faceToNodeId: Record<string, string> = {
+    'top': 'top', 'bottom': 'bottom',
+    'front': 'x_plus', 'back': 'x_minus',
+    'right': 'y_plus', 'left': 'y_minus',
+  }
+  const nodeId = faceToNodeId[face] || 'top'
+  return nodes.find(n => n.nodeId === nodeId)
+}
+
 export interface ExtractMountNodesArgs {
   kinematicGraph: Record<string, { name: string; parent?: string; children: string[] }>
   kinematicJoints: Record<string, { name: string; type: string; parentLink: string; childLink: string }>
