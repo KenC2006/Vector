@@ -1889,7 +1889,7 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
 
     # Build multimodal content parts
     parts = []
-    parts.append(_genai_types.Part.from_text(VALIDATION_SYSTEM_PROMPT))
+    parts.append(_genai_types.Part.from_text(text=VALIDATION_SYSTEM_PROMPT))
 
     view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
     has_images = False
@@ -1897,7 +1897,7 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
     if screenshots and len(screenshots) >= 3:
         for img, label in zip(screenshots[:3], view_labels):
             if img:
-                parts.append(_genai_types.Part.from_text(f"**{label}:**"))
+                parts.append(_genai_types.Part.from_text(text=f"**{label}:**"))
                 parts.append(_genai_types.Part.from_bytes(
                     data=base64.b64decode(img),
                     mime_type='image/png',
@@ -1921,7 +1921,7 @@ Assembled URDF:
 ```
 
 {"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}"""
-    parts.append(_genai_types.Part.from_text(prompt_text))
+    parts.append(_genai_types.Part.from_text(text=prompt_text))
 
     t0 = time.time()
     response = client.models.generate_content(
