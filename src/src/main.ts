@@ -7,7 +7,6 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
 import { applyRichVisuals, preloadMeshCache } from './richVisuals'
 import { SAMPLE_URDF } from './sampleUrdf'
@@ -15,7 +14,6 @@ import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
 import { initGitPanel } from './gitPanel'
 import { initValidation, validateXMLStructure, validateURDFPerLink } from './validation'
-import type { ValResult } from './validation'
 import { parseURDFToScene, buildKinematicGraphFromURDF, setPathResolver, defaultMat } from './urdfParser'
 import { rpyToQuat } from './rotationIO'
 import type { ParsedRobot, KinematicLink, KinematicJoint } from './urdfParser'
@@ -29,6 +27,20 @@ import {
   stepCameraFocusTween,
   type CameraFocusTween,
 } from './inspectMode'
+import { initChatHistory, type ChatHistoryApi } from './chatHistory'
+import { initInlineDiff, type InlineDiffApi } from './inlineDiff'
+import { initSimManager, type SimManagerApi } from './simManager'
+import { initViewportChat, type ViewportChatApi } from './viewportChat'
+
+// Module-level API handles — initialized during startup sequence
+let chatApi: ChatHistoryApi
+let inlineDiffApi: InlineDiffApi
+let simApi: SimManagerApi
+let viewportChatApi: ViewportChatApi
+
+// Viewport interaction state — declared early so simManager callbacks can reference it
+let viewportInteractionMode: 'build' | 'inspect' = 'build'
+let inspectFocusedLink: string | null = null
 
 /**
  * Raise the assembly root group so the lowest geometry point touches Y=0.
@@ -148,265 +160,12 @@ const monacoEditor = monaco.editor.create(monacoContainer, {
 
 // ── Inline AI Completions (Cursor-style Ghost Text) ──────────────────────────
 
-// ── Chat History System ──────────────────────────────────────────────────────
+// ── Chat History (delegated to chatHistory.ts) ──────────────────────────────
 
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  timestamp: number
-  urdfSnapshot?: string
-}
-
-interface ChatConversation {
-  id: string
-  title: string
-  createdAt: number
-  updatedAt: number
-  messages: ChatMessage[]
-}
-
-const MAX_CHATS = 20
-let chatHistory: ChatConversation[] = JSON.parse(localStorage.getItem('vector_chats') || '[]')
-let currentChatId: string = ''
-let currentChatMessages: ChatMessage[] = []
-
-function generateChatId(): string {
-  return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-}
-
-function saveChatHistory() {
-  while (chatHistory.length > MAX_CHATS) chatHistory.shift()
-  localStorage.setItem('vector_chats', JSON.stringify(chatHistory))
-}
-
-function getCurrentChat(): ChatConversation | undefined {
-  return chatHistory.find(c => c.id === currentChatId)
-}
-
-function updateChatDropdown() {
-  // Update hidden select for compatibility
-  const select = document.getElementById('vc-chat-select') as HTMLSelectElement | null
-  if (select) {
-    select.innerHTML = ''
-    for (let i = chatHistory.length - 1; i >= 0; i--) {
-      const chat = chatHistory[i]
-      const opt = document.createElement('option')
-      opt.value = chat.id
-      opt.textContent = chat.title || 'Untitled'
-      if (chat.id === currentChatId) opt.selected = true
-      select.appendChild(opt)
-    }
-  }
-
-  // Update custom dropdown
-  const label = document.getElementById('vc-chat-dropdown-label')
-  const list = document.getElementById('vc-chat-dropdown-list')
-  if (!label || !list) return
-
-  const current = chatHistory.find(c => c.id === currentChatId)
-  label.textContent = current?.title || 'New Chat'
-
-  list.innerHTML = ''
-  for (let i = chatHistory.length - 1; i >= 0; i--) {
-    const chat = chatHistory[i]
-    const item = document.createElement('div')
-    item.className = 'vc-dd-item' + (chat.id === currentChatId ? ' active' : '')
-
-    const lbl = document.createElement('span')
-    lbl.className = 'vc-dd-item-label'
-    lbl.textContent = chat.title || 'Untitled'
-
-    const del = document.createElement('button')
-    del.className = 'vc-dd-delete'
-    del.title = 'Delete chat'
-    del.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6.5 7v4M9.5 7v4M4.5 4l.5 9a1 1 0 001 1h4a1 1 0 001-1l.5-9" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    del.addEventListener('click', (e) => {
-      e.stopPropagation()
-      deleteChat(chat.id)
-    })
-
-    item.addEventListener('click', () => {
-      loadChat(chat.id)
-      updateChatDropdown()
-      list.classList.add('hidden')
-    })
-
-    item.appendChild(lbl)
-    item.appendChild(del)
-    list.appendChild(item)
-  }
-}
-
-function deleteChat(chatId: string) {
-  const idx = chatHistory.findIndex(c => c.id === chatId)
-  if (idx === -1) return
-  chatHistory.splice(idx, 1)
-  saveChatHistory()
-
-  if (chatId === currentChatId) {
-    // Deleted the active chat — switch to another or start fresh
-    if (chatHistory.length > 0) {
-      loadChat(chatHistory[chatHistory.length - 1].id)
-    } else {
-      startNewChat()
-    }
-  }
-  updateChatDropdown()
-}
-
-function startNewChat() {
-  const id = generateChatId()
-  const chat: ChatConversation = {
-    id,
-    title: 'New Chat',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    messages: [],
-  }
-  chatHistory.push(chat)
-  currentChatId = id
-  currentChatMessages = chat.messages
-  saveChatHistory()
-  updateChatDropdown()
-
-  // Clear chat UI
-  const vcMsgs = document.getElementById('vc-messages')
-  if (vcMsgs) {
-    vcMsgs.innerHTML = `<div class="ai-msg system">
-      <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
-    </div>`
-  }
-}
-
-function loadChat(chatId: string) {
-  const chat = chatHistory.find(c => c.id === chatId)
-  if (!chat) return
-  currentChatId = chatId
-  currentChatMessages = chat.messages
-
-  // Rebuild chat UI from stored messages
-  const vcMsgs = document.getElementById('vc-messages')
-  if (!vcMsgs) return
-  vcMsgs.innerHTML = `<div class="ai-msg system">
-    <div class="ai-msg-content">Describe changes to your robot in natural language.</div>
-  </div>`
-  for (let i = 0; i < chat.messages.length; i++) {
-    const msg = chat.messages[i]
-    const el = document.createElement('div')
-    el.className = `ai-msg ${msg.role}`
-    el.innerHTML = `<div class="ai-msg-content">${msg.role === 'user' ? escapeHtml(msg.content) : msg.content}</div>`
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      attachRewindButton(el, i)
-    }
-    vcMsgs.appendChild(el)
-  }
-  vcMsgs.scrollTop = vcMsgs.scrollHeight
-  updateChatDropdown()
-}
-
-function recordChatMessage(role: 'user' | 'assistant' | 'system', content: string) {
-  const urdfSnapshot = monacoEditor.getModel()?.getValue() || ''
-  const msg: ChatMessage = { role, content, timestamp: Date.now(), urdfSnapshot }
-  currentChatMessages.push(msg)
-
-  const chat = getCurrentChat()
-  if (chat) {
-    chat.updatedAt = Date.now()
-    // Auto-title from first user message
-    if (!chat.title || chat.title === 'New Chat') {
-      const firstUser = currentChatMessages.find(m => m.role === 'user')
-      if (firstUser) chat.title = firstUser.content.slice(0, 50)
-    }
-    saveChatHistory()
-    updateChatDropdown()
-  }
-}
-
-// ── Chat rewind ──────────────────────────────────────────────────────────────
-
-function rewindChatTo(msgIndex: number, mode: 'conversation' | 'code' | 'both') {
-  const chat = getCurrentChat()
-  if (!chat) return
-
-  const targetMsg = currentChatMessages[msgIndex]
-  if (!targetMsg) return
-
-  if (mode === 'code' || mode === 'both') {
-    if (targetMsg.urdfSnapshot) {
-      monacoEditor.setValue(targetMsg.urdfSnapshot)
-    }
-  }
-
-  if (mode === 'conversation' || mode === 'both') {
-    // Keep messages up to and including the target index
-    currentChatMessages.length = msgIndex + 1
-    chat.messages = currentChatMessages
-    chat.updatedAt = Date.now()
-    saveChatHistory()
-    loadChat(currentChatId)
-  }
-}
-
-function attachRewindButton(msgEl: HTMLElement, msgIndex: number) {
-  const wrap = document.createElement('div')
-  wrap.className = 'chat-rewind-wrap'
-
-  const btn = document.createElement('button')
-  btn.className = 'chat-rewind-btn'
-  btn.title = 'Rewind to here'
-  btn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8a6 6 0 1 1 1.8 4.3" stroke-linecap="round"/><path d="M2 12V8h4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-
-  const popover = document.createElement('div')
-  popover.className = 'chat-rewind-popover hidden'
-  popover.innerHTML = `
-    <button class="crp-option" data-mode="conversation">Rewind conversation</button>
-    <button class="crp-option" data-mode="code">Rewind code only</button>
-    <button class="crp-option" data-mode="both">Rewind both</button>
-  `
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation()
-    // Close any other open popovers
-    document.querySelectorAll('.chat-rewind-popover').forEach(p => {
-      if (p !== popover) p.classList.add('hidden')
-    })
-    popover.classList.toggle('hidden')
-  })
-
-  popover.querySelectorAll('.crp-option').forEach(opt => {
-    opt.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const mode = (opt as HTMLElement).dataset.mode as 'conversation' | 'code' | 'both'
-      popover.classList.add('hidden')
-      rewindChatTo(msgIndex, mode)
-    })
-  })
-
-  wrap.appendChild(btn)
-  wrap.appendChild(popover)
-  // Attach inside the .ai-msg-content bubble
-  const bubble = msgEl.querySelector('.ai-msg-content')
-  if (bubble) {
-    (bubble as HTMLElement).style.position = 'relative'
-    bubble.appendChild(wrap)
-  } else {
-    msgEl.appendChild(wrap)
-  }
-}
-
-// Close rewind popovers on outside click
-document.addEventListener('click', () => {
-  document.querySelectorAll('.chat-rewind-popover').forEach(p => p.classList.add('hidden'))
+chatApi = initChatHistory({
+  getEditorValue: () => monacoEditor.getModel()?.getValue() || '',
+  setEditorValue: (v) => monacoEditor.setValue(v),
 })
-
-// Initialize: load most recent chat or create new one
-if (chatHistory.length > 0) {
-  const latest = chatHistory[chatHistory.length - 1]
-  currentChatId = latest.id
-  currentChatMessages = latest.messages
-} else {
-  startNewChat()
-}
 
 // State for managing completion requests
 let inlineCompletionSettings = {
@@ -752,9 +511,8 @@ function switchToFile(filename: string) {
 
   // Clear any pending inline diff and debounced reparse from the previous file —
   // they shouldn't block rendering of the new file
-  if (pendingOldText !== null) {
-    clearInlineDiff()
-    pendingOldText = null
+  if (inlineDiffApi.getPendingOldText() !== null) {
+    inlineDiffApi.clearPendingDiff()
   }
   if (reparseTimeout !== null) {
     clearTimeout(reparseTimeout)
@@ -913,7 +671,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
       if (activeFile === fn) {
         // Hot-reload guard: block reparse while sim is running — edits would
         // diverge from the loaded MJCF. User must restart sim to apply changes.
-        if (simActive) {
+        if (simApi.isSimActive()) {
           showToast('Editor changed — restart simulation to apply', 'warning')
           return
         }
@@ -922,7 +680,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
           reparseTimeout = null
           // Suppress auto-reparse while an AI inline diff is pending —
           // the explicit reparseURDF() in acceptInlineDiff/dismissInlineDiff handles it.
-          if (pendingOldText !== null) return
+          if (inlineDiffApi.getPendingOldText() !== null) return
           // Only reparse if this file is STILL active (user may have switched tabs during debounce)
           if (activeFile !== fn) return
           reparseURDF()
@@ -1049,9 +807,6 @@ controls.mouseButtons = {
   MIDDLE: THREE.MOUSE.PAN,
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
-
-// 3D vs AI chat tab (tabs wired later). Declared here so animate() can read it.
-let activeViewportView: '3d' | 'chat' = '3d'
 
 const viewportNavClock = new THREE.Clock()
 const keysViewportPan = { w: false, a: false, s: false, d: false }
@@ -1429,29 +1184,49 @@ toggleCollisionBtn?.addEventListener('click', () => {
   toggleCollisionBtn.classList.toggle('active', showCollision)
 })
 
-// ── Sim mode ─────────────────────────────────────────────────────────────────
+// ── Sim mode (delegated to simManager.ts) ────────────────────────────────────
 
-const simToggle = document.getElementById('sim-toggle') as HTMLButtonElement
-const simBar = document.getElementById('sim-bar') as HTMLDivElement
-const simPlay = document.getElementById('sim-play') as HTMLButtonElement
-const simPause = document.getElementById('sim-pause') as HTMLButtonElement
-const simReset = document.getElementById('sim-reset') as HTMLButtonElement
-const simProgress = document.getElementById('sim-progress') as HTMLDivElement
-const simTimeEl = document.getElementById('sim-time') as HTMLSpanElement
-const viewportLabel = document.querySelector('.vp-tab[data-view="3d"]') as HTMLButtonElement
+// Deferred callbacks to break circular init dependency (simManager ↔ vpControls/openSidebarPanel)
+let _resize: () => void = () => {}
+let _openSidebarPanel: (p: string) => void = () => {}
+let _createCheckpoint: (label: string, urdf: string, auto: boolean) => void = () => {}
 
-let simRunning = false
-let simActive = false
-let simTime = 0
-
-// Original sim event listeners removed — replaced by persistent-core versions below
-
-function updateSimUI() {
-  simPlay.classList.toggle('active', simRunning)
-  simPause.classList.toggle('active', !simRunning && simActive)
-  simTimeEl.textContent = simTime.toFixed(3) + 's'
-  simProgress.style.width = `${Math.min((simTime / 10) * 100, 100)}%`
-}
+simApi = initSimManager({
+  robot,
+  worldGroup,
+  camera,
+  controls,
+  viewportPanel,
+  simBar: document.getElementById('sim-bar') as HTMLElement,
+  simToggle: document.getElementById('sim-toggle') as HTMLButtonElement,
+  simPlay: document.getElementById('sim-play') as HTMLButtonElement,
+  simPause: document.getElementById('sim-pause') as HTMLButtonElement,
+  simReset: document.getElementById('sim-reset') as HTMLButtonElement,
+  simProgress: document.getElementById('sim-progress') as HTMLElement,
+  simTimeEl: document.getElementById('sim-time') as HTMLElement,
+  viewportLabel: document.querySelector('.vp-tab[data-view="3d"]') as HTMLElement,
+  getParsedRobot: () => parsedRobot,
+  getEditorValue: () => monacoEditor.getModel()?.getValue() || '',
+  getActiveFile: () => activeFile,
+  getFilePaths: () => filePaths,
+  getCurrentFilePath: () => currentFilePath,
+  validateXMLStructure,
+  validateURDFPerLink,
+  showToast,
+  openSidebarPanel: (p) => _openSidebarPanel(p),
+  resize: () => _resize(),
+  onEnterSim: () => {
+    viewportInteractionMode = 'inspect'
+    syncViewportModeButton()
+    urdfAssemblyApi?.onInteractionModeChanged('inspect')
+    clearInspectFocus()
+  },
+  onExitSim: () => {
+    viewportInteractionMode = 'build'
+    syncViewportModeButton()
+    urdfAssemblyApi?.onInteractionModeChanged('build')
+  },
+})
 
 // ── Viewport controls (delegated to viewportControls.ts) ────────────────────
 
@@ -1461,14 +1236,16 @@ const editorPanel = document.getElementById('editor-panel') as HTMLDivElement
 const vpControls = initViewportControls({
   camera, renderer, controls, robot, scene, canvas, viewportPanel, editorPanel, handle,
   originAxes, grid, comGroup, wireframeGroup, axisVisuals, jointAxisState,
-  simBar,
-  simActive: () => simActive,
+  simBar: document.getElementById('sim-bar') as HTMLDivElement,
+  simActive: () => simApi.isSimActive(),
   parsedRobot: () => parsedRobot,
   showToast,
   onResize: (w, h) => { composer.setSize(w, h); composer.setPixelRatio(renderer.getPixelRatio()) },
 })
 
 const { resize, focusOnRobot, zoomCamera, setViewportCollapsed, setViewportFullscreen, setFocusMode, updateViewportInfo } = vpControls
+// Wire up deferred resize callback now that it's available
+_resize = resize
 
 // ── Animate ──────────────────────────────────────────────────────────────────
 
@@ -1501,7 +1278,7 @@ function animate() {
   }
 
   if (
-    activeViewportView === '3d' &&
+    viewportChatApi?.isViewport3D() &&
     (keysViewportPan.w || keysViewportPan.a || keysViewportPan.s || keysViewportPan.d)
   ) {
     const forward = new THREE.Vector3().subVectors(controls.target, camera.position)
@@ -1526,8 +1303,8 @@ function animate() {
     cameraFocusTween = stepCameraFocusTween(cameraFocusTween, camera, controls, performance.now())
   }
 
-  // Phase C: camera follow — smooth orbit target toward robot base link
-  tickCameraFollow()
+  // Phase C: camera follow + preview animation (delegated to simManager)
+  simApi.tickCameraFollow()
 
   controls.update()
 
@@ -1538,36 +1315,8 @@ function animate() {
     }
   }
 
-  // Three.js preview animation — only when MuJoCo physics core is NOT running.
-  // When simCoreRunning, updateRobotFromSimState() drives joints from real physics.
-  if (simRunning && !simCoreRunning) {
-    simTime += 1 / 60
-    updateSimUI()
-    const t = simTime
-    let i = 0
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      const jType = jointInfo.type
-      if (jType !== 'revolute' && jType !== 'continuous' && jType !== 'prismatic') { i++; continue }
-      // Spread phase so joints don't all move in lockstep
-      const phase = i * 1.3
-      const quat = new THREE.Quaternion()
-      const limits = simPreviewLimits.get(jointName)
-      if (jType === 'continuous') {
-        // Continuous joints (wheels etc.) — just spin
-        quat.setFromAxisAngle(jointInfo.axis, t * 1.5 + phase)
-      } else if (limits) {
-        // Revolute/prismatic with known limits — sweep full range sinusoidally
-        const mid = (limits.lower + limits.upper) / 2
-        const amp = (limits.upper - limits.lower) / 2
-        quat.setFromAxisAngle(jointInfo.axis, mid + Math.sin(t * 0.7 + phase) * amp)
-      } else {
-        // No limits found — gentle ±45° sweep
-        quat.setFromAxisAngle(jointInfo.axis, Math.sin(t * 0.7 + phase) * (Math.PI / 4))
-      }
-      jointInfo.group.quaternion.copy(quat)
-      i++
-    }
-  }
+  // Three.js preview animation + real physics update (delegated to simManager)
+  simApi.tickPreviewAnimation()
 
   composer.render()
 }
@@ -1826,14 +1575,14 @@ function reparseURDF(xmlOverride?: string) {
 if (monacoModels['robot.urdf']) {
   monacoModels['robot.urdf'].onDidChangeContent(() => {
     if (activeFile === 'robot.urdf') {
-      if (simActive) {
+      if (simApi.isSimActive()) {
         showToast('Editor changed — restart simulation to apply', 'warning')
         return
       }
       if (reparseTimeout !== null) clearTimeout(reparseTimeout)
       reparseTimeout = window.setTimeout(() => {
         reparseTimeout = null
-        if (pendingOldText !== null) return
+        if (inlineDiffApi.getPendingOldText() !== null) return
         // Only reparse if robot.urdf is STILL active (user may have switched tabs)
         if (activeFile !== 'robot.urdf') return
         reparseURDF()
@@ -2081,7 +1830,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).closest('.monaco-editor')) return
 
   // WASD: pan camera on the ground plane (orbit target moves with camera). Shift = faster.
-  if (activeViewportView === '3d') {
+  if (viewportChatApi?.isViewport3D() ?? true) {
     const pk = e.key.toLowerCase()
     if (
       (pk === 'w' || pk === 'a' || pk === 's' || pk === 'd') &&
@@ -2177,9 +1926,9 @@ const panels: Record<string, HTMLElement> = {
 function openSidebarPanel(panel: string) {
   if (
     (panel === 'build' || panel === 'toolbox' || panel === 'inspector' || panel === 'focus') &&
-    activeViewportView !== '3d'
+    !(viewportChatApi?.isViewport3D() ?? true)
   ) {
-    switchViewportView('3d')
+    viewportChatApi?.switchViewportView('3d')
     showToast('Switched to 3D Preview for URDF editing', 'info')
   }
   if (
@@ -2199,6 +1948,8 @@ function openSidebarPanel(panel: string) {
     }
   }
 }
+// Wire up deferred openSidebarPanel callback for simManager
+_openSidebarPanel = openSidebarPanel
 
 document.querySelectorAll('.ab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -2356,7 +2107,8 @@ const { createCheckpoint } = initSettings({
   urdfAssemblyApi,
   renderer,
 })
-
+// Wire up deferred checkpoint callback for inlineDiff
+_createCheckpoint = createCheckpoint
 
 // ── File I/O Buttons ─────────────────────────────────────────────────────────
 const btnOpenFile = document.getElementById('btn-open-file') as HTMLButtonElement | null
@@ -2548,682 +2300,50 @@ let coreAvailable = false
   }
 })()
 
-// ── AI Utility Functions (used by viewport chat) ────────────────────────────
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
+// ── Inline Diff + Viewport Chat (delegated to inlineDiff.ts / viewportChat.ts) ─
 
-function computeSimpleDiff(oldText: string, newText: string): { added: string[], removed: string[] } {
-  const oldLines = oldText.split('\n')
-  const newLines = newText.split('\n')
-  const added: string[] = []
-  const removed: string[] = []
-
-  const oldSet = new Set(oldLines.map(l => l.trim()))
-  const newSet = new Set(newLines.map(l => l.trim()))
-
-  for (const line of oldLines) {
-    if (!newSet.has(line.trim()) && line.trim()) removed.push(line)
-  }
-  for (const line of newLines) {
-    if (!oldSet.has(line.trim()) && line.trim()) added.push(line)
-  }
-
-  return { added, removed }
-}
-
-
-// ── Viewport Tab Switching (3D Preview / AI Chat) ────────────────────────────
-const viewportCanvas = document.getElementById('viewport') as HTMLCanvasElement
-const viewportChat = document.getElementById('viewport-chat')!
-const vcMessages = document.getElementById('vc-messages')!
-const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
-const vcSend = document.getElementById('vc-send') as HTMLButtonElement
-const viewportTabs = document.querySelectorAll('.vp-tab')
-
-// Initialize chat UI from stored history or show default message
-if (currentChatMessages.length > 0) {
-  loadChat(currentChatId)
-} else {
-  vcMessages.innerHTML = `<div class="ai-msg system">
-    <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
-  </div>`
-}
-updateChatDropdown()
-
-// Wire chat header controls
-const vcChatSelect = document.getElementById('vc-chat-select') as HTMLSelectElement | null
-const vcNewChatBtn = document.getElementById('vc-new-chat') as HTMLButtonElement | null
-
-vcChatSelect?.addEventListener('change', () => {
-  if (vcChatSelect.value && vcChatSelect.value !== currentChatId) {
-    loadChat(vcChatSelect.value)
-  }
+inlineDiffApi = initInlineDiff({
+  getUrdfAssemblyApi: () => urdfAssemblyApi,
+  createCheckpoint: (l, u, a) => _createCheckpoint(l, u, a),
+  getReparseTimeout: () => reparseTimeout,
+  setReparseTimeout: (id) => { reparseTimeout = id },
+  reparseURDF,
+  runLocalValidation,
+  showToast,
 })
 
-vcNewChatBtn?.addEventListener('click', () => startNewChat())
-
-// Wire custom chat dropdown toggle
-const vcDropdownBtn = document.getElementById('vc-chat-dropdown-btn')
-const vcDropdownList = document.getElementById('vc-chat-dropdown-list')
-vcDropdownBtn?.addEventListener('click', (e) => {
-  e.stopPropagation()
-  vcDropdownList?.classList.toggle('hidden')
+// ── Viewport Chat (delegated to viewportChat.ts) ─────────────────────────────
+viewportChatApi = initViewportChat({
+  getEditorValue: () => monacoEditor.getModel()?.getValue() || '',
+  createNewFile: (name, content, path) => createNewFile(name ?? 'robot.urdf', content ?? '', path ?? null),
+  buildKinematicContext,
+  getCurrentChatId: () => chatApi.getCurrentChatId(),
+  getCurrentChatMessages: () => chatApi.getCurrentChatMessages(),
+  recordChatMessage: (role, content) => chatApi.recordChatMessage(role, content),
+  attachRewindButton: (el, idx) => chatApi.attachRewindButton(el, idx),
+  loadChat: (id) => chatApi.loadChat(id),
+  startNewChat: () => chatApi.startNewChat(),
+  updateChatDropdown: () => chatApi.updateChatDropdown(),
+  showInlineDiff: (o, n, u) => inlineDiffApi.showInlineDiff(o, n, u),
+  clearInlineDiff: () => inlineDiffApi.clearInlineDiff(),
+  setActiveChatActionsId: (id) => inlineDiffApi.setActiveChatActionsId(id),
+  acceptInlineDiff: () => inlineDiffApi.acceptInlineDiff(),
+  dismissInlineDiff: () => inlineDiffApi.dismissInlineDiff(),
+  reparseURDF,
+  runLocalValidation,
+  createCheckpoint: (l, u, a) => _createCheckpoint(l, u, a),
+  scene,
+  robot,
+  camera,
+  groundRobot: () => groundRobot(robot),
+  autoFrameRobot: () => autoFrameRobot(robot, camera, controls),
+  getUrdfAssemblyApi: () => urdfAssemblyApi,
+  getCoreAvailable: () => coreAvailable,
+  showToast,
+  SAMPLE_URDF,
+  keysViewportPan,
+  resize: () => _resize(),
 })
-document.addEventListener('click', (e) => {
-  if (vcDropdownList && !vcDropdownList.contains(e.target as Node) && e.target !== vcDropdownBtn) {
-    vcDropdownList.classList.add('hidden')
-  }
-})
-
-function switchViewportView(view: '3d' | 'chat') {
-  activeViewportView = view
-  if (view !== '3d') {
-    keysViewportPan.w = keysViewportPan.a = keysViewportPan.s = keysViewportPan.d = false
-  }
-  viewportTabs.forEach(tab => {
-    tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view)
-  })
-  if (view === '3d') {
-    viewportCanvas.style.display = ''
-    viewportChat.classList.add('hidden')
-    document.getElementById('viewport-info')!.style.display = ''
-    resize()
-  } else {
-    viewportCanvas.style.display = 'none'
-    viewportChat.classList.remove('hidden')
-    document.getElementById('viewport-info')!.style.display = 'none'
-    vcInput.focus()
-  }
-}
-
-viewportTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    switchViewportView((tab as HTMLElement).dataset.view as '3d' | 'chat')
-  })
-})
-
-// Shared function to add message to viewport chat
-function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, extras?: {
-  diff?: { added: string[], removed: string[] },
-  newUrdf?: string,
-}) {
-  // Persist to chat history (strip HTML tags for storage)
-  const plainContent = content.replace(/<[^>]*>/g, '').trim()
-  if (plainContent) recordChatMessage(role, plainContent)
-
-  const msg = document.createElement('div')
-  msg.className = `ai-msg ${role}`
-
-  if (role === 'user') {
-    msg.innerHTML = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
-  } else if (role === 'assistant') {
-    let html = `<div class="ai-msg-content">${content}</div>`
-
-    if (extras?.diff && (extras.diff.added.length > 0 || extras.diff.removed.length > 0)) {
-      html += `<div class="ai-msg-diff">
-        <div class="ai-msg-diff-header">
-          <span>robot.urdf</span>
-          <span>${extras.diff.added.length} added, ${extras.diff.removed.length} removed</span>
-        </div>`
-      for (const line of extras.diff.removed) {
-        html += `<div class="ai-diff-line removed">${escapeHtml(line)}</div>`
-      }
-      for (const line of extras.diff.added) {
-        html += `<div class="ai-diff-line added">${escapeHtml(line)}</div>`
-      }
-      html += `</div>`
-    }
-
-    if (extras?.newUrdf) {
-      const msgId = 'vc-msg-' + Date.now()
-      activeChatActionsId = msgId
-      html += `<div class="ai-msg-actions" id="${msgId}">
-        <button class="ai-accept" data-action="accept">Apply Changes</button>
-        <button class="ai-reject" data-action="reject">Dismiss</button>
-      </div>`
-      msg.innerHTML = html
-
-      setTimeout(() => {
-        const actions = document.getElementById(msgId)
-        if (!actions) return
-        const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement
-        const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement
-
-        acceptBtn.addEventListener('click', () => {
-          activeChatActionsId = null  // prevent syncChatActions from double-updating
-          acceptInlineDiff()
-          acceptBtn.textContent = '✓ Applied'
-          acceptBtn.className = 'ai-applied'
-          rejectBtn.style.display = 'none'
-        })
-
-        rejectBtn.addEventListener('click', () => {
-          activeChatActionsId = null  // prevent syncChatActions from double-updating
-          dismissInlineDiff()
-          rejectBtn.textContent = '✗ Dismissed'
-          rejectBtn.className = 'ai-rejected'
-          acceptBtn.style.display = 'none'
-        })
-      }, 0)
-    } else {
-      msg.innerHTML = html
-    }
-  } else {
-    msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
-  }
-
-  if (role === 'user' || role === 'assistant') {
-    attachRewindButton(msg, currentChatMessages.length - 1)
-  }
-
-  vcMessages.appendChild(msg)
-  vcMessages.scrollTop = vcMessages.scrollHeight
-  return msg
-}
-
-function addVCThinking(): HTMLElement & { updateStage: (stage: string, text: string) => void } {
-  const msg = document.createElement('div') as unknown as HTMLElement & { updateStage: (stage: string, text: string) => void }
-  msg.className = 'ai-msg assistant'
-  msg.innerHTML = `<div class="ai-thinking">
-    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-    <span class="ai-thinking-text">Thinking...</span>
-  </div>
-  <div class="ai-streaming-preview" style="display:none"></div>`
-  vcMessages.appendChild(msg)
-  vcMessages.scrollTop = vcMessages.scrollHeight
-
-  const stageLabels: Record<string, string> = {
-    thinking: 'Analyzing model...',
-    generating: 'Generating design...',
-    streaming: '',
-    applying: 'Applying changes...',
-    done: 'Done',
-  }
-
-  msg.updateStage = (stage: string, text: string) => {
-    const thinkingText = msg.querySelector('.ai-thinking-text') as HTMLElement | null
-    const preview = msg.querySelector('.ai-streaming-preview') as HTMLElement | null
-    if (!thinkingText) return
-
-    if (stage === 'streaming' && text && preview) {
-      thinkingText.textContent = 'Generating...'
-      preview.style.display = 'block'
-      preview.textContent = text
-    } else {
-      thinkingText.textContent = stageLabels[stage] || text || 'Processing...'
-    }
-    vcMessages.scrollTop = vcMessages.scrollHeight
-  }
-
-  return msg
-}
-
-// ── Inline Diff in Monaco ────────────────────────────────────────────────────
-let inlineDiffCollection: monaco.editor.IEditorDecorationsCollection | null = null
-let inlineDiffWidget: HTMLElement | null = null
-let pendingOldText: string | null = null
-let activeChatActionsId: string | null = null  // tracks the chat message's Accept/Dismiss buttons
-
-function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
-  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-  if (!editor) return
-
-  // Store old text so Dismiss can revert
-  pendingOldText = oldText
-
-  const oldLines = oldText.split('\n')
-  const newLines = newText.split('\n')
-
-  // Find which lines in the new text differ from old
-  const maxLen = Math.max(oldLines.length, newLines.length)
-  const changedLines: number[] = []
-
-  for (let i = 0; i < maxLen; i++) {
-    const oldLine = i < oldLines.length ? oldLines[i] : undefined
-    const newLine = i < newLines.length ? newLines[i] : undefined
-    if (oldLine !== newLine && newLine !== undefined) {
-      changedLines.push(i + 1) // Monaco is 1-indexed
-    }
-  }
-
-  // Show the new content in the editor as a preview
-  editor.setValue(newText)
-
-  // Build decorations for changed/added lines (green highlight)
-  const decorations: monaco.editor.IModelDeltaDecoration[] = changedLines.map(lineNum => ({
-    range: new monaco.Range(lineNum, 1, lineNum, 1),
-    options: {
-      isWholeLine: true,
-      className: 'inline-diff-added',
-      linesDecorationsClassName: 'inline-diff-gutter-added',
-    }
-  }))
-
-  // Use createDecorationsCollection (Monaco 0.36+, replaces deprecated deltaDecorations)
-  if (inlineDiffCollection) {
-    inlineDiffCollection.clear()
-  }
-  inlineDiffCollection = editor.createDecorationsCollection(decorations)
-
-  // Show floating accept/dismiss bar at top of editor
-  if (inlineDiffWidget) inlineDiffWidget.remove()
-  const bar = document.createElement('div')
-  bar.className = 'inline-diff-bar'
-  bar.innerHTML = `
-    <span class="idb-label">${changedLines.length} lines changed</span>
-    <button class="idb-accept">✓ Accept</button>
-    <button class="idb-dismiss">✗ Dismiss</button>
-  `
-  const editorEl = document.getElementById('monaco-container')!
-  const rect = editorEl.getBoundingClientRect()
-  if (rect.width > 0) {
-    // Monaco is visible — anchor bar to top of editor panel
-    bar.style.top = (rect.top + 8) + 'px'
-    bar.style.right = (window.innerWidth - rect.right + 20) + 'px'
-  } else {
-    // Monaco is hidden (fullscreen/focus mode) — pin to top-right of viewport
-    bar.style.top = '10px'
-    bar.style.right = '10px'
-  }
-  document.body.appendChild(bar)
-  inlineDiffWidget = bar
-
-  bar.querySelector('.idb-accept')!.addEventListener('click', () => acceptInlineDiff())
-  bar.querySelector('.idb-dismiss')!.addEventListener('click', () => dismissInlineDiff())
-
-  // Scroll to the first changed line
-  if (changedLines.length > 0) {
-    editor.revealLineInCenter(changedLines[0])
-  }
-}
-
-function acceptInlineDiff() {
-  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-
-  // Push pre-AI state to undo stack so Ctrl+Z works after accepting
-  if (pendingOldText && urdfAssemblyApi) {
-    urdfAssemblyApi.recordUndoExternal(pendingOldText)
-  }
-
-  // Auto-create checkpoint before AI edit
-  if (pendingOldText) {
-    createCheckpoint('Before AI edit', pendingOldText, true)
-  }
-
-  clearInlineDiff()
-  pendingOldText = null  // clear before reparse so debounce guard is lifted
-
-  // Cancel any debounce that was triggered by showInlineDiff's setValue call
-  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
-
-  showToast('Changes accepted', 'success')
-
-  // Sync chat buttons to show "Applied"
-  syncChatActions('accept')
-
-  // Apply the accepted URDF to the 3D viewport
-  if (editor) {
-    reparseURDF()
-
-    // Run local validation on the accepted changes (avoids blocking Mutex)
-    runLocalValidation()
-  }
-}
-
-function dismissInlineDiff() {
-  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-  const oldText = pendingOldText  // capture before clearing
-
-  clearInlineDiff()
-  pendingOldText = null  // clear before setValue so the debounce guard is lifted
-
-  // Cancel any pending debounce before restoring (avoid a second reparse race)
-  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
-
-  if (editor && oldText !== null) {
-    editor.setValue(oldText)
-    reparseURDF()  // revert 3D immediately — no 500ms wait
-  }
-
-  showToast('Changes dismissed', 'info')
-
-  // Sync chat buttons to show "Dismissed"
-  syncChatActions('dismiss')
-}
-
-/** Update the chat Apply/Dismiss buttons to reflect the action taken (from editor bar or chat) */
-function syncChatActions(action: 'accept' | 'dismiss') {
-  if (!activeChatActionsId) return
-  const actions = document.getElementById(activeChatActionsId)
-  if (!actions) return
-  const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement | null
-  const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement | null
-  if (action === 'accept') {
-    if (acceptBtn) { acceptBtn.textContent = '✓ Applied'; acceptBtn.className = 'ai-applied' }
-    if (rejectBtn) { rejectBtn.style.display = 'none' }
-  } else {
-    if (rejectBtn) { rejectBtn.textContent = '✗ Dismissed'; rejectBtn.className = 'ai-rejected' }
-    if (acceptBtn) { acceptBtn.style.display = 'none' }
-  }
-  activeChatActionsId = null
-}
-
-function clearInlineDiff() {
-  if (inlineDiffCollection) {
-    inlineDiffCollection.clear()
-    inlineDiffCollection = null
-  }
-  if (inlineDiffWidget) {
-    inlineDiffWidget.remove()
-    inlineDiffWidget = null
-  }
-}
-
-// ── Viewport Chat Send ───────────────────────────────────────────────────────
-async function sendVCMessage(prompt: string, retryCount = 0) {
-  if (!prompt.trim()) return
-
-  // Auto-create a file if none is open
-  if (!monacoEditor.getModel()) {
-    createNewFile('robot.urdf', SAMPLE_URDF, null)
-  }
-
-  if (retryCount === 0) {
-    addVCMessage('user', prompt)
-    vcInput.value = ''
-    vcInput.style.height = 'auto'
-  }
-
-  vcSend.disabled = true
-
-  const thinking = addVCThinking()
-
-  // Listen for streaming progress events from Python → Rust → Frontend
-  let unlisten: (() => void) | null = null
-  try {
-    unlisten = await listen<{ stage: string; text: string }>('ai_progress', (event) => {
-      thinking.updateStage(event.payload.stage, event.payload.text)
-    })
-  } catch {
-    // listen may fail in dev mode without Tauri — non-critical
-  }
-
-  try {
-    const editor = (window as any).__vectorEditor
-    const fullUrdf = editor?.getValue() || ''
-    const kinematicContext = buildKinematicContext()
-
-    // For redesign retries (retryCount > 0), send minimal payloads to save tokens.
-    // Redesigns create new topologies from scratch — the old URDF and kinematic
-    // graph are dead weight and sending them blows the 10K ITPM rate limit.
-    const isRedesign = retryCount > 0
-    const currentUrdf = isRedesign
-      ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
-      : fullUrdf
-    if (isRedesign) {
-      console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF, ${kinematicContext.length} char kinematic context)`)
-    }
-
-    const result = await invoke('ai_edit', {
-      prompt: prompt,
-      urdfContent: currentUrdf,
-      kinematicContext: isRedesign ? '' : kinematicContext,
-      sessionId: currentChatId,
-    }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
-
-    thinking.remove()
-
-    // Check if this is an assembly graph (Option C) — resolve via frontend snap system
-    if (result.assembly_graph && urdfAssemblyApi) {
-      console.log('[AI] Received assembly_graph — resolving via frontend snap system')
-      const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
-      let assemblyResult = assemblyOut.urdf
-      console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
-      if (assemblyResult) {
-        // 2nd-pass AI validation: send assembled URDF + viewport screenshot to Claude
-        try {
-          console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
-
-          // Wait for GLB meshes to load before capturing screenshots.
-          // Without this delay, Sonnet sees primitive boxes instead of actual component meshes.
-          await new Promise(r => setTimeout(r, 800))
-
-          // Phase 2: Re-ground now that GLB meshes have loaded.
-          // The initial groundAssembly() inside resolveAssemblyGraph runs before
-          // async GLB loads complete, so the bbox may only include primitive boxes.
-          groundRobot(robot)
-
-          // Phase 3: Auto-frame camera on the assembled robot.
-          autoFrameRobot(robot, camera, controls)
-
-          // Capture 3 labeled screenshots from canonical angles for visual validation
-          // Research: 3 near-orthogonal views capture all geometry with minimal token cost
-          const robotBox = new THREE.Box3().setFromObject(robot)
-          if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
-          const robotCenter = new THREE.Vector3()
-          const robotSize = new THREE.Vector3()
-          robotBox.getCenter(robotCenter)
-          robotBox.getSize(robotSize)
-          const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
-          const dist = maxDim * 2.5
-          const captureSize = 512
-
-          // 3 canonical views: front-iso, rear-iso, top-down
-          const viewAngles = [
-            { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },  // front-isometric
-            { label: 'rear-left',   az: -0.75, el: 0.5, depth: -0.75 }, // rear-isometric
-            { label: 'top-down',    az: 0.2, el: 1.2, depth: 0.2 },     // steep overhead
-          ]
-          const screenshots: string[] = []
-
-          // Use a separate offscreen canvas for screenshots so we don't
-          // disrupt the main renderer/composer pipeline (which caused the
-          // viewport to stop updating after screenshot capture)
-          const offCanvas = document.createElement('canvas')
-          offCanvas.width = captureSize
-          offCanvas.height = captureSize
-          const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
-          offRenderer.setSize(captureSize, captureSize)
-          offRenderer.shadowMap.enabled = true
-
-          const offCam = camera.clone()
-          offCam.aspect = 1
-
-          for (const view of viewAngles) {
-            offCam.position.set(
-              robotCenter.x + dist * view.az,
-              robotCenter.y + dist * view.el,
-              robotCenter.z + dist * view.depth
-            )
-            offCam.lookAt(robotCenter)
-            offCam.updateProjectionMatrix()
-            offRenderer.render(scene, offCam)
-            const dataUrl = offCanvas.toDataURL('image/png')
-            screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
-          }
-
-          offRenderer.dispose()
-
-          const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
-          console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
-
-          const valResult = await invoke('ai_validate_assembly', {
-            urdfContent: assemblyResult,
-            originalPrompt: prompt,
-            sessionId: currentChatId,
-            screenshotBase64: screenshots[0],
-            screenshots: screenshots,
-          }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
-
-          // Validation is diagnostic only — no URDF coordinate edits (LLMs can't do spatial math).
-          // When validation finds issues and needs_redesign is set, retry with a new topology.
-          console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
-          console.log(`[AI][redesign] Full valResult:`, JSON.stringify(valResult, null, 2))
-
-          if (valResult.ok) {
-            console.log(`[AI][redesign] Validation passed: ${valResult.notes}`)
-          } else {
-            console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
-            const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
-            if (checklist) {
-              const passed = checklist.filter(c => c.pass).length
-              const failed = checklist.filter(c => !c.pass).length
-              console.log(`[AI][redesign] Checklist: ${passed} passed, ${failed} failed`)
-              for (const c of checklist) {
-                console.log(`[AI][redesign]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
-              }
-            } else {
-              console.log(`[AI][redesign] No checklist in response`)
-            }
-
-            // Trigger redesign only for topology-fixable failures (not placement issues)
-            const needsRedesign = (valResult as any).needs_redesign
-            const topoFailures = checklist
-              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology')
-              : []
-            const placementFailures = checklist
-              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement')
-              : []
-            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, topoFailures=${topoFailures.length}, placementFailures=${placementFailures.length}, retryCount=${retryCount}`)
-            console.log(`[AI][redesign] will_retry=${!!(needsRedesign && topoFailures.length > 0 && retryCount < 1)}`)
-
-            if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
-              const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
-              const placementNote = placementFailures.length > 0
-                ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) like positioning/spacing — these are handled by the placement engine, not your topology. Ignore them.)`
-                : ''
-              console.log(`[AI][redesign] Triggering redesign with ${topoFailures.length} topology failures:\n${failures}`)
-              if (placementFailures.length > 0) {
-                console.log(`[AI][redesign] Skipping ${placementFailures.length} placement-only failures:`)
-                for (const pf of placementFailures) {
-                  console.log(`[AI][redesign]   (placement) ${pf.check}: ${pf.detail}`)
-                }
-              }
-              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
-
-              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above. Focus on: correct components, correct connections, nothing missing. The placement engine handles all positioning — do NOT try to fix spacing, angles, or grounding.`
-              console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
-
-              // No proactive delay — validation is on Gemini (separate rate limits).
-              // If the Claude redesign call hits 429, the existing rate limit retry
-              // logic (exponential backoff) handles it automatically.
-              vcSend.disabled = false
-              unlisten?.()
-              return sendVCMessage(redesignPrompt, retryCount + 1)
-            } else if (needsRedesign && topoFailures.length === 0) {
-              console.log(`[AI][redesign] Validation flagged needs_redesign but all ${placementFailures.length} failures are placement-only — skipping redesign (topology is correct)`)
-            } else if (needsRedesign && retryCount >= 1) {
-              console.log(`[AI][redesign] Redesign requested but already retried (retryCount=${retryCount}) — showing result as-is`)
-            }
-          }
-        } catch (valErr) {
-          console.warn('[AI] Visual validation skipped:', valErr)
-          // Non-blocking — assembly still usable without validation
-        }
-
-        const diff = computeSimpleDiff(fullUrdf, assemblyResult)
-        addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
-          diff,
-          newUrdf: assemblyResult,
-        })
-        showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
-      } else if (retryCount < 2) {
-        // Error recovery ladder: retry with error context
-        const topoErrors = assemblyOut.topologyErrors
-        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount}, topologyErrors=${topoErrors ? topoErrors.length : 0}, will_retry=true`)
-
-        if (topoErrors && topoErrors.length > 0) {
-          // Topology validation failed — retry with specific error feedback
-          console.log(`[AI][topology] BRANCH: topology-error retry with ${topoErrors.length} specific errors:`)
-          for (const err of topoErrors) {
-            console.log(`[AI][topology]   - ${err}`)
-          }
-          addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
-          const errorList = topoErrors.map(e => `- ${e}`).join('\n')
-          const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design. Remember the forbidden patterns: no sensor→sensor, no children on effectors, no duplicate names, root must be structural_baseplate.`
-          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
-          vcSend.disabled = false
-          unlisten?.()
-          return sendVCMessage(retryPrompt, retryCount + 1)
-        } else {
-          // Placement failed (no topology errors) — retry with simplification
-          console.log(`[AI][topology] BRANCH: generic placement-failure retry (no topology errors, urdf was null)`)
-          addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
-          const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
-          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
-          vcSend.disabled = false
-          unlisten?.()
-          return sendVCMessage(retryPrompt, retryCount + 1)
-        }
-      } else {
-        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount} >= 2, giving up. topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
-        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. The design may be too complex for the current placement engine. Try describing a simpler robot.</span>`)
-      }
-    } else {
-      // Standard path: direct URDF replacement (Option A/B)
-      const diff = computeSimpleDiff(fullUrdf, result.new_urdf)
-
-      addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
-        diff,
-        newUrdf: result.new_urdf,
-      })
-
-      showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
-    }
-
-  } catch (err) {
-    thinking.remove()
-    const errStr = String(err)
-    console.warn('[VC] Backend error:', err)
-
-    // Handle rate limit with auto-retry
-    if (errStr.includes('429') || errStr.includes('rate_limit') ) {
-      if (retryCount < 2) {
-        const waitSec = (retryCount + 1) * 5
-        addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
-        await new Promise(r => setTimeout(r, waitSec * 1000))
-        // Retry (don't re-add the user message)
-        unlisten?.()
-        vcSend.disabled = false
-        return sendVCMessage(prompt, retryCount + 1)
-      }
-      addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
-    } else {
-      const errorMsg = `<span style="color:#f85149;">Error: ${escapeHtml(errStr.slice(0, 200))}</span>`
-      addVCMessage('assistant', errorMsg)
-    }
-  } finally {
-    unlisten?.()
-    vcSend.disabled = false
-  }
-}
-
-vcInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    sendVCMessage(vcInput.value)
-  }
-})
-
-vcSend.addEventListener('click', () => sendVCMessage(vcInput.value))
-
-vcInput.addEventListener('input', () => {
-  vcInput.style.height = 'auto'
-  vcInput.style.height = Math.min(vcInput.scrollHeight, 120) + 'px'
-})
-
-// Ctrl+L now switches to viewport chat
-document.removeEventListener('keydown', () => {}) // cleanup
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.key === 'l') {
-    e.preventDefault()
-    switchViewportView('chat')
-    vcInput.focus()
-  }
-})
-
-// ── Simulation Mode Integration ──────────────────────────────────────────────
 
 // ── File I/O System ──────────────────────────────────────────────────────────
 let currentFilePath: string | null = null
@@ -3284,1049 +2404,6 @@ async function saveFileAs() {
     showToast(`Error saving file: ${err}`, 'error')
   }
 }
-
-// Simulation state
-let simCoreRunning = false
-let simStepIntervalId: number | null = null
-/** Model timestep from MuJoCo (seconds). Used for fixed-timestep substep loop. */
-let simModelDt = 0.002
-/** Wall-clock time of the last substep batch, for real-time pacing. */
-let simLastStepWallTime = 0
-/** Whether the sim loop is in an error state (paused after a physics blow-up). */
-let simErrorState = false
-// Store original joint poses before sim so we can restore on exit
-const originalJointPoses = new Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion }>()
-
-// Per-joint limits cached from URDF for the Three.js preview animation.
-// Only populated for revolute/prismatic joints that have a <limit> element.
-const simPreviewLimits = new Map<string, { lower: number; upper: number }>()
-
-function refreshSimPreviewLimits() {
-  simPreviewLimits.clear()
-  const urdf = monacoEditor.getModel()?.getValue() ?? ''
-  if (!urdf.trim()) return
-  try {
-    const doc = new DOMParser().parseFromString(urdf, 'application/xml')
-    for (const joint of Array.from(doc.querySelectorAll('joint'))) {
-      const name = joint.getAttribute('name')
-      const type = joint.getAttribute('type')
-      if (!name || (type !== 'revolute' && type !== 'prismatic')) continue
-      const limitEl = joint.querySelector('limit')
-      if (!limitEl) continue
-      const lower = parseFloat(limitEl.getAttribute('lower') || '0')
-      const upper = parseFloat(limitEl.getAttribute('upper') || '0')
-      if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
-        simPreviewLimits.set(name, { lower, upper })
-      }
-    }
-  } catch { /* ignore parse errors */ }
-}
-
-// ── Sim Panel (B8-B12) ─────────────────────────────────────────────��──────────
-
-const simNotActive = document.getElementById('sim-not-active')!
-const simControlsBody = document.getElementById('sim-controls-body')!
-const simJointSliders = document.getElementById('sim-joint-sliders')!
-const simKfList = document.getElementById('sim-kf-list')!
-const simGravityEnabled = document.getElementById('sim-gravity-enabled') as HTMLInputElement
-
-/** Map jointName → { lower, upper, effort } from URDF limits for slider range */
-const simJointLimits = new Map<string, { lower: number; upper: number; effort: number }>()
-
-/** Keyframe store: name → (jointName → position). Persisted in localStorage. */
-let simKeyframes: Record<string, Record<string, number>> = {}
-/** Current joint positions as reported by last state update. */
-const simCurrentPositions = new Map<string, number>()
-
-function loadSimKeyframes() {
-  const key = `sim_keyframes::${currentFilePath || '__default__'}`
-  try {
-    const raw = localStorage.getItem(key)
-    simKeyframes = raw ? JSON.parse(raw) : {}
-  } catch { simKeyframes = {} }
-}
-
-function saveSimKeyframesStorage() {
-  const key = `sim_keyframes::${currentFilePath || '__default__'}`
-  try { localStorage.setItem(key, JSON.stringify(simKeyframes)) } catch { /* ignore */ }
-}
-
-function buildSimPanel() {
-  simJointLimits.clear()
-  simCurrentPositions.clear()
-  simJointSliders.innerHTML = ''
-
-  const urdf = monacoEditor.getModel()?.getValue() ?? ''
-  const doc = new DOMParser().parseFromString(urdf, 'application/xml')
-
-  for (const [jointName, jointInfo] of parsedRobot.joints) {
-    if (jointInfo.type === 'fixed') continue
-    const effort = (() => {
-      const jEl = Array.from(doc.querySelectorAll('joint')).find(j => j.getAttribute('name') === jointName)
-      const lEl = jEl?.querySelector('limit')
-      const e = parseFloat(lEl?.getAttribute('effort') || '10')
-      return Number.isFinite(e) && e > 0 ? e : 10
-    })()
-    const lim = simPreviewLimits.get(jointName)
-    const lower = lim?.lower ?? -Math.PI
-    const upper = lim?.upper ?? Math.PI
-    simJointLimits.set(jointName, { lower, upper, effort })
-
-    const row = document.createElement('div')
-    row.className = 'sim-slider-row'
-    row.dataset.joint = jointName
-    row.innerHTML = `
-      <div class="sim-slider-label">
-        <span class="sim-slider-name">${jointName}</span>
-        <span class="sim-slider-val" id="sslv-${jointName}">0.000</span>
-      </div>
-      <input type="range" class="sim-slider" id="ssl-${jointName}"
-        min="${lower.toFixed(4)}" max="${upper.toFixed(4)}" step="0.001" value="0"
-        data-joint="${jointName}" data-effort="${effort}">
-      <div class="sim-torque-row">
-        <span class="sim-torque-label">Torque</span>
-        <input type="range" class="sim-torque-slider" id="sst-${jointName}"
-          min="${-effort}" max="${effort}" step="${(effort / 50).toFixed(4)}" value="0"
-          data-joint="${jointName}">
-        <button class="sim-torque-zero" data-joint="${jointName}" title="Zero torque">✕</button>
-      </div>
-    `
-    simJointSliders.appendChild(row)
-  }
-
-  // Wire torque sliders → sim_set_control
-  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(slider => {
-    slider.addEventListener('input', () => sendSimControl())
-  })
-  simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-torque-zero').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const joint = btn.dataset.joint!
-      const s = document.getElementById(`sst-${joint}`) as HTMLInputElement | null
-      if (s) s.value = '0'
-      sendSimControl()
-    })
-  })
-
-  refreshSimKeyframeList()
-}
-
-function sendSimControl() {
-  if (!simCoreRunning) return
-  const controls: Record<string, number> = {}
-  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => {
-    controls[s.dataset.joint!] = parseFloat(s.value) || 0
-  })
-  recordControlTrace(simTime, controls)
-  invoke('sim_set_control', { controls }).catch(() => { /* ignore */ })
-}
-
-function updateSimSliders(state: Record<string, unknown>) {
-  const joints = state.joints as Record<string, { position: number; velocity: number }> | undefined
-  if (!joints) return
-  for (const [name, j] of Object.entries(joints)) {
-    simCurrentPositions.set(name, j.position)
-    const valEl = document.getElementById(`sslv-${name}`)
-    const posSlider = document.getElementById(`ssl-${name}`) as HTMLInputElement | null
-    if (valEl) valEl.textContent = j.position.toFixed(3)
-    if (posSlider) posSlider.value = String(j.position)
-  }
-}
-
-function refreshSimKeyframeList() {
-  simKfList.innerHTML = ''
-  const names = Object.keys(simKeyframes)
-  if (names.length === 0) {
-    simKfList.innerHTML = '<div class="sim-kf-empty">No keyframes saved</div>'
-    return
-  }
-  for (const name of names) {
-    const row = document.createElement('div')
-    row.className = 'sim-kf-row'
-    row.innerHTML = `
-      <span class="sim-kf-name">${name}</span>
-      <button class="sim-kf-load" data-kf="${name}" title="Load keyframe">Load</button>
-      <button class="sim-kf-del" data-kf="${name}" title="Delete">✕</button>
-    `
-    simKfList.appendChild(row)
-  }
-  simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-load').forEach(btn => {
-    btn.addEventListener('click', () => loadKeyframe(btn.dataset.kf!))
-  })
-  simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-del').forEach(btn => {
-    btn.addEventListener('click', () => {
-      delete simKeyframes[btn.dataset.kf!]
-      saveSimKeyframesStorage()
-      refreshSimKeyframeList()
-    })
-  })
-}
-
-function loadKeyframe(name: string) {
-  if (!simCoreRunning) return
-  const kf = simKeyframes[name]
-  if (!kf) return
-  // Apply as torque drive — not ideal but simple; real IK comes later
-  const controls: Record<string, number> = {}
-  for (const [joint, pos] of Object.entries(kf)) {
-    const torqueSlider = document.getElementById(`sst-${joint}`) as HTMLInputElement | null
-    // Send zero torque but update position sliders display
-    controls[joint] = 0
-    const posSlider = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
-    if (posSlider) posSlider.value = String(pos)
-  }
-  // Reset sim to home then the user can observe; proper position servo in Phase C
-  showToast(`Keyframe "${name}" loaded as target reference`, 'info')
-}
-
-function enterSimPanel() {
-  simNotActive.classList.add('hidden')
-  simControlsBody.classList.remove('hidden')
-  buildSimPanel()
-  loadSimKeyframes()
-}
-
-function exitSimPanel() {
-  simNotActive.classList.remove('hidden')
-  simControlsBody.classList.add('hidden')
-  simJointSliders.innerHTML = ''
-  // Phase C/D cleanup
-  clearScriptError()
-  clearSimViz()
-  // Reset trace recording state
-  simTraceEnabled = false
-  simTraceData.length = 0
-  const traceToggle = document.getElementById('sim-trace-enabled') as HTMLInputElement | null
-  if (traceToggle) traceToggle.checked = false
-  const countEl = document.getElementById('sim-trace-count')
-  if (countEl) countEl.textContent = '0 samples'
-  const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-  if (dlBtn) dlBtn.disabled = true
-  // Uncheck camera follow
-  const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
-  if (followEl) followEl.checked = false
-}
-
-// ── Phase D: Layer 4 Viz (CoM Trail, Contact Forces, Torque Heatmap) ─────────
-
-// Groups are inside worldGroup so MJCF Z-up coordinates map correctly.
-const simTrailGroup = new THREE.Group()
-simTrailGroup.name = 'sim_com_trail'
-worldGroup.add(simTrailGroup)
-
-const simContactGroup = new THREE.Group()
-simContactGroup.name = 'sim_contacts'
-worldGroup.add(simContactGroup)
-
-// ── CoM Trail ────────────────────────────────────────────────────────────────
-
-const COM_TRAIL_MAX = 300
-const comTrailBuffer: THREE.Vector3[] = []
-let comTrailLine: THREE.Line | null = null
-
-function tickComTrail(state: Record<string, unknown>) {
-  const enabled = (document.getElementById('sim-viz-com-trail') as HTMLInputElement | null)?.checked
-  if (!enabled) {
-    simTrailGroup.visible = false
-    return
-  }
-  simTrailGroup.visible = true
-
-  const com = state.com_position as number[] | undefined
-  if (!com || com.length < 3) return
-
-  comTrailBuffer.push(new THREE.Vector3(com[0], com[1], com[2]))
-  if (comTrailBuffer.length > COM_TRAIL_MAX) comTrailBuffer.shift()
-
-  // Rebuild line geometry each update (cheap for ≤300 points)
-  if (comTrailLine) {
-    simTrailGroup.remove(comTrailLine)
-    comTrailLine.geometry.dispose()
-    ;(comTrailLine.material as THREE.Material).dispose()
-  }
-  if (comTrailBuffer.length < 2) return
-
-  const positions = new Float32Array(comTrailBuffer.length * 3)
-  for (let i = 0; i < comTrailBuffer.length; i++) {
-    positions[i * 3]     = comTrailBuffer[i].x
-    positions[i * 3 + 1] = comTrailBuffer[i].y
-    positions[i * 3 + 2] = comTrailBuffer[i].z
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  const mat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.7 })
-  comTrailLine = new THREE.Line(geo, mat)
-  simTrailGroup.add(comTrailLine)
-}
-
-function clearComTrail() {
-  comTrailBuffer.length = 0
-  if (comTrailLine) {
-    simTrailGroup.remove(comTrailLine)
-    comTrailLine.geometry.dispose()
-    ;(comTrailLine.material as THREE.Material).dispose()
-    comTrailLine = null
-  }
-  simTrailGroup.visible = false
-}
-
-// ── Contact-Force Arrows ──────────────────────────────────────────────────────
-
-const CONTACT_ARROW_POOL = 20
-const contactArrows: THREE.ArrowHelper[] = []
-for (let i = 0; i < CONTACT_ARROW_POOL; i++) {
-  const arrow = new THREE.ArrowHelper(
-    new THREE.Vector3(0, 0, 1),
-    new THREE.Vector3(0, 0, 0),
-    0.1,
-    0xff4444,
-    0.04,
-    0.025,
-  )
-  arrow.visible = false
-  simContactGroup.add(arrow)
-  contactArrows.push(arrow)
-}
-
-function tickContactArrows(state: Record<string, unknown>) {
-  const enabled = (document.getElementById('sim-viz-contacts') as HTMLInputElement | null)?.checked
-  if (!enabled) {
-    contactArrows.forEach(a => { a.visible = false })
-    return
-  }
-
-  const list = state.contacts_list as Array<{
-    pos: number[]; normal: number[]; force: number; body1: string; body2: string
-  }> | undefined
-
-  const contacts = list ?? []
-  for (let i = 0; i < CONTACT_ARROW_POOL; i++) {
-    const arrow = contactArrows[i]
-    const c = contacts[i]
-    if (!c || c.force < 0.001) {
-      arrow.visible = false
-      continue
-    }
-    const [px, py, pz] = c.pos
-    const [nx, ny, nz] = c.normal
-    // Arrow length proportional to force, clamped to [0.02, 0.4] m
-    const len = Math.min(0.4, Math.max(0.02, c.force * 0.002))
-    const dir = new THREE.Vector3(nx, ny, nz).normalize()
-    if (dir.lengthSq() < 0.01) { arrow.visible = false; continue }
-    arrow.position.set(px, py, pz)
-    arrow.setDirection(dir)
-    arrow.setLength(len, len * 0.35, len * 0.2)
-    // Color: white→red based on force magnitude (0–100 N)
-    const t = Math.min(1, c.force / 100)
-    arrow.setColor(new THREE.Color(1, 1 - t, 1 - t))
-    arrow.visible = true
-  }
-}
-
-// ── Torque Heatmap ────────────────────────────────────────────────────────────
-
-/** Map jointName → original emissive color (restored when heatmap disabled). */
-const heatmapOriginalEmissive = new Map<string, THREE.Color>()
-
-function tickTorqueHeatmap(state: Record<string, unknown>) {
-  const enabled = (document.getElementById('sim-viz-heatmap') as HTMLInputElement | null)?.checked
-  const forces = state.actuator_forces as Record<string, number> | undefined
-
-  for (const [jointName, jointInfo] of parsedRobot.joints) {
-    if (jointInfo.type === 'fixed') continue
-    const childLinkGroup = parsedRobot.linkGroups.get((jointInfo as any).childLink)
-    if (!childLinkGroup) continue
-
-    childLinkGroup.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return
-      const mat = obj.material as THREE.MeshStandardMaterial
-      if (!mat || !('emissive' in mat)) return
-
-      if (!enabled) {
-        // Restore original emissive color
-        const orig = heatmapOriginalEmissive.get(obj.uuid)
-        if (orig) { mat.emissive.copy(orig); mat.emissiveIntensity = 0 }
-        return
-      }
-
-      // Save original on first encounter
-      if (!heatmapOriginalEmissive.has(obj.uuid)) {
-        heatmapOriginalEmissive.set(obj.uuid, mat.emissive.clone())
-      }
-
-      const motorName = `${jointName}_motor`
-      const force = forces ? Math.abs(forces[motorName] ?? 0) : 0
-      const effort = simJointLimits.get(jointName)?.effort ?? 10
-      const t = Math.min(1, force / effort)
-      // lerp: blue (cool) → red (hot)
-      mat.emissive.setRGB(t, 0, 1 - t)
-      mat.emissiveIntensity = t * 0.8
-    })
-  }
-}
-
-function clearHeatmap() {
-  for (const [jointName] of parsedRobot.joints) {
-    const childLinkGroup = parsedRobot.linkGroups.get((parsedRobot.joints.get(jointName) as any)?.childLink)
-    if (!childLinkGroup) continue
-    childLinkGroup.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return
-      const mat = obj.material as THREE.MeshStandardMaterial
-      if (!mat || !('emissive' in mat)) return
-      const orig = heatmapOriginalEmissive.get(obj.uuid)
-      if (orig) { mat.emissive.copy(orig); mat.emissiveIntensity = 0 }
-    })
-  }
-  heatmapOriginalEmissive.clear()
-}
-
-/** Called from stepSimulation — drives all Phase D viz each physics tick. */
-function tickSimViz(state: Record<string, unknown>) {
-  tickComTrail(state)
-  tickContactArrows(state)
-  tickTorqueHeatmap(state)
-}
-
-/** Clean up all Phase D viz state on sim exit. */
-function clearSimViz() {
-  clearComTrail()
-  contactArrows.forEach(a => { a.visible = false })
-  clearHeatmap()
-  // Uncheck all viz toggles
-  ;['sim-viz-com-trail', 'sim-viz-contacts', 'sim-viz-heatmap'].forEach(id => {
-    const el = document.getElementById(id) as HTMLInputElement | null
-    if (el) el.checked = false
-  })
-}
-
-// ── Phase C: Camera Follow ────────────────────────────────────────────────────
-
-/** Smooth camera follow — called from animate() each frame when sim is active. */
-function tickCameraFollow() {
-  const simCameraFollowEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
-  if (!simCameraFollowEl?.checked || !simActive) return
-  const worldPos = new THREE.Vector3()
-  robot.getWorldPosition(worldPos)
-  controls.target.lerp(worldPos, 0.08)
-  controls.update()
-}
-
-// ── Phase C: Control Trace ────────────────────────────────────────────────────
-
-let simTraceEnabled = false
-const simTraceData: Array<{ t: number; controls: Record<string, number> }> = []
-
-function recordControlTrace(t: number, controlSnapshot: Record<string, number>) {
-  if (!simTraceEnabled) return
-  simTraceData.push({ t, controls: { ...controlSnapshot } })
-  const countEl = document.getElementById('sim-trace-count')
-  if (countEl) countEl.textContent = `${simTraceData.length} samples`
-  const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-  if (dlBtn) dlBtn.disabled = false
-}
-
-document.getElementById('sim-trace-enabled')?.addEventListener('change', (e) => {
-  simTraceEnabled = (e.target as HTMLInputElement).checked
-  if (!simTraceEnabled) {
-    simTraceData.length = 0
-    const countEl = document.getElementById('sim-trace-count')
-    if (countEl) countEl.textContent = '0 samples'
-    const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-    if (dlBtn) dlBtn.disabled = true
-  }
-})
-
-document.getElementById('sim-trace-download')?.addEventListener('click', () => {
-  if (simTraceData.length === 0) return
-  const allJoints = [...new Set(simTraceData.flatMap(d => Object.keys(d.controls)))]
-  const header = ['t', ...allJoints].join(',')
-  const rows = simTraceData.map(d =>
-    [d.t.toFixed(6), ...allJoints.map(j => (d.controls[j] ?? 0).toFixed(6))].join(',')
-  )
-  const csv = [header, ...rows].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'sim_control_trace.csv'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-})
-
-// ── Phase C: Script Runner ────────────────────────────────────────────────────
-
-function showScriptError(msg: string) {
-  const el = document.getElementById('sim-script-error')
-  if (el) { el.textContent = msg; el.classList.remove('hidden') }
-}
-
-function clearScriptError() {
-  const el = document.getElementById('sim-script-error')
-  if (el) el.classList.add('hidden')
-}
-
-document.getElementById('sim-script-apply')?.addEventListener('click', async () => {
-  if (!simCoreRunning) { showToast('Start simulation first', 'warning'); return }
-  const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
-  const code = editor?.value.trim() ?? ''
-  try {
-    const result = await invoke<{ status: string; message?: string }>('sim_set_script', { code })
-    if (result.status === 'error') {
-      showScriptError(result.message ?? 'Script error')
-      showToast('Script error — check panel', 'error')
-    } else if (result.status === 'cleared') {
-      clearScriptError()
-      showToast('Script cleared', 'info')
-    } else {
-      clearScriptError()
-      showToast('Script active', 'success')
-    }
-  } catch (e) {
-    showScriptError(String(e))
-    showToast('Script apply failed', 'error')
-  }
-})
-
-document.getElementById('sim-script-clear')?.addEventListener('click', async () => {
-  const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
-  if (editor) editor.value = ''
-  clearScriptError()
-  if (simCoreRunning) {
-    try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore */ }
-  }
-  showToast('Script cleared', 'info')
-})
-
-// Save keyframe button
-document.getElementById('sim-kf-save')?.addEventListener('click', () => {
-  if (!simCoreRunning) return
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const name = `kf-${timestamp}`
-  const snapshot: Record<string, number> = {}
-  simCurrentPositions.forEach((pos, joint) => { snapshot[joint] = pos })
-  simKeyframes[name] = snapshot
-  saveSimKeyframesStorage()
-  refreshSimKeyframeList()
-  showToast(`Keyframe "${name}" saved`, 'success')
-})
-
-// Reset pose buttons
-document.getElementById('sim-reset-home')?.addEventListener('click', async () => {
-  if (!simCoreRunning) return
-  simRunning = false
-  if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
-  try {
-    await invoke('sim_reset')
-    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
-    updateRobotFromSimState(state)
-    simTime = 0
-    clearSimError()
-    updateSimUI()
-  } catch (e) { showToast(`Reset failed: ${e}`, 'error') }
-})
-
-document.getElementById('sim-reset-editor')?.addEventListener('click', async () => {
-  if (!simCoreRunning) return
-  // Restore original URDF joint poses visually; sim stays at home (no MJCF keyframe support yet)
-  for (const [jointName, jointInfo] of parsedRobot.joints) {
-    const original = originalJointPoses.get(jointName)
-    if (original) {
-      jointInfo.group.position.copy(original.position)
-      jointInfo.group.quaternion.copy(original.quaternion)
-    }
-  }
-  // Zero all controls
-  simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => { s.value = '0' })
-  sendSimControl()
-  showToast('Restored editor pose (visual only; physics at home)', 'info')
-})
-
-// ── App-close cleanup (risk: staging file left on disk) ──────────────────────
-// Tauri's CloseRequested fires before the window is destroyed; allows async cleanup.
-;(async () => {
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window')
-    getCurrentWindow().onCloseRequested(async () => {
-      if (lastSimStagingPath) {
-        try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
-        lastSimStagingPath = null
-      }
-    })
-  } catch { /* not in Tauri context */ }
-})()
-
-// Gravity toggle
-simGravityEnabled?.addEventListener('change', async () => {
-  if (!simCoreRunning) return
-  const grav = simGravityEnabled.checked ? [0, 0, -9.81] : [0, 0, 0]
-  try {
-    await invoke('sim_set_gravity', { gravity: grav })
-    showToast(simGravityEnabled.checked ? 'Gravity enabled' : 'Zero-G mode', 'info')
-  } catch (e) { showToast(`Gravity toggle failed: ${e}`, 'error') }
-})
-
-// Joint state display
-const simStateDisplay = document.createElement('div')
-simStateDisplay.id = 'sim-state-display'
-simStateDisplay.className = 'sim-state-display'
-simStateDisplay.style.cssText = `
-  position: absolute;
-  top: 48px;
-  right: 12px;
-  background: rgba(30, 30, 30, 0.95);
-  border: 1px solid #3c3c3c;
-  border-radius: 6px;
-  padding: 12px;
-  font-family: monospace;
-  font-size: 11px;
-  color: #cccccc;
-  max-width: 240px;
-  max-height: 300px;
-  overflow-y: auto;
-  z-index: 100;
-  display: none;
-  backdrop-filter: blur(8px);
-`
-viewportPanel.appendChild(simStateDisplay)
-
-/** Path to last staging URDF written for sim_load (cleaned up on exit). */
-let lastSimStagingPath: string | null = null
-
-/** MuJoCo `get_state` returns `joint_states` array; UI expects `joints` map by name. */
-function normalizeMuJoCoState(state: unknown): Record<string, unknown> {
-  if (!state || typeof state !== 'object') return state as Record<string, unknown>
-  const s = state as Record<string, unknown>
-  if (s.joints && typeof s.joints === 'object') return s
-  const jointStates = s.joint_states
-  if (!Array.isArray(jointStates)) return s
-  const joints: Record<string, { position: number; velocity: number }> = {}
-  for (const j of jointStates) {
-    if (j && typeof j === 'object' && typeof (j as { name?: string }).name === 'string') {
-      const row = j as { name: string; position?: number; velocity?: number }
-      joints[row.name] = {
-        position: typeof row.position === 'number' ? row.position : 0,
-        velocity: typeof row.velocity === 'number' ? row.velocity : 0,
-      }
-    }
-  }
-  return { ...s, joints }
-}
-
-function summarizeValidationErrors(results: ValResult[]): string {
-  const errs = results.filter(r => r.severity === 'error')
-  if (errs.length === 0) return 'URDF validation failed'
-  return errs
-    .slice(0, 6)
-    .map(r => `${r.name}: ${r.message}`)
-    .join('\n')
-}
-
-/** Throws if URDF must not be loaded into MuJoCo (XML or backend validation errors). */
-async function assertUrdfReadyForSim(urdf: string): Promise<void> {
-  const xmlErrors = validateXMLStructure(urdf).filter(r => r.severity === 'error')
-  if (xmlErrors.length > 0) {
-    throw new Error(summarizeValidationErrors(xmlErrors))
-  }
-
-  // Client-side per-link checks (no backend needed)
-  const perLinkResults = validateURDFPerLink(urdf)
-  const perLinkErrors = perLinkResults.filter(r => r.severity === 'error')
-  const perLinkWarns  = perLinkResults.filter(r => r.severity === 'warn')
-  if (perLinkErrors.length > 0) {
-    throw new Error(summarizeValidationErrors(perLinkErrors))
-  }
-  if (perLinkWarns.length > 0) {
-    showToast(`URDF has ${perLinkWarns.length} completeness warning(s) — check Validation panel.`, 'warning')
-  }
-
-  let result: { results?: ValResult[]; summary?: { error?: number; warn?: number } }
-  try {
-    result = await invoke('validate_urdf_content', { urdf_content: urdf }) as typeof result
-  } catch (_e) {
-    // Backend not available — per-link checks already ran above, allow sim to continue.
-    return
-  }
-  const summary = result.summary
-  const results = result.results ?? []
-  if (summary && summary.error && summary.error > 0) {
-    throw new Error(summarizeValidationErrors(results))
-  }
-  if (summary && summary.warn && summary.warn > 0) {
-    showToast(`URDF has ${summary.warn} validation warning(s); continuing to simulation.`, 'warning')
-  }
-}
-
-async function initializeSimulation() {
-    console.log('[Sim] Initializing simulation core...')
-  // Try to start core — if already running, that's fine
-  try {
-    await invoke('start_core')
-    console.log('[Sim] Core started successfully')
-  } catch (coreErr) {
-    const msg = String(coreErr).toLowerCase()
-    if (msg.includes('already running') || msg.includes('already started')) {
-      console.log('[Sim] Core already running, continuing...')
-    } else {
-      throw coreErr
-    }
-  }
-
-  const urdf = monacoEditor.getModel()?.getValue() ?? ''
-  if (!urdf.trim()) {
-    throw new Error('URDF editor is empty')
-  }
-
-  await assertUrdfReadyForSim(urdf)
-
-  const neighborPath = (filePaths[activeFile] || currentFilePath || '').trim()
-  const neighborUrdfPath =
-    neighborPath && /\.urdf$/i.test(neighborPath) ? neighborPath : null
-
-  if (lastSimStagingPath) {
-    try {
-      await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath })
-    } catch {
-      /* ignore */
-    }
-    lastSimStagingPath = null
-  }
-
-  const simPath = await invoke<string>('write_sim_staging_urdf', {
-    content: urdf,
-    neighbor_urdf_path: neighborUrdfPath,
-  })
-
-  console.log('[Sim] Loading robot model from', simPath)
-  const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
-  const seedRaw = (document.getElementById('sim-seed') as HTMLInputElement | null)?.value ?? ''
-  const seed = seedRaw.trim() !== '' ? parseInt(seedRaw, 10) : undefined
-  let modelInfo: Record<string, unknown> = {}
-  try {
-    modelInfo = await invoke<Record<string, unknown>>('sim_load', {
-      path: simPath,
-      freeBase,
-      ...(seed !== undefined && Number.isFinite(seed) ? { seed } : {}),
-    })
-  } catch (loadErr) {
-    try {
-      await invoke('remove_sim_staging_urdf', { path: simPath })
-    } catch {
-      /* ignore */
-    }
-    throw loadErr
-  }
-  lastSimStagingPath = simPath
-  // Capture model timestep for fixed-rate substepping
-  if (typeof modelInfo?.timestep === 'number' && modelInfo.timestep > 0) {
-    simModelDt = modelInfo.timestep
-  } else {
-    simModelDt = 0.002 // 500 Hz default
-  }
-  simErrorState = false
-  console.log('[Sim] Robot model loaded, dt =', simModelDt)
-
-  simCoreRunning = true
-
-    console.log('[Sim] Getting initial state...')
-  const initialState = normalizeMuJoCoState(await invoke('sim_get_state'))
-    console.log('[Sim] Initial state:', initialState)
-  if (typeof initialState.time === 'number' && !Number.isNaN(initialState.time)) {
-    simTime = initialState.time
-  }
-    simStateDisplay.style.display = 'block'
-    updateSimStateDisplay(initialState)
-  updateSimUI()
-}
-
-async function shutdownSimulation() {
-  try {
-    if (simStepIntervalId !== null) {
-      clearInterval(simStepIntervalId)
-      simStepIntervalId = null
-    }
-    if (lastSimStagingPath) {
-      try {
-        await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath })
-      } catch {
-        /* ignore */
-      }
-      lastSimStagingPath = null
-    }
-    await invoke('stop_core')
-    simCoreRunning = false
-    simStateDisplay.style.display = 'none'
-    console.log('[Sim] Core stopped')
-  } catch (error) {
-    console.error('[Sim] Error stopping simulation:', error)
-    showToast(`Error stopping simulation: ${String(error)}`, 'error')
-  }
-}
-
-async function stepSimulation() {
-  if (!simCoreRunning || simErrorState) return
-
-  // Fixed-timestep substep: advance enough steps to stay real-time.
-  const now = performance.now()
-  const elapsed = simLastStepWallTime > 0 ? Math.min(now - simLastStepWallTime, 100) : simModelDt * 1000
-  simLastStepWallTime = now
-  const nSteps = Math.max(1, Math.min(Math.floor(elapsed / (simModelDt * 1000)), 20))
-
-  try {
-    // sim_step now returns the state directly — one round-trip instead of two
-    const rawState = await invoke('sim_step', { n_steps: nSteps })
-    const state = normalizeMuJoCoState(rawState)
-    if (typeof state.time === 'number' && !Number.isNaN(state.time)) {
-      simTime = state.time
-    }
-    updateSimStateDisplay(state)
-    updateRobotFromSimState(state)
-    updateSimSliders(state)
-    tickSimViz(state)
-    updateSimUI()
-    clearSimError()
-    // Surface script errors without stopping the loop
-    if (state.script_error) {
-      showScriptError(state.script_error as string)
-    } else {
-      clearScriptError()
-    }
-  } catch (error) {
-    console.error('[Sim] Error stepping simulation:', error)
-    showSimError(String(error))
-  }
-}
-
-function showSimError(msg: string) {
-  simErrorState = true
-  simRunning = false
-  if (simStepIntervalId !== null) {
-    clearInterval(simStepIntervalId)
-    simStepIntervalId = null
-  }
-  const errEl = document.getElementById('sim-error-overlay')
-  if (errEl) {
-    errEl.textContent = `⚠ Sim error: ${msg}`
-    errEl.classList.remove('hidden')
-  }
-  updateSimUI()
-}
-
-function clearSimError() {
-  if (!simErrorState) return
-  simErrorState = false
-  const errEl = document.getElementById('sim-error-overlay')
-  if (errEl) errEl.classList.add('hidden')
-}
-
-function updateSimStateDisplay(state: any) {
-  try {
-    let html = '<div style="font-weight: bold; color: #569cd6; margin-bottom: 8px;">Simulation State</div>'
-
-    if (state && typeof state === 'object') {
-      // Display time
-      if (state.time !== undefined) {
-        html += `<div><span style="color: #dcdcaa;">time:</span> ${(state.time as number).toFixed(3)}s</div>`
-      }
-
-      // Display joint states
-      if (state.joints && typeof state.joints === 'object') {
-        html += '<div style="margin-top: 6px; color: #858585;">Joints:</div>'
-        for (const [name, joint] of Object.entries(state.joints)) {
-          if (typeof joint === 'object' && joint !== null) {
-            const j = joint as any
-            const pos = j.position?.toFixed(3) || '0.000'
-            const vel = j.velocity?.toFixed(3) || '0.000'
-            html += `<div style="margin-left: 8px;">
-              <span style="color: #9cdcfe;">${name}</span>
-              <div style="margin-left: 8px; color: #858585; font-size: 10px;">
-                pos: ${pos} | vel: ${vel}
-              </div>
-            </div>`
-          }
-        }
-      }
-
-      // Display contact info
-      if (state.contacts !== undefined) {
-        html += `<div style="margin-top: 6px; color: #858585;">Contacts: <span style="color: #f14c4c;">${state.contacts}</span></div>`
-      }
-
-      // Display energy
-      if (state.energy !== undefined) {
-        html += `<div style="margin-top: 6px; color: #858585;">Energy: <span style="color: #569cd6;">${(state.energy as number).toFixed(3)}J</span></div>`
-      }
-    }
-
-    simStateDisplay.innerHTML = html
-  } catch (e) {
-    console.error('[Sim] Error updating display:', e)
-  }
-}
-
-function updateRobotFromSimState(state: any) {
-  try {
-    if (!state || !state.joints) return
-
-    const joints = state.joints as any
-
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      if (joints[jointName]?.position === undefined) continue
-      const position = joints[jointName].position as number
-
-      if (jointInfo.type === 'prismatic') {
-        // Prismatic: translate along axis from rest position
-        const original = originalJointPoses.get(jointName)
-        const basePos = original ? original.position : jointInfo.group.position
-        jointInfo.group.position.copy(basePos).addScaledVector(jointInfo.axis, position)
-      } else {
-        // Revolute (hinge): rotate around axis
-        const quat = new THREE.Quaternion()
-        quat.setFromAxisAngle(jointInfo.axis, position)
-        jointInfo.group.quaternion.copy(quat)
-      }
-    }
-
-    // Free-floating base: if state has body_positions, apply root body pose to robot group
-    const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
-    if (freeBase && Array.isArray(state.body_positions) && state.body_positions.length > 0) {
-      const rootBody = state.body_positions[0] as { position?: number[]; rotation?: number[] }
-      if (rootBody?.position && rootBody?.rotation) {
-        const [px, py, pz] = rootBody.position
-        const [qw, qx, qy, qz] = rootBody.rotation // MuJoCo: [w, x, y, z]
-        robot.position.set(px, py, pz)
-        robot.quaternion.set(qx, qy, qz, qw)
-      }
-    }
-  } catch (e) {
-    console.error('[Sim] Error updating robot from state:', e)
-  }
-}
-
-// Update sim mode toggle to use persistent core
-simToggle.addEventListener('click', async () => {
-  simActive = !simActive
-  simBar.classList.toggle('hidden', !simActive)
-  simToggle.classList.toggle('running', simActive)
-  simToggle.querySelector('span')!.textContent = simActive ? 'Exit Sim' : 'Simulate'
-  viewportLabel.textContent = simActive ? 'Simulation' : '3D Preview'
-
-  if (simActive) {
-    // Force inspect mode — build mode must not be active during simulation
-    viewportInteractionMode = 'inspect'
-    syncViewportModeButton()
-    urdfAssemblyApi?.onInteractionModeChanged('inspect')
-    clearInspectFocus()
-
-    // Enter simulation mode — save original joint poses first
-    originalJointPoses.clear()
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      originalJointPoses.set(jointName, {
-        position: jointInfo.group.position.clone(),
-        quaternion: jointInfo.group.quaternion.clone()
-      })
-    }
-    // Cache joint limits from URDF for the Three.js preview animation
-    refreshSimPreviewLimits()
-    try {
-      await initializeSimulation()
-      enterSimPanel()
-      openSidebarPanel('sim')
-      showToast('Entered simulation mode (MuJoCo)', 'success')
-    } catch (error) {
-      console.error('[Sim] Failed to initialize:', error)
-      simActive = false
-      simCoreRunning = false
-      simToggle.classList.remove('running')
-      simBar.classList.add('hidden')
-      simToggle.querySelector('span')!.textContent = 'Simulate'
-      viewportLabel.textContent = '3D Preview'
-      showToast(`Simulation: ${error instanceof Error ? error.message : String(error)}`, 'error')
-    }
-  } else {
-    // Exit simulation mode — restore build mode
-    viewportInteractionMode = 'build'
-    syncViewportModeButton()
-    urdfAssemblyApi?.onInteractionModeChanged('build')
-
-    simRunning = false
-    simTime = 0
-    await shutdownSimulation()
-
-    // Restore original joint poses (don't zero them — that destroys URDF offsets)
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      const original = originalJointPoses.get(jointName)
-      if (original) {
-        jointInfo.group.position.copy(original.position)
-        jointInfo.group.quaternion.copy(original.quaternion)
-      } else {
-        // Fallback: only reset rotation, never zero position
-        jointInfo.group.quaternion.identity()
-      }
-    }
-    originalJointPoses.clear()
-    exitSimPanel()
-    updateSimUI()
-    showToast('Exited simulation mode', 'info')
-  }
-  resize()
-})
-
-// Update play/pause to use persistent stepping
-simPlay.addEventListener('click', () => {
-  if (!simCoreRunning) return
-  clearSimError()
-  simRunning = true
-  simLastStepWallTime = 0 // reset so first frame doesn't over-substep
-  if (simStepIntervalId !== null) {
-    clearInterval(simStepIntervalId)
-  }
-  // Step at ~60 Hz; each call substeps enough to stay real-time
-  simStepIntervalId = setInterval(async () => {
-    await stepSimulation()
-  }, 1000 / 60) as unknown as number
-  updateSimUI()
-})
-
-simPause.addEventListener('click', () => {
-  simRunning = false
-  if (simStepIntervalId !== null) {
-    clearInterval(simStepIntervalId)
-    simStepIntervalId = null
-  }
-  updateSimUI()
-})
-
-simReset.addEventListener('click', async () => {
-  if (!simCoreRunning) return
-  simRunning = false
-  simErrorState = false
-  if (simStepIntervalId !== null) {
-    clearInterval(simStepIntervalId)
-    simStepIntervalId = null
-  }
-  try {
-    await invoke('sim_reset')
-    const state = normalizeMuJoCoState(await invoke('sim_get_state'))
-    // Restore original joint poses on reset (don't let physics drift linger)
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      const original = originalJointPoses.get(jointName)
-      if (original) {
-        jointInfo.group.position.copy(original.position)
-        jointInfo.group.quaternion.copy(original.quaternion)
-      }
-    }
-    updateRobotFromSimState(state)
-    simTime = typeof state.time === 'number' && !Number.isNaN(state.time) ? state.time : 0
-    clearSimError()
-    updateSimUI()
-  } catch (error) {
-    console.error('[Sim] Reset error:', error)
-  }
-})
-
-let viewportInteractionMode: 'build' | 'inspect' = 'build'
-let inspectFocusedLink: string | null = null
 
 function cancelCameraFocusTween() {
   cameraFocusTween = null
@@ -4437,7 +2514,7 @@ function refreshInspectAfterModelUpdate() {
 }
 
 document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
-  if (simActive) return  // locked to inspect while simulation is running
+  if (simApi.isSimActive()) return  // locked to inspect while simulation is running
   viewportInteractionMode = viewportInteractionMode === 'build' ? 'inspect' : 'build'
   syncViewportModeButton()
   urdfAssemblyApi?.onInteractionModeChanged(viewportInteractionMode)
@@ -4492,9 +2569,9 @@ urdfAssemblyApi = initUrdfAssembly({
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
-  isViewport3D: () => activeViewportView === '3d',
+  isViewport3D: () => viewportChatApi?.isViewport3D() ?? true,
   getInteractionMode: () => viewportInteractionMode,
-  isSimActive: () => simActive,
+  isSimActive: () => simApi.isSimActive(),
   onInspectLinkFocused: handleInspectLinkFocused,
   onAfterModelUpdated: refreshInspectAfterModelUpdate,
   zeroAssemblyWorldPosition: () => {

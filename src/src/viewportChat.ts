@@ -1,0 +1,481 @@
+// viewportChat.ts — Viewport chat panel: message rendering, AI send, tab switching
+
+import * as THREE from 'three'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { escapeHtml } from './chatHistory'
+import type { UrdfAssemblyApi } from './urdfAssembly'
+
+export interface ViewportChatDeps {
+  // Editor
+  getEditorValue(): string
+  createNewFile(filename?: string, content?: string, diskPath?: string | null): void
+  // AI context
+  buildKinematicContext(): string
+  getCurrentChatId(): string
+  getCurrentChatMessages(): Array<{ role: string; content: string; timestamp: number; urdfSnapshot?: string }>
+  recordChatMessage(role: 'user' | 'assistant' | 'system', content: string): void
+  attachRewindButton(el: HTMLElement, idx: number): void
+  loadChat(id: string): void
+  startNewChat(): void
+  updateChatDropdown(): void
+  // Inline diff
+  showInlineDiff(oldText: string, newText: string, newUrdf?: string): void
+  clearInlineDiff(): void
+  setActiveChatActionsId(id: string | null): void
+  acceptInlineDiff(): void
+  dismissInlineDiff(): void
+  // URDF
+  reparseURDF(xml?: string): void
+  runLocalValidation(): void
+  createCheckpoint(label: string, urdf: string, auto: boolean): void
+  // Three.js (for screenshots)
+  scene: THREE.Scene
+  robot: THREE.Group
+  camera: THREE.PerspectiveCamera
+  groundRobot(): void
+  autoFrameRobot(): void
+  // Misc
+  getUrdfAssemblyApi(): UrdfAssemblyApi | null
+  getCoreAvailable(): boolean
+  showToast(msg: string, type?: 'success' | 'error' | 'warning' | 'info'): void
+  SAMPLE_URDF: string
+  keysViewportPan: { w: boolean; a: boolean; s: boolean; d: boolean }
+  resize(): void
+}
+
+export interface ViewportChatApi {
+  switchViewportView(view: '3d' | 'chat'): void
+  isViewport3D(): boolean
+  getVcInput(): HTMLTextAreaElement
+}
+
+function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const added: string[] = []
+  const removed: string[] = []
+  const oldSet = new Set(oldLines.map(l => l.trim()))
+  const newSet = new Set(newLines.map(l => l.trim()))
+  for (const line of oldLines) {
+    if (!newSet.has(line.trim()) && line.trim()) removed.push(line)
+  }
+  for (const line of newLines) {
+    if (!oldSet.has(line.trim()) && line.trim()) added.push(line)
+  }
+  return { added, removed }
+}
+
+export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
+  const viewportCanvas = document.getElementById('viewport') as HTMLCanvasElement
+  const viewportChat = document.getElementById('viewport-chat')!
+  const vcMessages = document.getElementById('vc-messages')!
+  const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
+  const vcSend = document.getElementById('vc-send') as HTMLButtonElement
+  const viewportTabs = document.querySelectorAll('.vp-tab')
+
+  let activeViewportView: '3d' | 'chat' = '3d'
+
+  // ── Chat UI init ──────────────────────────────────────────────────────────
+
+  if (deps.getCurrentChatMessages().length > 0) {
+    deps.loadChat(deps.getCurrentChatId())
+  } else {
+    vcMessages.innerHTML = `<div class="ai-msg system">
+      <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
+    </div>`
+  }
+  deps.updateChatDropdown()
+
+  // Wire chat header controls
+  const vcChatSelect = document.getElementById('vc-chat-select') as HTMLSelectElement | null
+  const vcNewChatBtn = document.getElementById('vc-new-chat') as HTMLButtonElement | null
+
+  vcChatSelect?.addEventListener('change', () => {
+    if (vcChatSelect.value && vcChatSelect.value !== deps.getCurrentChatId()) {
+      deps.loadChat(vcChatSelect.value)
+    }
+  })
+
+  vcNewChatBtn?.addEventListener('click', () => deps.startNewChat())
+
+  const vcDropdownBtn = document.getElementById('vc-chat-dropdown-btn')
+  const vcDropdownList = document.getElementById('vc-chat-dropdown-list')
+  vcDropdownBtn?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    vcDropdownList?.classList.toggle('hidden')
+  })
+  document.addEventListener('click', (e) => {
+    if (vcDropdownList && !vcDropdownList.contains(e.target as Node) && e.target !== vcDropdownBtn) {
+      vcDropdownList.classList.add('hidden')
+    }
+  })
+
+  // ── View switching ────────────────────────────────────────────────────────
+
+  function switchViewportView(view: '3d' | 'chat') {
+    activeViewportView = view
+    if (view !== '3d') {
+      deps.keysViewportPan.w = deps.keysViewportPan.a = deps.keysViewportPan.s = deps.keysViewportPan.d = false
+    }
+    viewportTabs.forEach(tab => {
+      tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view)
+    })
+    if (view === '3d') {
+      viewportCanvas.style.display = ''
+      viewportChat.classList.add('hidden')
+      document.getElementById('viewport-info')!.style.display = ''
+      deps.resize()
+    } else {
+      viewportCanvas.style.display = 'none'
+      viewportChat.classList.remove('hidden')
+      document.getElementById('viewport-info')!.style.display = 'none'
+      vcInput.focus()
+    }
+  }
+
+  viewportTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      switchViewportView((tab as HTMLElement).dataset.view as '3d' | 'chat')
+    })
+  })
+
+  // ── Message rendering ──────────────────────────────────────────────────────
+
+  function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, extras?: {
+    diff?: { added: string[]; removed: string[] }
+    newUrdf?: string
+  }) {
+    const plainContent = content.replace(/<[^>]*>/g, '').trim()
+    if (plainContent) deps.recordChatMessage(role, plainContent)
+
+    const msg = document.createElement('div')
+    msg.className = `ai-msg ${role}`
+
+    if (role === 'user') {
+      msg.innerHTML = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
+    } else if (role === 'assistant') {
+      let html = `<div class="ai-msg-content">${content}</div>`
+
+      if (extras?.diff && (extras.diff.added.length > 0 || extras.diff.removed.length > 0)) {
+        html += `<div class="ai-msg-diff">
+          <div class="ai-msg-diff-header">
+            <span>robot.urdf</span>
+            <span>${extras.diff.added.length} added, ${extras.diff.removed.length} removed</span>
+          </div>`
+        for (const line of extras.diff.removed) {
+          html += `<div class="ai-diff-line removed">${escapeHtml(line)}</div>`
+        }
+        for (const line of extras.diff.added) {
+          html += `<div class="ai-diff-line added">${escapeHtml(line)}</div>`
+        }
+        html += `</div>`
+      }
+
+      if (extras?.newUrdf) {
+        const msgId = 'vc-msg-' + Date.now()
+        deps.setActiveChatActionsId(msgId)
+        html += `<div class="ai-msg-actions" id="${msgId}">
+          <button class="ai-accept" data-action="accept">Apply Changes</button>
+          <button class="ai-reject" data-action="reject">Dismiss</button>
+        </div>`
+        msg.innerHTML = html
+
+        setTimeout(() => {
+          const actions = document.getElementById(msgId)
+          if (!actions) return
+          const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement
+          const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement
+
+          acceptBtn.addEventListener('click', () => {
+            deps.setActiveChatActionsId(null)
+            deps.acceptInlineDiff()
+            acceptBtn.textContent = '✓ Applied'
+            acceptBtn.className = 'ai-applied'
+            rejectBtn.style.display = 'none'
+          })
+
+          rejectBtn.addEventListener('click', () => {
+            deps.setActiveChatActionsId(null)
+            deps.dismissInlineDiff()
+            rejectBtn.textContent = '✗ Dismissed'
+            rejectBtn.className = 'ai-rejected'
+            acceptBtn.style.display = 'none'
+          })
+        }, 0)
+      } else {
+        msg.innerHTML = html
+      }
+    } else {
+      msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
+    }
+
+    if (role === 'user' || role === 'assistant') {
+      deps.attachRewindButton(msg, deps.getCurrentChatMessages().length - 1)
+    }
+
+    vcMessages.appendChild(msg)
+    vcMessages.scrollTop = vcMessages.scrollHeight
+    return msg
+  }
+
+  function addVCThinking(): HTMLElement & { updateStage: (stage: string, text: string) => void } {
+    const msg = document.createElement('div') as unknown as HTMLElement & { updateStage: (stage: string, text: string) => void }
+    msg.className = 'ai-msg assistant'
+    msg.innerHTML = `<div class="ai-thinking">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="ai-thinking-text">Thinking...</span>
+    </div>
+    <div class="ai-streaming-preview" style="display:none"></div>`
+    vcMessages.appendChild(msg)
+    vcMessages.scrollTop = vcMessages.scrollHeight
+
+    const stageLabels: Record<string, string> = {
+      thinking: 'Analyzing model...', generating: 'Generating design...',
+      streaming: '', applying: 'Applying changes...', done: 'Done',
+    }
+
+    msg.updateStage = (stage: string, text: string) => {
+      const thinkingText = msg.querySelector('.ai-thinking-text') as HTMLElement | null
+      const preview = msg.querySelector('.ai-streaming-preview') as HTMLElement | null
+      if (!thinkingText) return
+      if (stage === 'streaming' && text && preview) {
+        thinkingText.textContent = 'Generating...'
+        preview.style.display = 'block'
+        preview.textContent = text
+      } else {
+        thinkingText.textContent = stageLabels[stage] || text || 'Processing...'
+      }
+      vcMessages.scrollTop = vcMessages.scrollHeight
+    }
+
+    return msg
+  }
+
+  // ── AI send ───────────────────────────────────────────────────────────────
+
+  async function sendVCMessage(prompt: string, retryCount = 0) {
+    if (!prompt.trim()) return
+
+    if (!deps.getEditorValue()) {
+      deps.createNewFile('robot.urdf', deps.SAMPLE_URDF, null)
+    }
+
+    if (retryCount === 0) {
+      addVCMessage('user', prompt)
+      vcInput.value = ''
+      vcInput.style.height = 'auto'
+    }
+
+    vcSend.disabled = true
+    const thinking = addVCThinking()
+
+    let unlisten: (() => void) | null = null
+    try {
+      unlisten = await listen<{ stage: string; text: string }>('ai_progress', (event) => {
+        thinking.updateStage(event.payload.stage, event.payload.text)
+      })
+    } catch {
+      // listen may fail in dev mode without Tauri — non-critical
+    }
+
+    try {
+      const fullUrdf = deps.getEditorValue()
+      const kinematicContext = deps.buildKinematicContext()
+      const isRedesign = retryCount > 0
+      const currentUrdf = isRedesign
+        ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
+        : fullUrdf
+      if (isRedesign) {
+        console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF)`)
+      }
+
+      const result = await invoke('ai_edit', {
+        prompt,
+        urdfContent: currentUrdf,
+        kinematicContext: isRedesign ? '' : kinematicContext,
+        sessionId: deps.getCurrentChatId(),
+      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
+
+      thinking.remove()
+
+      const urdfAssemblyApi = deps.getUrdfAssemblyApi()
+      if (result.assembly_graph && urdfAssemblyApi) {
+        console.log('[AI] Received assembly_graph — resolving via frontend snap system')
+        const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+        let assemblyResult = assemblyOut.urdf
+        console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+
+        if (assemblyResult) {
+          try {
+            console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
+            await new Promise(r => setTimeout(r, 800))
+
+            deps.groundRobot()
+            deps.autoFrameRobot()
+
+            const robotBox = new THREE.Box3().setFromObject(deps.robot)
+            if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
+            const robotCenter = new THREE.Vector3()
+            const robotSize = new THREE.Vector3()
+            robotBox.getCenter(robotCenter)
+            robotBox.getSize(robotSize)
+            const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
+            const dist = maxDim * 2.5
+            const captureSize = 512
+
+            const viewAngles = [
+              { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },
+              { label: 'rear-left', az: -0.75, el: 0.5, depth: -0.75 },
+              { label: 'top-down', az: 0.2, el: 1.2, depth: 0.2 },
+            ]
+            const screenshots: string[] = []
+
+            const offCanvas = document.createElement('canvas')
+            offCanvas.width = captureSize
+            offCanvas.height = captureSize
+            const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
+            offRenderer.setSize(captureSize, captureSize)
+            offRenderer.shadowMap.enabled = true
+
+            const offCam = deps.camera.clone()
+            offCam.aspect = 1
+
+            for (const view of viewAngles) {
+              offCam.position.set(
+                robotCenter.x + dist * view.az,
+                robotCenter.y + dist * view.el,
+                robotCenter.z + dist * view.depth,
+              )
+              offCam.lookAt(robotCenter)
+              offCam.updateProjectionMatrix()
+              offRenderer.render(deps.scene, offCam)
+              const dataUrl = offCanvas.toDataURL('image/png')
+              screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
+            }
+            offRenderer.dispose()
+
+            const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
+            console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
+
+            const valResult = await invoke('ai_validate_assembly', {
+              urdfContent: assemblyResult,
+              originalPrompt: prompt,
+              sessionId: deps.getCurrentChatId(),
+              screenshotBase64: screenshots[0],
+              screenshots,
+            }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
+
+            console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
+            console.log(`[AI][redesign] Full valResult:`, JSON.stringify(valResult, null, 2))
+
+            if (!valResult.ok) {
+              console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
+              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
+              const needsRedesign = (valResult as any).needs_redesign
+              const topoFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology') : []
+              const placementFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement') : []
+
+              if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
+                const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
+                const placementNote = placementFailures.length > 0
+                  ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) — these are handled by the placement engine. Ignore them.)`
+                  : ''
+                addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above.`
+                vcSend.disabled = false
+                unlisten?.()
+                return sendVCMessage(redesignPrompt, retryCount + 1)
+              }
+            }
+          } catch (valErr) {
+            console.warn('[AI] Visual validation skipped:', valErr)
+          }
+
+          const diff = computeSimpleDiff(fullUrdf, assemblyResult)
+          addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+            diff, newUrdf: assemblyResult,
+          })
+          deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
+        } else if (retryCount < 2) {
+          const topoErrors = assemblyOut.topologyErrors
+          if (topoErrors && topoErrors.length > 0) {
+            addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
+            const errorList = topoErrors.map(e => `- ${e}`).join('\n')
+            const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design.`
+            vcSend.disabled = false
+            unlisten?.()
+            return sendVCMessage(retryPrompt, retryCount + 1)
+          } else {
+            addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+            const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components.`
+            vcSend.disabled = false
+            unlisten?.()
+            return sendVCMessage(retryPrompt, retryCount + 1)
+          }
+        } else {
+          addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. Try describing a simpler robot.</span>`)
+        }
+      } else {
+        const diff = computeSimpleDiff(fullUrdf, result.new_urdf)
+        addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          diff, newUrdf: result.new_urdf,
+        })
+        deps.showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+      }
+
+    } catch (err) {
+      thinking.remove()
+      const errStr = String(err)
+      console.warn('[VC] Backend error:', err)
+
+      if (errStr.includes('429') || errStr.includes('rate_limit')) {
+        if (retryCount < 2) {
+          const waitSec = (retryCount + 1) * 5
+          addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
+          await new Promise(r => setTimeout(r, waitSec * 1000))
+          unlisten?.()
+          vcSend.disabled = false
+          return sendVCMessage(prompt, retryCount + 1)
+        }
+        addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
+      } else {
+        addVCMessage('assistant', `<span style="color:#f85149;">Error: ${escapeHtml(errStr.slice(0, 200))}</span>`)
+      }
+    } finally {
+      unlisten?.()
+      vcSend.disabled = false
+    }
+  }
+
+  // ── Input handlers ────────────────────────────────────────────────────────
+
+  vcInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendVCMessage(vcInput.value)
+    }
+  })
+
+  vcSend.addEventListener('click', () => sendVCMessage(vcInput.value))
+
+  vcInput.addEventListener('input', () => {
+    vcInput.style.height = 'auto'
+    vcInput.style.height = Math.min(vcInput.scrollHeight, 120) + 'px'
+  })
+
+  // Ctrl+L switches to chat view
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'l') {
+      e.preventDefault()
+      switchViewportView('chat')
+      vcInput.focus()
+    }
+  })
+
+  return {
+    switchViewportView,
+    isViewport3D: () => activeViewportView === '3d',
+    getVcInput: () => vcInput,
+  }
+}
