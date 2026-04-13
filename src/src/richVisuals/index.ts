@@ -319,7 +319,6 @@ function applyMeshToLink(
         meshGroup.scale.x *= scaleX
         meshGroup.scale.y *= scaleY
         meshGroup.scale.z *= scaleZ
-        console.log(`[richVisuals] Extrusion scale for ${compId}: ${scaleX.toFixed(2)}x ${scaleY.toFixed(2)}y ${scaleZ.toFixed(2)}z (dims=${dims.x.toFixed(3)},${dims.y.toFixed(3)},${dims.z.toFixed(3)})`)
       }
     }
 

@@ -2253,6 +2253,612 @@ viewportChatApi = initViewportChat({
   keysViewportPan,
   resize: () => _resize(),
 })
+document.addEventListener('click', (e) => {
+  if (vcDropdownList && !vcDropdownList.contains(e.target as Node) && e.target !== vcDropdownBtn) {
+    vcDropdownList.classList.add('hidden')
+  }
+})
+
+function switchViewportView(view: '3d' | 'chat') {
+  activeViewportView = view
+  if (view !== '3d') {
+    keysViewportPan.w = keysViewportPan.a = keysViewportPan.s = keysViewportPan.d = false
+  }
+  viewportTabs.forEach(tab => {
+    tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view)
+  })
+  if (view === '3d') {
+    viewportCanvas.style.display = ''
+    viewportChat.classList.add('hidden')
+    document.getElementById('viewport-info')!.style.display = ''
+    resize()
+  } else {
+    viewportCanvas.style.display = 'none'
+    viewportChat.classList.remove('hidden')
+    document.getElementById('viewport-info')!.style.display = 'none'
+    vcInput.focus()
+  }
+}
+
+viewportTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    switchViewportView((tab as HTMLElement).dataset.view as '3d' | 'chat')
+  })
+})
+
+// Shared function to add message to viewport chat
+function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, extras?: {
+  diff?: { added: string[], removed: string[] },
+  newUrdf?: string,
+}) {
+  // Persist to chat history (strip HTML tags for storage)
+  const plainContent = content.replace(/<[^>]*>/g, '').trim()
+  if (plainContent) recordChatMessage(role, plainContent)
+
+  const msg = document.createElement('div')
+  msg.className = `ai-msg ${role}`
+
+  if (role === 'user') {
+    msg.innerHTML = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
+  } else if (role === 'assistant') {
+    let html = `<div class="ai-msg-content">${content}</div>`
+
+    if (extras?.diff && (extras.diff.added.length > 0 || extras.diff.removed.length > 0)) {
+      html += `<div class="ai-msg-diff">
+        <div class="ai-msg-diff-header">
+          <span>robot.urdf</span>
+          <span>${extras.diff.added.length} added, ${extras.diff.removed.length} removed</span>
+        </div>`
+      for (const line of extras.diff.removed) {
+        html += `<div class="ai-diff-line removed">${escapeHtml(line)}</div>`
+      }
+      for (const line of extras.diff.added) {
+        html += `<div class="ai-diff-line added">${escapeHtml(line)}</div>`
+      }
+      html += `</div>`
+    }
+
+    if (extras?.newUrdf) {
+      const msgId = 'vc-msg-' + Date.now()
+      activeChatActionsId = msgId
+      html += `<div class="ai-msg-actions" id="${msgId}">
+        <button class="ai-accept" data-action="accept">Apply Changes</button>
+        <button class="ai-reject" data-action="reject">Dismiss</button>
+      </div>`
+      msg.innerHTML = html
+
+      setTimeout(() => {
+        const actions = document.getElementById(msgId)
+        if (!actions) return
+        const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement
+        const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement
+
+        acceptBtn.addEventListener('click', () => {
+          activeChatActionsId = null  // prevent syncChatActions from double-updating
+          acceptInlineDiff()
+          acceptBtn.textContent = '✓ Applied'
+          acceptBtn.className = 'ai-applied'
+          rejectBtn.style.display = 'none'
+        })
+
+        rejectBtn.addEventListener('click', () => {
+          activeChatActionsId = null  // prevent syncChatActions from double-updating
+          dismissInlineDiff()
+          rejectBtn.textContent = '✗ Dismissed'
+          rejectBtn.className = 'ai-rejected'
+          acceptBtn.style.display = 'none'
+        })
+      }, 0)
+    } else {
+      msg.innerHTML = html
+    }
+  } else {
+    msg.innerHTML = `<div class="ai-msg-content">${content}</div>`
+  }
+
+  if (role === 'user' || role === 'assistant') {
+    attachRewindButton(msg, currentChatMessages.length - 1)
+  }
+
+  vcMessages.appendChild(msg)
+  vcMessages.scrollTop = vcMessages.scrollHeight
+  return msg
+}
+
+function addVCThinking(): HTMLElement & { updateStage: (stage: string, text: string) => void } {
+  const msg = document.createElement('div') as unknown as HTMLElement & { updateStage: (stage: string, text: string) => void }
+  msg.className = 'ai-msg assistant'
+  msg.innerHTML = `<div class="ai-thinking">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="ai-thinking-text">Thinking...</span>
+  </div>
+  <div class="ai-streaming-preview" style="display:none"></div>`
+  vcMessages.appendChild(msg)
+  vcMessages.scrollTop = vcMessages.scrollHeight
+
+  const stageLabels: Record<string, string> = {
+    thinking: 'Analyzing model...',
+    generating: 'Generating design...',
+    streaming: '',
+    applying: 'Applying changes...',
+    done: 'Done',
+  }
+
+  msg.updateStage = (stage: string, text: string) => {
+    const thinkingText = msg.querySelector('.ai-thinking-text') as HTMLElement | null
+    const preview = msg.querySelector('.ai-streaming-preview') as HTMLElement | null
+    if (!thinkingText) return
+
+    if (stage === 'streaming' && text && preview) {
+      thinkingText.textContent = 'Generating...'
+      preview.style.display = 'block'
+      preview.textContent = text
+    } else {
+      thinkingText.textContent = stageLabels[stage] || text || 'Processing...'
+    }
+    vcMessages.scrollTop = vcMessages.scrollHeight
+  }
+
+  return msg
+}
+
+// ── Inline Diff in Monaco ────────────────────────────────────────────────────
+let inlineDiffCollection: monaco.editor.IEditorDecorationsCollection | null = null
+let inlineDiffWidget: HTMLElement | null = null
+let pendingOldText: string | null = null
+let activeChatActionsId: string | null = null  // tracks the chat message's Accept/Dismiss buttons
+
+function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+  if (!editor) return
+
+  // Store old text so Dismiss can revert
+  pendingOldText = oldText
+
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+
+  // Find which lines in the new text differ from old
+  const maxLen = Math.max(oldLines.length, newLines.length)
+  const changedLines: number[] = []
+
+  for (let i = 0; i < maxLen; i++) {
+    const oldLine = i < oldLines.length ? oldLines[i] : undefined
+    const newLine = i < newLines.length ? newLines[i] : undefined
+    if (oldLine !== newLine && newLine !== undefined) {
+      changedLines.push(i + 1) // Monaco is 1-indexed
+    }
+  }
+
+  // Show the new content in the editor as a preview
+  editor.setValue(newText)
+
+  // Build decorations for changed/added lines (green highlight)
+  const decorations: monaco.editor.IModelDeltaDecoration[] = changedLines.map(lineNum => ({
+    range: new monaco.Range(lineNum, 1, lineNum, 1),
+    options: {
+      isWholeLine: true,
+      className: 'inline-diff-added',
+      linesDecorationsClassName: 'inline-diff-gutter-added',
+    }
+  }))
+
+  // Use createDecorationsCollection (Monaco 0.36+, replaces deprecated deltaDecorations)
+  if (inlineDiffCollection) {
+    inlineDiffCollection.clear()
+  }
+  inlineDiffCollection = editor.createDecorationsCollection(decorations)
+
+  // Show floating accept/dismiss bar at top of editor
+  if (inlineDiffWidget) inlineDiffWidget.remove()
+  const bar = document.createElement('div')
+  bar.className = 'inline-diff-bar'
+  bar.innerHTML = `
+    <span class="idb-label">${changedLines.length} lines changed</span>
+    <button class="idb-accept">✓ Accept</button>
+    <button class="idb-dismiss">✗ Dismiss</button>
+  `
+  const editorEl = document.getElementById('monaco-container')!
+  const rect = editorEl.getBoundingClientRect()
+  if (rect.width > 0) {
+    // Monaco is visible — anchor bar to top of editor panel
+    bar.style.top = (rect.top + 8) + 'px'
+    bar.style.right = (window.innerWidth - rect.right + 20) + 'px'
+  } else {
+    // Monaco is hidden (fullscreen/focus mode) — pin to top-right of viewport
+    bar.style.top = '10px'
+    bar.style.right = '10px'
+  }
+  document.body.appendChild(bar)
+  inlineDiffWidget = bar
+
+  bar.querySelector('.idb-accept')!.addEventListener('click', () => acceptInlineDiff())
+  bar.querySelector('.idb-dismiss')!.addEventListener('click', () => dismissInlineDiff())
+
+  // Scroll to the first changed line
+  if (changedLines.length > 0) {
+    editor.revealLineInCenter(changedLines[0])
+  }
+}
+
+function acceptInlineDiff() {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+
+  // Push pre-AI state to undo stack so Ctrl+Z works after accepting
+  if (pendingOldText && urdfAssemblyApi) {
+    urdfAssemblyApi.recordUndoExternal(pendingOldText)
+  }
+
+  // Auto-create checkpoint before AI edit
+  if (pendingOldText) {
+    createCheckpoint('Before AI edit', pendingOldText, true)
+  }
+
+  clearInlineDiff()
+  pendingOldText = null  // clear before reparse so debounce guard is lifted
+
+  // Cancel any debounce that was triggered by showInlineDiff's setValue call
+  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
+
+  showToast('Changes accepted', 'success')
+
+  // Sync chat buttons to show "Applied"
+  syncChatActions('accept')
+
+  // Apply the accepted URDF to the 3D viewport
+  if (editor) {
+    reparseURDF()
+
+    // Run local validation on the accepted changes (avoids blocking Mutex)
+    runLocalValidation()
+  }
+}
+
+function dismissInlineDiff() {
+  const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+  const oldText = pendingOldText  // capture before clearing
+
+  clearInlineDiff()
+  pendingOldText = null  // clear before setValue so the debounce guard is lifted
+
+  // Cancel any pending debounce before restoring (avoid a second reparse race)
+  if (reparseTimeout !== null) { clearTimeout(reparseTimeout); reparseTimeout = null }
+
+  if (editor && oldText !== null) {
+    editor.setValue(oldText)
+    reparseURDF()  // revert 3D immediately — no 500ms wait
+  }
+
+  showToast('Changes dismissed', 'info')
+
+  // Sync chat buttons to show "Dismissed"
+  syncChatActions('dismiss')
+}
+
+/** Update the chat Apply/Dismiss buttons to reflect the action taken (from editor bar or chat) */
+function syncChatActions(action: 'accept' | 'dismiss') {
+  if (!activeChatActionsId) return
+  const actions = document.getElementById(activeChatActionsId)
+  if (!actions) return
+  const acceptBtn = actions.querySelector('.ai-accept') as HTMLButtonElement | null
+  const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement | null
+  if (action === 'accept') {
+    if (acceptBtn) { acceptBtn.textContent = '✓ Applied'; acceptBtn.className = 'ai-applied' }
+    if (rejectBtn) { rejectBtn.style.display = 'none' }
+  } else {
+    if (rejectBtn) { rejectBtn.textContent = '✗ Dismissed'; rejectBtn.className = 'ai-rejected' }
+    if (acceptBtn) { acceptBtn.style.display = 'none' }
+  }
+  activeChatActionsId = null
+}
+
+function clearInlineDiff() {
+  if (inlineDiffCollection) {
+    inlineDiffCollection.clear()
+    inlineDiffCollection = null
+  }
+  if (inlineDiffWidget) {
+    inlineDiffWidget.remove()
+    inlineDiffWidget = null
+  }
+}
+
+// ── Viewport Chat Send ───────────────────────────────────────────────────────
+async function sendVCMessage(prompt: string, retryCount = 0) {
+  if (!prompt.trim()) return
+
+  // Auto-create a file if none is open
+  if (!monacoEditor.getModel()) {
+    createNewFile('robot.urdf', SAMPLE_URDF, null)
+  }
+
+  if (retryCount === 0) {
+    addVCMessage('user', prompt)
+    vcInput.value = ''
+    vcInput.style.height = 'auto'
+  }
+
+  vcSend.disabled = true
+
+  const thinking = addVCThinking()
+
+  // Listen for streaming progress events from Python → Rust → Frontend
+  let unlisten: (() => void) | null = null
+  try {
+    unlisten = await listen<{ stage: string; text: string }>('ai_progress', (event) => {
+      thinking.updateStage(event.payload.stage, event.payload.text)
+    })
+  } catch {
+    // listen may fail in dev mode without Tauri — non-critical
+  }
+
+  try {
+    const editor = (window as any).__vectorEditor
+    const fullUrdf = editor?.getValue() || ''
+    const kinematicContext = buildKinematicContext()
+
+    // For redesign retries (retryCount > 0), send minimal payloads to save tokens.
+    // Redesigns create new topologies from scratch — the old URDF and kinematic
+    // graph are dead weight and sending them blows the 10K ITPM rate limit.
+    const isRedesign = retryCount > 0
+    const currentUrdf = isRedesign
+      ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
+      : fullUrdf
+    if (isRedesign) {
+      console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF, ${kinematicContext.length} char kinematic context)`)
+    }
+
+    const result = await invoke('ai_edit', {
+      prompt: prompt,
+      urdfContent: currentUrdf,
+      kinematicContext: isRedesign ? '' : kinematicContext,
+      sessionId: currentChatId,
+    }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
+
+    thinking.remove()
+
+    // Check if this is an assembly graph (Option C) — resolve via frontend snap system
+    if (result.assembly_graph && urdfAssemblyApi) {
+      console.log('[AI] Received assembly_graph — resolving via frontend snap system')
+      const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      let assemblyResult = assemblyOut.urdf
+      console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+      if (assemblyResult) {
+        // 2nd-pass AI validation: send assembled URDF + viewport screenshot to Claude
+        try {
+          console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
+
+          // Wait for GLB meshes to load before capturing screenshots.
+          // Without this delay, Sonnet sees primitive boxes instead of actual component meshes.
+          await new Promise(r => setTimeout(r, 800))
+
+          // Capture 3 labeled screenshots from canonical angles for visual validation
+          // Research: 3 near-orthogonal views capture all geometry with minimal token cost
+          const robotBox = new THREE.Box3().setFromObject(robot)
+          if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
+          const robotCenter = new THREE.Vector3()
+          const robotSize = new THREE.Vector3()
+          robotBox.getCenter(robotCenter)
+          robotBox.getSize(robotSize)
+          const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
+          const dist = maxDim * 2.5
+          const captureSize = 512
+
+          // 3 canonical views: front-iso, rear-iso, top-down
+          const viewAngles = [
+            { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },  // front-isometric
+            { label: 'rear-left',   az: -0.75, el: 0.5, depth: -0.75 }, // rear-isometric
+            { label: 'top-down',    az: 0.2, el: 1.2, depth: 0.2 },     // steep overhead
+          ]
+          const screenshots: string[] = []
+
+          // Use a separate offscreen canvas for screenshots so we don't
+          // disrupt the main renderer/composer pipeline (which caused the
+          // viewport to stop updating after screenshot capture)
+          const offCanvas = document.createElement('canvas')
+          offCanvas.width = captureSize
+          offCanvas.height = captureSize
+          const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
+          offRenderer.setSize(captureSize, captureSize)
+          offRenderer.shadowMap.enabled = true
+
+          const offCam = camera.clone()
+          offCam.aspect = 1
+
+          for (const view of viewAngles) {
+            offCam.position.set(
+              robotCenter.x + dist * view.az,
+              robotCenter.y + dist * view.el,
+              robotCenter.z + dist * view.depth
+            )
+            offCam.lookAt(robotCenter)
+            offCam.updateProjectionMatrix()
+            offRenderer.render(scene, offCam)
+            const dataUrl = offCanvas.toDataURL('image/png')
+            screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
+          }
+
+          offRenderer.dispose()
+
+          const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
+          console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
+
+          const valResult = await invoke('ai_validate_assembly', {
+            urdfContent: assemblyResult,
+            originalPrompt: prompt,
+            sessionId: currentChatId,
+            screenshotBase64: screenshots[0],
+            screenshots: screenshots,
+          }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
+
+          // Validation is diagnostic only — no URDF coordinate edits (LLMs can't do spatial math).
+          // When validation finds issues and needs_redesign is set, retry with a new topology.
+          console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
+          console.log(`[AI][redesign] Full valResult:`, JSON.stringify(valResult, null, 2))
+
+          if (valResult.ok) {
+            console.log(`[AI][redesign] Validation passed: ${valResult.notes}`)
+          } else {
+            console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
+            const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
+            if (checklist) {
+              const passed = checklist.filter(c => c.pass).length
+              const failed = checklist.filter(c => !c.pass).length
+              console.log(`[AI][redesign] Checklist: ${passed} passed, ${failed} failed`)
+              for (const c of checklist) {
+                console.log(`[AI][redesign]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
+              }
+            } else {
+              console.log(`[AI][redesign] No checklist in response`)
+            }
+
+            // Trigger redesign only for topology-fixable failures (not placement issues)
+            const needsRedesign = (valResult as any).needs_redesign
+            const topoFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology')
+              : []
+            const placementFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement')
+              : []
+            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, topoFailures=${topoFailures.length}, placementFailures=${placementFailures.length}, retryCount=${retryCount}`)
+            console.log(`[AI][redesign] will_retry=${!!(needsRedesign && topoFailures.length > 0 && retryCount < 2)}`)
+
+            if (needsRedesign && topoFailures.length > 0 && retryCount < 2) {
+              const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
+              const placementNote = placementFailures.length > 0
+                ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) like positioning/spacing — these are handled by the placement engine, not your topology. Ignore them.)`
+                : ''
+              console.log(`[AI][redesign] Triggering redesign with ${topoFailures.length} topology failures:\n${failures}`)
+              if (placementFailures.length > 0) {
+                console.log(`[AI][redesign] Skipping ${placementFailures.length} placement-only failures:`)
+                for (const pf of placementFailures) {
+                  console.log(`[AI][redesign]   (placement) ${pf.check}: ${pf.detail}`)
+                }
+              }
+              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
+
+              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above. Focus on: correct components, correct connections, nothing missing. The placement engine handles all positioning — do NOT try to fix spacing, angles, or grounding.`
+              console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
+
+              // No proactive delay — validation is on Gemini (separate rate limits).
+              // If the Claude redesign call hits 429, the existing rate limit retry
+              // logic (exponential backoff) handles it automatically.
+              vcSend.disabled = false
+              unlisten?.()
+              return sendVCMessage(redesignPrompt, retryCount + 1)
+            } else if (needsRedesign && topoFailures.length === 0) {
+              console.log(`[AI][redesign] Validation flagged needs_redesign but all ${placementFailures.length} failures are placement-only — skipping redesign (topology is correct)`)
+            } else if (needsRedesign && retryCount >= 2) {
+              console.log(`[AI][redesign] Redesign requested but already retried ${retryCount} times — showing result as-is`)
+            }
+          }
+        } catch (valErr) {
+          console.warn('[AI] Visual validation skipped:', valErr)
+          // Non-blocking — assembly still usable without validation
+        }
+
+        const diff = computeSimpleDiff(fullUrdf, assemblyResult)
+        addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          diff,
+          newUrdf: assemblyResult,
+        })
+        showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
+      } else if (retryCount < 2) {
+        // Error recovery ladder: retry with error context
+        const topoErrors = assemblyOut.topologyErrors
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount}, topologyErrors=${topoErrors ? topoErrors.length : 0}, will_retry=true`)
+
+        if (topoErrors && topoErrors.length > 0) {
+          // Topology validation failed — retry with specific error feedback
+          console.log(`[AI][topology] BRANCH: topology-error retry with ${topoErrors.length} specific errors:`)
+          for (const err of topoErrors) {
+            console.log(`[AI][topology]   - ${err}`)
+          }
+          addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
+          const errorList = topoErrors.map(e => `- ${e}`).join('\n')
+          const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design. Remember the forbidden patterns: no sensor→sensor, no children on effectors, no duplicate names, root must be structural_baseplate.`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        } else {
+          // Placement failed (no topology errors) — retry with simplification
+          console.log(`[AI][topology] BRANCH: generic placement-failure retry (no topology errors, urdf was null)`)
+          addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+          const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        }
+      } else {
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount} >= 2, giving up. topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+        addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. The design may be too complex for the current placement engine. Try describing a simpler robot.</span>`)
+      }
+    } else {
+      // Standard path: direct URDF replacement (Option A/B)
+      const diff = computeSimpleDiff(fullUrdf, result.new_urdf)
+
+      addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+        diff,
+        newUrdf: result.new_urdf,
+      })
+
+      showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+    }
+
+  } catch (err) {
+    thinking.remove()
+    const errStr = String(err)
+    console.warn('[VC] Backend error:', err)
+
+    // Handle rate limit with auto-retry
+    if (errStr.includes('429') || errStr.includes('rate_limit') ) {
+      if (retryCount < 2) {
+        const waitSec = (retryCount + 1) * 5
+        addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
+        await new Promise(r => setTimeout(r, waitSec * 1000))
+        // Retry (don't re-add the user message)
+        unlisten?.()
+        vcSend.disabled = false
+        return sendVCMessage(prompt, retryCount + 1)
+      }
+      addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
+    } else {
+      const errorMsg = `<span style="color:#f85149;">Error: ${escapeHtml(errStr.slice(0, 200))}</span>`
+      addVCMessage('assistant', errorMsg)
+    }
+  } finally {
+    unlisten?.()
+    vcSend.disabled = false
+  }
+}
+
+vcInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendVCMessage(vcInput.value)
+  }
+})
+
+vcSend.addEventListener('click', () => sendVCMessage(vcInput.value))
+
+vcInput.addEventListener('input', () => {
+  vcInput.style.height = 'auto'
+  vcInput.style.height = Math.min(vcInput.scrollHeight, 120) + 'px'
+})
+
+// Ctrl+L now switches to viewport chat
+document.removeEventListener('keydown', () => {}) // cleanup
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'l') {
+    e.preventDefault()
+    switchViewportView('chat')
+    vcInput.focus()
+  }
+})
+
+// ── Simulation Mode Integration ──────────────────────────────────────────────
 
 // ── File I/O System ──────────────────────────────────────────────────────────
 let currentFilePath: string | null = null

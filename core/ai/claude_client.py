@@ -1869,16 +1869,27 @@ def validate_assembly(urdf_content: str, original_prompt: str,
     Returns dict with 'ok' bool, 'notes' str, 'checklist', and 'needs_redesign'.
     Cost: ~$0.0003 per call (Gemini 3 Flash with 3 images).
     """
-    # Try Gemini first (preferred — cheaper, separate rate limits)
-    use_gemini = _genai is not None and os.environ.get("GEMINI_API_KEY")
-    if use_gemini:
+    # Gemini required — no Claude fallback to avoid burning Anthropic tokens/rate limit
+    if _genai is None:
+        print(f"[ai_validate] google-genai not installed — skipping validation", file=sys.stderr)
+        return {"ok": True, "notes": "Validation skipped: google-genai not installed"}
+    if not os.environ.get("GEMINI_API_KEY"):
+        print(f"[ai_validate] GEMINI_API_KEY not set — skipping validation", file=sys.stderr)
+        return {"ok": True, "notes": "Validation skipped: GEMINI_API_KEY not set"}
+
+    # Retry once on transient errors (503 overload, network timeouts)
+    for attempt in range(2):
         try:
             return _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots)
         except Exception as e:
-            print(f"[ai_validate] Gemini validation failed, falling back to Claude: {e}", file=sys.stderr)
-
-    # Fallback: Claude Sonnet
-    return _validate_assembly_claude(urdf_content, original_prompt, screenshot_base64, screenshots)
+            err_str = str(e)
+            is_transient = '503' in err_str or 'UNAVAILABLE' in err_str or 'timeout' in err_str.lower()
+            if is_transient and attempt == 0:
+                print(f"[ai_validate] Gemini transient error, retrying in 3s: {e}", file=sys.stderr)
+                time.sleep(3)
+                continue
+            print(f"[ai_validate] Gemini validation failed: {e}", file=sys.stderr)
+            return {"ok": True, "notes": f"Validation skipped: Gemini error — {e}"}
 
 
 def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
