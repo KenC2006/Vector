@@ -1787,33 +1787,38 @@ def generate_completion(
 
 VALIDATION_SYSTEM_PROMPT = r"""You are a CRITICAL robot assembly validator for Vector IDE. Your job is to find problems, not confirm things look good. Be harsh.
 
-You receive a URDF and a 3D viewport screenshot of the assembled robot. The screenshot shows the ACTUAL rendered result.
+You receive a URDF and 3D viewport screenshots of the assembled robot. The screenshots show the ACTUAL rendered result.
 
-## Be Critical — Look for These Problems in the IMAGE
+## IMPORTANT: Two Types of Problems
 
-1. **Shape mismatch**: Does it ACTUALLY look like what was requested? An arm should have a clear L-shape (upper arm + elbow bend + forearm), not a straight pole. A dog should have 4 legs, a body, and a head — not a table.
-2. **Components going wrong direction**: Extrusions sticking upward when they should go down, arms pointing into the ground, legs going sideways.
-3. **Overlapping/intersecting parts**: Components clipping through each other, stacked in the same position.
-4. **Missing features**: If user asked for a "robot dog" but there's no head, that's a problem. If they asked for a gripper but there isn't one visible, flag it.
-5. **Proportions**: Legs way too long/short relative to body, arm segments wildly different sizes.
-6. **Floating/buried**: Robot not properly sitting on the ground.
+The robot is built in two stages: (1) an AI designs the TOPOLOGY (which components connect to which), then (2) a placement engine computes all 3D positions and angles automatically. You must classify each problem by what caused it:
 
-## IMPORTANT: Default to finding problems
+- **"topology"** = The AI chose wrong components, missed components, or connected things incorrectly. Examples: missing head on a dog, no gripper on an arm, using wrong component type, too few legs. THESE CAN BE FIXED by redesigning the topology.
+- **"placement"** = The components are correct but the placement engine positioned them poorly. Examples: legs too close together, body not elevated enough, components overlapping due to small splay angles, parts appearing too small on the grid. THESE CANNOT BE FIXED by the AI — the placement engine handles all coordinates.
 
-Most assemblies have at least one issue. If you say "ok": true, you MUST justify why every aspect is correct. If anything looks even slightly off, return corrections.
+## Check for These Problems in the IMAGE
+
+1. **shape_match**: Does it look like what was requested? (topology: wrong structure. placement: correct structure but poor positioning)
+2. **direction**: Components going wrong way? (usually placement — the engine controls orientation)
+3. **overlap**: Parts clipping through each other? (usually placement — spacing/offset issue)
+4. **completeness**: Missing features the user asked for? (topology — AI forgot a component)
+5. **proportions**: Segments wildly wrong sizes? (topology if wrong length_mm specified, placement if correct sizes but bad layout)
+6. **grounded**: Floating or buried? (placement — the grounding function handles this)
 
 ## Response Format
 
-Return ONLY valid JSON with a structured checklist:
+Return ONLY valid JSON with a structured checklist. Each check MUST include "fixable_by": "topology" or "placement":
 
-{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm"}, {"check": "direction", "pass": false, "detail": "forearm extends downward instead of forward"}, {"check": "proportions", "pass": true, "detail": "segments are reasonable sizes"}, {"check": "completeness", "pass": false, "detail": "missing gripper at end"}, {"check": "grounded", "pass": true, "detail": "sitting on floor"}, {"check": "symmetry", "pass": true, "detail": "n/a for arm"}], "notes": "The forearm extends downward instead of forward. The arm needs a different topology — the shoulder and elbow joints should create an L-shape reaching outward.", "needs_redesign": true}
+{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm points into ground", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "missing gripper at end of arm", "fixable_by": "topology"}, {"check": "proportions", "pass": true, "detail": "segments reasonable", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Missing gripper — the arm topology needs an effector at the end.", "needs_redesign": true}
+
+Set "needs_redesign" to true ONLY if there are topology-fixable failures (missing/wrong components, bad connections). Do NOT set needs_redesign for placement-only issues — the AI cannot fix those.
 
 Set "ok" to true ONLY if ALL checks pass. The checklist must always have these 6 checks.
 
 CRITICAL RULES:
-- Do NOT include "edits" with modified xyz/rpy coordinates. You cannot do spatial math — coordinate edits always make things worse.
-- If anything is wrong, set "needs_redesign": true. The system will regenerate the topology from scratch with your feedback.
-- Your job is to DESCRIBE what's wrong, not to fix coordinates.
+- Do NOT include "edits" with modified xyz/rpy coordinates. You cannot do spatial math.
+- Classify every failure as "topology" or "placement" — this determines whether a redesign is triggered.
+- Your job is to DESCRIBE what's wrong and WHO can fix it (topology AI vs placement engine).
 
 REMINDER: Return ONLY JSON. Start with { end with }.
 """
@@ -1898,18 +1903,26 @@ Assembled URDF:
     if checklist:
         failed = [c for c in checklist if not c.get("pass", True)]
         passed = [c for c in checklist if c.get("pass", True)]
-        print(f"[ai_validate] Checklist: {len(passed)} passed, {len(failed)} failed", file=sys.stderr)
+        topo_fails = [c for c in failed if c.get("fixable_by") == "topology"]
+        placement_fails = [c for c in failed if c.get("fixable_by") == "placement"]
+        print(f"[ai_validate] Checklist: {len(passed)} passed, {len(failed)} failed (topology={len(topo_fails)}, placement={len(placement_fails)})", file=sys.stderr)
         for c in failed:
-            print(f"[ai_validate]   FAIL: {c.get('check')}: {c.get('detail')}", file=sys.stderr)
+            print(f"[ai_validate]   FAIL [{c.get('fixable_by', '?')}]: {c.get('check')}: {c.get('detail')}", file=sys.stderr)
 
     if not result.get("ok", True) or result.get("needs_redesign"):
-        # Validation found issues — return diagnostic info for redesign.
-        # Do NOT apply URDF edits — LLMs can't do spatial math.
-        # The frontend will trigger a topology redesign with these notes.
+        # Validation found issues — check if any are topology-fixable.
+        # Only set needs_redesign if the AI can actually fix something.
+        has_topo_failures = any(
+            not c.get("pass", True) and c.get("fixable_by") == "topology"
+            for c in checklist
+        )
+        needs_redesign = result.get("needs_redesign", False) and has_topo_failures
+        if not has_topo_failures and result.get("needs_redesign"):
+            print(f"[ai_validate] Overriding needs_redesign=false — all failures are placement-only", file=sys.stderr)
         return {
             "ok": False,
-            "notes": result.get("notes", "Needs redesign"),
-            "needs_redesign": True,
+            "notes": result.get("notes", "Issues found"),
+            "needs_redesign": needs_redesign,
             "checklist": checklist,
         }
 

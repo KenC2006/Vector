@@ -3026,17 +3026,32 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
               console.log(`[AI][redesign] No checklist in response`)
             }
 
-            // Trigger redesign if validation says so and we haven't already retried
+            // Trigger redesign only for topology-fixable failures (not placement issues)
             const needsRedesign = (valResult as any).needs_redesign
-            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, retryCount=${retryCount}, will_retry=${!!(needsRedesign && retryCount < 1)}`)
-            if (needsRedesign && retryCount < 1) {
-              const failures = checklist
-                ? checklist.filter(c => !c.pass).map(c => `- ${c.check}: ${c.detail}`).join('\n')
-                : valResult.notes
-              console.log(`[AI][redesign] Triggering redesign with failures:\n${failures}`)
-              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found issues. Redesigning...</span>`)
+            const topoFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology')
+              : []
+            const placementFailures = checklist
+              ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement')
+              : []
+            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, topoFailures=${topoFailures.length}, placementFailures=${placementFailures.length}, retryCount=${retryCount}`)
+            console.log(`[AI][redesign] will_retry=${!!(needsRedesign && topoFailures.length > 0 && retryCount < 1)}`)
 
-              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}\n\nPlease design a NEW topology from scratch that fixes these issues. Do NOT reuse the same structure — rethink the component layout. Remember: you specify topology only, the placement engine handles coordinates.`
+            if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
+              const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
+              const placementNote = placementFailures.length > 0
+                ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) like positioning/spacing — these are handled by the placement engine, not your topology. Ignore them.)`
+                : ''
+              console.log(`[AI][redesign] Triggering redesign with ${topoFailures.length} topology failures:\n${failures}`)
+              if (placementFailures.length > 0) {
+                console.log(`[AI][redesign] Skipping ${placementFailures.length} placement-only failures:`)
+                for (const pf of placementFailures) {
+                  console.log(`[AI][redesign]   (placement) ${pf.check}: ${pf.detail}`)
+                }
+              }
+              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
+
+              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above. Focus on: correct components, correct connections, nothing missing. The placement engine handles all positioning — do NOT try to fix spacing, angles, or grounding.`
               console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
 
               // Wait for rate limit token bucket to replenish before redesign call.
@@ -3049,6 +3064,8 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
               vcSend.disabled = false
               unlisten?.()
               return sendVCMessage(redesignPrompt, retryCount + 1)
+            } else if (needsRedesign && topoFailures.length === 0) {
+              console.log(`[AI][redesign] Validation flagged needs_redesign but all ${placementFailures.length} failures are placement-only — skipping redesign (topology is correct)`)
             } else if (needsRedesign && retryCount >= 1) {
               console.log(`[AI][redesign] Redesign requested but already retried (retryCount=${retryCount}) — showing result as-is`)
             }
