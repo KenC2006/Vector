@@ -2,6 +2,7 @@
 Claude AI client for robot design editing.
 Communicates with Claude API to generate robot model edits based on natural language requests.
 """
+import base64
 import json
 import os
 import re
@@ -18,7 +19,17 @@ try:
 except ImportError as e:
     _anthropic_error = str(e)
 
-# ── Singleton client ──────────────────────────────────────────────────────────
+# Lazy import — google-genai for Gemini visual validation
+_genai = None
+_genai_error = None
+try:
+    from google import genai as _genai_module
+    from google.genai import types as _genai_types
+    _genai = _genai_module
+except ImportError as e:
+    _genai_error = str(e)
+
+# ── Singleton clients ─────────────────────────────────────────────────────────
 _client = None
 
 def _get_client():
@@ -35,6 +46,25 @@ def _get_client():
             raise ValueError("ANTHROPIC_API_KEY environment variable not set")
         _client = _anthropic.Anthropic(api_key=api_key)
     return _client
+
+
+_gemini_client = None
+
+def _get_gemini_client():
+    """Return a shared Gemini client instance for visual validation."""
+    global _gemini_client
+    if _gemini_client is None:
+        if _genai is None:
+            raise ImportError(
+                f"google-genai package not installed. Run: pip install google-genai\n"
+                f"Error: {_genai_error}"
+            )
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY environment variable not set")
+        _gemini_client = _genai.Client(api_key=api_key)
+    return _gemini_client
+
 
 # ── Prompt cache logging ─────────────────────────────────────────────────────
 def _log_cache_usage(label: str, response) -> None:
@@ -1829,21 +1859,95 @@ def validate_assembly(urdf_content: str, original_prompt: str,
                       screenshot_base64: str = None,
                       screenshots: list = None) -> dict:
     """
-    Second-pass validation: send assembled URDF + 3 viewport screenshots to Claude.
-    Uses multimodal input so Claude can SEE the assembled robot from multiple angles.
-    Returns dict with 'ok' bool, 'notes' str, and optional 'edits' list.
-    Cost: ~$0.05-0.10 per call (Sonnet with 3 images).
+    Second-pass validation: send assembled URDF + 3 viewport screenshots to Gemini.
+    Uses Gemini 3 Flash for visual validation (cheap, fast, good vision, separate rate limits).
+    Falls back to Claude Sonnet if Gemini is unavailable.
+    Returns dict with 'ok' bool, 'notes' str, 'checklist', and 'needs_redesign'.
+    Cost: ~$0.0003 per call (Gemini 3 Flash with 3 images).
     """
+    # Try Gemini first (preferred — cheaper, separate rate limits)
+    use_gemini = _genai is not None and os.environ.get("GEMINI_API_KEY")
+    if use_gemini:
+        try:
+            return _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots)
+        except Exception as e:
+            print(f"[ai_validate] Gemini validation failed, falling back to Claude: {e}", file=sys.stderr)
+
+    # Fallback: Claude Sonnet
+    return _validate_assembly_claude(urdf_content, original_prompt, screenshot_base64, screenshots)
+
+
+def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
+                               screenshot_base64: str = None,
+                               screenshots: list = None) -> dict:
+    """Gemini 3 Flash visual validation. ~$0.0003 per call."""
+    client = _get_gemini_client()
+
+    # Build multimodal content parts
+    parts = []
+    parts.append(_genai_types.Part.from_text(VALIDATION_SYSTEM_PROMPT))
+
+    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
+    has_images = False
+
+    if screenshots and len(screenshots) >= 3:
+        for img, label in zip(screenshots[:3], view_labels):
+            if img:
+                parts.append(_genai_types.Part.from_text(f"**{label}:**"))
+                parts.append(_genai_types.Part.from_bytes(
+                    data=base64.b64decode(img),
+                    mime_type='image/png',
+                ))
+                has_images = True
+        total_kb = sum(len(s) for s in screenshots[:3]) // 1024
+        print(f"[ai_validate] [Gemini] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
+    elif screenshot_base64:
+        parts.append(_genai_types.Part.from_bytes(
+            data=base64.b64decode(screenshot_base64),
+            mime_type='image/png',
+        ))
+        has_images = True
+        print(f"[ai_validate] [Gemini] Including 1 viewport screenshot ({len(screenshot_base64) // 1024}KB)", file=sys.stderr)
+
+    prompt_text = f"""Original user request: "{original_prompt}"
+
+Assembled URDF:
+```xml
+{urdf_content}
+```
+
+{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}"""
+    parts.append(_genai_types.Part.from_text(prompt_text))
+
+    t0 = time.time()
+    response = client.models.generate_content(
+        model='gemini-3-flash-preview',
+        contents=[_genai_types.Content(role="user", parts=parts)],
+        config=_genai_types.GenerateContentConfig(
+            response_mime_type='application/json',
+            temperature=0.2,
+        ),
+    )
+    elapsed = time.time() - t0
+    response_text = response.text or ""
+    if not response_text:
+        return {"ok": True, "notes": "Gemini validation returned empty response"}
+    print(f"[ai_validate] [Gemini] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
+    return _process_validation_result(response_text)
+
+
+def _validate_assembly_claude(urdf_content: str, original_prompt: str,
+                               screenshot_base64: str = None,
+                               screenshots: list = None) -> dict:
+    """Claude Sonnet fallback for visual validation. ~$0.05 per call."""
     client = _get_client()
 
-    # Build multimodal message content
     content = []
     view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
     has_images = False
 
-    # Add 3 labeled screenshots if available
     if screenshots and len(screenshots) >= 3:
-        for i, (img, label) in enumerate(zip(screenshots[:3], view_labels)):
+        for img, label in zip(screenshots[:3], view_labels):
             if img:
                 content.append({"type": "text", "text": f"**{label}:**"})
                 content.append({
@@ -1852,15 +1956,13 @@ def validate_assembly(urdf_content: str, original_prompt: str,
                 })
                 has_images = True
         total_kb = sum(len(s) for s in screenshots[:3]) // 1024
-        print(f"[ai_validate] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
+        print(f"[ai_validate] [Claude fallback] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
     elif screenshot_base64:
-        # Fallback: single screenshot
         content.append({
             "type": "image",
             "source": {"type": "base64", "media_type": "image/png", "data": screenshot_base64},
         })
         has_images = True
-        print(f"[ai_validate] Including 1 viewport screenshot ({len(screenshot_base64) // 1024}KB)", file=sys.stderr)
 
     content.append({
         "type": "text",
@@ -1871,13 +1973,10 @@ Assembled URDF:
 {urdf_content}
 ```
 
-{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, symmetry, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}""",
+{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}""",
     })
 
     t0 = time.time()
-    # Use Sonnet for visual validation — better vision than Haiku, worth the ~$0.05 cost
-    # Note: VALIDATION_SYSTEM_PROMPT is ~640 tokens, below the 1024 minimum
-    # for Sonnet prompt caching. No cache_control here.
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
@@ -1894,11 +1993,14 @@ Assembled URDF:
             response_text += block.text
     if not response_text:
         return {"ok": True, "notes": "Validation returned no text"}
-    print(f"[ai_validate] Claude responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
+    print(f"[ai_validate] [Claude fallback] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
+    return _process_validation_result(response_text)
 
+
+def _process_validation_result(response_text: str) -> dict:
+    """Shared parsing logic for validation responses from Gemini or Claude."""
     result = _parse_json_response(response_text)
 
-    # Log structured checklist if present
     checklist = result.get("checklist", [])
     if checklist:
         failed = [c for c in checklist if not c.get("pass", True)]
@@ -1910,8 +2012,6 @@ Assembled URDF:
             print(f"[ai_validate]   FAIL [{c.get('fixable_by', '?')}]: {c.get('check')}: {c.get('detail')}", file=sys.stderr)
 
     if not result.get("ok", True) or result.get("needs_redesign"):
-        # Validation found issues — check if any are topology-fixable.
-        # Only set needs_redesign if the AI can actually fix something.
         has_topo_failures = any(
             not c.get("pass", True) and c.get("fixable_by") == "topology"
             for c in checklist
