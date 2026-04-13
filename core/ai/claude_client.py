@@ -297,6 +297,10 @@ Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY
 
 Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(bottom, fixed, 100mm, vertical) -> 4x knee_servo(bottom, revolute y) -> 4x lower_leg_extrusion(bottom, fixed, 80mm, vertical)
 
+Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
+
+Tail: baseplate -> tail_servo(back, revolute z) -> tail_extrusion(back, fixed, 80-120mm, horizontal). One servo and one extrusion is enough.
+
 Sensor mount: any_link -> sensor(top/front/left/right, fixed)
 
 ## Forbidden Patterns (these WILL be rejected by the placement engine)

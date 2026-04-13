@@ -3054,13 +3054,9 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
               const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above. Focus on: correct components, correct connections, nothing missing. The placement engine handles all positioning — do NOT try to fix spacing, angles, or grounding.`
               console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
 
-              // Wait for rate limit token bucket to replenish before redesign call.
-              // Assembly (~4,000 tokens) + validation (~4,000 tokens with images) nearly
-              // exhausts the 10,000 ITPM budget. 45s ensures call 1 drops out of the
-              // sliding window, giving ~6,000 tokens of headroom for the redesign.
-              console.log(`[AI][redesign] Waiting 45s for rate limit budget to replenish...`)
-              await new Promise(r => setTimeout(r, 45000))
-
+              // No proactive delay — validation is on Gemini (separate rate limits).
+              // If the Claude redesign call hits 429, the existing rate limit retry
+              // logic (exponential backoff) handles it automatically.
               vcSend.disabled = false
               unlisten?.()
               return sendVCMessage(redesignPrompt, retryCount + 1)
