@@ -205,8 +205,9 @@ export function initViewportControls(deps: {
       viewportPanel.style.flex = '1'
       fullscreenViewportBtn?.classList.add('active')
     } else {
-      editorPanel.style.display = ''
-      handle.style.display = ''
+      // Only restore editor visibility if a file is actually open (editor-hidden absent)
+      if (!editorPanel.classList.contains('editor-hidden')) editorPanel.style.display = ''
+      if (!handle.classList.contains('editor-hidden')) handle.style.display = ''
       if (sidebarEl) sidebarEl.style.display = ''
       if (activityBarEl) activityBarEl.style.display = ''
       if (sidebarHandle) sidebarHandle.style.display = ''
@@ -239,8 +240,9 @@ export function initViewportControls(deps: {
       handle.style.display = 'none'
       viewportPanel.style.flex = '1'
     } else {
-      editorPanel.style.display = ''
-      handle.style.display = ''
+      // Only restore editor visibility if a file is actually open (editor-hidden absent)
+      if (!editorPanel.classList.contains('editor-hidden')) editorPanel.style.display = ''
+      if (!handle.classList.contains('editor-hidden')) handle.style.display = ''
       viewportPanel.style.flex = ''
       editorPanel.style.width = savedEditorWidth
     }

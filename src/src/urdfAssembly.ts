@@ -105,6 +105,10 @@ export interface UrdfAssemblyApi {
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
+  /** Snapshot the current undo/redo stacks (call before switching files). */
+  getUndoState(): { undo: string[]; redo: string[] }
+  /** Restore a previously saved undo/redo snapshot (call after switching files). */
+  restoreUndoState(state: { undo: string[]; redo: string[] }): void
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -1216,6 +1220,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     refreshBuildPanel()
     renderInspector()
     updateParentIndicator()
+    updateComponentCompatibility()
   }
 
   const parentNameEl = document.getElementById('tb-parent-name') as HTMLSpanElement | null
@@ -1237,6 +1242,42 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const compItems = document.getElementById('comp-items') as HTMLDivElement | null
   const compDetail = document.getElementById('comp-detail') as HTMLDivElement | null
   let presetData: PresetData | null = null
+  // comp.id → list item element, for compatibility updates without full re-render
+  const compItemEls = new Map<string, HTMLElement>()
+
+  // ── Category icons ──────────────────────────────────────────────────────────
+  const CATEGORY_ICONS: Record<string, string> = {
+    actuators:    `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="7" cy="7" r="2.2"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.93 2.93l1.06 1.06M10.01 10.01l1.06 1.06M2.93 11.07l1.06-1.06M10.01 3.99l1.06-1.06" stroke-linecap="round"/></svg>`,
+    motors:       `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="7" cy="7" r="4.5"/><circle cx="7" cy="7" r="1.5"/><path d="M7 2.5v1.8M7 9.7v1.8M2.5 7h1.8M9.7 7h1.8" stroke-linecap="round"/></svg>`,
+    sensors:      `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><ellipse cx="7" cy="7" rx="5" ry="3.5"/><circle cx="7" cy="7" r="1.5"/><path d="M2.5 5C3.5 2.5 10.5 2.5 11.5 5" stroke-linecap="round"/></svg>`,
+    compute:      `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="3" width="8" height="8" rx="1"/><path d="M5 1v2M9 1v2M5 11v2M9 11v2M1 5h2M1 9h2M11 5h2M11 9h2" stroke-linecap="round"/></svg>`,
+    power:        `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8.5 1.5L5 7.5h4L5 12.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    structural:   `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="4" width="11" height="6" rx="0.5"/><line x1="1.5" y1="6.5" x2="12.5" y2="6.5"/><line x1="1.5" y1="7.5" x2="12.5" y2="7.5"/></svg>`,
+    transmission: `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="4.5" cy="7" r="2.5"/><circle cx="9.5" cy="7" r="2"/><line x1="7" y1="7" x2="7.5" y2="7" stroke-width="1.5"/></svg>`,
+    end_effectors:`<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4 13V7.5L2 5V3h1.5l1.5 2.5L7 7M10 13V7.5l2-2.5V3H10.5L9 5.5 7 7" stroke-linecap="round" stroke-linejoin="round"/><line x1="7" y1="7" x2="7" y2="13" stroke-linecap="round"/></svg>`,
+    mobility:     `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="7" cy="7" r="5"/><circle cx="7" cy="7" r="1.5"/><path d="M7 2v2M7 10v2M2 7h2M10 7h2" stroke-linecap="round"/></svg>`,
+  }
+
+  // Map from preset mounting_logic.primary → whether it works with any face-mount link.
+  // Rail-only types need a structural/extrusion parent.
+  function mountIsCompatible(comp: PresetComponent): boolean {
+    if (!selectedLink) return false
+    const primary = ((comp.mounting_logic as Record<string, unknown>).primary ?? '') as string
+    if (primary === 'side_rail_mount' || primary === 'rail_slot') {
+      return selectedLink.includes('extrusion') || selectedLink.includes('rail')
+    }
+    return true
+  }
+
+  function updateComponentCompatibility() {
+    for (const [id, el] of compItemEls) {
+      if (!presetData) break
+      for (const cat of Object.values(presetData.categories)) {
+        const comp = cat.components.find(c => c.id === id)
+        if (comp) { el.classList.toggle('compatible', mountIsCompatible(comp)); break }
+      }
+    }
+  }
 
   function computeBoxInertia(mass: number, xm: number, ym: number, zm: number) {
     return {
@@ -1890,6 +1931,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function enterCarryMode(comp: PresetComponent) {
     if (carryGroup) exitCarryMode()
+    // Deselect any active link so the gizmo is detached and OrbitControls
+    // are guaranteed enabled before we take over mouse handling.
+    if (selectedLink) selectLink(null)
+    ctx.controls.enabled = true
     carryComp = comp
     carryFrozen = false
     carryUserAngle = 0
@@ -1946,6 +1991,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     applyNodeRingVisibility()
     setCarryHud('')
     ctx.canvas.style.cursor = ''
+    // Re-enable OrbitControls in case a gizmo drag left them disabled
+    // (the gizmo dragging-changed handler fires on drag-end, but can be missed
+    // if carry mode was entered mid-drag or Escape interrupted a drag).
+    ctx.controls.enabled = true
   }
 
   function getCarrySourceNodes() {
@@ -2135,22 +2184,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function renderComponentDetail(comp: PresetComponent) {
     if (!compDetail) return
+
     const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
     const massLabel = comp.physical.mass_kg_per_100mm ? `${(comp.physical.mass_kg_per_100mm * 1000).toFixed(0)}g/100mm` :
                       mass != null ? (mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`) : '—'
     const bb = comp.physical.bounding_box_mm
     const dims = bb ? `${bb[0]}×${bb[1]}×${bb[2]} mm` : '—'
     const shape = comp.physical.inertia_primitive || 'box'
+    const mounting = ((comp.mounting_logic as Record<string, unknown>).primary ?? '—') as string
 
-    // Build mechanical specs
     const me = comp.mechanical_electrical
     const specs = Object.entries(me).slice(0, 6).map(([k, v]) => {
       const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
       const val = Array.isArray(v) ? v.join(' – ') : String(v)
       return `<div class="tb-kv"><span class="tb-kv-key">${label}</span><span class="tb-kv-val">${val}</span></div>`
     }).join('')
-
-    const mounting = comp.mounting_logic.primary ?? '—'
 
     compDetail.innerHTML = `
       <div class="tb-detail-name">${comp.name}</div>
@@ -2169,29 +2217,33 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         ${specs}
       </div>
     `
+
   }
 
   function renderComponents(filter: string) {
     if (!compItems || !presetData) return
     const q = filter.trim().toLowerCase()
     compItems.innerHTML = ''
+    compItemEls.clear()
 
     for (const [catName, cat] of Object.entries(presetData.categories)) {
       const comps = cat.components.filter(c => {
-        // Only show components that have real mesh files
         if (!hasMeshOverride(c.id)) return false
-        // Exclude components whose meshes are too large/slow to load
         if (SLOW_MESH_BLACKLIST.has(c.id)) return false
-        // Apply search filter
         return !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
       })
       if (comps.length === 0) continue
 
-      // Category header
       const catLabel = catName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
       const catEl = document.createElement('div')
       catEl.className = 'tb-cat'
-      catEl.innerHTML = `<span class="tb-cat-arrow">▾</span> ${catLabel} <span style="opacity:0.4;margin-left:auto;font-size:10px">${comps.length}</span>`
+      const iconSvg = CATEGORY_ICONS[catName] ?? ''
+      catEl.innerHTML = `
+        <span class="tb-cat-icon">${iconSvg}</span>
+        <span class="tb-cat-label">${catLabel}</span>
+        <span class="tb-cat-count">${comps.length}</span>
+        <span class="tb-cat-arrow">▾</span>
+      `
       let collapsed = false
       catEl.addEventListener('click', () => {
         collapsed = !collapsed
@@ -2203,18 +2255,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const listEl = document.createElement('div')
       listEl.className = 'tb-list'
       const cc = CATEGORY_COLORS[catName] ?? [0.6, 0.6, 0.6, 1]
-      const dotColor = `rgb(${Math.round(cc[0]*255)},${Math.round(cc[1]*255)},${Math.round(cc[2]*255)})`
+      const iconColor = `rgb(${Math.round(cc[0]*255)},${Math.round(cc[1]*255)},${Math.round(cc[2]*255)})`
+
       for (const comp of comps) {
         const el = document.createElement('div')
         el.className = 'tb-item'
+        if (mountIsCompatible(comp)) el.classList.add('compatible')
         const spec = getCompactSpec(comp)
         el.innerHTML = `
-          <span class="tb-cat-dot" style="background:${dotColor}"></span>
+          <span class="tb-cat-icon tb-item-icon" style="color:${iconColor}">${iconSvg}</span>
           <div class="tb-item-info">
             <div class="tb-item-name">${comp.name}</div>
             <div class="tb-item-meta">${spec}</div>
           </div>
         `
+        compItemEls.set(comp.id, el)
+
         el.addEventListener('click', () => {
           if (ctx.getInteractionMode() === 'inspect') {
             ctx.showToast('Switch to Build mode to place components', 'info')
@@ -2224,12 +2280,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             ctx.showToast('Exit simulation before placing components', 'info')
             return
           }
-          // Show detail
-          renderComponentDetail(comp)
-          // Highlight
           compItems!.querySelectorAll('.tb-item').forEach(i => i.classList.remove('selected'))
           el.classList.add('selected')
-          // Enter carry mode — ghost follows mouse until committed
+          renderComponentDetail(comp)
           enterCarryMode(comp)
         })
         listEl.appendChild(el)
@@ -2357,6 +2410,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   gizmo.addEventListener('dragging-changed', ev => {
     const on = Boolean((ev as unknown as { value: boolean }).value)
+    // Carry mode owns the interaction; ignore gizmo drag events while it is active.
+    if (carryComp) { ctx.controls.enabled = true; return }
     ctx.controls.enabled = !on
     if (on && selectedLink) {
       const pivot = getPivotGroupForLink(selectedLink)
@@ -3402,6 +3457,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
     rebuildMountNodes,
+    getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),
+    restoreUndoState: (state: { undo: string[]; redo: string[] }) => {
+      urdfUndo = [...state.undo]
+      urdfRedo = [...state.redo]
+    },
   }
 }
 

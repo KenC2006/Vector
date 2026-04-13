@@ -414,6 +414,8 @@ interface TabRobotCache {
   parsedContent: string
 }
 const tabRobotCache: Record<string, TabRobotCache> = {}
+// Per-file undo/redo state — saved when leaving a file, restored when returning.
+const fileUndoStates: Record<string, { undo: string[]; redo: string[] }> = {}
 let untitledCounter = 0
 
 function getFileExt(filename: string): string {
@@ -495,6 +497,8 @@ function switchToFile(filename: string) {
       kinematicJoints,
       parsedContent: monacoEditor.getModel()?.getValue() || '',
     }
+    // Save per-file undo/redo stack before leaving this file
+    if (urdfAssemblyApi) fileUndoStates[activeFile] = urdfAssemblyApi.getUndoState()
   }
 
   // Save current view state (editor + camera)
@@ -563,7 +567,6 @@ function switchToFile(filename: string) {
       updateComMarker()
       rebuildCollisionVisuals(currentContent)
       updateViewportInfo()
-      buildKinematicTreeUI()
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
     } else {
@@ -573,6 +576,11 @@ function switchToFile(filename: string) {
       groundRobot(robot)
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
+    }
+
+    // Restore per-file undo/redo stack (or clear it for a brand-new file)
+    if (urdfAssemblyApi) {
+      urdfAssemblyApi.restoreUndoState(fileUndoStates[filename] ?? { undo: [], redo: [] })
     }
 
     // Restore saved camera or auto-frame
@@ -700,17 +708,26 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
 function showWelcomeState() {
   activeFile = ''
   monacoEditor.setModel(null)
-  const welcomeEl = document.getElementById('editor-welcome')
-  if (welcomeEl) welcomeEl.style.display = 'flex'
+  editorPanel.classList.add('editor-hidden')
+  handle.classList.add('editor-hidden')
   const bcFilename = document.getElementById('bc-filename')
   if (bcFilename) bcFilename.textContent = ''
   renderTabs()
   renderExplorer()
+  // Viewport expands to fill the space — update renderer after layout settles
+  requestAnimationFrame(() => _resize())
 }
 
 function hideWelcomeState() {
-  const welcomeEl = document.getElementById('editor-welcome')
-  if (welcomeEl) welcomeEl.style.display = 'none'
+  editorPanel.classList.remove('editor-hidden')
+  handle.classList.remove('editor-hidden')
+  if (!editorPanel.style.width) editorPanel.style.width = '50%'
+  // Force reflow so clientWidth is accurate before resize
+  void editorPanel.offsetWidth
+  requestAnimationFrame(() => {
+    _resize()
+    ;(window as any).__vectorEditor?.layout()
+  })
 }
 
 function closeFile(filename: string) {
@@ -933,13 +950,22 @@ preloadMeshCache()
 // Debounced callback: fired once after all async GLBs settle for a given parse cycle.
 // Re-runs rebuildMountNodes so attachment rings are placed on the real rendered geometry
 // rather than the parametric URDF primitive fallback that was measured at parse time.
+//
+// Each call to applyRichVisuals passes a closure that captures the parsedRobot at that
+// moment. If the robot has been replaced by a later reparse (or a tab switch), the
+// closure's stale reference won't match the live `parsedRobot` and the rebuild is skipped.
+// The sim guard prevents node positions from being updated mid-simulation.
 let _rebuildNodesTimer: ReturnType<typeof setTimeout> | null = null
-function onMeshLoaded(_linkName: string) {
-  if (_rebuildNodesTimer) clearTimeout(_rebuildNodesTimer)
-  _rebuildNodesTimer = setTimeout(() => {
-    _rebuildNodesTimer = null
-    urdfAssemblyApi?.rebuildMountNodes()
-  }, 150)
+function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
+  return (_linkName: string) => {
+    if (_rebuildNodesTimer) clearTimeout(_rebuildNodesTimer)
+    _rebuildNodesTimer = setTimeout(() => {
+      _rebuildNodesTimer = null
+      if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
+      if (simApi.isSimActive()) return          // don't disturb sim joint state
+      urdfAssemblyApi?.rebuildMountNodes()
+    }, 150)
+  }
 }
 
 // worldGroup applies the Z-up → Y-up correction for the scene.
@@ -953,7 +979,7 @@ robot.add(worldGroup)
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot, onMeshLoaded)
+applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1478,6 +1504,11 @@ function rebuildJointAxisVisuals() {
   }
 }
 
+// Monotonically-increasing counter. Incremented each time an async xacro reparse is
+// dispatched. The callback checks this before applying results so a superseded async
+// reparse (user typed again while xacro was processing) is silently discarded.
+let xacroGeneration = 0
+
 function reparseURDF(xmlOverride?: string) {
   try {
     let urdfContent: string
@@ -1494,6 +1525,9 @@ function reparseURDF(xmlOverride?: string) {
     // and wrongly runs the preprocessor (often breaking AI-generated robots).
     const isXacro = activeFile.endsWith('.xacro') || /<xacro:/i.test(urdfContent)
     if (isXacro) {
+      // Capture generation + active file so the callback can detect if it's stale.
+      const myGeneration = ++xacroGeneration
+      const capturedFile = activeFile
       // Async xacro processing — fire and forget, reparse when done
       processXacro(urdfContent, {
         basePath: filePaths[activeFile]?.replace(/[\\/][^\\/]+$/, '') || openedFolderPath || '',
@@ -1506,6 +1540,8 @@ function reparseURDF(xmlOverride?: string) {
           }
         },
       }).then(processed => {
+        // Discard result if a newer reparse was issued or the user switched files.
+        if (xacroGeneration !== myGeneration || activeFile !== capturedFile) return
         try {
           const newParsed = parseURDFToScene(processed)
           const newKinematicData = buildKinematicGraphFromURDF(processed)
@@ -1517,14 +1553,13 @@ function reparseURDF(xmlOverride?: string) {
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot, onMeshLoaded)
+          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
           rebuildWireframes()
           rebuildCollisionVisuals(processed)
           updateViewportInfo()
-          buildKinematicTreeUI()
           urdfAssemblyApi?.onModelUpdated()
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
@@ -1555,7 +1590,7 @@ function reparseURDF(xmlOverride?: string) {
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot, onMeshLoaded)
+    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
     addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()
@@ -1570,8 +1605,6 @@ function reparseURDF(xmlOverride?: string) {
     // Update viewport info
     updateViewportInfo()
 
-    // Rebuild kinematic tree
-    buildKinematicTreeUI()
     urdfAssemblyApi?.onModelUpdated()
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
@@ -1582,143 +1615,9 @@ function reparseURDF(xmlOverride?: string) {
   }
 }
 
-// Content change listener is now handled by createNewFile() for all URDF/XML files.
-// Attach to the initial robot.urdf model:
-if (monacoModels['robot.urdf']) {
-  monacoModels['robot.urdf'].onDidChangeContent(() => {
-    if (activeFile === 'robot.urdf') {
-      if (simApi.isSimActive()) {
-        showToast('Editor changed — restart simulation to apply', 'warning')
-        return
-      }
-      if (reparseTimeout !== null) clearTimeout(reparseTimeout)
-      reparseTimeout = window.setTimeout(() => {
-        reparseTimeout = null
-        if (inlineDiffApi.getPendingOldText() !== null) return
-        // Only reparse if robot.urdf is STILL active (user may have switched tabs)
-        if (activeFile !== 'robot.urdf') return
-        reparseURDF()
-        urdfAssemblyApi?.onModelUpdated()
-      }, 500)
-    }
-  })
-}
-
-// ── Build Kinematic Tree UI ──────────────────────────────────────────────────
-// Populates the kinematic tree with links, joints, masses, and geometry types
-
-function buildKinematicTreeUI() {
-  const treeContainer = document.getElementById('kinematic-tree')!
-  treeContainer.innerHTML = ''
-
-  // Helper to get geometry type for a link
-  function getGeometryType(linkName: string): string {
-    const linkGroup = parsedRobot.linkGroups.get(linkName)
-    if (!linkGroup) return 'unknown'
-
-    let geomType = 'unknown'
-    linkGroup.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        const geom = child.geometry
-        if (geom instanceof THREE.BoxGeometry) geomType = 'box'
-        else if (geom instanceof THREE.CylinderGeometry) geomType = 'cylinder'
-        else if (geom instanceof THREE.SphereGeometry) geomType = 'sphere'
-      }
-    })
-    return geomType
-  }
-
-  function buildNode(linkName: string, depth: number = 0) {
-    const link = kinematicGraph[linkName]
-    if (!link) return
-
-    const nodeEl = document.createElement('div')
-    nodeEl.className = 'kt-node link'
-    nodeEl.style.paddingLeft = `${10 + depth * 12}px`
-
-    const hasChildren = link.children.length > 0
-    const toggleEl = document.createElement('div')
-    toggleEl.className = `kt-toggle ${hasChildren ? 'expanded' : ''}`
-    if (!hasChildren) toggleEl.style.opacity = '0'
-
-    // Extract geometry type
-    const geomType = getGeometryType(linkName)
-
-    const labelEl = document.createElement('span')
-    labelEl.textContent = `${link.name} (${link.mass}kg, ${geomType})`
-    labelEl.title = `Link: ${link.name}\nMass: ${link.mass}kg\nGeometry: ${geomType}`
-
-    nodeEl.appendChild(toggleEl)
-    nodeEl.appendChild(labelEl)
-
-    // Click to highlight in 3D
-    labelEl.style.cursor = 'pointer'
-    labelEl.addEventListener('click', (e) => {
-      e.stopPropagation()
-      highlightMesh(linkName)
-    })
-
-    // Toggle expand/collapse
-    if (hasChildren) {
-      toggleEl.style.cursor = 'pointer'
-      toggleEl.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const childrenDiv = nodeEl.nextElementSibling
-        if (childrenDiv && childrenDiv.classList.contains('kt-children')) {
-          childrenDiv.classList.toggle('visible')
-          toggleEl.classList.toggle('expanded')
-          toggleEl.classList.toggle('collapsed')
-        }
-      })
-    }
-
-    treeContainer.appendChild(nodeEl)
-
-    // Add joints and children
-    if (hasChildren) {
-      const childrenDiv = document.createElement('div')
-      childrenDiv.className = 'kt-children visible'
-
-      for (const childName of link.children) {
-        // Find the joint connecting to this child
-        for (const joint of Object.values(kinematicJoints)) {
-          if (joint.parentLink === linkName && joint.childLink === childName) {
-            const jointEl = document.createElement('div')
-            jointEl.className = 'kt-node joint'
-            jointEl.style.paddingLeft = `${30 + depth * 12}px`
-            jointEl.textContent = `↳ ${joint.name} [${joint.type}, ${joint.axis}]`
-
-            // Show tooltip on hover
-            jointEl.addEventListener('mouseenter', () => {
-              jointEl.title = `Type: ${joint.type}\nAxis: ${joint.axis}\nParent: ${joint.parentLink}\nChild: ${joint.childLink}`
-            })
-
-            childrenDiv.appendChild(jointEl)
-            break
-          }
-        }
-
-        // Recursively add child link
-        const tempDiv = document.createElement('div')
-        treeContainer.appendChild(tempDiv)
-        const oldAppend = treeContainer.appendChild
-        treeContainer.appendChild = function (el: any) {
-          tempDiv.parentElement!.insertBefore(el, tempDiv.nextSibling)
-          return el
-        }
-        buildNode(childName, depth + 1)
-        treeContainer.appendChild = oldAppend
-        tempDiv.remove()
-      }
-
-      treeContainer.appendChild(childrenDiv)
-    }
-  }
-
-  buildNode('base_link')
-}
-
-buildKinematicTreeUI()
+// Content change listeners are attached in createNewFile() for all URDF/XML files.
+// The duplicate robot.urdf listener that used to live here has been removed — the
+// createNewFile() path already covers it (and also calls groundRobot).
 
 // ── Validation Panel (delegated to validation.ts) ──────────────────────────
 
@@ -1739,7 +1638,6 @@ const nodeGraph = initNodeGraph({
   parsedRobot: () => parsedRobot,
 })
 
-const { highlightMesh, clearHighlight } = nodeGraph
 
 const toggleGraphBtn = document.getElementById('toggle-graph') as HTMLButtonElement
 
@@ -1929,7 +1827,6 @@ const panels: Record<string, HTMLElement> = {
   inspector: document.getElementById('panel-inspector')!,
   toolbox: document.getElementById('panel-toolbox')!,
   validation: document.getElementById('panel-validation')!,
-  kinematic: document.getElementById('panel-kinematic')!,
   sim: document.getElementById('panel-sim')!,
   git: document.getElementById('panel-git')!,
   settings: document.getElementById('panel-settings')!,
@@ -2570,11 +2467,37 @@ urdfAssemblyApi = initUrdfAssembly({
   switchPanel: openSidebarPanel,
   getUrdfText: () => monacoEditor.getModel()?.getValue() || SAMPLE_URDF,
   setUrdfText: (content: string) => {
-    if (monacoEditor.getModel()) {
-      monacoEditor.setValue(content)
+    const model = monacoEditor.getModel()
+    if (model) {
+      model.setValue(content)
     } else {
-      // Fallback safety: auto-create robot.urdf if somehow still no model
-      createNewFile('robot.urdf', content, null)
+      // No file open yet — create the model silently (don't reveal the editor panel).
+      // The user can open the file from the explorer if they want to edit it.
+      const filename = 'robot.urdf'
+      if (!monacoModels[filename]) {
+        monacoModels[filename] = monaco.editor.createModel(content, 'xml')
+        openFiles.push(filename)
+        filePaths[filename] = null
+        const fn = filename
+        const fnModel = monacoModels[filename]
+        fnModel.onDidChangeContent(() => {
+          if (activeFile !== fn) return
+          if (simApi.isSimActive()) { showToast('Editor changed — restart simulation to apply', 'warning'); return }
+          if (reparseTimeout !== null) clearTimeout(reparseTimeout)
+          reparseTimeout = window.setTimeout(() => {
+            reparseTimeout = null
+            if (inlineDiffApi.getPendingOldText() !== null) return
+            if (activeFile !== fn) return
+            reparseURDF()
+            groundRobot(robot)
+            urdfAssemblyApi?.onModelUpdated()
+          }, 500)
+        })
+        renderTabs()
+        renderExplorer()
+      } else {
+        monacoModels[filename].setValue(content)
+      }
     }
   },
   reparseUrdf: (xml?: string) => reparseURDF(xml),
