@@ -284,7 +284,6 @@ function applyMeshToLink(
   // Normalize units: GLB files from our STEP converter are in mm.
   // Detect by comparing raw mesh size to expected size (in meters).
   // If mesh is >10x larger than expected, assume mm → convert to m.
-  // Do NOT force-fit to the URDF primitive box — the GLB IS the real geometry.
   const meshBox = new THREE.Box3().setFromObject(meshGroup)
   const meshSize = new THREE.Vector3()
   meshBox.getSize(meshSize)
@@ -294,6 +293,26 @@ function applyMeshToLink(
   if (maxMeshDim > 0.0001) {
     if (maxMeshDim > maxExpectedDim * 10) {
       meshGroup.scale.setScalar(0.001) // mm → m
+    }
+
+    // Per-axis scaling for extrusions with variable length_mm overrides.
+    // The GLB mesh is a fixed default size but the URDF primitive geometry
+    // has the correct custom dimensions. Only apply to extrusion components
+    // — other components (servos, grippers, cameras) have GLB meshes that
+    // are already the correct shape and should NOT be distorted.
+    const isExtrusion = compId.includes('extrusion')
+    if (isExtrusion) {
+      meshBox.setFromObject(meshGroup)
+      meshBox.getSize(meshSize)
+      if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
+        const scaleX = dims.x / meshSize.x
+        const scaleY = dims.y / meshSize.y
+        const scaleZ = dims.z / meshSize.z
+        meshGroup.scale.x *= scaleX
+        meshGroup.scale.y *= scaleY
+        meshGroup.scale.z *= scaleZ
+        console.log(`[richVisuals] Extrusion scale for ${compId}: ${scaleX.toFixed(2)}x ${scaleY.toFixed(2)}y ${scaleZ.toFixed(2)}z (dims=${dims.x.toFixed(3)},${dims.y.toFixed(3)},${dims.z.toFixed(3)})`)
+      }
     }
 
     // Center the mesh on origin so it sits properly in the link frame
