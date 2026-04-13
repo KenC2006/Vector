@@ -185,7 +185,7 @@ Validation results surface as inline annotations in the model file, not just a l
 - [ ] Kinematic graph maintained in memory across edits
 - [ ] Diff view for every AI change
 - [ ] Preset library: 5 actuators, 3 sensors, 3 kinematic archetypes
-- [ ] MuJoCo integration (Simulation Mode — user-initiated)
+- [x] MuJoCo integration (Simulation Mode — user-initiated)
 - [ ] Basic validation: self-collision, inertia check, CoM
 
 ### Phase 2 — CAD + Expanded Sim

@@ -140,6 +140,14 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
 // Cache loaded STEP meshes so they survive reparse cycles
 const meshCache = new Map<string, THREE.Group>()  // compId → cloneable mesh group
 const loadingInProgress = new Set<string>()  // prevent duplicate loads
+// Cache actual rendered size (full extents in meters) after scaling + centering.
+// Used by urdfAssembly to align ghost bounds with the real visual.
+const meshDimsCache = new Map<string, THREE.Vector3>()  // compId → full size (x,y,z) in meters
+
+/** Return the actual rendered mesh size (full extents, meters) for a component, or null if not yet loaded. */
+export function getRenderedMeshDims(compId: string): THREE.Vector3 | null {
+  return meshDimsCache.get(compId) ?? null
+}
 // Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
 // Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
 export const SLOW_MESH_BLACKLIST = new Set([
@@ -158,7 +166,7 @@ export const SLOW_MESH_BLACKLIST = new Set([
   'motor_harmonic_drive_large',        // same mislabeled STEP
 ])
 
-export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
+export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (linkName: string) => void): void {
   for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
     const compId = extractComponentId(linkName)
     if (!compId) continue
@@ -182,7 +190,7 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike): void {
       // Async load — use parametric until GLB is ready
       if (!loadingInProgress.has(compId)) {
         loadingInProgress.add(compId)
-        loadMeshOverride(meshUrl, linkName, linkGroup, dims, compId)
+        loadMeshOverride(meshUrl, linkName, linkGroup, dims, compId, onMeshLoaded)
       }
       // Fall through to parametric generation as placeholder
     }
@@ -320,6 +328,15 @@ function applyMeshToLink(
     const center = new THREE.Vector3()
     meshBox.getCenter(center)
     meshGroup.position.sub(center)
+
+    // Cache the actual rendered size (full extents in meters) as the authoritative
+    // dimension source for ghost bounds and node placement.
+    const finalBox = new THREE.Box3().setFromObject(meshGroup)
+    const finalSize = new THREE.Vector3()
+    finalBox.getSize(finalSize)
+    if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
+      meshDimsCache.set(compId, finalSize.clone())
+    }
   }
 
   // Replace geometry in link group
@@ -340,6 +357,8 @@ function applyMeshToLink(
 
 /**
  * Async load a mesh (GLB preferred, STEP fallback), cache it, and apply to the link.
+ * Calls onMeshLoaded(linkName) after the mesh is applied so callers can re-run
+ * node placement that depends on actual rendered geometry (e.g. rebuildMountNodes).
  */
 async function loadMeshOverride(
   meshUrl: string,
@@ -347,6 +366,7 @@ async function loadMeshOverride(
   linkGroup: THREE.Group,
   dims: GeneratorDims,
   compId: string,
+  onMeshLoaded?: (linkName: string) => void,
 ): Promise<void> {
   const ext = meshUrl.split('.').pop()?.toLowerCase() || ''
   try {
@@ -367,6 +387,7 @@ async function loadMeshOverride(
     // Apply to the current link
     const clone = meshGroup.clone(true)
     applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+    onMeshLoaded?.(linkName)
 
     console.log(`[richVisuals] Mesh loaded and cached: ${compId} (${meshUrl})`)
   } catch (e) {
@@ -381,6 +402,7 @@ async function loadMeshOverride(
           loadingInProgress.delete(compId)
           const clone = meshGroup.clone(true)
           applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+          onMeshLoaded?.(linkName)
           console.log(`[richVisuals] STEP fallback loaded: ${compId}`)
           return
         } catch (e2) {
@@ -454,6 +476,22 @@ export async function preloadMeshCache(): Promise<void> {
       for (const compId of compIds) {
         meshCache.set(compId, meshGroup)
         loadingInProgress.delete(compId)
+
+        // Pre-populate meshDimsCache so ghost bounds are correct on first placement,
+        // before applyMeshToLink has ever been called for this component.
+        // Extrusions skip this — their dims depend on per-instance length_mm and are
+        // handled correctly by the parametric path in computeCarryGhostBounds.
+        if (!compId.includes('extrusion') && !meshDimsCache.has(compId)) {
+          const rawBox = new THREE.Box3().setFromObject(meshGroup)
+          const rawSize = new THREE.Vector3()
+          rawBox.getSize(rawSize)
+          // Apply the same mm→m detection logic as applyMeshToLink
+          const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z)
+          if (maxDim > 1.0) rawSize.multiplyScalar(0.001)
+          if (rawSize.x > 0.001 || rawSize.y > 0.001 || rawSize.z > 0.001) {
+            meshDimsCache.set(compId, rawSize.clone())
+          }
+        }
       }
       return compIds.length
     }),

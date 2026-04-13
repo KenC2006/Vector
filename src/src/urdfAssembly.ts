@@ -8,7 +8,7 @@ import type { UrdfVisualDesc } from './componentMeshes'
 import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCompatible, incompatibleReason, componentPortsForPreset, resolveFaceToPort } from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
-import { SLOW_MESH_BLACKLIST } from './richVisuals/index'
+import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { quatToRpy } from './rotationIO'
 
 export interface ParsedRobotLike {
@@ -103,6 +103,8 @@ export interface UrdfAssemblyApi {
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
+  /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
+  rebuildMountNodes(): void
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -1552,28 +1554,45 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   /** Compute the AABB of a component's visual geometry descriptors.
-   *  Cylinders are treated as axis-along-Z (matching the URDF parser's rotation.x = PI/2).
-   *  Returns half-extents and center offset in the component link's local frame. */
-  function computeCarryGhostBounds(comp: PresetComponent): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
+   *  Prefers actual rendered mesh dims (from loaded GLB) over parametric URDF primitives
+   *  so ghost bounds and node positions derive from the same geometry source.
+   *  Returns half-extents, center offset, and dominant shape for the carry ghost. */
+  function computeCarryGhostBounds(comp: PresetComponent): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' } {
+    // Fix 1+2: use actual rendered mesh size when the GLB has been loaded and cached.
+    // This ensures ghost bounds agree with the real visual geometry rather than URDF primitives.
+    const renderedDims = getRenderedMeshDims(comp.id)
+    if (renderedDims && renderedDims.x > 0.001) {
+      return {
+        hx: renderedDims.x / 2,
+        hy: renderedDims.y / 2,
+        hz: renderedDims.z / 2,
+        cx: 0, cy: 0, cz: 0,
+        shape: 'box',
+      }
+    }
+
+    // Fallback: derive from parametric URDF primitive definitions
     const catName = findCategory(comp)
     const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
     let minX = Infinity, maxX = -Infinity
     let minY = Infinity, maxY = -Infinity
     let minZ = Infinity, maxZ = -Infinity
+    let allCylinders = visuals.length > 0
     for (const vis of visuals) {
       const [ox, oy, oz] = vis.origin_xyz
       const g = vis.geometry
       let ex = 0, ey = 0, ez = 0
-      if (g.type === 'box') { ex = g.size[0] / 2; ey = g.size[1] / 2; ez = g.size[2] / 2 }
+      if (g.type === 'box') { ex = g.size[0] / 2; ey = g.size[1] / 2; ez = g.size[2] / 2; allCylinders = false }
       else if (g.type === 'cylinder') { ex = g.radius; ey = g.radius; ez = g.length / 2 }
-      else if (g.type === 'sphere') { ex = g.radius; ey = g.radius; ez = g.radius }
+      else if (g.type === 'sphere') { ex = g.radius; ey = g.radius; ez = g.radius; allCylinders = false }
       minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
       minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
       minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
     }
+    const shape: 'box' | 'cylinder' = allCylinders ? 'cylinder' : 'box'
     if (!isFinite(minX)) {
       const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
-      return { hx: (bb[0] ?? 40) / 2000, hy: (bb[1] ?? 40) / 2000, hz: (bb[2] ?? 40) / 2000, cx: 0, cy: 0, cz: 0 }
+      return { hx: (bb[0] ?? 40) / 2000, hy: (bb[1] ?? 40) / 2000, hz: (bb[2] ?? 40) / 2000, cx: 0, cy: 0, cz: 0, shape }
     }
     return {
       hx: (maxX - minX) / 2,
@@ -1582,6 +1601,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       cx: (maxX + minX) / 2,
       cy: (maxY + minY) / 2,
       cz: (maxZ + minZ) / 2,
+      shape,
     }
   }
 
@@ -1744,7 +1764,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   let carryComp: PresetComponent | null = null
   let carryGroup: THREE.Group | null = null
-  let carryGhostBounds: { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } | null = null
+  let carryGhostBounds: { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' } | null = null
   let carryWorldPos = new THREE.Vector3()
   let carryFrozen = false          // true after manual nudge — mouse no longer drives position
   let carryUserAngle = 0           // accumulated user rotation in radians
@@ -1879,9 +1899,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const bounds = computeCarryGhostBounds(comp)
     carryGhostBounds = bounds
-    const { hx, hy, hz, cx, cy, cz } = bounds
+    const { hx, hy, hz, cx, cy, cz, shape } = bounds
 
-    const geo = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2)
+    // Fix 4: use geometry that matches the component's dominant shape.
+    // CylinderGeometry axis is along Y in Three.js; radius = max(hx,hy), height = hz*2.
+    const geo: THREE.BufferGeometry = shape === 'cylinder'
+      ? new THREE.CylinderGeometry(Math.max(hx, hy), Math.max(hx, hy), hz * 2, 32)
+      : new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2)
     const mesh = new THREE.Mesh(geo, carryGhostMat)
     mesh.position.set(cx, cy, cz)
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), carryEdgeMat)
@@ -3377,6 +3401,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     onInteractionModeChanged,
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
+    rebuildMountNodes,
   }
 }
 

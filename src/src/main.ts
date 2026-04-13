@@ -930,6 +930,18 @@ scene.add(robot)
 // the rest of app init; applyRichVisuals will use cached meshes if ready.
 preloadMeshCache()
 
+// Debounced callback: fired once after all async GLBs settle for a given parse cycle.
+// Re-runs rebuildMountNodes so attachment rings are placed on the real rendered geometry
+// rather than the parametric URDF primitive fallback that was measured at parse time.
+let _rebuildNodesTimer: ReturnType<typeof setTimeout> | null = null
+function onMeshLoaded(_linkName: string) {
+  if (_rebuildNodesTimer) clearTimeout(_rebuildNodesTimer)
+  _rebuildNodesTimer = setTimeout(() => {
+    _rebuildNodesTimer = null
+    urdfAssemblyApi?.rebuildMountNodes()
+  }, 150)
+}
+
 // worldGroup applies the Z-up → Y-up correction for the scene.
 // parsedRobot.group is kept in pure URDF (Z-up) space so exported
 // transforms match what the parser reads back.
@@ -941,7 +953,7 @@ robot.add(worldGroup)
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot)
+applyRichVisuals(parsedRobot, onMeshLoaded)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1505,7 +1517,7 @@ function reparseURDF(xmlOverride?: string) {
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot)
+          applyRichVisuals(parsedRobot, onMeshLoaded)
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
@@ -1543,7 +1555,7 @@ function reparseURDF(xmlOverride?: string) {
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot)
+    applyRichVisuals(parsedRobot, onMeshLoaded)
     addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()

@@ -88,19 +88,19 @@ Collision bodies are never shown. Add a **toggle** (e.g. `C` key or toolbar butt
 
 ### Builder feature backlog (prioritized)
 
-1. **Joint axis reconciliation on snap** — revolute/prismatic joints must recompute `<axis>` in new parent frame at commit time.
-2. **Carry mode + ghost + commit/cancel** — no partial edits on cancel; ghost tracks world cursor.
-3. **HUD + nudge/rotate controls + solver transparency** — candidates, rejection reasons, freeze-after-manual.
-4. **Global attach targets + Tab cycle** — cycle both parent mount targets AND child mount face selection.
-5. **Y-up/Z-up round-trip** — replace `groundRobot()` hack; export → re-import must match orientation.
-6. **Free-space drop** — explicit world anchor / temporary root for off-robot staging during carry.
-7. **Undo/redo for graph edits** — current undo covers URDF text; add structural graph undo with URDF diff view.
-8. **Node type system completion** — shaft/bore, rail/rail matching with correct axis alignment.
-9. **Sim mode fix** — drive all URDF joints from their actual limits/axes; decouple from builder.
-10. **Collision visibility toggle** — render collision primitives semi-transparently on demand.
-11. **Validation gates** — topology check, inertia/collision completeness per link, tied to build actions.
-12. **Replace-in-place / duplicate subtree / mirror patterns** — replace swaps link definition + re-snaps children; duplicate preserves relative transform.
-13. **Export bundle correctness** — URDF + meshes + manifests; MuJoCo load test as acceptance criterion.
+1. [x] **Joint axis reconciliation on snap** — revolute/prismatic joints must recompute `<axis>` in new parent frame at commit time.
+2. [x] **Carry mode + ghost + commit/cancel** — no partial edits on cancel; ghost tracks world cursor.
+3. [x] **HUD + nudge/rotate controls + solver transparency** — candidates, rejection reasons, freeze-after-manual.
+4. [x] **Global attach targets + Tab cycle** — cycle both parent mount targets AND child mount face selection.
+5. [ ] **Y-up/Z-up round-trip** — replace `groundRobot()` hack; export → re-import must match orientation. (`worldGroup` added but `groundRobot()` still called — not fully resolved.)
+6. [ ] **Free-space drop** — explicit world anchor / temporary root for off-robot staging during carry.
+7. [ ] **Undo/redo for graph edits** — current undo covers URDF text; add structural graph undo with URDF diff view.
+8. [x] **Node type system completion** — shaft/bore, rail/rail matching with correct axis alignment. (matching logic implemented in `attachmentNodes.ts`)
+9. [x] **Sim mode fix** — drive all URDF joints from their actual limits/axes; decouple from builder.
+10. [x] **Collision visibility toggle** — render collision primitives semi-transparently on demand.
+11. [ ] **Validation gates** — topology check, inertia/collision completeness per link, tied to build actions.
+12. [ ] **Replace-in-place / duplicate subtree / mirror patterns** — replace swaps link definition + re-snaps children; duplicate preserves relative transform.
+13. [ ] **Export bundle correctness** — URDF + meshes + manifests; MuJoCo load test as acceptance criterion.
 
 ---
 
