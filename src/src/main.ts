@@ -2908,13 +2908,24 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
 
   try {
     const editor = (window as any).__vectorEditor
-    const currentUrdf = editor?.getValue() || ''
+    const fullUrdf = editor?.getValue() || ''
     const kinematicContext = buildKinematicContext()
+
+    // For redesign retries (retryCount > 0), send minimal payloads to save tokens.
+    // Redesigns create new topologies from scratch — the old URDF and kinematic
+    // graph are dead weight and sending them blows the 10K ITPM rate limit.
+    const isRedesign = retryCount > 0
+    const currentUrdf = isRedesign
+      ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
+      : fullUrdf
+    if (isRedesign) {
+      console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF, ${kinematicContext.length} char kinematic context)`)
+    }
 
     const result = await invoke('ai_edit', {
       prompt: prompt,
       urdfContent: currentUrdf,
-      kinematicContext: kinematicContext,
+      kinematicContext: isRedesign ? '' : kinematicContext,
       sessionId: currentChatId,
     }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
 
@@ -2923,7 +2934,9 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
     // Check if this is an assembly graph (Option C) — resolve via frontend snap system
     if (result.assembly_graph && urdfAssemblyApi) {
       console.log('[AI] Received assembly_graph — resolving via frontend snap system')
-      let assemblyResult = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
+      let assemblyResult = assemblyOut.urdf
+      console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
       if (assemblyResult) {
         // 2nd-pass AI validation: send assembled URDF + viewport screenshot to Claude
         try {
@@ -2935,10 +2948,6 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
 
           // Capture 3 labeled screenshots from canonical angles for visual validation
           // Research: 3 near-orthogonal views capture all geometry with minimal token cost
-          const savedCamPos = camera.position.clone()
-          const savedTarget = controls.target.clone()
-          const savedAspect = camera.aspect
-
           const robotBox = new THREE.Box3().setFromObject(robot)
           if (robotBox.isEmpty()) throw new Error('Robot bounding box is empty — meshes may not have loaded')
           const robotCenter = new THREE.Vector3()
@@ -2948,7 +2957,6 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
           const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
           const dist = maxDim * 2.5
           const captureSize = 512
-          const prevSize = renderer.getSize(new THREE.Vector2())
 
           // 3 canonical views: front-iso, rear-iso, top-down
           const viewAngles = [
@@ -2997,18 +3005,52 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
             screenshots: screenshots,
           }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
 
-          // Validation is diagnostic only — no URDF edits (LLMs can't do spatial math).
-          // If validation finds issues, log them. A future iteration could trigger redesign.
+          // Validation is diagnostic only — no URDF coordinate edits (LLMs can't do spatial math).
+          // When validation finds issues and needs_redesign is set, retry with a new topology.
+          console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
+          console.log(`[AI][redesign] Full valResult:`, JSON.stringify(valResult, null, 2))
+
           if (valResult.ok) {
-            console.log(`[AI] Validation passed: ${valResult.notes}`)
+            console.log(`[AI][redesign] Validation passed: ${valResult.notes}`)
           } else {
-            console.log(`[AI] Validation found issues: ${valResult.notes}`)
-            // Log checklist details
-            const checklist = (valResult as any).checklist
+            console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
+            const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
             if (checklist) {
+              const passed = checklist.filter(c => c.pass).length
+              const failed = checklist.filter(c => !c.pass).length
+              console.log(`[AI][redesign] Checklist: ${passed} passed, ${failed} failed`)
               for (const c of checklist) {
-                console.log(`[AI]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
+                console.log(`[AI][redesign]   ${c.pass ? 'PASS' : 'FAIL'}: ${c.check} — ${c.detail}`)
               }
+            } else {
+              console.log(`[AI][redesign] No checklist in response`)
+            }
+
+            // Trigger redesign if validation says so and we haven't already retried
+            const needsRedesign = (valResult as any).needs_redesign
+            console.log(`[AI][redesign] needsRedesign=${needsRedesign}, retryCount=${retryCount}, will_retry=${!!(needsRedesign && retryCount < 1)}`)
+            if (needsRedesign && retryCount < 1) {
+              const failures = checklist
+                ? checklist.filter(c => !c.pass).map(c => `- ${c.check}: ${c.detail}`).join('\n')
+                : valResult.notes
+              console.log(`[AI][redesign] Triggering redesign with failures:\n${failures}`)
+              addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found issues. Redesigning...</span>`)
+
+              const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}\n\nPlease design a NEW topology from scratch that fixes these issues. Do NOT reuse the same structure — rethink the component layout. Remember: you specify topology only, the placement engine handles coordinates.`
+              console.log(`[AI][redesign] Redesign prompt length: ${redesignPrompt.length} chars`)
+
+              // Wait for rate limit token bucket to replenish before redesign call.
+              // Assembly (~4,000 tokens) + validation (~4,000 tokens with images) nearly
+              // exhausts the 10,000 ITPM budget. 45s ensures call 1 drops out of the
+              // sliding window, giving ~6,000 tokens of headroom for the redesign.
+              console.log(`[AI][redesign] Waiting 45s for rate limit budget to replenish...`)
+              await new Promise(r => setTimeout(r, 45000))
+
+              vcSend.disabled = false
+              unlisten?.()
+              return sendVCMessage(redesignPrompt, retryCount + 1)
+            } else if (needsRedesign && retryCount >= 1) {
+              console.log(`[AI][redesign] Redesign requested but already retried (retryCount=${retryCount}) — showing result as-is`)
             }
           }
         } catch (valErr) {
@@ -3016,30 +3058,47 @@ async function sendVCMessage(prompt: string, retryCount = 0) {
           // Non-blocking — assembly still usable without validation
         }
 
-        const diff = computeSimpleDiff(currentUrdf, assemblyResult)
+        const diff = computeSimpleDiff(fullUrdf, assemblyResult)
         addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
           diff,
           newUrdf: assemblyResult,
         })
-        showInlineDiff(currentUrdf, assemblyResult, assemblyResult)
+        showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
       } else if (retryCount < 2) {
         // Error recovery ladder: retry with error context
-        console.log(`[AI] Assembly failed — retrying with error context (attempt ${retryCount + 1}/2)`)
-        addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+        const topoErrors = assemblyOut.topologyErrors
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount}, topologyErrors=${topoErrors ? topoErrors.length : 0}, will_retry=true`)
 
-        // Retry with a simplified prompt that includes the error
-        const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because the topology was invalid or components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
-
-        // Re-send with retry count incremented
-        vcSend.disabled = false
-        unlisten?.()
-        return sendVCMessage(retryPrompt, retryCount + 1)
+        if (topoErrors && topoErrors.length > 0) {
+          // Topology validation failed — retry with specific error feedback
+          console.log(`[AI][topology] BRANCH: topology-error retry with ${topoErrors.length} specific errors:`)
+          for (const err of topoErrors) {
+            console.log(`[AI][topology]   - ${err}`)
+          }
+          addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
+          const errorList = topoErrors.map(e => `- ${e}`).join('\n')
+          const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design. Remember the forbidden patterns: no sensor→sensor, no children on effectors, no duplicate names, root must be structural_baseplate.`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        } else {
+          // Placement failed (no topology errors) — retry with simplification
+          console.log(`[AI][topology] BRANCH: generic placement-failure retry (no topology errors, urdf was null)`)
+          addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
+          const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components. Use only: structural_baseplate, actuator_servo_high_torque, structural_extrusion_2020, and basic end effectors. Keep the kinematic chain short (max 8 components).`
+          console.log(`[AI][topology] Retry prompt length: ${retryPrompt.length} chars`)
+          vcSend.disabled = false
+          unlisten?.()
+          return sendVCMessage(retryPrompt, retryCount + 1)
+        }
       } else {
+        console.log(`[AI][topology] Assembly failed — retryCount=${retryCount} >= 2, giving up. topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
         addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. The design may be too complex for the current placement engine. Try describing a simpler robot.</span>`)
       }
     } else {
       // Standard path: direct URDF replacement (Option A/B)
-      const diff = computeSimpleDiff(currentUrdf, result.new_urdf)
+      const diff = computeSimpleDiff(fullUrdf, result.new_urdf)
 
       addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
         diff,

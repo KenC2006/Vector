@@ -36,6 +36,22 @@ def _get_client():
         _client = _anthropic.Anthropic(api_key=api_key)
     return _client
 
+# ── Prompt cache logging ─────────────────────────────────────────────────────
+def _log_cache_usage(label: str, response) -> None:
+    """Log prompt cache hit/miss stats for debugging rate limit and cost issues."""
+    usage = response.usage
+    cache_write = getattr(usage, 'cache_creation_input_tokens', 0) or 0
+    cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
+    regular = getattr(usage, 'input_tokens', 0) or 0
+    output = getattr(usage, 'output_tokens', 0) or 0
+    print(
+        f"[ai_cache] {label}: input={regular} cache_write={cache_write} "
+        f"cache_read={cache_read} output={output} "
+        f"({'HIT' if cache_read > 0 else 'MISS' if cache_write > 0 else 'NONE'})",
+        file=sys.stderr,
+    )
+
+
 # ── Conversation history store (keyed by session_id) ──────────────────────────
 # Each entry is a list of {"role": "user"|"assistant", "content": str} dicts.
 # Capped to last 20 messages to avoid unbounded token growth.
@@ -46,46 +62,32 @@ _MAX_HISTORY_MESSAGES = 20
 # Component IDs that have verified GLB meshes available in the UI.
 # Must match meshOverrides.ts minus SLOW_MESH_BLACKLIST in richVisuals/index.ts.
 _ALLOWED_COMPONENT_IDS = {
-    # Actuators
+    # Actuators — core servo range + continuous rotation + linear
     'actuator_servo_micro', 'actuator_servo_standard', 'actuator_servo_high_torque',
-    'actuator_servo_heavy_duty', 'actuator_stepper_nema17', 'actuator_stepper_nema23',
-    'actuator_linear_small', 'actuator_linear_heavy', 'actuator_micro_linear_servo',
-    'actuator_continuous_rotation_servo', 'actuator_high_speed_mini_servo',
-    # Motors
-    'motor_dc_small_130', 'motor_dc_medium_540', 'motor_dc_large_775',
-    'motor_gear_small_n20', 'motor_gear_medium_37mm', 'motor_gear_heavy_50mm',
-    'motor_coreless_dc', 'motor_worm_gear',
-    # Sensors
-    'sensor_depth_camera_small', 'sensor_depth_camera_wide',
-    'sensor_lidar_2d', 'sensor_lidar_3d',
-    'sensor_imu_6dof', 'sensor_imu_9dof',
-    'sensor_ultrasonic', 'sensor_tof',
+    'actuator_continuous_rotation_servo', 'actuator_linear_small',
+    # Motors — one DC, one geared
+    'motor_dc_small_130', 'motor_gear_medium_37mm',
+    # Sensors — camera, lidar, IMU, range, force, encoder
+    'sensor_depth_camera_small', 'sensor_lidar_2d',
+    'sensor_imu_6dof', 'sensor_ultrasonic',
     'sensor_force_torque_6axis', 'sensor_joint_encoder_absolute',
-    'sensor_limit_switch', 'sensor_load_cell',
-    # Compute
-    'compute_mcu_small', 'compute_sbc_small',
-    'compute_motor_driver_dual', 'compute_fpga_dev_board',
-    'compute_can_transceiver', 'compute_gps_gnss',
-    # Power
-    'power_lipo_3s_2200', 'power_lipo_4s_5000', 'power_lipo_6s_10000',
-    'power_buck_converter_5v', 'power_buck_converter_12v',
-    'power_distribution_unit', 'power_solar_panel_small', 'power_estop_switch',
-    # Structural
+    # Compute — MCU, SBC, motor driver
+    'compute_mcu_small', 'compute_sbc_small', 'compute_motor_driver_dual',
+    # Power — two battery sizes + regulation + distribution
+    'power_lipo_3s_2200', 'power_lipo_4s_5000',
+    'power_buck_converter_5v', 'power_distribution_unit',
+    # Structural — baseplate (always root), extrusions, brackets, shaft collar
+    'structural_baseplate',
     'structural_extrusion_2020', 'structural_extrusion_4040',
-    'structural_bracket_l', 'structural_bracket_u',
-    'structural_shaft_collar', 'structural_linear_rail_mgn12',
-    'structural_din_rail_35mm',
-    # Transmission
+    'structural_bracket_l', 'structural_bracket_u', 'structural_shaft_collar',
+    # Transmission — belt, leadscrew, bearing, coupling
     'transmission_timing_belt_gt2', 'transmission_leadscrew_8mm',
-    'transmission_bearing_deep_groove', 'transmission_bearing_large',
-    'transmission_planetary_gearbox',
-    'transmission_flexible_coupling_jaw', 'transmission_rigid_shaft_coupling',
-    # End Effectors
-    'effector_parallel_gripper_small', 'effector_parallel_gripper_large',
-    'effector_3finger_adaptive', 'effector_suction_cup', 'effector_pen_marker_holder',
-    # Mobility
+    'transmission_bearing_deep_groove', 'transmission_flexible_coupling_jaw',
+    # End Effectors — two grippers + suction
+    'effector_parallel_gripper_small', 'effector_parallel_gripper_large', 'effector_suction_cup',
+    # Mobility — wheel, caster, mecanum, foot pad
     'mobility_wheel_driven', 'mobility_caster_wheel',
-    'mobility_mecanum_wheel', 'mobility_omni_wheel', 'mobility_rubber_foot_pad',
+    'mobility_mecanum_wheel', 'mobility_rubber_foot_pad',
 }
 
 
@@ -266,6 +268,16 @@ Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY
 Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(bottom, fixed, 100mm, vertical) -> 4x knee_servo(bottom, revolute y) -> 4x lower_leg_extrusion(bottom, fixed, 80mm, vertical)
 
 Sensor mount: any_link -> sensor(top/front/left/right, fixed)
+
+## Forbidden Patterns (these WILL be rejected by the placement engine)
+
+- ❌ Sensor attached to another sensor — sensors must attach to structural or actuator links
+- ❌ End effector with children — effectors (grippers, suction cups) are ALWAYS terminal nodes
+- ❌ Multiple children on a servo/motor shaft — each servo/motor output drives exactly ONE child
+- ❌ Duplicate link_name values — every link_name must be unique
+- ❌ Multiple root components — exactly one component has attach_to=null (the baseplate)
+- ❌ Cycles in the topology — A→B→C→A is invalid; the topology must be a tree
+- ❌ Extrusion as root — root is always structural_baseplate
 
 ## Critical Rules
 
@@ -1079,13 +1091,18 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
         print(f"[tool-agent] Round {round_num}, {len(assembly_state['links'])} links placed", file=sys.stderr)
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=4096,
-            system=system_prompt,
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=messages,
             tools=ASSEMBLY_TOOLS,
             timeout=60.0,
         )
+        _log_cache_usage("tool_agent", response)
 
         # Process response content blocks
         assistant_content = response.content
@@ -1313,14 +1330,20 @@ User Request: {prompt}"""
     system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=64000,
-        system=system_prompt,
+        system=[{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }],
         messages=messages,
         tools=ROBOT_TOOLS,
         tool_choice={"type": "any"},  # Force tool use — guarantees structured output
         timeout=180.0,
     )
+    # Log cache performance
+    _log_cache_usage("generate_edit", response)
 
     # Store conversation turn in history
     history.append({"role": "user", "content": f"[Edit request] {prompt}"})
@@ -1383,9 +1406,13 @@ User Request: {prompt}"""
     # Stream text for progress, then get final message with tool_use blocks
     try:
         with client.messages.stream(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=64000,
-            system=system_prompt,
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=messages,
             tools=ROBOT_TOOLS,
             tool_choice={"type": "any"},  # Force tool use — guarantees structured output
@@ -1400,6 +1427,7 @@ User Request: {prompt}"""
 
             # Get the complete response including tool_use blocks
             final_response = stream.get_final_message()
+            _log_cache_usage("generate_edit_streaming", final_response)
 
     except Exception as e:
         raise ValueError(f"Streaming API call failed: {e}")
@@ -1843,8 +1871,10 @@ Assembled URDF:
 
     t0 = time.time()
     # Use Sonnet for visual validation — better vision than Haiku, worth the ~$0.05 cost
+    # Note: VALIDATION_SYSTEM_PROMPT is ~640 tokens, below the 1024 minimum
+    # for Sonnet prompt caching. No cache_control here.
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=VALIDATION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
