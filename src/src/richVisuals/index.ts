@@ -303,23 +303,19 @@ function applyMeshToLink(
       meshGroup.scale.setScalar(0.001) // mm → m
     }
 
-    // Per-axis scaling for extrusions with variable length_mm overrides.
-    // The GLB mesh is a fixed default size but the URDF primitive geometry
-    // has the correct custom dimensions. Only apply to extrusion components
-    // — other components (servos, grippers, cameras) have GLB meshes that
-    // are already the correct shape and should NOT be distorted.
-    const isExtrusion = compId.includes('extrusion')
-    if (isExtrusion) {
-      meshBox.setFromObject(meshGroup)
-      meshBox.getSize(meshSize)
-      if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
-        const scaleX = dims.x / meshSize.x
-        const scaleY = dims.y / meshSize.y
-        const scaleZ = dims.z / meshSize.z
-        meshGroup.scale.x *= scaleX
-        meshGroup.scale.y *= scaleY
-        meshGroup.scale.z *= scaleZ
-      }
+    // Per-axis scaling: scale the GLB to match the component's declared bounding_box_mm.
+    // Applied to all components — this corrects shared-GLB variants (e.g. small vs large
+    // linear actuators pointing to the same file) and ensures the rendered mesh agrees
+    // with ghost bounds and mount-node placement, which both derive from bounding_box_mm.
+    meshBox.setFromObject(meshGroup)
+    meshBox.getSize(meshSize)
+    if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
+      const scaleX = dims.x / meshSize.x
+      const scaleY = dims.y / meshSize.y
+      const scaleZ = dims.z / meshSize.z
+      meshGroup.scale.x *= scaleX
+      meshGroup.scale.y *= scaleY
+      meshGroup.scale.z *= scaleZ
     }
 
     // Center the mesh on origin so it sits properly in the link frame
@@ -471,26 +467,14 @@ export async function preloadMeshCache(): Promise<void> {
   const results = await Promise.allSettled(
     Array.from(urlToCompIds.entries()).map(async ([url, compIds]) => {
       const meshGroup = await loadGLB(url)
-      // Store the same parsed mesh for every component ID sharing this GLB
+      // Store the same parsed mesh for every component ID sharing this GLB.
+      // meshDimsCache is NOT pre-populated here — the raw GLB size is meaningless for
+      // shared-GLB components (all variants would get the same dims). applyMeshToLink
+      // sets meshDimsCache after per-axis scaling to bounding_box_mm on first placement.
+      // computeCarryGhostBounds falls back to bounding_box_mm directly when no dims cached.
       for (const compId of compIds) {
         meshCache.set(compId, meshGroup)
         loadingInProgress.delete(compId)
-
-        // Pre-populate meshDimsCache so ghost bounds are correct on first placement,
-        // before applyMeshToLink has ever been called for this component.
-        // Extrusions skip this — their dims depend on per-instance length_mm and are
-        // handled correctly by the parametric path in computeCarryGhostBounds.
-        if (!compId.includes('extrusion') && !meshDimsCache.has(compId)) {
-          const rawBox = new THREE.Box3().setFromObject(meshGroup)
-          const rawSize = new THREE.Vector3()
-          rawBox.getSize(rawSize)
-          // Apply the same mm→m detection logic as applyMeshToLink
-          const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z)
-          if (maxDim > 1.0) rawSize.multiplyScalar(0.001)
-          if (rawSize.x > 0.001 || rawSize.y > 0.001 || rawSize.z > 0.001) {
-            meshDimsCache.set(compId, rawSize.clone())
-          }
-        }
       }
       return compIds.length
     }),

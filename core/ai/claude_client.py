@@ -273,9 +273,27 @@ You MUST respond by calling one of the provided tools:
 - All xyz coordinates and rpy rotations
 - Elongated parts use the orientation hint to determine rotation direction
 - Multiple children on the same face are distributed to corners (e.g., 4 wheels on "bottom" go to 4 corners)
-- Legs on "bottom" face get automatic outward splay (~10°)
+- Legs on "bottom" face get automatic outward splay (scales with leg count: 2 legs→15°, 3→25°, 4→30°, 5–6→35°, 7+→40°). Wheels are excluded from splay and stay level.
 - Ground offset so the robot sits on the floor
 - Collision geometry, inertia computation, visual materials
+
+## Rotation Controls
+
+Beyond attach_face and joint_axis, you have two additional per-component rotation parameters:
+
+### orientation
+Controls how an elongated or directable component is rotated within its face:
+- **"vertical"** (default): component extends along +Z (upward). Use for leg segments, vertical masts.
+- **"horizontal"**: component extends along +X (forward). Use for tails, horizontal booms.
+- **"auto"**: engine chooses based on component type.
+- **Numeric string (degrees)**: yaw rotation around the face normal. E.g., `"45"` rotates 45° on a top-face component. Use to angle sensors, offset actuators, or fan out side mounts. Combine with "horizontal" for a horizontally-extended component at a specific yaw: specify e.g. `"horizontal+45"` — the engine applies 90° pitch then 45° yaw.
+
+### elevation_angle
+**Only applies to side faces (front, back, left, right).** Tilts the component up (+) or down (−) from the face normal, in degrees.
+- Use for cameras/sensors that should angle toward the ground or sky.
+- Use for arms that extend outward but pitch upward at rest.
+- Example: a depth camera on the front face with elevation_angle=-20 angles 20° downward to see the floor.
+- Range: typically −45 to +45. Applied as pitch (front/back) or roll (left/right).
 
 ## Topology Rules
 
@@ -287,6 +305,7 @@ You MUST respond by calling one of the provided tools:
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: attach wheels DIRECTLY to the baseplate bottom face (revolute y). Do NOT put servos between baseplate and wheels — wheel components have built-in motor semantics.
+9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
@@ -302,6 +321,8 @@ Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> h
 Tail: baseplate -> tail_servo(back, revolute z) -> tail_extrusion(back, fixed, 80-120mm, horizontal). One servo and one extrusion is enough.
 
 Sensor mount: any_link -> sensor(top/front/left/right, fixed)
+Angled sensor: any_link -> depth_camera(front, fixed, elevation_angle=-20) — tilts 20° downward to see the floor.
+Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45° on the top face.
 
 ## Forbidden Patterns (these WILL be rejected by the placement engine)
 
@@ -348,8 +369,9 @@ DESIGN_ROBOT_TOOL = {
                         "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
                         "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic"]},
                         "joint_axis": {"type": "string", "enum": ["x", "y", "z"]},
-                        "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links."},
-                        "orientation": {"type": "string", "enum": ["horizontal", "vertical", "auto"], "description": "horizontal=extend +X (arms), vertical=extend +Z (legs), auto=engine decides"},
+                        "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links, 80-120 for leg segments."},
+                        "orientation": {"type": "string", "description": "Rotation within the face. Keywords: 'vertical' (default, extend +Z), 'horizontal' (extend +X), 'auto'. Or a numeric string in degrees for yaw around the face normal (e.g. '45', '-30'). Combine keyword+degrees as 'horizontal+45'."},
+                        "elevation_angle": {"type": "number", "description": "Tilt in degrees for side-face attachments (front/back/left/right only). Positive=up, negative=down. E.g. -20 angles a front camera 20° downward. Ignored on top/bottom faces."},
                     },
                     "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
                 },
