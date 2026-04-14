@@ -692,7 +692,6 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
           // Only reparse if this file is STILL active (user may have switched tabs during debounce)
           if (activeFile !== fn) return
           reparseURDF()
-          groundRobot(robot)
           urdfAssemblyApi?.onModelUpdated()
         }, 500)
       }
@@ -2489,7 +2488,6 @@ urdfAssemblyApi = initUrdfAssembly({
             if (inlineDiffApi.getPendingOldText() !== null) return
             if (activeFile !== fn) return
             reparseURDF()
-            groundRobot(robot)
             urdfAssemblyApi?.onModelUpdated()
           }, 500)
         })

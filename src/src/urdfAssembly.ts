@@ -1298,30 +1298,71 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number } {
-    // Extract parent link's bounding half-extents from its URDF geometry
+    // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
+    // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
+    // Strip trailing _N instance number to recover the component ID (e.g. "servo_micro_2" → "servo_micro").
+    const compIdMatch = parentLinkName.match(/^(.+)_(\d+)$/)
+    const compId = compIdMatch?.[1] ?? parentLinkName
+    const renderedDims = getRenderedMeshDims(compId)
+    if (renderedDims && renderedDims.x > 0.001) {
+      // meshDimsCache is measured in the GLB's local space before worldGroup rotation.
+      // After worldGroup.rotation.x = -PI/2: local X → world X (URDF X),
+      // local Z → world Y (URDF Z, "up"), local Y → world -Z (URDF Y, "depth").
+      // So: hx = X half-extent, hy = Y half-extent (depth), hz = Z half-extent (height/up).
+      return {
+        hx: renderedDims.x / 2,
+        hy: renderedDims.y / 2,
+        hz: renderedDims.z / 2,
+      }
+    }
+
+    // Fallback: iterate ALL <visual> elements in the URDF, accounting for each element's
+    // <origin xyz> offset. This handles multi-piece shapes (body + shaft, body + horn, etc.)
+    // where previously only the first visual was read, missing protrusions in URDF Z (up).
     const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
     if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05 }
 
-    const vis = linkEl.querySelector('visual geometry')
-    if (!vis) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    const visuals = linkEl.querySelectorAll('visual')
+    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05 }
 
-    const boxEl = vis.querySelector('box')
-    if (boxEl) {
-      const size = (boxEl.getAttribute('size') || '0.1 0.1 0.1').split(/\s+/).map(Number)
-      return { hx: (size[0] || 0.1) / 2, hy: (size[1] || 0.1) / 2, hz: (size[2] || 0.1) / 2 }
+    let maxX = 0, maxY = 0, maxZ = 0
+
+    for (const visual of Array.from(visuals)) {
+      const originEl = visual.querySelector('origin')
+      const xyz = (originEl?.getAttribute('xyz') || '0 0 0').split(/\s+/).map(Number)
+      const ox = xyz[0] || 0, oy = xyz[1] || 0, oz = xyz[2] || 0
+
+      const geom = visual.querySelector('geometry')
+      if (!geom) continue
+
+      const boxEl = geom.querySelector('box')
+      const cylEl = geom.querySelector('cylinder')
+      const sphEl = geom.querySelector('sphere')
+
+      let ex = 0, ey = 0, ez = 0
+      if (boxEl) {
+        const size = (boxEl.getAttribute('size') || '0 0 0').split(/\s+/).map(Number)
+        ex = (size[0] || 0) / 2; ey = (size[1] || 0) / 2; ez = (size[2] || 0) / 2
+      } else if (cylEl) {
+        const r = Number(cylEl.getAttribute('radius')) || 0
+        const h = Number(cylEl.getAttribute('length')) || 0
+        ex = r; ey = r; ez = h / 2
+      } else if (sphEl) {
+        const r = Number(sphEl.getAttribute('radius')) || 0
+        ex = r; ey = r; ez = r
+      }
+
+      maxX = Math.max(maxX, Math.abs(ox) + ex)
+      maxY = Math.max(maxY, Math.abs(oy) + ey)
+      maxZ = Math.max(maxZ, Math.abs(oz) + ez)
     }
-    const cylEl = vis.querySelector('cylinder')
-    if (cylEl) {
-      const r = Number(cylEl.getAttribute('radius')) || 0.05
-      const h = Number(cylEl.getAttribute('length')) || 0.1
-      return { hx: r, hy: r, hz: h / 2 }
+
+    if (maxX < 0.001 && maxY < 0.001 && maxZ < 0.001) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    return {
+      hx: Math.max(maxX, 0.005),
+      hy: Math.max(maxY, 0.005),
+      hz: Math.max(maxZ, 0.005),
     }
-    const sphEl = vis.querySelector('sphere')
-    if (sphEl) {
-      const r = Number(sphEl.getAttribute('radius')) || 0.05
-      return { hx: r, hy: r, hz: r }
-    }
-    return { hx: 0.05, hy: 0.05, hz: 0.05 }
   }
 
   function computePlacement(
@@ -1331,7 +1372,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const mount = (comp.mounting_logic?.primary as string) || 'face_mount'
-    const gap = 0.005 // 5mm clearance
+    const gap = 0
 
     // face_mount / pcb_solder / bracket_mount → stack on top (Z+) of parent
     if (mount === 'face_mount' || mount === 'pcb_solder' || mount === 'bracket_mount') {
@@ -1416,7 +1457,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     elevationAngleDeg: number = 0,
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
-    const gap = 0.005
+    const gap = 0
 
     const face = attachFace || 'top'
 
@@ -3272,9 +3313,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Detect wheel-related components — these should NOT get leg splay
       const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
+      // Revolute joints are actuated — their rest position should be vertical (zero angle).
+      // Splay makes sense only for fixed structural legs, not for hip/shoulder actuators.
+      const noSplay = isWheelRelated || comp.joint_type === 'revolute'
       const elevAngle = comp.elevation_angle ?? 0
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, isWheelRelated, comp.component_id, elevAngle)
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${isWheelRelated}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle)
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
