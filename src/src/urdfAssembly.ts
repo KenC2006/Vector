@@ -1720,6 +1720,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(visual)
   }
 
+  function addCollisionElement(doc: Document, link: Element, vis: UrdfVisualDesc) {
+    const collision = doc.createElement('collision')
+    const co = doc.createElement('origin')
+    co.setAttribute('xyz', vis.origin_xyz.map(v => v.toFixed(6)).join(' '))
+    co.setAttribute('rpy', vis.origin_rpy.map(v => v.toFixed(6)).join(' '))
+    const geometry = doc.createElement('geometry')
+    const g = vis.geometry
+    if (g.type === 'box') {
+      const el = doc.createElement('box')
+      el.setAttribute('size', g.size.map(v => v.toFixed(6)).join(' '))
+      geometry.appendChild(el)
+    } else if (g.type === 'cylinder') {
+      const el = doc.createElement('cylinder')
+      el.setAttribute('radius', g.radius.toFixed(6))
+      el.setAttribute('length', g.length.toFixed(6))
+      geometry.appendChild(el)
+    } else {
+      const el = doc.createElement('sphere')
+      el.setAttribute('radius', g.radius.toFixed(6))
+      geometry.appendChild(el)
+    }
+    collision.appendChild(co)
+    collision.appendChild(geometry)
+    link.appendChild(collision)
+  }
+
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
   function addComponentCore(
     comp: PresetComponent,
@@ -1771,27 +1797,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       link.appendChild(inertialEl)
 
       visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
-
-      const collision = doc.createElement('collision')
-      const co = doc.createElement('origin')
-      co.setAttribute('xyz', '0 0 0'); co.setAttribute('rpy', '0 0 0')
-      const collGeom = doc.createElement('geometry')
-      if (shape === 'cylinder') {
-        const el = doc.createElement('cylinder')
-        el.setAttribute('radius', (Math.max(xm, ym) / 2).toFixed(6))
-        el.setAttribute('length', zm.toFixed(6))
-        collGeom.appendChild(el)
-      } else if (shape === 'sphere') {
-        const el = doc.createElement('sphere')
-        el.setAttribute('radius', (Math.max(xm, ym, zm) / 2).toFixed(6))
-        collGeom.appendChild(el)
-      } else {
-        const el = doc.createElement('box')
-        el.setAttribute('size', `${xm.toFixed(6)} ${ym.toFixed(6)} ${zm.toFixed(6)}`)
-        collGeom.appendChild(el)
-      }
-      collision.appendChild(co); collision.appendChild(collGeom)
-      link.appendChild(collision)
+      visuals.forEach(vis => addCollisionElement(doc, link, vis))
 
       const joint = doc.createElement('joint')
       joint.setAttribute('name', jointName)
@@ -3153,12 +3159,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     </visual>`
     })
 
-    // Collision geometry
-    const collGeomXml = shape === 'cylinder'
-      ? `<cylinder radius="${(Math.max(xm, ym) / 2).toFixed(6)}" length="${zm.toFixed(6)}"/>`
-      : shape === 'sphere'
-      ? `<sphere radius="${(Math.max(xm, ym, zm) / 2).toFixed(6)}"/>`
-      : `<box size="${xm.toFixed(6)} ${ym.toFixed(6)} ${zm.toFixed(6)}"/>`
+    // Collision geometry — one element per visual piece for accurate hitboxes
+    let collisionsXml = ''
+    visuals.forEach(vis => {
+      const cGeomXml = vis.geometry.type === 'box'
+        ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
+        : vis.geometry.type === 'cylinder'
+        ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
+        : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+      collisionsXml += `
+    <collision>
+      <origin xyz="${vis.origin_xyz.map(v => v.toFixed(6)).join(' ')}" rpy="${vis.origin_rpy.map(v => v.toFixed(6)).join(' ')}"/>
+      <geometry>${cGeomXml}</geometry>
+    </collision>`
+    })
 
     const baseUrdf = `<?xml version="1.0"?>
 <robot name="assembled_robot">
@@ -3167,11 +3181,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       <mass value="${mass.toFixed(4)}"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <inertia ixx="${inertia.ixx.toFixed(6)}" iyy="${inertia.iyy.toFixed(6)}" izz="${inertia.izz.toFixed(6)}" ixy="0" ixz="0" iyz="0"/>
-    </inertial>${visualsXml}
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>${collGeomXml}</geometry>
-    </collision>
+    </inertial>${visualsXml}${collisionsXml}
   </link>
 </robot>`
 
@@ -3365,27 +3375,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         link.appendChild(inertialEl)
 
         cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
-
-        const collision = urdfDoc.createElement('collision')
-        const co = urdfDoc.createElement('origin')
-        co.setAttribute('xyz', '0 0 0'); co.setAttribute('rpy', '0 0 0')
-        const collGeom = urdfDoc.createElement('geometry')
-        if (cShape === 'cylinder') {
-          const el = urdfDoc.createElement('cylinder')
-          el.setAttribute('radius', (Math.max(cxm, cym) / 2).toFixed(6))
-          el.setAttribute('length', czm.toFixed(6))
-          collGeom.appendChild(el)
-        } else if (cShape === 'sphere') {
-          const el = urdfDoc.createElement('sphere')
-          el.setAttribute('radius', (Math.max(cxm, cym, czm) / 2).toFixed(6))
-          collGeom.appendChild(el)
-        } else {
-          const el = urdfDoc.createElement('box')
-          el.setAttribute('size', `${cxm.toFixed(6)} ${cym.toFixed(6)} ${czm.toFixed(6)}`)
-          collGeom.appendChild(el)
-        }
-        collision.appendChild(co); collision.appendChild(collGeom)
-        link.appendChild(collision)
+        cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
 
         const joint = urdfDoc.createElement('joint')
         joint.setAttribute('name', jointName)
