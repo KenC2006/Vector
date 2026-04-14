@@ -185,6 +185,7 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
         const cached = meshCache.get(compId)!
         const clone = cached.clone(true)
         applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+        onMeshLoaded?.(linkName)
         continue
       }
       // Async load — use parametric until GLB is ready
@@ -303,19 +304,22 @@ function applyMeshToLink(
       meshGroup.scale.setScalar(0.001) // mm → m
     }
 
-    // Per-axis scaling: scale the GLB to match the component's declared bounding_box_mm.
-    // Applied to all components — this corrects shared-GLB variants (e.g. small vs large
-    // linear actuators pointing to the same file) and ensures the rendered mesh agrees
-    // with ghost bounds and mount-node placement, which both derive from bounding_box_mm.
-    meshBox.setFromObject(meshGroup)
-    meshBox.getSize(meshSize)
-    if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
-      const scaleX = dims.x / meshSize.x
-      const scaleY = dims.y / meshSize.y
-      const scaleZ = dims.z / meshSize.z
-      meshGroup.scale.x *= scaleX
-      meshGroup.scale.y *= scaleY
-      meshGroup.scale.z *= scaleZ
+    // Per-axis scaling: scale GLB to match the component's declared bounding_box_mm.
+    // Skip odd-shaped components (grippers, end effectors) whose GLB meshes don't
+    // scale cleanly along independent axes.
+    const PERAXIS_BLACKLIST = ['gripper', 'effector', 'claw', 'suction']
+    const skipPerAxis = PERAXIS_BLACKLIST.some(k => compId.includes(k))
+    if (!skipPerAxis) {
+      meshBox.setFromObject(meshGroup)
+      meshBox.getSize(meshSize)
+      if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
+        const scaleX = dims.x / meshSize.x
+        const scaleY = dims.y / meshSize.y
+        const scaleZ = dims.z / meshSize.z
+        meshGroup.scale.x *= scaleX
+        meshGroup.scale.y *= scaleY
+        meshGroup.scale.z *= scaleZ
+      }
     }
 
     // Center the mesh on origin so it sits properly in the link frame

@@ -48,13 +48,25 @@ let inspectFocusedLink: string | null = null
  * or the whole robot jumps whenever a new part dips below the floor plane.
  */
 function groundRobot(robotGroup: THREE.Group) {
+  // Reset Y first so bbox is measured from neutral position
+  robotGroup.position.y = 0
   robotGroup.updateMatrixWorld(true)
-  const box = new THREE.Box3().setFromObject(robotGroup)
+  // Only measure the URDF world group — exclude wireframe overlays, CoM markers,
+  // and other helpers that are children of robotGroup but not actual robot geometry.
+  const urdfWorld = robotGroup.getObjectByName('urdf_world')
+  const target = urdfWorld || robotGroup
+  // Compute bbox from only Mesh objects (excludes edge Lines, ArrowHelpers, etc.)
+  const box = new THREE.Box3()
+  const meshBox = new THREE.Box3()
+  target.traverse((obj: THREE.Object3D) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      meshBox.setFromObject(obj)
+      if (!meshBox.isEmpty()) box.union(meshBox)
+    }
+  })
   if (box.isEmpty()) return
   // In Three.js Y is up; shift so bottom of bounding box = 0
-  if (box.min.y < -0.001) {
-    robotGroup.position.y -= box.min.y
-  }
+  robotGroup.position.y = -box.min.y
 }
 
 /**
@@ -962,6 +974,7 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       _rebuildNodesTimer = null
       if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
       if (simApi.isSimActive()) return          // don't disturb sim joint state
+      groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
     }, 150)
   }
@@ -1560,6 +1573,7 @@ function reparseURDF(xmlOverride?: string) {
           rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
+          groundRobot(robot)
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
           showToast(
@@ -1605,6 +1619,8 @@ function reparseURDF(xmlOverride?: string) {
     updateViewportInfo()
 
     urdfAssemblyApi?.onModelUpdated()
+
+    groundRobot(robot)
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
