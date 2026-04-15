@@ -25,7 +25,7 @@ function catMetal(strength = 0.3) {
 
 function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, z: h, y: d } = dims
 
   const isHeavy = id.includes('heavy') || id.includes('high_torque')
 

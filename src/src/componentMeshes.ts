@@ -101,14 +101,14 @@ function servoShape(
   const hornR = Math.min(w, d) * 0.35
   const hornH = h * 0.12
   return [
-    // Main body
-    box(w, h * 0.76, d, 0, 0, 0, c),
+    // Main body — height along Z (URDF up), depth along Y
+    box(w, d, h * 0.76, 0, 0, 0, c),
     // Mounting ears (midway up the body)
-    box(earW, earH, d, 0, h * 0.32, 0, c2),
+    box(earW, d, earH, 0, 0, h * 0.32, c2),
     // Output horn (top)
-    cyl(hornR, hornH, 0, h * 0.44, 0, c3),
+    cyl(hornR, hornH, 0, 0, h * 0.44, c3),
     // Shaft nub
-    cyl(hornR * 0.25, hornH * 0.8, 0, h * 0.52, 0, c2),
+    cyl(hornR * 0.25, hornH * 0.8, 0, 0, h * 0.52, c2),
   ]
 }
 

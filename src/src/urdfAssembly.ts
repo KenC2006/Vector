@@ -1325,7 +1325,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const visuals = linkEl.querySelectorAll('visual')
     if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05 }
 
-    let maxX = 0, maxY = 0, maxZ = 0
+    // Compute the full axis-aligned bounding box across all visuals, then derive
+    // half-extents.  Previous code used `abs(offset) + half_extent` which equals a
+    // full extent from the link origin, not a half-extent — causing over-sized bounds
+    // for multi-visual links with offset pieces (e.g. servo horn, motor shaft).
+    let minX = Infinity, maxX = -Infinity
+    let minY = Infinity, maxY = -Infinity
+    let minZ = Infinity, maxZ = -Infinity
 
     for (const visual of Array.from(visuals)) {
       const originEl = visual.querySelector('origin')
@@ -1352,16 +1358,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         ex = r; ey = r; ez = r
       }
 
-      maxX = Math.max(maxX, Math.abs(ox) + ex)
-      maxY = Math.max(maxY, Math.abs(oy) + ey)
-      maxZ = Math.max(maxZ, Math.abs(oz) + ez)
+      minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
+      minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
+      minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
     }
 
-    if (maxX < 0.001 && maxY < 0.001 && maxZ < 0.001) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05 }
     return {
-      hx: Math.max(maxX, 0.005),
-      hy: Math.max(maxY, 0.005),
-      hz: Math.max(maxZ, 0.005),
+      hx: Math.max((maxX - minX) / 2, 0.005),
+      hy: Math.max((maxY - minY) / 2, 0.005),
+      hz: Math.max((maxZ - minZ) / 2, 0.005),
     }
   }
 
@@ -1458,6 +1464,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
+    console.log(`[placement] ${childComponentId || '?'} on ${parentLinkName} face=${attachFace || 'top'} | parent hx=${parent.hx.toFixed(4)} hy=${parent.hy.toFixed(4)} hz=${parent.hz.toFixed(4)} | child ${childX.toFixed(4)}×${childY.toFixed(4)}×${childZ.toFixed(4)}`)
 
     const face = attachFace || 'top'
 
@@ -3244,12 +3251,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Select the parent link so addComponentCore attaches to it
       selectLink(parentLinkName)
 
-      // Compute child dimensions
+      // Compute child dimensions from URDF visual bounds so placement uses the same
+      // data source as parent bounds (getParentBounds also reads URDF visuals).
+      // This eliminates gaps caused by visual geometry not filling the full catalog
+      // bounding_box_mm (e.g. servo body is 76% of catalog height).
       const cPhys = preset.physical
       const cBb = cPhys.bounding_box_mm ?? cPhys.cross_section_mm ?? [40, 40, 40]
-      const cxm = (cBb[0] ?? 40) / 1000
-      const cym = (cBb[1] ?? 40) / 1000
-      let czm = (cBb[2] ?? 40) / 1000
+      const childVisPreset = (comp.length_mm && cPhys.cross_section_mm)
+        ? { ...preset, physical: { ...cPhys, bounding_box_mm: [cBb[0] ?? 40, cBb[1] ?? 40, comp.length_mm] } }
+        : preset
+      const childBounds = computeCarryGhostBounds(childVisPreset as PresetComponent)
+      const cxm = childBounds.hx * 2
+      const cym = childBounds.hy * 2
+      // For extrusions with per-instance length, the mesh cache may hold dims from a
+      // different-length instance (cache is keyed by component ID).  Always use the
+      // explicit length when specified.
+      let czm = childBounds.hz * 2
       if (comp.length_mm && cPhys.cross_section_mm) {
         czm = comp.length_mm / 1000
       }
@@ -3327,6 +3344,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Splay makes sense only for fixed structural legs, not for hip/shoulder actuators.
       const noSplay = isWheelRelated || comp.joint_type === 'revolute'
       const elevAngle = comp.elevation_angle ?? 0
+
       const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle)
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
