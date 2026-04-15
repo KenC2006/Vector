@@ -18,7 +18,7 @@ export interface GeneratorDims {
   z: number  // depth in meters
 }
 
-export type RichGenerator = (id: string, dims: GeneratorDims) => THREE.Group
+export type RichGenerator = (id: string, dims: GeneratorDims, color?: [number, number, number]) => THREE.Group
 
 interface RegistryEntry {
   pattern: RegExp

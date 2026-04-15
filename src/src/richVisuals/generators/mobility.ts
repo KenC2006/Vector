@@ -11,7 +11,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.20, 0.29, 0.37]  // dark slate
+const DEFAULT_COLOR: [number, number, number] = [0.20, 0.29, 0.37]  // dark slate
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
@@ -565,7 +566,8 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichMobility(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichMobility(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('caster')) return generateCasterWheel(id, dims)
   if (id.includes('mecanum')) return generateMecanumWheel(id, dims)
   if (id.includes('omni')) return generateOmniWheel(id, dims)

@@ -5,14 +5,20 @@
  */
 import * as THREE from 'three'
 import type { GeneratorDims } from './index'
-import { getMaterial } from '../materials'
+import { getMaterial, getTintedMaterial } from '../materials'
 import {
   chamferedBox, chamferedCylinder, mountingHole,
   labelRecess, pcbBoard, connectorBlock, heatsinkFins,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
-// Category color: [0.18, 0.80, 0.44] (green) — applied via pcbBoard's green material
+const DEFAULT_COLOR: [number, number, number] = [0.18, 0.80, 0.44] // green
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
+
+/** Get a PCB material tinted with the current component color. */
+function catPcb(strength = 0.4) {
+  return getTintedMaterial('pcb_green', ...CAT_COLOR, strength)
+}
 
 // ── MCU Small ───────────────────────────────────────────────────────────────
 
@@ -21,7 +27,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.25)
+  const pcb = pcbBoard(w, h, d * 0.25, catPcb())
   g.add(pcb)
 
   // Main chip package (dark QFP)
@@ -112,7 +118,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.2)
+  const pcb = pcbBoard(w, h, d * 0.2, catPcb())
   g.add(pcb)
 
   // SoC chip package (chamferedBox)
@@ -214,7 +220,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.18)
+  const pcb = pcbBoard(w, h, d * 0.18, catPcb())
   g.add(pcb)
 
   // heatsinkFins on top (covers chip area)
@@ -299,7 +305,7 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.2)
+  const pcb = pcbBoard(w, h, d * 0.2, catPcb())
   g.add(pcb)
 
   // 2 heatsinkFins blocks (H-bridge drivers)
@@ -374,7 +380,7 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.2)
+  const pcb = pcbBoard(w, h, d * 0.2, catPcb())
   g.add(pcb)
 
   // Main heatsinkFins
@@ -455,7 +461,7 @@ function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.18)
+  const pcb = pcbBoard(w, h, d * 0.18, catPcb())
   g.add(pcb)
 
   // Large BGA chip (chamferedBox)
@@ -549,7 +555,7 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
   const hasAntenna = id.includes('wireless') || id.includes('lora') || id.includes('gps')
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.25)
+  const pcb = pcbBoard(w, h, d * 0.25, catPcb())
   g.add(pcb)
 
   // Main IC (chamferedBox)
@@ -667,7 +673,8 @@ function generatePCBModule(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichCompute(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichCompute(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('mcu')) return generateMCU(id, dims)
   if (id.includes('sbc_gpu') || id.includes('sbc_large')) return generateSBCGPU(id, dims)
   if (id.includes('sbc')) return generateSBCSmall(id, dims)

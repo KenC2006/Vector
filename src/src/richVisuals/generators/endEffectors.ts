@@ -12,7 +12,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.10, 0.74, 0.61]  // teal
+const DEFAULT_COLOR: [number, number, number] = [0.10, 0.74, 0.61]  // teal
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
@@ -523,7 +524,8 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichEndEffector(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichEndEffector(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('parallel_gripper')) return generateParallelGripper(id, dims)
   if (id.includes('3finger') || id.includes('three_finger')) return generate3FingerAdaptive(id, dims)
   if (id.includes('suction_cup')) return generateSuctionCup(id, dims)
