@@ -1832,22 +1832,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return changed
   }
 
-  function addComponent(comp: PresetComponent) {
-    if (!selectedLink) {
-      ctx.showToast('Select a parent link first, or drag from toolbox to place', 'warning')
-      return
-    }
-    const parentLink = selectedLink
-    const phys = comp.physical
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    const zm = (bb[2] ?? 40) / 1000
-    const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
-    const placement = computePlacement(doc, parentLink, comp, xm, ym, zm)
-    addComponentCore(comp, parentLink, placement.xyz, placement.rpy)
-  }
-
   // ── Carry mode ───────────────────────────────────────────────────────────────
 
   let carryComp: PresetComponent | null = null

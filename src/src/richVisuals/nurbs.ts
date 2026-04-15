@@ -92,7 +92,6 @@ export function nurbsFilletBox(
   // For a full implementation, we'd need 12 edge fillet patches + 6 face patches
   // Simplified approach: use ExtrudeGeometry with a NURBS-quality rounded rect
 
-  const segments = resolution
   const shape = new THREE.Shape()
 
   // Build rounded rect with many segments per corner for smoothness
@@ -286,7 +285,7 @@ export function nurbsTorus(
   majorR: number,
   minorR: number,
   segments = 48,
-  tubeSegments = 24,
+  _tubeSegments = 24,
 ): THREE.BufferGeometry {
   // Torus profile: circle at offset majorR
   const w = Math.SQRT1_2

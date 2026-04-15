@@ -9,11 +9,11 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, boltCircle, mountingHole,
+  boltCircle, mountingHole,
   screwHead, labelRecess, knurledRing, pcbBoard,
-  connectorBlock, cablePort, flangePlate,
+  connectorBlock, cablePort,
 } from '../primitives'
-import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
+import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.20, 0.60, 0.86] // blue
 

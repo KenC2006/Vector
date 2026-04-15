@@ -4,7 +4,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
-import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
@@ -1293,7 +1292,7 @@ const vpControls = initViewportControls({
   onResize: (w, h) => { composer.setSize(w, h); composer.setPixelRatio(renderer.getPixelRatio()) },
 })
 
-const { resize, focusOnRobot, zoomCamera, setViewportCollapsed, setViewportFullscreen, setFocusMode, updateViewportInfo } = vpControls
+const { resize, focusOnRobot, setViewportCollapsed, setViewportFullscreen, setFocusMode, updateViewportInfo } = vpControls
 // Wire up deferred resize callback now that it's available
 _resize = resize
 
@@ -1636,7 +1635,7 @@ function reparseURDF(xmlOverride?: string) {
 
 // ── Validation Panel (delegated to validation.ts) ──────────────────────────
 
-const { runLocalValidation, runValidation, setValidationMarkers } = initValidation({
+const { runLocalValidation } = initValidation({
   invoke: invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>,
   monacoEditor,
   getKinematicGraph: () => kinematicGraph,

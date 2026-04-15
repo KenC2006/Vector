@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, flangePlate, labelRecess,
+  flangePlate, labelRecess,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 

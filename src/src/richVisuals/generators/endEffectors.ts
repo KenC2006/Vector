@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, boltCircle, screwHead,
+  boltCircle, screwHead,
   flangePlate, knurledRing, labelRecess, connectorBlock, cablePort,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
@@ -177,8 +177,6 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
 function generateSuctionCup(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.05
-
   // Revolved bell shape via LatheGeometry (narrow tube -> wide bell -> thin lip)
   const tubeR = Math.min(w, d) * 0.12
   const bellR = Math.min(w, d) * 0.38

@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, mountingHole, screwHead,
+  mountingHole, screwHead,
   boltCircle, knurledRing, flangePlate,
   gearCylinder, bearingProfile, bearingOuterProfile,
 } from '../primitives'

@@ -7,11 +7,11 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, mountingHole, screwHead,
+  mountingHole, screwHead,
   labelRecess, knurledRing,
   tSlotExtrusion, iBeamExtrusion, cChannelExtrusion, lBracketExtrusion,
 } from '../primitives'
-import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
+import { nurbsFilletBox, nurbsCylinder } from '../nurbs'
 
 const CAT_COLOR: [number, number, number] = [0.66, 0.70, 0.72]  // silver-grey
 

@@ -221,8 +221,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
           heatmapOriginalEmissive.set(obj.uuid, mat.emissive.clone())
         }
 
-        const motorName = `${jointName}_motor`
-        const force = forces ? Math.abs(forces[motorName] ?? 0) : 0
+        // Look for position actuator first (_pos), fall back to torque motor (_motor).
+        const actName = forces
+          ? (`${jointName}_pos` in forces ? `${jointName}_pos` : `${jointName}_motor`)
+          : ''
+        const force = (forces && actName) ? Math.abs(forces[actName] ?? 0) : 0
         const effort = simJointLimits.get(jointName)?.effort ?? 10
         const t = Math.min(1, force / effort)
         mat.emissive.setRGB(t, 0, 1 - t)
@@ -462,29 +465,26 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       row.innerHTML = `
         <div class="sim-slider-label">
           <span class="sim-slider-name">${jointName}</span>
-          <span class="sim-slider-val" id="sslv-${jointName}">0.000</span>
+          <span class="sim-slider-val" id="sslv-${jointName}" title="Actual position">0.000</span>
         </div>
         <input type="range" class="sim-slider" id="ssl-${jointName}"
           min="${lower.toFixed(4)}" max="${upper.toFixed(4)}" step="0.001" value="0"
-          data-joint="${jointName}" data-effort="${effort}">
-        <div class="sim-torque-row">
-          <span class="sim-torque-label">Torque</span>
-          <input type="range" class="sim-torque-slider" id="sst-${jointName}"
-            min="${-effort}" max="${effort}" step="${(effort / 50).toFixed(4)}" value="0"
-            data-joint="${jointName}">
-          <button class="sim-torque-zero" data-joint="${jointName}" title="Zero torque">✕</button>
+          data-joint="${jointName}" data-effort="${effort}"
+          title="Target position (rad)">
+        <div class="sim-pos-row">
+          <button class="sim-pos-center" data-joint="${jointName}" title="Return to zero">⟳ Zero</button>
         </div>
       `
       simJointSliders.appendChild(row)
     }
 
-    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(slider => {
+    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(slider => {
       slider.addEventListener('input', () => sendSimControl())
     })
-    simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-torque-zero').forEach(btn => {
+    simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-pos-center').forEach(btn => {
       btn.addEventListener('click', () => {
         const joint = btn.dataset.joint!
-        const s = document.getElementById(`sst-${joint}`) as HTMLInputElement | null
+        const s = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
         if (s) s.value = '0'
         sendSimControl()
       })
@@ -496,7 +496,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   function sendSimControl() {
     if (!simCoreRunning) return
     const controls: Record<string, number> = {}
-    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => {
+    // Position sliders (ssl-) send target joint angles in radians to position actuators.
+    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(s => {
       controls[s.dataset.joint!] = parseFloat(s.value) || 0
     })
     recordControlTrace(simTime, controls)
@@ -508,10 +509,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (!joints) return
     for (const [name, j] of Object.entries(joints)) {
       simCurrentPositions.set(name, j.position)
+      // Only update the text readout (actual physics position), not the slider itself.
+      // The slider now represents the user's position *target*, not the measured state.
       const valEl = document.getElementById(`sslv-${name}`)
-      const posSlider = document.getElementById(`ssl-${name}`) as HTMLInputElement | null
       if (valEl) valEl.textContent = j.position.toFixed(3)
-      if (posSlider) posSlider.value = String(j.position)
     }
   }
 

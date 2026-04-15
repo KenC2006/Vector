@@ -9,7 +9,6 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
-  revolvedMotor, chamferedBox, chamferedCylinder,
   boltCircle, mountingHole, labelRecess, flangePlate, cablePort,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'

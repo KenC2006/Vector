@@ -57,12 +57,65 @@ class MuJoCoSimulator:
             # Reset to initial state
             self.mujoco.mj_resetData(self.model, self.data)
 
+            # For free-floating robots, the freejoint spawns at the world origin
+            # (z=0).  If the robot's rest pose has geometry below z=0 it will
+            # violently collide with the floor on the first step.  Shift the
+            # freejoint up so the lowest geom just clears the floor.
+            if free_base:
+                self._auto_lift_above_floor()
+
             return self.get_model_info()
 
         except Exception as e:
             self.model = None
             self.data = None
             raise ValueError(f"Failed to load URDF: {e}")
+
+    def _auto_lift_above_floor(self, clearance: float = 0.02) -> None:
+        """
+        Translate the free-floating root body upward so that the robot's lowest
+        geom (at the zero-pose) is `clearance` metres above the floor (z=0).
+
+        MuJoCo's freejoint qpos layout: [tx, ty, tz, qw, qx, qy, qz].
+        """
+        mujoco = self.mujoco
+
+        # Forward kinematics at the current (zero) pose so geom_xpos is valid.
+        mujoco.mj_kinematics(self.model, self.data)
+
+        floor_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+        plane_type = int(mujoco.mjtGeom.mjGEOM_PLANE)
+
+        # Find the lowest point of every non-floor geom.
+        # For each geom we take its centre z minus a conservative half-extent
+        # (max of all size dimensions), which over-estimates and is safe.
+        min_z = float("inf")
+        for i in range(self.model.ngeom):
+            if i == floor_id:
+                continue
+            if int(self.model.geom_type[i]) == plane_type:
+                continue
+            z_cen = float(self.data.geom_xpos[i, 2])
+            size = self.model.geom_size[i]
+            extent = float(np.max(size[:3]))   # conservative bound
+            min_z = min(min_z, z_cen - extent)
+
+        if min_z == float("inf") or min_z >= clearance:
+            return   # already above floor
+
+        shift = clearance - min_z
+
+        # Find the freejoint and move its z component.
+        for i in range(self.model.njnt):
+            if int(self.model.jnt_type[i]) == int(mujoco.mjtJoint.mjJNT_FREE):
+                adr = int(self.model.jnt_qposadr[i])
+                self.data.qpos[adr + 2] += shift
+                break
+
+        # Recompute kinematics so the rest of load_urdf sees consistent state.
+        mujoco.mj_kinematics(self.model, self.data)
 
     def step(self, n_steps: int = 1) -> None:
         """
@@ -91,6 +144,15 @@ class MuJoCoSimulator:
             raise RuntimeError("No model loaded. Call load_urdf() first.")
 
         self.mujoco.mj_resetData(self.model, self.data)
+
+        # Re-apply the spawn-height lift so the robot doesn't reset into the floor.
+        # Only needed when a freejoint is present (i.e. free_base=True was used).
+        has_free = any(
+            int(self.model.jnt_type[i]) == int(self.mujoco.mjtJoint.mjJNT_FREE)
+            for i in range(self.model.njnt)
+        )
+        if has_free:
+            self._auto_lift_above_floor()
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -215,13 +277,14 @@ class MuJoCoSimulator:
         # Clear all controls first
         self.data.ctrl[:] = 0.0
 
-        # Set specified controls
+        # Set specified controls.
+        # Actuator names are either "{joint}_pos" (position actuators, the default for
+        # revolute/prismatic joints) or "{joint}_motor" (torque motors for continuous joints).
         for ctrl_name, ctrl_value in controls.items():
-            # Try to find the actuator
             actuator_id = -1
             for i in range(self.model.nu):
                 act_name = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_ACTUATOR, i)
-                if act_name and act_name == f"{ctrl_name}_motor":
+                if act_name and act_name in (f"{ctrl_name}_pos", f"{ctrl_name}_motor"):
                     actuator_id = i
                     break
 

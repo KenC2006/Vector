@@ -14,7 +14,6 @@ import { getMaterial } from './materials'
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const SEGMENTS_HIGH = 64    // smooth curves
-const SEGMENTS_MED = 32     // default
 const SEGMENTS_LOW = 16     // small detail parts
 const BEVEL_SEGS = 4        // bevel quality
 

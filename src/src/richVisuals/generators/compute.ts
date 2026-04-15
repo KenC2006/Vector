@@ -7,10 +7,10 @@ import * as THREE from 'three'
 import type { GeneratorDims } from './index'
 import { getMaterial } from '../materials'
 import {
-  chamferedBox, chamferedCylinder, mountingHole,
+  mountingHole,
   labelRecess, pcbBoard, connectorBlock, heatsinkFins,
 } from '../primitives'
-import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
+import { nurbsFilletBox, nurbsCylinder } from '../nurbs'
 
 // Category color: [0.18, 0.80, 0.44] (green) — applied via pcbBoard's green material
 

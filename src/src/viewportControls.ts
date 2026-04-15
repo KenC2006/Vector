@@ -36,7 +36,7 @@ export function initViewportControls(deps: {
   focusMode: () => boolean
 } {
   const {
-    camera, renderer, controls, robot,
+    camera, renderer, controls,
     viewportPanel, editorPanel, handle,
     originAxes, grid, comGroup, wireframeGroup, axisVisuals, jointAxisState,
     simBar, simActive, parsedRobot,

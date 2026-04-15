@@ -70,7 +70,7 @@ export function defaultFaceNodesForBoxDims(
 export function componentPortsForPreset(
   componentId: string,
   hx: number, hy: number, hz: number,
-  mountingLogic?: { primary?: string; output?: string; shaft_diameter_mm?: number },
+  _mountingLogic?: { primary?: string; output?: string; shaft_diameter_mm?: number },
 ): AttachmentNodeDef[] {
   const nodes = defaultFaceNodesForBoxDims(hx, hy, hz)
 
