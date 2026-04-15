@@ -1924,7 +1924,7 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
     parts = []
     parts.append(_genai_types.Part.from_text(text=VALIDATION_SYSTEM_PROMPT))
 
-    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
+    view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
     has_images = False
 
     if screenshots and len(screenshots) >= 3:
@@ -1980,7 +1980,7 @@ def _validate_assembly_claude(urdf_content: str, original_prompt: str,
     client = _get_client()
 
     content = []
-    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
+    view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
     has_images = False
 
     if screenshots and len(screenshots) >= 3:
@@ -2037,6 +2037,9 @@ Assembled URDF:
 def _process_validation_result(response_text: str) -> dict:
     """Shared parsing logic for validation responses from Gemini or Claude."""
     result = _parse_json_response(response_text)
+    # Gemini sometimes wraps JSON responses in an array — unwrap it
+    if isinstance(result, list):
+        result = result[0] if result else {}
 
     checklist = result.get("checklist", [])
     if checklist:

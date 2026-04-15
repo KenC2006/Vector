@@ -321,15 +321,70 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             robotBox.getCenter(robotCenter)
             robotBox.getSize(robotSize)
             const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
-            const dist = maxDim * 2.5
-            const captureSize = 512
+            const captureSize = 768    // VLMs downscale to ~768px tiles; matches their native resolution
 
+            // Three canonical views with per-view distance for optimal framing
             const viewAngles = [
-              { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },
-              { label: 'rear-left', az: -0.75, el: 0.5, depth: -0.75 },
-              { label: 'top-down', az: 0.2, el: 1.2, depth: 0.2 },
+              { label: 'side-low',      az: Math.PI * 0.05, el: Math.PI * 0.06, dist: maxDim * 0.95 },  // ~11° elevation — profile/grounding
+              { label: 'three-quarter', az: Math.PI * 0.30, el: Math.PI * 0.10, dist: maxDim * 0.85 },  // ~18° elevation, ~54° azimuth — low 3/4 like standing nearby
+              { label: 'overhead',      az: Math.PI * -0.15, el: Math.PI * 0.35, dist: maxDim * 0.85 },  // ~63° elevation — top-down layout
             ]
             const screenshots: string[] = []
+
+            // ── Prepare clean scene for capture ──
+            // Hide everything except the robot meshes and lights.
+            // Strategy: hide all scene children except the robot group and lights,
+            // then inside the robot hide any debug/overlay groups.
+            const hiddenObjects: THREE.Object3D[] = []
+
+            // Hide top-level scene objects that aren't the robot or lights
+            for (const child of deps.scene.children) {
+              if (!child.visible) continue
+              if (child === deps.robot) continue
+              if (child instanceof THREE.Light) continue
+              child.visible = false
+              hiddenObjects.push(child)
+            }
+
+            // Hide debug overlays inside the robot group (wireframe, CoM, axis visuals, etc.)
+            deps.robot.traverse(obj => {
+              if (!obj.visible) return
+              const dominated =
+                obj instanceof THREE.AxesHelper
+                || obj instanceof THREE.ArrowHelper
+                || obj.name === 'attachment_nodes'
+                || obj.name === 'attachment_node_rings'
+                || obj.name === 'node-axis-rings'
+                || obj.type === 'Line'
+                || obj.type === 'LineLoop'
+                || obj.type === 'LineSegments'
+                // BoxGeometry node meshes (12×12×12mm cubes used for mount nodes)
+                || (obj instanceof THREE.Mesh && (obj.geometry as any)?.parameters?.width === 0.012)
+                // TorusGeometry axis rings
+                || (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.TorusGeometry)
+              if (dominated) {
+                obj.visible = false
+                hiddenObjects.push(obj)
+              }
+            })
+
+            // Swap to light gray background for better contrast (VLMs parse light BGs better)
+            const origBackground = deps.scene.background
+            deps.scene.background = new THREE.Color(0xd8dce3)
+
+            // Add a temporary fill light to reduce harsh shadows in captures
+            const captureFill = new THREE.HemisphereLight(0xffffff, 0x8899aa, 0.5)
+            deps.scene.add(captureFill)
+
+            // Visible ground plane so the floor line is clear in low-angle shots
+            const captureGround = new THREE.Mesh(
+              new THREE.PlaneGeometry(6, 6),
+              new THREE.MeshStandardMaterial({ color: 0xbcc0c8, roughness: 0.9 }),
+            )
+            captureGround.rotation.x = -Math.PI / 2
+            captureGround.position.y = 0.0001  // just above origin to avoid z-fighting
+            captureGround.receiveShadow = true
+            deps.scene.add(captureGround)
 
             const offCanvas = document.createElement('canvas')
             offCanvas.width = captureSize
@@ -337,15 +392,18 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
             offRenderer.setSize(captureSize, captureSize)
             offRenderer.shadowMap.enabled = true
+            offRenderer.setClearColor(0xd8dce3, 1)
 
             const offCam = deps.camera.clone()
             offCam.aspect = 1
 
             for (const view of viewAngles) {
+              // Spherical coordinates: azimuth around Y-up, elevation from ground plane
+              const d = view.dist
               offCam.position.set(
-                robotCenter.x + dist * view.az,
-                robotCenter.y + dist * view.el,
-                robotCenter.z + dist * view.depth,
+                robotCenter.x + d * Math.cos(view.el) * Math.sin(view.az),
+                robotCenter.y + d * Math.sin(view.el),
+                robotCenter.z + d * Math.cos(view.el) * Math.cos(view.az),
               )
               offCam.lookAt(robotCenter)
               offCam.updateProjectionMatrix()
@@ -354,6 +412,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
             }
             offRenderer.dispose()
+
+            // ── Restore scene state ──
+            deps.scene.background = origBackground
+            deps.scene.remove(captureFill)
+            deps.scene.remove(captureGround)
+            ;(captureGround.material as THREE.Material).dispose()
+            captureGround.geometry.dispose()
+            for (const obj of hiddenObjects) obj.visible = true
 
             const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
             console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
