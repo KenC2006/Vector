@@ -1461,6 +1461,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     noSplay: boolean = false,
     childComponentId: string = '',
     elevationAngleDeg: number = 0,
+    childSizes?: Array<{ hu: number; hv: number }>,
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
@@ -1483,7 +1484,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // ── Multi-child tangential offsets (uses splay-corrected inset on bottom face) ──
     let tu = 0, tv = 0
     if (totalOnFace > 1) {
-      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride)
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes)
       tu = offsets.u
       tv = offsets.v
     }
@@ -1564,73 +1565,133 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
   }
 
+  /** Map a face name to its two tangent half-extents (U and V axes on that face). */
+  function faceUVHalfExtents(b: { hx: number; hy: number; hz: number }, face: string): { hu: number; hv: number } {
+    switch (face) {
+      case 'top': case 'bottom': return { hu: b.hx, hv: b.hy }
+      case 'front': case 'back': return { hu: b.hy, hv: b.hz }
+      case 'left': case 'right': return { hu: b.hx, hv: b.hz }
+      default: return { hu: b.hx, hv: b.hy }
+    }
+  }
+
+  /** Build a preset with length_mm override applied to bounding_box_mm (for extrusions). */
+  function buildVisPreset(preset: PresetComponent, comp: { length_mm?: number }): PresetComponent {
+    const phys = preset.physical
+    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    if (comp.length_mm && phys.cross_section_mm) {
+      return { ...preset, physical: { ...phys, bounding_box_mm: [bb[0] ?? 40, bb[1] ?? 40, comp.length_mm] } } as PresetComponent
+    }
+    return preset
+  }
+
   /**
-   * Compute tangential UV offsets for distributing multiple children on a face.
-   * Returns offsets along the face's two tangent axes.
+   * Build the resolved positions array for all children on a face.
+   * Cached per face group key to avoid recomputing for each child.
+   */
+  const _multiChildPositionsCache = new Map<string, Array<{ u: number; v: number }>>()
+
+  function _buildMultiChildPositions(
+    total: number,
+    parent: { hx: number; hy: number; hz: number },
+    face: string,
+    inset: number,
+    childSizes?: Array<{ hu: number; hv: number }>,
+  ): Array<{ u: number; v: number }> {
+    // Cache key: deterministic for same inputs
+    const cacheKey = `${total}:${face}:${parent.hx},${parent.hy},${parent.hz}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
+    const cached = _multiChildPositionsCache.get(cacheKey)
+    if (cached) return cached
+
+    const { hu: extU, hv: extV } = faceUVHalfExtents(parent, face)
+    let positions: Array<{ u: number; v: number }>
+
+    if (total === 2) {
+      positions = [
+        { u: -inset * extU, v: 0 },
+        { u: inset * extU, v: 0 },
+      ]
+    } else if (total === 3) {
+      positions = [
+        { u: 0, v: inset * extV },
+        { u: -inset * extU, v: -inset * 0.5 * extV },
+        { u: inset * extU, v: -inset * 0.5 * extV },
+      ]
+    } else if (total === 4) {
+      positions = [
+        { u: inset * extU, v: inset * extV },
+        { u: -inset * extU, v: inset * extV },
+        { u: inset * extU, v: -inset * extV },
+        { u: -inset * extU, v: -inset * extV },
+      ]
+    } else if (total === 6) {
+      positions = []
+      for (let i = 0; i < 6; i++) {
+        const col = i % 3
+        const row = Math.floor(i / 3)
+        positions.push({
+          u: (col - 1) * inset * extU,
+          v: (row === 0 ? inset : -inset) * extV,
+        })
+      }
+    } else {
+      positions = []
+      const step = (2 * inset * extU) / Math.max(total - 1, 1)
+      for (let i = 0; i < total; i++) {
+        positions.push({ u: -inset * extU + i * step, v: 0 })
+      }
+    }
+
+    // ── Overlap resolution: push apart positions that would cause child AABBs to clip ──
+    if (childSizes && childSizes.length === total) {
+      const margin = 0.002
+      for (let pass = 0; pass < 3; pass++) {
+        for (let i = 0; i < total; i++) {
+          for (let j = i + 1; j < total; j++) {
+            const du = positions[j].u - positions[i].u
+            const dv = positions[j].v - positions[i].v
+            const minSepU = childSizes[i].hu + childSizes[j].hu + margin
+            const minSepV = childSizes[i].hv + childSizes[j].hv + margin
+            const overlapU = minSepU - Math.abs(du)
+            const overlapV = minSepV - Math.abs(dv)
+            if (overlapU > 0 && overlapV > 0) {
+              if (overlapU <= overlapV) {
+                const push = overlapU / 2 + 0.001
+                const signU = du >= 0 ? 1 : -1
+                positions[i].u -= signU * push
+                positions[j].u += signU * push
+              } else {
+                const push = overlapV / 2 + 0.001
+                const signV = dv >= 0 ? 1 : -1
+                positions[i].v -= signV * push
+                positions[j].v += signV * push
+              }
+            }
+          }
+        }
+      }
+      console.log(`[placement] Multi-child overlap resolution: ${total} children, positions:`, positions.map((p, i) => `${i}:(${p.u.toFixed(4)},${p.v.toFixed(4)}) size(${childSizes[i].hu.toFixed(4)},${childSizes[i].hv.toFixed(4)})`))
+    }
+
+    _multiChildPositionsCache.set(cacheKey, positions)
+    return positions
+  }
+
+  /**
+   * Compute tangential UV offset for a single child on a shared face.
+   * Delegates to _buildMultiChildPositions (cached) and returns the position for this index.
    */
   function _computeMultiChildOffsets(
     total: number, index: number,
     parent: { hx: number; hy: number; hz: number },
     face: string,
     insetOverride?: number,
+    childSizes?: Array<{ hu: number; hv: number }>,
   ): { u: number; v: number } {
-    // Determine the face's tangent extents (how much room to spread children)
-    let extU: number, extV: number
-    switch (face) {
-      case 'top': case 'bottom':
-        extU = parent.hx; extV = parent.hy; break
-      case 'front': case 'back':
-        extU = parent.hy; extV = parent.hz; break
-      case 'left': case 'right':
-        extU = parent.hx; extV = parent.hz; break
-      default:
-        extU = parent.hx; extV = parent.hy
-    }
-
-    // Inset from edge (70% of half-extent so children are near corners but not at the very edge).
-    // Caller may pass a reduced insetOverride when splay is active to prevent post-splay clipping.
     const inset = insetOverride ?? 0.7
-
-    // Clamp index to valid range to prevent array out-of-bounds
     const safeIndex = Math.min(index, Math.max(total - 1, 0))
-
-    if (total === 2) {
-      // Side by side along U axis
-      const positions = [-inset, inset]
-      return { u: positions[safeIndex] * extU, v: 0 }
-    }
-    if (total === 3) {
-      // Triangle pattern
-      const positions = [
-        { u: 0, v: inset },
-        { u: -inset, v: -inset * 0.5 },
-        { u: inset, v: -inset * 0.5 },
-      ]
-      return { u: positions[safeIndex].u * extU, v: positions[safeIndex].v * extV }
-    }
-    if (total === 4) {
-      // Four corners
-      const positions = [
-        { u: inset, v: inset },    // front-right
-        { u: -inset, v: inset },   // front-left
-        { u: inset, v: -inset },   // back-right
-        { u: -inset, v: -inset },  // back-left
-      ]
-      return { u: positions[safeIndex].u * extU, v: positions[safeIndex].v * extV }
-    }
-    if (total === 6) {
-      // 2x3 grid
-      const col = safeIndex % 3
-      const row = Math.floor(safeIndex / 3)
-      const u = (col - 1) * inset * extU
-      const v = (row === 0 ? inset : -inset) * extV
-      return { u, v }
-    }
-
-    // Generic: spread linearly along U axis
-    const step = (2 * inset * extU) / Math.max(total - 1, 1)
-    const u = -inset * extU + safeIndex * step
-    return { u, v: 0 }
+    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes)
+    return positions[safeIndex] || { u: 0, v: 0 }
   }
 
   // Resolve which category a component belongs to
@@ -2917,6 +2978,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   // ── AI Assembly Graph Resolver ───────────────────────────────────────────────
   function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
+    _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
     if (!presetData) {
@@ -3145,9 +3207,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const rootLinkName = root.link_name
     const catName = findCategory(rootPreset)
-    const rootVisualPreset = (root.length_mm && phys.cross_section_mm)
-      ? { ...rootPreset, physical: { ...phys, bounding_box_mm: [bb[0] ?? 40, bb[1] ?? 40, root.length_mm] } }
-      : rootPreset
+    const rootVisualPreset = buildVisPreset(rootPreset, root)
     const visuals = generateVisuals(rootVisualPreset as Parameters<typeof generateVisuals>[0], catName)
 
     // Build root link XML
@@ -3207,11 +3267,28 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // so we can distribute them (e.g., 4 wheels on bottom corners)
     const faceChildCounts = new Map<string, number>()
     const faceChildIndex = new Map<string, number>()
+    // Pre-collect child UV-projected half-sizes per face group so
+    // _computeMultiChildOffsets can prevent overlapping placements.
+    const faceChildSizes = new Map<string, Array<{ hu: number; hv: number }>>()
+    // Cache bounds from pre-pass so the main loop doesn't recompute them.
+    const boundsCache = new Map<string, ReturnType<typeof computeCarryGhostBounds>>()
     for (const comp of components) {
       if (!comp.attach_to) continue
       const key = `${comp.attach_to}:${comp.attach_face || 'top'}`
       faceChildCounts.set(key, (faceChildCounts.get(key) || 0) + 1)
       faceChildIndex.set(key, 0) // will increment as we place
+
+      const cPreset = findPreset(comp.component_id)
+      if (cPreset) {
+        const cb = computeCarryGhostBounds(buildVisPreset(cPreset, comp))
+        boundsCache.set(comp.link_name, cb)
+        const { hu, hv } = faceUVHalfExtents(cb, comp.attach_face || 'top')
+        if (!faceChildSizes.has(key)) faceChildSizes.set(key, [])
+        faceChildSizes.get(key)!.push({ hu, hv })
+      } else {
+        if (!faceChildSizes.has(key)) faceChildSizes.set(key, [])
+        faceChildSizes.get(key)!.push({ hu: 0.02, hv: 0.02 })
+      }
     }
     console.log('[assembly] Face child distribution:', Object.fromEntries(faceChildCounts))
 
@@ -3251,16 +3328,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Select the parent link so addComponentCore attaches to it
       selectLink(parentLinkName)
 
-      // Compute child dimensions from URDF visual bounds so placement uses the same
-      // data source as parent bounds (getParentBounds also reads URDF visuals).
-      // This eliminates gaps caused by visual geometry not filling the full catalog
-      // bounding_box_mm (e.g. servo body is 76% of catalog height).
+      // Use cached bounds from pre-pass when available, otherwise compute.
       const cPhys = preset.physical
-      const cBb = cPhys.bounding_box_mm ?? cPhys.cross_section_mm ?? [40, 40, 40]
-      const childVisPreset = (comp.length_mm && cPhys.cross_section_mm)
-        ? { ...preset, physical: { ...cPhys, bounding_box_mm: [cBb[0] ?? 40, cBb[1] ?? 40, comp.length_mm] } }
-        : preset
-      const childBounds = computeCarryGhostBounds(childVisPreset as PresetComponent)
+      const childBounds = boundsCache.get(comp.link_name) ?? computeCarryGhostBounds(buildVisPreset(preset, comp))
       const cxm = childBounds.hx * 2
       const cym = childBounds.hy * 2
       // For extrusions with per-instance length, the mesh cache may hold dims from a
@@ -3333,19 +3403,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       faceChildIndex.set(faceKey, childIdx + 1)
 
       const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
-      // Detect rod-shaped components (two short dims, one long)
       const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
       const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
       const orientation = comp.orientation || 'auto'
-      // Detect wheel-related components — these should NOT get leg splay
       const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
-      // Revolute joints are actuated — their rest position should be vertical (zero angle).
-      // Splay makes sense only for fixed structural legs, not for hip/shoulder actuators.
       const noSplay = isWheelRelated || comp.joint_type === 'revolute'
       const elevAngle = comp.elevation_angle ?? 0
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle)
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey))
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
@@ -3368,10 +3434,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       else cInertia = computeBoxInertia(cMass, cxm, cym, czm)
 
       const cCatName = findCategory(preset)
-      // Build a visuals-preset with correct length so generateVisuals sees the full dimension
-      const visualPreset = (comp.length_mm && cPhys.cross_section_mm)
-        ? { ...preset, physical: { ...cPhys, bounding_box_mm: [cBb[0] ?? 40, cBb[1] ?? 40, comp.length_mm] } }
-        : preset
+      const visualPreset = buildVisPreset(preset, comp)
       const cVisuals = generateVisuals(visualPreset as Parameters<typeof generateVisuals>[0], cCatName)
 
       const changed = commitUrdf(urdfDoc => {
