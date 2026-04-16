@@ -27,6 +27,7 @@ export interface ChatHistoryApi {
   updateChatDropdown(): void
   rewindChatTo(msgIndex: number, mode: 'conversation' | 'code' | 'both'): void
   attachRewindButton(msgEl: HTMLElement, msgIndex: number): void
+  exportForBackend(chatId?: string): Array<{ role: string; content: string }>
 }
 
 const MAX_CHATS = 20
@@ -270,6 +271,15 @@ export function initChatHistory(deps: {
     startNewChat()
   }
 
+  function exportForBackend(chatId?: string): Array<{ role: string; content: string }> {
+    const id = chatId || currentChatId
+    const chat = chatHistory.find(c => c.id === id)
+    if (!chat) return []
+    return chat.messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }))
+  }
+
   return {
     getChatHistory: () => chatHistory,
     getCurrentChatId: () => currentChatId,
@@ -282,5 +292,6 @@ export function initChatHistory(deps: {
     updateChatDropdown,
     rewindChatTo,
     attachRewindButton,
+    exportForBackend,
   }
 }

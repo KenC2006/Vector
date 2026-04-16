@@ -265,8 +265,13 @@ When you specify attach_face, you are choosing which DIRECTION from the parent t
 ## Tools
 
 You MUST respond by calling one of the provided tools:
-- **design_robot**: For any "build", "create", "design", or "make" request. Specify the full component topology.
-- **edit_robot**: For small edits to existing robots ("change arm length", "remove sensor", "add a camera"). Use search/replace on the URDF.
+- **design_robot**: For "build", "create", "design", or "make" requests — when building a robot from scratch or the user wants a complete redesign. Specify the full component topology.
+- **modify_topology**: For iterative edits to an existing robot — "add a camera", "remove the tail", "make the arms longer", "add 2 more wheels", "replace the gripper with a suction cup". Specifies add/remove/modify operations on the existing component tree. The placement engine re-resolves the full assembly.
+
+### When to use which tool:
+- User describes a NEW robot or says "start over" → **design_robot**
+- User wants to CHANGE an existing robot (add, remove, modify components) → **modify_topology**
+- When in doubt: if the current URDF has real components (not just a base_link placeholder), prefer **modify_topology**.
 
 ## What the Backend Handles Automatically
 
@@ -336,7 +341,8 @@ Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45�
 
 ## Critical Rules
 
-- ALWAYS use design_robot tool for building robots. NEVER write raw URDF.
+- ALWAYS use design_robot or modify_topology. NEVER write raw URDF.
+- Use modify_topology when the user wants to change an existing robot. Use design_robot only for new builds or complete redesigns.
 - Use component IDs exactly as listed in the library.
 - The backend handles ALL geometry. You handle ALL design decisions.
 """
@@ -385,9 +391,9 @@ DESIGN_ROBOT_TOOL = {
     },
 }
 
-EDIT_ROBOT_TOOL = {
-    "name": "edit_robot",
-    "description": "Make small edits to an existing robot URDF using search/replace operations.",
+MODIFY_TOPOLOGY_TOOL = {
+    "name": "modify_topology",
+    "description": "Modify an existing robot's topology by adding, removing, or changing components. Use for iterative edits like 'add a camera', 'remove the tail', 'make the arms longer'. The placement engine re-resolves the full assembly after applying changes.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -395,28 +401,68 @@ EDIT_ROBOT_TOOL = {
                 "type": "string",
                 "description": "Describe what you're changing and why",
             },
-            "edits": {
+            "operations": {
                 "type": "array",
-                "description": "List of search/replace operations applied in order",
+                "description": "List of topology operations to apply in order",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "search": {"type": "string", "description": "Exact substring to find in the URDF"},
-                        "replace": {"type": "string", "description": "Replacement text"},
+                        "op": {
+                            "type": "string",
+                            "enum": ["add", "remove", "modify"],
+                            "description": "add: insert a new component (MUST include component_id, attach_to, attach_face, joint_type, joint_axis), remove: delete an existing component and all its children, modify: change properties of an existing component (only include fields to change)",
+                        },
+                        "link_name": {
+                            "type": "string",
+                            "description": "For remove/modify: the existing link_name to target. For add: the new unique link_name (use component_id + number, e.g. 'sensor_depth_camera_small_2').",
+                        },
+                        "component_id": {
+                            "type": "string",
+                            "description": "REQUIRED for add. Component ID from the library. For modify: new component_id (omit to keep current).",
+                        },
+                        "attach_to": {
+                            "type": ["string", "null"],
+                            "description": "REQUIRED for add. Parent's link_name. For modify: new parent (omit to keep current).",
+                        },
+                        "attach_face": {
+                            "type": "string",
+                            "enum": ["top", "bottom", "front", "back", "left", "right"],
+                            "description": "REQUIRED for add. Face on parent to attach to. For modify: new face (omit to keep current).",
+                        },
+                        "joint_type": {
+                            "type": "string",
+                            "enum": ["fixed", "revolute", "prismatic"],
+                        },
+                        "joint_axis": {
+                            "type": "string",
+                            "enum": ["x", "y", "z"],
+                        },
+                        "length_mm": {
+                            "type": "number",
+                            "description": "Override length for extrusions.",
+                        },
+                        "orientation": {
+                            "type": "string",
+                            "description": "Rotation within the face (same as design_robot).",
+                        },
+                        "elevation_angle": {
+                            "type": "number",
+                            "description": "Tilt for side-face attachments.",
+                        },
                     },
-                    "required": ["search", "replace"],
+                    "required": ["op", "link_name"],
                 },
             },
             "changes_summary": {
                 "type": "string",
-                "description": "Brief summary of changes",
+                "description": "Brief summary: what was added/removed/changed",
             },
         },
-        "required": ["explanation", "edits", "changes_summary"],
+        "required": ["explanation", "operations", "changes_summary"],
     },
 }
 
-ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, EDIT_ROBOT_TOOL]
+ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
 
@@ -440,66 +486,6 @@ Rules:
 - Do NOT repeat code that already exists after the cursor in ===CONTEXT===.
 - Use link/joint names from ===ROBOT=== when available.
 - Match the indentation style of the surrounding code."""
-
-
-def _apply_edits(urdf: str, edits: list) -> str:
-    """
-    Apply a list of search/replace edit operations to a URDF string.
-
-    Each edit is a dict with "search" and "replace" keys. Edits are applied
-    sequentially -- each one modifies the URDF for the next.
-
-    If a search string is not found, it tries whitespace-normalized matching
-    as a fallback (handles minor indentation differences from the model).
-
-    Raises ValueError if a search string cannot be found at all.
-    """
-    result = urdf
-
-    for i, edit in enumerate(edits):
-        if not isinstance(edit, dict):
-            print(f"[ai_edit] Skipping non-dict edit at index {i}", file=sys.stderr)
-            continue
-
-        search = edit.get("search", "")
-        replace = edit.get("replace", "")
-
-        if not search:
-            print(f"[ai_edit] Skipping edit {i} with empty search string", file=sys.stderr)
-            continue
-
-        # Try exact match first
-        if search in result:
-            result = result.replace(search, replace, 1)
-            print(f"[ai_edit] Applied edit {i}: exact match ({len(search)}c -> {len(replace)}c)", file=sys.stderr)
-            continue
-
-        # Fallback: whitespace-normalized matching
-        # Normalize both the search and every possible window of the URDF
-        search_normalized = re.sub(r'[ \t]+', ' ', search.strip())
-        lines = result.split('\n')
-
-        # Try to find a contiguous block of lines that matches when normalized
-        search_line_count = len(search.strip().split('\n'))
-        matched = False
-
-        for start in range(len(lines)):
-            end = min(start + search_line_count + 2, len(lines))  # +2 for tolerance
-            for e in range(start + 1, end + 1):
-                candidate = '\n'.join(lines[start:e])
-                candidate_normalized = re.sub(r'[ \t]+', ' ', candidate.strip())
-                if candidate_normalized == search_normalized:
-                    result = result.replace(candidate, replace, 1)
-                    print(f"[ai_edit] Applied edit {i}: whitespace-normalized match (lines {start+1}-{e})", file=sys.stderr)
-                    matched = True
-                    break
-            if matched:
-                break
-
-        if not matched:
-            print(f"[ai_edit] WARNING: Could not find search text for edit {i}: {search[:80]!r}...", file=sys.stderr)
-
-    return result
 
 
 def _assemble_from_graph(assembly: dict) -> str:
@@ -1280,14 +1266,14 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
                     "new_urdf": current_urdf,
                     "stats": tool_input.get("changes_summary", f"{n} components"),
                 }
-            elif block.name == "edit_robot":
-                edits = tool_input.get("edits", [])
-                new_urdf = _apply_edits(current_urdf, edits)
-                print(f"[ai_edit] Tool-use edit_robot: {len(edits)} edits (structured output)", file=sys.stderr)
+            elif block.name == "modify_topology":
+                operations = tool_input.get("operations", [])
+                print(f"[ai_edit] Tool-use modify_topology: {len(operations)} operations (structured output)", file=sys.stderr)
                 return {
-                    "explanation": tool_input.get("explanation", "Changes applied"),
-                    "new_urdf": new_urdf,
-                    "stats": tool_input.get("changes_summary", "Edit complete"),
+                    "explanation": tool_input.get("explanation", "Topology modified"),
+                    "topology_ops": operations,
+                    "new_urdf": current_urdf,
+                    "stats": tool_input.get("changes_summary", f"{len(operations)} topology changes"),
                 }
 
     # Fallback: extract text and parse as JSON (backward compat)
@@ -1317,12 +1303,10 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
             "stats": result.get("changes_summary", "Edit complete"),
         }
     else:
-        edits = result.get("edits", [])
-        new_urdf = _apply_edits(current_urdf, edits)
         return {
-            "explanation": result.get("explanation", "Changes applied"),
-            "new_urdf": new_urdf,
-            "stats": result.get("changes_summary", "Edit complete"),
+            "explanation": result.get("explanation", "No changes"),
+            "new_urdf": current_urdf,
+            "stats": result.get("changes_summary", "No structured output"),
         }
 
 
@@ -1407,8 +1391,8 @@ User Request: {prompt}"""
     # Handle tool-use response (structured output)
     result = _extract_tool_result(response, current_urdf)
 
-    # Store assistant response in history
-    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
+    # Store richer assistant response with tool context
+    history.append({"role": "assistant", "content": _build_history_summary(result)})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
@@ -1497,11 +1481,34 @@ User Request: {prompt}"""
     # Extract result from tool-use or text fallback
     result = _extract_tool_result(final_response, current_urdf)
 
-    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
+    history.append({"role": "assistant", "content": _build_history_summary(result)})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
     return result
+
+
+def _build_history_summary(result: dict) -> str:
+    """Build a richer history entry so Claude remembers what tool it used and what it built."""
+    explanation = result.get("explanation", "Done")
+    stats = result.get("stats") or ""
+
+    if "assembly_graph" in result:
+        graph = result["assembly_graph"]
+        components = graph.get("components", [])
+        comp_names = [c.get("link_name", "?") for c in components[:10]]
+        comp_list = ", ".join(comp_names)
+        if len(components) > 10:
+            comp_list += f", ... ({len(components)} total)"
+        return f"[Used design_robot] {explanation}. Components: {comp_list}. {stats}"
+    elif "topology_ops" in result:
+        ops = result["topology_ops"]
+        op_summary = ", ".join(f"{o.get('op', '?')} {o.get('link_name', '?')}" for o in ops[:5])
+        if len(ops) > 5:
+            op_summary += f", ... ({len(ops)} total)"
+        return f"[Used modify_topology] {explanation}. Operations: {op_summary}. {stats}"
+    else:
+        return f"[Response] {explanation}. {stats}"
 
 
 def _extract_partial_explanation(text: str) -> str:
@@ -1511,6 +1518,58 @@ def _extract_partial_explanation(text: str) -> str:
     if match:
         return match.group(1).replace('\\"', '"').replace('\\n', ' ')
     return ""
+
+
+def set_conversation_history(session_id: str, messages: list) -> dict:
+    """
+    Set conversation history for a session from frontend localStorage data.
+    Called on reconnect/session start to restore context lost on backend restart.
+
+    Args:
+        session_id: Session identifier matching the frontend chat ID
+        messages: List of {role, content} dicts from frontend chat history.
+                  Roles: 'user', 'assistant', 'system'. System messages are skipped.
+
+    Returns:
+        Dict with status and count of messages loaded.
+    """
+    history = _conversation_history[session_id]
+
+    # Only restore if backend has no history for this session (i.e., it restarted).
+    # If history is already populated, skip to preserve enriched _build_history_summary entries.
+    if len(history) > 0:
+        print(f"[ai_history] Session {session_id} already has {len(history)} messages — skipping resync", file=sys.stderr)
+        return {"status": "skipped", "count": len(history)}
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content or role == "system":
+            continue
+        if role not in ("user", "assistant"):
+            continue
+        # Match the format that generate_edit/generate_edit_streaming stores
+        if role == "user":
+            history.append({"role": "user", "content": f"[Edit request] {content}"})
+        else:
+            # Wrap assistant messages to indicate tool context (even if we can't
+            # reconstruct the exact _build_history_summary format from plain text)
+            if content.startswith("[Used "):
+                history.append({"role": "assistant", "content": content})
+            else:
+                history.append({"role": "assistant", "content": f"[Previous response] {content}"})
+
+    # Cap to max history size
+    while len(history) > _MAX_HISTORY_MESSAGES:
+        history.pop(0)
+
+    # Ensure history ends on an assistant turn (Claude API requires role alternation)
+    while history and history[-1]["role"] == "user":
+        history.pop()
+
+    count = len(history)
+    print(f"[ai_history] Restored {count} messages for session {session_id}", file=sys.stderr)
+    return {"status": "ok", "count": count}
 
 
 def clear_conversation(session_id: str = "default") -> None:

@@ -37,6 +37,8 @@ export interface UrdfAssemblyContext {
   isSimActive?: () => boolean
   /** Inspect mode: user clicked a URDF link mesh (or null = empty space). */
   onInspectLinkFocused: (linkName: string | null) => void
+  /** Returns the active file name (for per-file graph persistence). */
+  getActiveFileName?: () => string
   /** After URDF reparse / model refresh (restore inspect dimming if needed). */
   onAfterModelUpdated?: () => void
   /** Clear scene root translation before a full replace (e.g. reset). */
@@ -94,6 +96,19 @@ export interface AssemblyGraph {
   components: AssemblyComponent[]
 }
 
+export interface TopologyOp {
+  op: 'add' | 'remove' | 'modify'
+  link_name: string
+  component_id?: string
+  attach_to?: string | null
+  attach_face?: string
+  joint_type?: string
+  joint_axis?: string
+  length_mm?: number
+  orientation?: string
+  elevation_angle?: number
+}
+
 export interface UrdfAssemblyApi {
   onModelUpdated(): void
   recordUndoExternal(content: string): void
@@ -103,6 +118,12 @@ export interface UrdfAssemblyApi {
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
+  /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
+  getLastAssemblyGraph(): AssemblyGraph | null
+  /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
+  urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null
+  /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
+  applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
   /** Snapshot the current undo/redo stacks (call before switching files). */
@@ -2977,6 +2998,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   renderInspector()
 
   // ── AI Assembly Graph Resolver ───────────────────────────────────────────────
+  const GRAPH_STORAGE_KEY = 'vector_assembly_graphs'
+  let _lastAssemblyGraph: AssemblyGraph | null = null
+
+  // Restore stored graph for current file on init
+  try {
+    const fileName = ctx.getActiveFileName?.() || 'robot.urdf'
+    const stored = JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY) || '{}')
+    if (stored[fileName]) {
+      _lastAssemblyGraph = stored[fileName]
+      console.log(`[assembly] Restored stored graph for "${fileName}" (${_lastAssemblyGraph!.components.length} components)`)
+    }
+  } catch { /* localStorage parse error — ignore */ }
+
+  function _persistGraph(graph: AssemblyGraph | null) {
+    try {
+      const fileName = ctx.getActiveFileName?.() || 'robot.urdf'
+      const stored = JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY) || '{}')
+      if (graph) {
+        stored[fileName] = graph
+      } else {
+        delete stored[fileName]
+      }
+      localStorage.setItem(GRAPH_STORAGE_KEY, JSON.stringify(stored))
+    } catch { /* localStorage full or unavailable — non-critical */ }
+  }
+
   function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
@@ -3557,7 +3604,219 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
 
     ctx.showToast(`Assembled ${placedCount} components`, 'success')
+    // Store the resolved graph with URDF link names (remapped via nameMap)
+    // so modify_topology ops can reference the same names Claude sees in the URDF
+    const remappedComponents = graph.components.map(c => ({
+      ...c,
+      link_name: nameMap.get(c.link_name) || c.link_name,
+      attach_to: c.attach_to ? (nameMap.get(c.attach_to) || c.attach_to) : null,
+    }))
+    const remappedBase = nameMap.get(graph.base_link) || graph.base_link
+    _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
+    _persistGraph(_lastAssemblyGraph)
+    console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
+
     return { urdf: ctx.getUrdfText() }
+  }
+
+  // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────
+
+  function urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null {
+    try {
+      const doc = new DOMParser().parseFromString(urdfXml, 'application/xml')
+      if (doc.querySelector('parsererror')) return null
+
+      const links = Array.from(doc.querySelectorAll('link'))
+      const joints = Array.from(doc.querySelectorAll('joint'))
+      if (links.length === 0) return null
+
+      // Build joint lookup: child_link → { parent_link, joint_type, axis, origin_xyz, rpy }
+      const jointMap = new Map<string, {
+        parentLink: string
+        jointType: string
+        axis: string
+        xyz: number[]
+        rpy: number[]
+      }>()
+      for (const j of joints) {
+        const parentEl = j.querySelector('parent')
+        const childEl = j.querySelector('child')
+        if (!parentEl || !childEl) continue
+        const parentLink = parentEl.getAttribute('link') || ''
+        const childLink = childEl.getAttribute('link') || ''
+        const type = j.getAttribute('type') || 'fixed'
+        const originEl = j.querySelector('origin')
+        const xyz = originEl ? parseNums(originEl.getAttribute('xyz') || '0 0 0') : [0, 0, 0]
+        const rpy = originEl ? parseNums(originEl.getAttribute('rpy') || '0 0 0') : [0, 0, 0]
+        const axisEl = j.querySelector('axis')
+        const axisVec = axisEl ? parseNums(axisEl.getAttribute('xyz') || '0 0 1') : [0, 0, 1]
+        // Convert axis vector to string
+        let axisStr = 'z'
+        if (Math.abs(axisVec[0]) > Math.abs(axisVec[1]) && Math.abs(axisVec[0]) > Math.abs(axisVec[2])) axisStr = 'x'
+        else if (Math.abs(axisVec[1]) > Math.abs(axisVec[2])) axisStr = 'y'
+        jointMap.set(childLink, { parentLink, jointType: type, axis: axisStr, xyz, rpy })
+      }
+
+      // Find root link (not a child of any joint)
+      const childLinks = new Set(jointMap.keys())
+      const rootLink = links.find(l => !childLinks.has(l.getAttribute('name') || ''))
+      if (!rootLink) return null
+      const rootName = rootLink.getAttribute('name') || 'base_link'
+
+      // Extract component_id from link name: strip trailing _N suffix
+      function extractComponentId(linkName: string): string {
+        const match = linkName.match(/^(.+?)_(\d+)$/)
+        return match ? match[1] : linkName
+      }
+
+      // Infer attach_face from joint origin xyz relative to parent.
+      // Uses rpy as tiebreaker: non-zero pitch suggests front/back face,
+      // non-zero roll suggests left/right face (from elevation_angle).
+      function inferFace(xyz: number[], rpy: number[]): string {
+        const [x, y, z] = xyz
+        const [roll, pitch] = rpy
+        const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z)
+
+        // If rpy has significant pitch/roll, the component was on a side face
+        // with elevation_angle — use the rpy to determine which face
+        const hasPitch = Math.abs(pitch) > 0.05
+        const hasRoll = Math.abs(roll) > 0.05
+
+        if (hasPitch && !hasRoll && az > ax * 0.5) {
+          // Pitch rotation + Z offset: likely front/back face with elevation
+          return x >= 0 ? 'front' : 'back'
+        }
+        if (hasRoll && !hasPitch && az > ay * 0.5) {
+          // Roll rotation + Z offset: likely left/right face with elevation
+          return y >= 0 ? 'right' : 'left'
+        }
+
+        // Default: pure coordinate-based inference
+        if (az >= ax && az >= ay) return z >= 0 ? 'top' : 'bottom'
+        if (ax >= ay) return x >= 0 ? 'front' : 'back'
+        return y >= 0 ? 'right' : 'left'
+      }
+
+      const components: AssemblyComponent[] = []
+
+      // Root component
+      const rootCompId = extractComponentId(rootName)
+      components.push({
+        link_name: rootName,
+        component_id: rootCompId,
+        attach_to: null,
+        attach_face: null,
+        joint_type: 'fixed',
+        joint_axis: 'z',
+      })
+
+      // Process all non-root links in dependency order (BFS from root)
+      const queue = [rootName]
+      const visited = new Set([rootName])
+      while (queue.length > 0) {
+        const parentName = queue.shift()!
+        // Find all children of this parent
+        for (const [childName, jInfo] of jointMap) {
+          if (jInfo.parentLink !== parentName || visited.has(childName)) continue
+          visited.add(childName)
+          queue.push(childName)
+
+          const compId = extractComponentId(childName)
+          const face = inferFace(jInfo.xyz, jInfo.rpy)
+
+          components.push({
+            link_name: childName,
+            component_id: compId,
+            attach_to: parentName,
+            attach_face: face,
+            joint_type: jInfo.jointType,
+            joint_axis: jInfo.axis,
+          })
+        }
+      }
+
+      console.log(`[assembly] Reverse-parsed URDF → ${components.length} components`)
+      return {
+        base_link: rootName,
+        ground_offset: true,
+        components,
+      }
+    } catch (err) {
+      console.error('[assembly] Failed to reverse-parse URDF:', err)
+      return null
+    }
+  }
+
+  // ── Topology Operations: apply add/remove/modify to AssemblyGraph ──────────
+
+  function applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph {
+    const components = [...graph.components.map(c => ({ ...c }))]
+
+    for (const op of operations) {
+      if (op.op === 'remove') {
+        // Remove the target and all its descendants
+        const toRemove = new Set<string>()
+        toRemove.add(op.link_name)
+        // BFS to find all descendants
+        let changed = true
+        while (changed) {
+          changed = false
+          for (const c of components) {
+            if (c.attach_to && toRemove.has(c.attach_to) && !toRemove.has(c.link_name)) {
+              toRemove.add(c.link_name)
+              changed = true
+            }
+          }
+        }
+        // Filter out removed components
+        const before = components.length
+        for (let i = components.length - 1; i >= 0; i--) {
+          if (toRemove.has(components[i].link_name)) components.splice(i, 1)
+        }
+        console.log(`[topology] Removed ${op.link_name} and ${toRemove.size - 1} descendants (${before} → ${components.length} components)`)
+
+      } else if (op.op === 'add') {
+        if (!op.component_id) {
+          console.warn(`[topology] add op missing component_id for ${op.link_name}`)
+          continue
+        }
+        components.push({
+          link_name: op.link_name,
+          component_id: op.component_id,
+          attach_to: op.attach_to ?? null,
+          attach_face: op.attach_face ?? 'top',
+          joint_type: op.joint_type ?? 'fixed',
+          joint_axis: op.joint_axis ?? 'z',
+          length_mm: op.length_mm,
+          orientation: op.orientation,
+          elevation_angle: op.elevation_angle,
+        })
+        console.log(`[topology] Added ${op.link_name} (${op.component_id}) → ${op.attach_to}:${op.attach_face}`)
+
+      } else if (op.op === 'modify') {
+        const existing = components.find(c => c.link_name === op.link_name)
+        if (!existing) {
+          console.warn(`[topology] modify target not found: ${op.link_name}`)
+          continue
+        }
+        // Only update fields that were explicitly provided
+        if (op.component_id !== undefined) existing.component_id = op.component_id
+        if (op.attach_to !== undefined) existing.attach_to = op.attach_to
+        if (op.attach_face !== undefined) existing.attach_face = op.attach_face
+        if (op.joint_type !== undefined) existing.joint_type = op.joint_type
+        if (op.joint_axis !== undefined) existing.joint_axis = op.joint_axis
+        if (op.length_mm !== undefined) existing.length_mm = op.length_mm
+        if (op.orientation !== undefined) existing.orientation = op.orientation
+        if (op.elevation_angle !== undefined) existing.elevation_angle = op.elevation_angle
+        console.log(`[topology] Modified ${op.link_name}: ${JSON.stringify(op)}`)
+      }
+    }
+
+    return {
+      base_link: graph.base_link,
+      ground_offset: true,
+      components,
+    }
   }
 
   return {
@@ -3571,6 +3830,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     onInteractionModeChanged,
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
+    getLastAssemblyGraph: () => _lastAssemblyGraph,
+    urdfToAssemblyGraph,
+    applyTopologyOps,
     rebuildMountNodes,
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),
     restoreUndoState: (state: { undo: string[]; redo: string[] }) => {

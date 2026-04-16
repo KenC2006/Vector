@@ -73,8 +73,9 @@ _ai_import_error = None
 
 _generate_assembly_with_tools = None
 _validate_assembly = None
+_set_conversation_history = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -108,6 +109,7 @@ class JSONRPCServer:
             "ai_edit": self.handle_ai_edit,
             "ai_complete": self.handle_ai_complete,
             "ai_validate_assembly": self.handle_ai_validate_assembly,
+            "ai_set_history": self.handle_ai_set_history,
         }
 
     def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -520,6 +522,8 @@ class JSONRPCServer:
             }
             if "assembly_graph" in result:
                 response["assembly_graph"] = result["assembly_graph"]
+            if "topology_ops" in result:
+                response["topology_ops"] = result["topology_ops"]
             return response
         except Exception as e:
             raise ValueError(f"AI edit failed: {e}")
@@ -610,6 +614,40 @@ class JSONRPCServer:
             return result
         except Exception as e:
             raise ValueError(f"Assembly validation failed: {e}")
+
+    def handle_ai_set_history(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Restore conversation history for a session from frontend localStorage.
+        Called on reconnect to maintain context across backend restarts.
+
+        Params:
+            session_id (str): Session identifier.
+            history (list): List of {role, content} message dicts.
+
+        Returns:
+            Dict with 'status' and 'count'.
+        """
+        if _set_conversation_history is None:
+            raise ValueError(
+                f"Claude AI not installed. Run: pip install anthropic\n"
+                f"Error: {_ai_import_error}"
+            )
+
+        if "session_id" not in params or "history" not in params:
+            raise ValueError("Missing required parameters: session_id, history")
+
+        session_id = params["session_id"]
+        history = params["history"]
+
+        if not isinstance(session_id, str):
+            raise ValueError("Parameter 'session_id' must be a string")
+        if not isinstance(history, list):
+            raise ValueError("Parameter 'history' must be a list")
+
+        try:
+            return _set_conversation_history(session_id, history)
+        except Exception as e:
+            raise ValueError(f"Failed to set history: {e}")
 
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """

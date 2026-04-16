@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { escapeHtml } from './chatHistory'
-import type { UrdfAssemblyApi } from './urdfAssembly'
+import type { UrdfAssemblyApi, TopologyOp } from './urdfAssembly'
 
 export interface ViewportChatDeps {
   // Editor
@@ -35,6 +35,8 @@ export interface ViewportChatDeps {
   camera: THREE.PerspectiveCamera
   groundRobot(): void
   autoFrameRobot(): void
+  // Chat history
+  exportForBackend(chatId?: string): Array<{ role: string; content: string }>
   // Misc
   getUrdfAssemblyApi(): UrdfAssemblyApi | null
   getCoreAvailable(): boolean
@@ -146,7 +148,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     diff?: { added: string[]; removed: string[] }
     newUrdf?: string
   }) {
-    const plainContent = content.replace(/<[^>]*>/g, '').trim()
+    const plainContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
     if (plainContent) deps.recordChatMessage(role, plainContent)
 
     const msg = document.createElement('div')
@@ -262,6 +264,19 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     }
 
     if (retryCount === 0) {
+      // Resync conversation history to backend BEFORE recording the new message,
+      // so the current prompt isn't duplicated (generate_edit adds it separately).
+      const chatId = deps.getCurrentChatId()
+      const history = deps.exportForBackend(chatId)
+      if (history.length > 0) {
+        try {
+          await invoke('ai_set_history', { sessionId: chatId, history })
+          console.log(`[VC] Resynced ${history.length} messages for session ${chatId}`)
+        } catch (err) {
+          console.warn('[VC] History resync failed (non-critical):', err)
+        }
+      }
+
       addVCMessage('user', prompt)
       vcInput.value = ''
       vcInput.style.height = 'auto'
@@ -280,6 +295,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     }
 
     try {
+
       const fullUrdf = deps.getEditorValue()
       const kinematicContext = deps.buildKinematicContext()
       const isRedesign = retryCount > 0
@@ -295,12 +311,44 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         urdfContent: currentUrdf,
         kinematicContext: isRedesign ? '' : kinematicContext,
         sessionId: deps.getCurrentChatId(),
-      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
+      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       thinking.remove()
 
       const urdfAssemblyApi = deps.getUrdfAssemblyApi()
-      if (result.assembly_graph && urdfAssemblyApi) {
+
+      // ── modify_topology path: parse current URDF → apply ops → re-resolve ──
+      if (result.topology_ops && result.topology_ops.length > 0 && urdfAssemblyApi) {
+        console.log(`[AI] Received ${result.topology_ops.length} topology operations — applying to current assembly`)
+        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback)
+        const storedGraph = urdfAssemblyApi.getLastAssemblyGraph()
+        const currentGraph = storedGraph || urdfAssemblyApi.urdfToAssemblyGraph(fullUrdf)
+        if (currentGraph && !storedGraph) {
+          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available')
+        }
+        if (!currentGraph) {
+          addVCMessage('assistant', `<span style="color:#f85149;">Could not parse current URDF for topology editing. Try "start over" to redesign from scratch.</span>`)
+        } else {
+          const modifiedGraph = urdfAssemblyApi.applyTopologyOps(currentGraph, result.topology_ops)
+          console.log(`[AI] Modified graph: ${modifiedGraph.components.length} components (was ${currentGraph.components.length})`)
+          const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(modifiedGraph)
+          if (assemblyOut.urdf) {
+            // Ground and frame the modified robot (same as assembly_graph path)
+            await new Promise(r => setTimeout(r, 400))
+            deps.groundRobot()
+            deps.autoFrameRobot()
+
+            const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
+            addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+              diff, newUrdf: assemblyOut.urdf,
+            })
+            deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+          } else {
+            const errors = assemblyOut.topologyErrors?.join(', ') || 'unknown error'
+            addVCMessage('assistant', `<span style="color:#f85149;">Topology modification failed: ${escapeHtml(errors)}</span>`)
+          }
+        }
+      } else if (result.assembly_graph && urdfAssemblyApi) {
         console.log('[AI] Received assembly_graph — resolving via frontend snap system')
         const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
         let assemblyResult = assemblyOut.urdf
