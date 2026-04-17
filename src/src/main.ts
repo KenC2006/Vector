@@ -56,18 +56,30 @@ function groundRobot(robotGroup: THREE.Group) {
   // and other helpers that are children of robotGroup but not actual robot geometry.
   const urdfWorld = robotGroup.getObjectByName('urdf_world')
   const target = urdfWorld || robotGroup
-  // Compute bbox from only Mesh objects (excludes edge Lines, ArrowHelpers, etc.)
-  const box = new THREE.Box3()
-  const meshBox = new THREE.Box3()
+
+  // Walk the full scene graph under target. Computing each mesh's world-space AABB
+  // from its geometry.boundingBox + matrixWorld explicitly (instead of Box3.setFromObject)
+  // avoids silently missing components deep in serial chains when setFromObject's limited
+  // (false, false) world-matrix refresh can't recurse — a previous bug where robots floated
+  // because the lowest mesh was buried in servo→servo→extrusion chains.
+  let minY = Infinity
+  let meshCount = 0
+  const tmpBox = new THREE.Box3()
   target.traverse((obj: THREE.Object3D) => {
-    if ((obj as THREE.Mesh).isMesh) {
-      meshBox.setFromObject(obj)
-      if (!meshBox.isEmpty()) box.union(meshBox)
-    }
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.visible) return
+    const geom = mesh.geometry
+    if (!geom) return
+    if (!geom.boundingBox) geom.computeBoundingBox()
+    const bb = geom.boundingBox
+    if (!bb || bb.isEmpty()) return
+    tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
+    if (tmpBox.min.y < minY) minY = tmpBox.min.y
+    meshCount++
   })
-  if (box.isEmpty()) return
-  // In Three.js Y is up; shift so bottom of bounding box = 0
-  robotGroup.position.y = -box.min.y
+  if (!isFinite(minY) || meshCount === 0) return
+  // In Three.js Y is up; shift so lowest mesh touches Y=0
+  robotGroup.position.y = -minY
 }
 
 /**
@@ -805,7 +817,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.setClearColor(VIEWPORT_BG[(localStorage.getItem('vector_theme') || 'dark') as ThemeId] || 0x1a1a1a)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
+renderer.shadowMap.type = THREE.PCFShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 renderer.toneMappingExposure = 1.1
 
@@ -837,7 +849,7 @@ controls.mouseButtons = {
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
 
-const viewportNavClock = new THREE.Clock()
+const viewportNavTimer = new THREE.Timer()
 const keysViewportPan = { w: false, a: false, s: false, d: false }
 let shiftViewportPanHeld = false
 
@@ -1344,7 +1356,8 @@ function rebuildWireframes() {
 function animate() {
   requestAnimationFrame(animate)
 
-  const navDt = Math.min(viewportNavClock.getDelta(), 0.05)
+  viewportNavTimer.update()
+  const navDt = Math.min(viewportNavTimer.getDelta(), 0.05)
 
   // Build wireframes once
   if (!wireframeBuilt) {

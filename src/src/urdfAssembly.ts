@@ -1543,11 +1543,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     if (shouldRotateHorizontal && face === 'top') {
-      // Pitch 90° swings X onto Z — use childX as the vertical extent.
-      const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-      const oz = parent.hz + vExtent / 2 + gap
-      const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
-      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
+      // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
+      // components whose long axis is already X or Y (batteries, sensor packs), pitching
+      // stands them up — fall through to the normal 'top' case, applying just yaw.
+      const longestIsZ = childZ >= childX && childZ >= childY
+      if (longestIsZ) {
+        // Pitch 90° swings X onto Z — use childX as the vertical extent.
+        const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
+        const oz = parent.hz + vExtent / 2 + gap
+        const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
+      }
     }
 
     // ── 1b: Elevation angle for side faces (degrees → radians) ──
