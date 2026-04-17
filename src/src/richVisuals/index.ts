@@ -204,6 +204,10 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
               }
             }
           }
+        } else if (child instanceof THREE.LineSegments) {
+          // Feature-edge LineSegments (added by addEdgeLines) own their
+          // EdgesGeometry — dispose it so async mesh replacement doesn't leak.
+          child.geometry?.dispose()
         }
       })
 

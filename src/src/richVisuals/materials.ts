@@ -247,20 +247,75 @@ const CATEGORY_FALLBACK_COLORS: Record<string, ComponentColorDef> = {
   mobility:     { material: 'rubber_black',      tint: [0.10, 0.10, 0.10], strength: 0.2 },
 }
 
+// Body-part token fallbacks (used when compId is category-less, e.g., "wheel_driven",
+// "front_left_wheel", "drive_tire"). Any token in the compId that matches a key here
+// yields the corresponding realistic color. Order matters in TOKEN_PRIORITY below.
+const TOKEN_FALLBACK_COLORS: Record<string, ComponentColorDef> = {
+  wheel:   { material: 'rubber_black',     tint: [0.10, 0.10, 0.10], strength: 0.2 },
+  tire:    { material: 'rubber_black',     tint: [0.07, 0.07, 0.07], strength: 0.2 },
+  tread:   { material: 'rubber_black',     tint: [0.10, 0.10, 0.10], strength: 0.2 },
+  track:   { material: 'rubber_black',     tint: [0.10, 0.10, 0.10], strength: 0.2 },
+  rubber:  { material: 'rubber_black',     tint: [0.07, 0.07, 0.07], strength: 0.2 },
+  caster:  { material: 'brushed_steel',    tint: [0.53, 0.53, 0.53], strength: 0.2 },
+  pad:     { material: 'rubber_black',     tint: [0.07, 0.07, 0.07], strength: 0.2 },
+  bearing: { material: 'brushed_steel',    tint: [0.75, 0.75, 0.75], strength: 0.2 },
+  shaft:   { material: 'brushed_steel',    tint: [0.70, 0.70, 0.70], strength: 0.2 },
+  servo:   { material: 'matte_plastic',    tint: [0.10, 0.10, 0.10], strength: 0.3 },
+  stepper: { material: 'matte_plastic',    tint: [0.10, 0.10, 0.10], strength: 0.3 },
+  bldc:    { material: 'anodized_aluminum',tint: [0.63, 0.63, 0.63], strength: 0.3 },
+  bracket: { material: 'anodized_aluminum',tint: [0.75, 0.75, 0.75], strength: 0.2 },
+  frame:   { material: 'anodized_aluminum',tint: [0.55, 0.55, 0.55], strength: 0.2 },
+  plate:   { material: 'anodized_aluminum',tint: [0.65, 0.65, 0.65], strength: 0.2 },
+  battery: { material: 'glossy_plastic',   tint: [0.10, 0.23, 0.42], strength: 0.5 },
+  pcb:     { material: 'pcb_green',        tint: [0.10, 0.36, 0.10], strength: 0.4 },
+  gripper: { material: 'anodized_aluminum',tint: [0.33, 0.40, 0.47], strength: 0.3 },
+  belt:    { material: 'rubber_black',     tint: [0.13, 0.13, 0.13], strength: 0.2 },
+  pulley:  { material: 'anodized_aluminum',tint: [0.60, 0.60, 0.60], strength: 0.2 },
+  gear:    { material: 'brushed_steel',    tint: [0.70, 0.70, 0.70], strength: 0.2 },
+}
+
+// When multiple tokens match, earlier entries win. Surface-defining parts (rubber,
+// wheel) outrank structural hosts (bracket) so "wheel_bracket" reads as rubber.
+const TOKEN_PRIORITY = [
+  'tire', 'wheel', 'tread', 'track', 'rubber', 'belt', 'pad',
+  'caster', 'bearing', 'shaft', 'pulley', 'gear',
+  'servo', 'stepper', 'bldc',
+  'pcb', 'battery',
+  'gripper', 'bracket', 'plate', 'frame',
+]
+
 /**
- * Look up realistic color for a component. Falls back to category, then generic.
+ * Look up realistic color for a component. Falls back through:
+ *   1. exact match, 2. category-prefixed match, 3. token match,
+ *   4. category prefix fallback, 5. generic neutral.
  */
 export function getComponentColor(componentId: string): ComponentColorDef {
-  // Exact match
+  // 1. Exact match
   const exact = COMPONENT_COLORS[componentId]
   if (exact) return exact
 
-  // Category prefix fallback
-  const prefix = componentId.split('_')[0]
-  const catFallback = CATEGORY_FALLBACK_COLORS[prefix]
+  // 2. Category-prefixed match: "wheel_driven" → try "mobility_wheel_driven", etc.
+  // Handles AI-generated IDs that drop the category prefix.
+  for (const cat of Object.keys(CATEGORY_FALLBACK_COLORS)) {
+    const prefixed = COMPONENT_COLORS[`${cat}_${componentId}`]
+    if (prefixed) return prefixed
+  }
+
+  // 3. Token fallback: scan compId tokens for known body-part nouns.
+  // This is what catches "wheel_driven", "front_left_wheel", "drive_tire".
+  const tokens = componentId.split('_')
+  const tokenSet = new Set(tokens)
+  for (const priorityTok of TOKEN_PRIORITY) {
+    if (tokenSet.has(priorityTok)) {
+      return TOKEN_FALLBACK_COLORS[priorityTok]
+    }
+  }
+
+  // 4. Category prefix fallback (first token)
+  const catFallback = CATEGORY_FALLBACK_COLORS[tokens[0]]
   if (catFallback) return catFallback
 
-  // Generic fallback
+  // 5. Generic fallback
   return { material: 'anodized_aluminum', tint: [0.53, 0.57, 0.60], strength: 0.3 }
 }
 

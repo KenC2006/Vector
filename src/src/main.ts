@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
@@ -861,9 +862,18 @@ window.addEventListener('blur', () => {
 
 let cameraFocusTween: CameraFocusTween | null = null
 
-// ── Post-processing pipeline (SSAO + output) ───────────────────────────────
-
-const composer = new EffectComposer(renderer)
+// ── Post-processing pipeline (MSAA + SMAA + output) ─────────────────────────
+// The composer's internal render target otherwise silently bypasses the
+// WebGLRenderer antialias:true flag. Provide an MSAA render target explicitly.
+const _initSize = renderer.getSize(new THREE.Vector2())
+const _dpr = renderer.getPixelRatio()
+const msaaRenderTarget = new THREE.WebGLRenderTarget(
+  Math.max(1, _initSize.x * _dpr),
+  Math.max(1, _initSize.y * _dpr),
+  { type: THREE.HalfFloatType, samples: 4 },
+)
+msaaRenderTarget.texture.name = 'EffectComposer.rt1.msaa'
+const composer = new EffectComposer(renderer, msaaRenderTarget)
 composer.setPixelRatio(renderer.getPixelRatio())
 // Sync initial size after a frame (viewport layout not done yet at this point)
 requestAnimationFrame(() => {
@@ -881,6 +891,11 @@ composer.addPass(renderPass)
 // const gtaoPass = new GTAOPass(scene, camera)
 // gtaoPass.blendIntensity = 0.15
 // composer.addPass(gtaoPass)
+
+// SMAA: sub-pixel silhouette cleanup. Handles edges that slip past MSAA —
+// especially thin rounded parts at far zoom. Sized automatically via composer.setSize.
+const smaaPass = new SMAAPass()
+composer.addPass(smaaPass)
 
 // Output pass (tone mapping + color space conversion)
 const outputPass = new OutputPass()
@@ -976,6 +991,9 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       if (simApi.isSimActive()) return          // don't disturb sim joint state
       groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
+      // STEP/GLB meshes load async — re-run edges so late arrivals get the
+      // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
+      addEdgeLines(parsedRobot)
     }, 150)
   }
 }
@@ -996,22 +1014,28 @@ addEdgeLines(parsedRobot)
 groundRobot(robot)
 
 // ── Edge lines (CAD-style silhouette edges) ─────────────────────────────────
+// Gives the Fusion 360 feature-edge look: silhouettes stay crisp at any zoom
+// because edges are 1-px vector lines, independent of triangle tessellation.
 
 const edgeMaterial = new THREE.LineBasicMaterial({
-  color: 0x000000,
+  color: 0x0a0a0a,
   transparent: true,
-  opacity: 0.3,
+  opacity: 0.55,
   depthTest: true,
 })
 
 function addEdgeLines(parsed: typeof parsedRobot) {
   parsed.group.traverse(child => {
-    if (child instanceof THREE.Mesh && child.geometry) {
-      const edges = new THREE.EdgesGeometry(child.geometry, 30) // 30° threshold
-      const line = new THREE.LineSegments(edges, edgeMaterial)
-      line.raycast = () => {} // don't interfere with raycasting
-      child.add(line)
-    }
+    if (!(child instanceof THREE.Mesh) || !child.geometry) return
+    // Idempotency: skip meshes that already have a feature-edge child.
+    // Async STEP/GLB loads call this again; don't double up.
+    if ((child.userData as Record<string, unknown>).__hasFeatureEdges) return
+    const edges = new THREE.EdgesGeometry(child.geometry, 20) // 20° = Fusion-like
+    const line = new THREE.LineSegments(edges, edgeMaterial)
+    line.raycast = () => {} // don't interfere with raycasting
+    ;(line.userData as Record<string, unknown>).__featureEdge = true
+    child.add(line)
+    ;(child.userData as Record<string, unknown>).__hasFeatureEdges = true
   })
 }
 
