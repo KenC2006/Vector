@@ -246,6 +246,11 @@ function applyMeshToLink(
   const catMat = getTintedMaterial(compColor.material, ...compColor.tint, compColor.strength ?? 0.4)
   const tintColor = new THREE.Color(compColor.tint[0], compColor.tint[1], compColor.tint[2])
   const tintStrength = compColor.strength ?? 0.4
+  // Materials where the real-world color dominates the PBR look and should
+  // never be softened by a source-material blend. Rubber parts are physically
+  // black regardless of whatever generic color the STEP converter emitted.
+  const forceReplaceMaterials = new Set(['rubber_black'])
+  const forceReplace = forceReplaceMaterials.has(compColor.material)
   meshGroup.traverse(child => {
     if (child instanceof THREE.Mesh) {
       const mat = child.material as THREE.MeshStandardMaterial
@@ -253,7 +258,7 @@ function applyMeshToLink(
         Math.abs(mat.color.r - 0.533) < 0.05 &&
         Math.abs(mat.color.g - 0.533) < 0.05 &&
         Math.abs(mat.color.b - 0.533) < 0.05
-      if (isDefaultGray) {
+      if (forceReplace || isDefaultGray) {
         child.material = catMat
       } else if (mat?.color) {
         // Cache tinted materials per (compId, sourceMaterial) to share across instances
