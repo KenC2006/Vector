@@ -1471,6 +1471,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
    * @param childIndex - which child this is on this face (0-based)
    * @param totalOnFace - total children that will be on this face
    */
+  // Which pre-rotation half-extent ends up vertical after an axis-aligned
+  // RPY rotation. Only ±90° roll or pitch swap an axis onto Z; smaller angles
+  // (e.g. leg splay) leave Z dominant, so they keep childZ.
+  //
+  // Without this, a sideways cylinder (wheel, roller, caster, horizontal
+  // bearing) is placed using its pre-rotation thickness rather than its
+  // post-rotation radius, and the part clips into its parent by (radius − thickness)/2.
+  function verticalExtentForRotation(
+    childX: number, childY: number, childZ: number,
+    rollRad: number, pitchRad: number,
+  ): number {
+    const RIGHT_ANGLE = Math.PI / 2
+    const nearRight = (v: number) => Math.abs(Math.abs(v) - RIGHT_ANGLE) < 0.1
+    if (nearRight(rollRad)) return childY   // ±90° roll: Y → vertical
+    if (nearRight(pitchRad)) return childX  // ±90° pitch: X → vertical
+    return childZ
+  }
+
   function computeFacePlacement(
     doc: Document, parentLinkName: string,
     childX: number, childY: number, childZ: number,
@@ -1525,7 +1543,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     if (shouldRotateHorizontal && face === 'top') {
-      const oz = parent.hz + childX / 2 + gap  // cross-section becomes Z extent after rotation
+      // Pitch 90° swings X onto Z — use childX as the vertical extent.
+      const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
+      const oz = parent.hz + vExtent / 2 + gap
       const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
       return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
     }
@@ -1542,19 +1562,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
       }
       case 'bottom': {
-        const oz = -(parent.hz + childZ / 2 + gap)
+        // Compute rotation first — vertical extent depends on it.
         // 1a: topology-aware splay — splayAngle was pre-computed above
+        let rollRad = 0
+        let pitchRad = 0
         let rpyStr = '0 0 0'
         if (isWheel) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
+          rollRad = -Math.PI / 2
           rpyStr = '-1.5708 0 0'
         } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
-          const roll  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
-          const pitch = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-          rpyStr = `${roll.toFixed(4)} ${pitch.toFixed(4)} 0`
+          rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
+          pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
+          rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} 0`
         }
+        const vExtent = verticalExtentForRotation(childX, childY, childZ, rollRad, pitchRad)
+        const oz = -(parent.hz + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
