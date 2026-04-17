@@ -589,25 +589,37 @@ def _assemble_from_graph(assembly: dict) -> str:
             if attach_face in ("top", "coaxial") and _is_elongated(c_bbox):
                 rpy = [0, math.pi/2, 0]  # pitch 90°
                 print(f"[assembly] Auto-rotating elongated child to horizontal (pitch 90°)", file=sys.stderr)
+            # Auto-roll: wheels and casters on the "bottom" face need -90° roll so
+            # the axle lies along Y (standard ROS convention for wheeled bases).
+            # Applied deterministically so the URDF is correct even when the model
+            # didn't emit attach_rpy. Mirrors the isWheel branch in urdfAssembly.ts.
+            child_id = (child_preset or {}).get("id", "")
+            if ("wheel" in child_id or "caster" in child_id) and attach_face == "bottom":
+                rpy = [-math.pi / 2, 0, 0]
+                print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face wheel mount", file=sys.stderr)
 
         # Half-extents (geometry is always centered at link frame origin)
         px, py, pz = p_bbox[0]/2, p_bbox[1]/2, p_bbox[2]/2
         cx, cy, cz = c_bbox[0]/2, c_bbox[1]/2, c_bbox[2]/2
 
         child_is_rod = _is_elongated(c_bbox)
-        is_rotated = abs(rpy[1] - math.pi/2) < 0.01
+        # Rotation-aware extents: a ±90° pitch swings X onto Z; a ±90° roll
+        # swings Y onto Z. Without this, sideways cylinders (wheels, rollers,
+        # horizontal bearings) get placed using their pre-rotation thickness
+        # instead of their post-rotation radius and clip into their parent.
+        RIGHT = math.pi / 2
+        is_pitch_rotated = abs(abs(rpy[1]) - RIGHT) < 0.1
+        is_roll_rotated = abs(abs(rpy[0]) - RIGHT) < 0.1
 
         if child_is_rod:
             # Rod geometry is offset in local +Z, so it extends forward from the joint.
             # The joint only needs to clear the rod's cross-section, not half its length.
-            if is_rotated:
-                cx_eff = cx  # cross-section in rotated X (was originally X)
-                cz_eff = cx  # cross-section in Z (was originally X)
-            else:
-                cx_eff = cx
-                cz_eff = cx  # cross-section, not half-length
-        elif is_rotated:
-            cx_eff, cz_eff = cz, cx  # swap Z and X extents
+            cx_eff = cx
+            cz_eff = cx  # cross-section, not half-length (true regardless of rotation)
+        elif is_pitch_rotated:
+            cx_eff, cz_eff = cz, cx  # ±90° pitch: old Z → X, old X → Z
+        elif is_roll_rotated:
+            cx_eff, cz_eff = cx, cy  # ±90° roll: old Y → Z (X unchanged)
         else:
             cx_eff, cz_eff = cx, cz
 
@@ -2029,67 +2041,6 @@ Assembled URDF:
     if not response_text:
         return {"ok": True, "notes": "Gemini validation returned empty response"}
     print(f"[ai_validate] [Gemini] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
-    return _process_validation_result(response_text)
-
-
-def _validate_assembly_claude(urdf_content: str, original_prompt: str,
-                               screenshot_base64: str = None,
-                               screenshots: list = None) -> dict:
-    """Claude Sonnet fallback for visual validation. ~$0.05 per call."""
-    client = _get_client()
-
-    content = []
-    view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
-    has_images = False
-
-    if screenshots and len(screenshots) >= 3:
-        for img, label in zip(screenshots[:3], view_labels):
-            if img:
-                content.append({"type": "text", "text": f"**{label}:**"})
-                content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/png", "data": img},
-                })
-                has_images = True
-        total_kb = sum(len(s) for s in screenshots[:3]) // 1024
-        print(f"[ai_validate] [Claude fallback] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
-    elif screenshot_base64:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png", "data": screenshot_base64},
-        })
-        has_images = True
-
-    content.append({
-        "type": "text",
-        "text": f"""Original user request: "{original_prompt}"
-
-Assembled URDF:
-```xml
-{urdf_content}
-```
-
-{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}""",
-    })
-
-    t0 = time.time()
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        system=VALIDATION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-        timeout=60.0,
-    )
-    elapsed = time.time() - t0
-    if not response.content:
-        return {"ok": True, "notes": "Validation returned empty response"}
-    response_text = ""
-    for block in response.content:
-        if hasattr(block, "text"):
-            response_text += block.text
-    if not response_text:
-        return {"ok": True, "notes": "Validation returned no text"}
-    print(f"[ai_validate] [Claude fallback] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
     return _process_validation_result(response_text)
 
 
