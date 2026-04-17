@@ -3104,9 +3104,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         }
       }
 
-      // Rule 8: warn about multiple children on single-use shaft ports
-      // (not a hard error — logged as warning for diagnostics)
-      const shaftFaceCounts = new Map<string, number>()
+      // Rule 8: HARD error — multiple children on a single-use shaft port.
+      // A servo shaft drives exactly one load; extra children create mechanical conflict.
+      // Exception: all-wheel groups (differential drive patterns) are left for the port-system
+      // rule to catch, since wheel pairs are a plausible design intent that auto-repair avoids rewriting.
+      const shaftGroups = new Map<string, { children: string[]; componentIds: string[] }>()
       let shaftPortsChecked = 0
       for (const comp of comps) {
         if (!comp.attach_to) continue
@@ -3122,13 +3124,40 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (port?.cls === 'shaft' && port.single) {
           shaftPortsChecked++
           const key = `${comp.attach_to}::${face}`
-          shaftFaceCounts.set(key, (shaftFaceCounts.get(key) || 0) + 1)
+          const entry = shaftGroups.get(key) || { children: [], componentIds: [] }
+          entry.children.push(comp.link_name)
+          entry.componentIds.push(comp.component_id)
+          shaftGroups.set(key, entry)
         }
       }
-      console.log(`[assembly][ports] Rule 8: checked ${shaftPortsChecked} shaft port connections across ${shaftFaceCounts.size} unique ports`)
-      for (const [key, count] of shaftFaceCounts) {
-        if (count > 1) {
-          console.warn(`[assembly][ports] Topology warning: ${key} has ${count} children on a single-use shaft port`)
+      console.log(`[assembly][ports] Rule 8: checked ${shaftPortsChecked} shaft port connections across ${shaftGroups.size} unique ports`)
+      for (const [key, entry] of shaftGroups) {
+        if (entry.children.length <= 1) continue
+        const allMobility = entry.componentIds.every(id => id.startsWith('mobility_'))
+        if (allMobility) {
+          console.warn(`[assembly][ports] Shaft "${key}" has ${entry.children.length} mobility children — allowed as differential drive pattern`)
+          continue
+        }
+        const [parentName] = key.split('::')
+        const extras = entry.children.slice(1).join(', ')
+        errors.push(
+          `[SHAFT_FANOUT] ${parentName}: shaft has ${entry.children.length} children (${entry.children.join(', ')}). A servo shaft drives exactly one load; extra children on the same shaft are mechanically invalid. Fix: keep one child on the shaft and reparent the others (${extras}) to the nearest structural extrusion.`
+        )
+      }
+
+      // Rule 9: sensors must not attach directly to actuators (servos/motors).
+      // Actuators rotate and vibrate — sensors need rigid structural mounting.
+      const isActuatorId = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
+      const isSensorId = (id: string) => id.startsWith('sensor_')
+      for (const comp of comps) {
+        if (!comp.attach_to) continue
+        if (!isSensorId(comp.component_id)) continue
+        const parentComp = comps.find(c => c.link_name === comp.attach_to)
+        if (!parentComp) continue
+        if (isActuatorId(parentComp.component_id)) {
+          errors.push(
+            `[SENSOR_ON_ACTUATOR] ${comp.link_name}: sensor attached to ${parentComp.link_name} (${parentComp.component_id}). Sensors on actuators rotate/vibrate with the joint and have no rigid mounting face. Fix: attach ${comp.link_name} to a structural extrusion near the actuator instead.`
+          )
         }
       }
 
@@ -3151,6 +3180,64 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       if (toProcess.length > 0) {
         errors.push(`Cycle or disconnected components: ${toProcess.map(c => c.link_name).join(', ')}`)
+      }
+
+      // Rule 10/11: proportions + baseplate thickness (only for baseplate-rooted robots).
+      // Uses longest chain of component Z-dimensions from root to a leaf as a height estimate.
+      const rootComp = comps.find(c => !c.attach_to)
+      if (rootComp && rootComp.component_id.startsWith('structural_baseplate')) {
+        const rootPreset = findPreset(rootComp.component_id)
+        if (rootPreset) {
+          const rootBb = rootPreset.physical.bounding_box_mm ?? rootPreset.physical.cross_section_mm ?? [200, 200, 5]
+          const baseW = Math.min(rootBb[0] ?? 200, rootBb[1] ?? 200)
+          const plateThickness = rootBb[2] ?? 5
+
+          const heightOf = (comp: (typeof comps)[number]): number => {
+            const p = findPreset(comp.component_id)
+            if (!p) return 0
+            const bb = p.physical.bounding_box_mm ?? p.physical.cross_section_mm ?? [40, 40, 40]
+            let h = bb[2] ?? 40
+            if (comp.length_mm && p.physical.cross_section_mm) h = comp.length_mm
+            return h
+          }
+          // Only children attached to the top/bottom face stack vertically.
+          // Side-face children (front/back/left/right) extend horizontally, not into the tower.
+          // Visited set guards against cycles (Rule 7 records cycle errors but doesn't early-return).
+          const stacksVertically = (child: (typeof comps)[number]): boolean => {
+            const f = child.attach_face ?? 'top'
+            return f === 'top' || f === 'bottom'
+          }
+          const chainHeight = (
+            comp: (typeof comps)[number],
+            visited: Set<string>,
+          ): number => {
+            if (visited.has(comp.link_name)) return 0
+            visited.add(comp.link_name)
+            const stackingChildren = comps.filter(
+              c => c.attach_to === comp.link_name && stacksVertically(c),
+            )
+            const own = heightOf(comp)
+            if (stackingChildren.length === 0) return own
+            return own + Math.max(...stackingChildren.map(c => chainHeight(c, visited)))
+          }
+          const totalHeightMm = chainHeight(rootComp, new Set<string>())
+
+          if (baseW > 0 && totalHeightMm / baseW > 5) {
+            const ratio = (totalHeightMm / baseW).toFixed(1)
+            errors.push(
+              `[TIPPY_PROPORTIONS] Robot is ~${Math.round(totalHeightMm)}mm tall but baseplate is only ${Math.round(baseW)}mm wide (${ratio}x ratio — unstable). Fix: use a wider baseplate (at least ${Math.round(totalHeightMm / 3)}mm across) or reduce arm height.`
+            )
+          }
+
+          if (totalHeightMm > 300) {
+            const minThickness = Math.max(5, totalHeightMm / 60)
+            if (plateThickness < minThickness) {
+              errors.push(
+                `[BASEPLATE_TOO_THIN] ${rootComp.link_name}: baseplate is ${plateThickness}mm thick but robot is ~${Math.round(totalHeightMm)}mm tall. For this height, the baseplate (or a pedestal above it) should provide at least ${Math.round(minThickness)}mm of structural depth. Fix: use a thicker baseplate preset or insert a short extrusion pedestal between the baseplate and the arm.`
+              )
+            }
+          }
+        }
       }
 
       return errors
@@ -3217,8 +3304,104 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       console.log(`[assembly][autorepair] No effector-with-children issues found`)
     }
 
-    if (dupesFixed > 0 || effectorChildrenFixed > 0) {
-      console.log(`[assembly][autorepair] Total repairs: ${dupesFixed} duplicate names, ${effectorChildrenFixed} effector children`)
+    // Shared helper for auto-repairs 3+4: walk up from `start` to find the nearest
+    // structural ancestor (extrusion, baseplate, bracket, etc.) for sensor/shaft reparenting.
+    // Auto-repairs run BEFORE cycle validation, so guard against cyclic attach_to chains.
+    const findStructuralAncestor = (
+      start: (typeof graph.components)[number] | undefined,
+    ): (typeof graph.components)[number] | undefined => {
+      let anc = start
+      const visited = new Set<string>()
+      while (anc) {
+        if (visited.has(anc.link_name)) return undefined
+        visited.add(anc.link_name)
+        if (anc.component_id.startsWith('structural_')) return anc
+        if (!anc.attach_to) return undefined
+        anc = graph.components.find(c => c.link_name === anc!.attach_to)
+      }
+      return undefined
+    }
+
+    // Auto-repair 3: Sensor directly on actuator (servo/motor) → reparent to nearest structural ancestor.
+    // Sensors on actuators rotate/vibrate with the joint, so move them to rigid structural mounting.
+    let sensorsRepaired = 0
+    for (const comp of graph.components) {
+      if (!comp.component_id.startsWith('sensor_')) continue
+      if (!comp.attach_to) continue
+      const parent = graph.components.find(c => c.link_name === comp.attach_to)
+      if (!parent) continue
+      const isActuatorParent =
+        parent.component_id.startsWith('actuator_') || parent.component_id.startsWith('motor_')
+      if (!isActuatorParent) continue
+      const newParent =
+        findStructuralAncestor(parent) ??
+        graph.components.find(c => c.link_name === parent.attach_to)
+      if (!newParent) continue
+      console.log(
+        `[assembly][autorepair] Sensor "${comp.link_name}" on actuator "${parent.link_name}" → reparenting to "${newParent.link_name}"`,
+      )
+      comp.attach_to = newParent.link_name
+      sensorsRepaired++
+    }
+    if (sensorsRepaired > 0) {
+      console.log(`[assembly][autorepair] Reparented ${sensorsRepaired} sensor(s) off actuator shafts`)
+    }
+
+    // Auto-repair 4: Multiple non-mobility children on a single-use shaft → keep the first,
+    // reparent the rest to the nearest structural ancestor. All-mobility groups are skipped
+    // (differential-drive wheel pairs are a plausible design; leave them for the validator).
+    const shaftRepairGroups = new Map<string, (typeof graph.components)[number][]>()
+    for (const comp of graph.components) {
+      if (!comp.attach_to) continue
+      const parent = graph.components.find(c => c.link_name === comp.attach_to)
+      if (!parent) continue
+      const pp = findPreset(parent.component_id)
+      if (!pp) continue
+      const face = comp.attach_face || 'top'
+      const pBb = pp.physical.bounding_box_mm ?? pp.physical.cross_section_mm ?? [40, 40, 40]
+      const ports = componentPortsForPreset(
+        pp.id,
+        (pBb[0] ?? 40) / 2000,
+        (pBb[1] ?? 40) / 2000,
+        (pBb[2] ?? 40) / 2000,
+        pp.mounting_logic,
+      )
+      const port = resolveFaceToPort(face, ports)
+      if (port?.cls === 'shaft' && port.single) {
+        const key = `${comp.attach_to}::${face}`
+        const list = shaftRepairGroups.get(key) || []
+        list.push(comp)
+        shaftRepairGroups.set(key, list)
+      }
+    }
+    let shaftExtrasRepaired = 0
+    for (const [key, children] of shaftRepairGroups) {
+      if (children.length < 2) continue
+      const allMobility = children.every(c => c.component_id.startsWith('mobility_'))
+      if (allMobility) continue
+      const parent = graph.components.find(c => c.link_name === children[0].attach_to)
+      if (!parent) continue
+      const newParent =
+        findStructuralAncestor(parent) ??
+        graph.components.find(c => c.link_name === parent.attach_to)
+      if (!newParent) continue
+      for (let i = 1; i < children.length; i++) {
+        const oldParent = children[i].attach_to
+        children[i].attach_to = newParent.link_name
+        console.log(
+          `[assembly][autorepair] Shaft fan-out "${key}": "${children[i].link_name}" moved from "${oldParent}" to "${newParent.link_name}"`,
+        )
+        shaftExtrasRepaired++
+      }
+    }
+    if (shaftExtrasRepaired > 0) {
+      console.log(`[assembly][autorepair] Reparented ${shaftExtrasRepaired} extra shaft children`)
+    }
+
+    if (dupesFixed > 0 || effectorChildrenFixed > 0 || sensorsRepaired > 0 || shaftExtrasRepaired > 0) {
+      console.log(
+        `[assembly][autorepair] Total repairs: ${dupesFixed} duplicate names, ${effectorChildrenFixed} effector children, ${sensorsRepaired} sensors off actuators, ${shaftExtrasRepaired} shaft extras`,
+      )
       console.log(`[assembly][autorepair] Post-repair topology: ${graph.components.map(c => `${c.link_name}→${c.attach_to || 'ROOT'}`).join(', ')}`)
     } else {
       console.log(`[assembly][autorepair] No repairs needed — topology clean`)
