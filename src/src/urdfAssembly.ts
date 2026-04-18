@@ -88,6 +88,9 @@ export interface AssemblyComponent {
   orientation?: string
   /** Degrees of upward/downward tilt for side-face (front/back/left/right) attachments. Positive = upward. */
   elevation_angle?: number
+  /** Explicit rest-pose [roll, pitch, yaw] in radians. When any component is non-zero, overrides
+   *  the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
+  attach_rpy?: number[]
 }
 
 export interface AssemblyGraph {
@@ -107,6 +110,7 @@ export interface TopologyOp {
   length_mm?: number
   orientation?: string
   elevation_angle?: number
+  attach_rpy?: number[]
 }
 
 export interface UrdfAssemblyApi {
@@ -1543,11 +1547,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     if (shouldRotateHorizontal && face === 'top') {
-      // Pitch 90° swings X onto Z — use childX as the vertical extent.
-      const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-      const oz = parent.hz + vExtent / 2 + gap
-      const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
-      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
+      // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
+      // components whose long axis is already X or Y (batteries, sensor packs), pitching
+      // stands them up — fall through to the normal 'top' case, applying just yaw.
+      const longestIsZ = childZ >= childX && childZ >= childY
+      if (longestIsZ) {
+        // Pitch 90° swings X onto Z — use childX as the vertical extent.
+        const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
+        const oz = parent.hz + vExtent / 2 + gap
+        const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
+      }
     }
 
     // ── 1b: Elevation angle for side faces (degrees → radians) ──
@@ -3480,7 +3490,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const orientation = comp.orientation || 'auto'
       const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
-      const noSplay = isWheelRelated || comp.joint_type === 'revolute'
+      // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
+      // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
+      // auto-inserted shaft↔mount_face brackets, which otherwise tilt whole leg chains 30° outward.
+      const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
+        || comp.component_id.startsWith('structural_joint_plate')
+        || comp.component_id.startsWith('structural_sheet')
+        || comp.component_id.startsWith('power_')
+        || comp.component_id.startsWith('sensor_')
+        || comp.component_id.startsWith('compute_')
+      const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
       const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey))
@@ -3560,6 +3579,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           // Propagate arm depth through non-revolute components (extrusions, grippers)
           // so the next revolute-Y joint gets the correct depth
           armDepth.set(comp.link_name, comp.attach_face === 'top' ? parentDepth : 0)
+        }
+        // Explicit attach_rpy from AI overrides all auto-computed rpy (placement + arm rest-pose).
+        // Mirrors claude_client.py:583-587. Threshold matches Python's 0.001 rad (~0.057°).
+        const explicitRpy = comp.attach_rpy
+        if (Array.isArray(explicitRpy) && explicitRpy.length === 3
+            && explicitRpy.some(v => Math.abs(v) > 0.001)) {
+          finalRpy = explicitRpy.map(v => Number(v).toFixed(4)).join(' ')
+          console.log(`[assembly] attach_rpy override: ${comp.link_name} rpy=[${explicitRpy.join(', ')}]`)
         }
         origin.setAttribute('rpy', finalRpy)
         const axis = urdfDoc.createElement('axis'); axis.setAttribute('xyz', jointAxis)
@@ -3815,6 +3842,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           length_mm: op.length_mm,
           orientation: op.orientation,
           elevation_angle: op.elevation_angle,
+          attach_rpy: op.attach_rpy,
         })
         console.log(`[topology] Added ${op.link_name} (${op.component_id}) → ${op.attach_to}:${op.attach_face}`)
 
@@ -3833,6 +3861,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (op.length_mm !== undefined) existing.length_mm = op.length_mm
         if (op.orientation !== undefined) existing.orientation = op.orientation
         if (op.elevation_angle !== undefined) existing.elevation_angle = op.elevation_angle
+        if (op.attach_rpy !== undefined) existing.attach_rpy = op.attach_rpy
         console.log(`[topology] Modified ${op.link_name}: ${JSON.stringify(op)}`)
       }
     }
