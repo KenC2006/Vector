@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { escapeHtml } from './chatHistory'
-import type { UrdfAssemblyApi, TopologyOp } from './urdfAssembly'
+import type { UrdfAssemblyApi, TopologyOp, AssemblyGraph } from './urdfAssembly'
 
 export interface ViewportChatDeps {
   // Editor
@@ -50,6 +50,110 @@ export interface ViewportChatApi {
   switchViewportView(view: '3d' | 'chat'): void
   isViewport3D(): boolean
   getVcInput(): HTMLTextAreaElement
+}
+
+/**
+ * Build a Claude-facing summary of which faces are already occupied on each component.
+ * Helps the AI avoid shaft-fanout (2+ children on the same servo face) before it's
+ * attempted. Flags overloaded faces explicitly so Claude can reason about free ports
+ * rather than re-discovering occupancy via the validator.
+ */
+function buildPortOccupancyContext(graph: AssemblyGraph): string {
+  const allFaces = ['top', 'bottom', 'front', 'back', 'left', 'right']
+  // parent link_name → face → child link_names attached there
+  const usage = new Map<string, Map<string, string[]>>()
+  for (const comp of graph.components) {
+    if (!comp.attach_to || !comp.attach_face) continue
+    let byFace = usage.get(comp.attach_to)
+    if (!byFace) { byFace = new Map(); usage.set(comp.attach_to, byFace) }
+    const bucket = byFace.get(comp.attach_face) || []
+    bucket.push(comp.link_name)
+    byFace.set(comp.attach_face, bucket)
+  }
+  const lines: string[] = []
+  for (const comp of graph.components) {
+    const byFace = usage.get(comp.link_name)
+    if (!byFace || byFace.size === 0) continue
+    const takenEntries: string[] = []
+    const overloaded: string[] = []
+    for (const [face, children] of byFace) {
+      takenEntries.push(`${face}=[${children.join(', ')}]`)
+      if (children.length > 1) overloaded.push(face)
+    }
+    const free = allFaces.filter(f => !byFace.has(f))
+    const warn = overloaded.length > 0 ? `  ⚠ OVERLOADED faces (must reparent extras to a structural link): ${overloaded.join(', ')}` : ''
+    lines.push(`  - ${comp.link_name} (${comp.component_id}): taken ${takenEntries.join(', ')}; free [${free.join(', ')}]${warn}`)
+  }
+  if (lines.length === 0) return ''
+  return `\n\nPort occupancy (existing children per face). Rules:
+- Servos/motors have a shaft output on TOP; attach exactly ONE child to a servo's top face.
+- Do NOT attach a second child to an already-taken face of an actuator — reparent to a structural link (extrusion, bracket) instead.
+${lines.join('\n')}`
+}
+
+/**
+ * Build a "I'll change X" banner that names the resolved targets a set of topology
+ * operations will affect — Cursor-style echo-before-apply (master plan W2). Surfaced
+ * alongside the Apply/Dismiss buttons so the user can sanity-check the resolution
+ * before committing (e.g. "move wrist camera" → sensor_depth_camera_small_1).
+ */
+function summarizeTopologyOps(ops: TopologyOp[], currentGraph: AssemblyGraph): string {
+  const byName = new Map(currentGraph.components.map(c => [c.link_name, c]))
+  const rows: string[] = []
+  for (const op of ops) {
+    if (op.op === 'add') {
+      const parent = op.attach_to || '(root)'
+      rows.push(`<b>add</b> <code>${escapeHtml(op.link_name)}</code> (${escapeHtml(op.component_id || '?')}) on <code>${escapeHtml(parent)}:${escapeHtml(op.attach_face || '?')}</code>`)
+    } else if (op.op === 'remove') {
+      const existing = byName.get(op.link_name)
+      const tag = existing ? ` (${escapeHtml(existing.component_id)})` : ''
+      rows.push(`<b>remove</b> <code>${escapeHtml(op.link_name)}</code>${tag} and its subtree`)
+    } else if (op.op === 'modify') {
+      const existing = byName.get(op.link_name)
+      const tag = existing ? ` (${escapeHtml(existing.component_id)})` : ''
+      const changes: string[] = []
+      if (op.attach_to !== undefined) changes.push(`parent→${escapeHtml(String(op.attach_to))}`)
+      if (op.attach_face !== undefined) changes.push(`face→${escapeHtml(op.attach_face)}`)
+      if (op.component_id !== undefined) changes.push(`component_id→${escapeHtml(op.component_id)}`)
+      if (op.joint_type !== undefined) changes.push(`joint_type→${escapeHtml(op.joint_type)}`)
+      if (op.joint_axis !== undefined) changes.push(`joint_axis→${escapeHtml(op.joint_axis)}`)
+      if (op.length_mm !== undefined) changes.push(`length_mm→${op.length_mm}`)
+      if (op.orientation !== undefined) changes.push(`orientation→${escapeHtml(op.orientation)}`)
+      if (op.elevation_angle !== undefined) changes.push(`elevation_angle→${op.elevation_angle}°`)
+      const changeText = changes.length > 0 ? changes.join(', ') : '(no field changes)'
+      rows.push(`<b>modify</b> <code>${escapeHtml(op.link_name)}</code>${tag}: ${changeText}`)
+    }
+  }
+  if (rows.length === 0) return ''
+  return `<div class="ai-resolved-targets" style="margin:6px 0;padding:8px 10px;border-left:3px solid #4d78cc;background:#1b1f2b;border-radius:3px;font-size:12px;line-height:1.6;">
+    <div style="color:#9aa7c2;font-weight:600;margin-bottom:4px;">I'll change:</div>
+    ${rows.map(r => `<div>• ${r}</div>`).join('')}
+  </div>`
+}
+
+/**
+ * One-line summary of a fresh assembly graph (design_robot path) — helps the user
+ * catch wrong-shape outputs before applying (e.g. "expected an arm, got a rover").
+ */
+function summarizeAssemblyGraph(graph: AssemblyGraph): string {
+  const comps = graph.components
+  if (comps.length === 0) return ''
+  const dof = comps.filter(c => c.joint_type === 'revolute' || c.joint_type === 'prismatic').length
+  const sensors = comps.filter(c => c.component_id.startsWith('sensor_')).length
+  const actuators = comps.filter(c => c.component_id.startsWith('actuator_') || c.component_id.startsWith('motor_')).length
+  const structural = comps.filter(c => c.component_id.startsWith('structural_')).length
+  const wheels = comps.filter(c => c.component_id.includes('wheel') || c.component_id.includes('caster')).length
+  const effectors = comps.filter(c => c.component_id.includes('gripper') || c.component_id.includes('effector') || c.component_id.includes('suction')).length
+  const parts: string[] = [`${comps.length} components`, `${dof} DOF`]
+  if (actuators > 0) parts.push(`${actuators} actuator${actuators > 1 ? 's' : ''}`)
+  if (structural > 0) parts.push(`${structural} structural`)
+  if (sensors > 0) parts.push(`${sensors} sensor${sensors > 1 ? 's' : ''}`)
+  if (wheels > 0) parts.push(`${wheels} wheel${wheels > 1 ? 's' : ''}`)
+  if (effectors > 0) parts.push(`${effectors} effector${effectors > 1 ? 's' : ''}`)
+  return `<div class="ai-resolved-targets" style="margin:6px 0;padding:8px 10px;border-left:3px solid #4d78cc;background:#1b1f2b;border-radius:3px;font-size:12px;">
+    <div style="color:#9aa7c2;font-weight:600;margin-bottom:2px;">I'll build:</div>
+    <div>${parts.join(', ')}  •  base=<code>${escapeHtml(graph.base_link)}</code></div>
+  </div>`
 }
 
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
@@ -306,10 +410,19 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF)`)
       }
 
+      // Augment context with per-component port occupancy so Claude can avoid
+      // shaft-fanout before attempting it (master plan W2). Only meaningful for
+      // edit/modify_topology calls — redesigns start from a blank graph.
+      const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
+      const portOccupancyCtx = !isRedesign && storedGraphForContext
+        ? buildPortOccupancyContext(storedGraphForContext)
+        : ''
+      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx)
+
       const result = await invoke('ai_edit', {
         prompt,
         urdfContent: currentUrdf,
-        kinematicContext: isRedesign ? '' : kinematicContext,
+        kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
@@ -339,7 +452,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             deps.autoFrameRobot()
 
             const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
-            addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+            const resolvedTargets = summarizeTopologyOps(result.topology_ops, currentGraph)
+            addVCMessage('assistant', `${resolvedTargets}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
               diff, newUrdf: assemblyOut.urdf,
             })
             deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
@@ -485,18 +599,34 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             if (!valResult.ok) {
               console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
-              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
+              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string }[] | undefined
               const needsRedesign = (valResult as any).needs_redesign
-              const topoFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology') : []
-              const placementFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement') : []
+              const allFailures = checklist ? checklist.filter(c => !c.pass) : []
+              const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
+              const placementFailures = allFailures.filter(c => c.fixable_by === 'placement')
 
-              if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
-                const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
-                const placementNote = placementFailures.length > 0
-                  ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) — these are handled by the placement engine. Ignore them.)`
+              // Redesign triggers (quadruped item 4):
+              //  (a) Gemini says needs_redesign AND at least one topology failure — original path.
+              //  (b) NEW: >=2 checklist failures AND any is fixable_by: "placement" — a structural
+              //      mismatch is often what causes placement to fail, so retrying with a different
+              //      topology frequently clears issues even when Gemini tags them placement-only.
+              const topologyRedesign = needsRedesign && topoFailures.length > 0
+              const placementRedesign = allFailures.length >= 2 && placementFailures.length > 0
+              const shouldRedesign = topologyRedesign || placementRedesign
+
+              if (shouldRedesign && retryCount < 1) {
+                const failures = allFailures
+                  .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const reason = topologyRedesign
+                  ? 'Visual validation found topology issues. Redesigning...'
+                  : `Visual validation flagged ${allFailures.length} problems — retrying with a different topology.`
+                addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
+                const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
+                const placementGuidance = placementFailures.length > 0 && !topologyRedesign
+                  ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
-                addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above.`
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}\n\nPlease design a NEW topology from scratch that addresses these issues.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
@@ -507,7 +637,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           }
 
           const diff = computeSimpleDiff(fullUrdf, assemblyResult)
-          addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          const graphSummary = summarizeAssemblyGraph(result.assembly_graph as AssemblyGraph)
+          addVCMessage('assistant', `${graphSummary}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
             diff, newUrdf: assemblyResult,
           })
           deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
