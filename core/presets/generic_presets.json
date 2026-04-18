@@ -2533,7 +2533,7 @@
           "name": "Robot Baseplate (Large)",
           "description": "Larger aluminum baseplate sized for quadrupeds, humanoid torsos, and other robots whose hip/shoulder span exceeds ~250mm. Use as root in place of structural_baseplate when leg length, payload mass, or component count outgrows the 200x150mm default.",
           "physical": {
-            "mass_kg": 1.350,
+            "mass_kg": 2.100,
             "bounding_box_mm": [350, 250, 8],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6"

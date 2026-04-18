@@ -183,6 +183,7 @@ const COMPONENT_COLORS: Record<string, ComponentColorDef> = {
   structural_hip_housing_2dof:       { material: 'anodized_aluminum', tint: hexToRgb(0x444455), strength: 0.35 },
   structural_joint_plate:            { material: 'anodized_aluminum', tint: hexToRgb(0xb0b0b0), strength: 0.2 },
   structural_baseplate:              { material: 'anodized_aluminum', tint: hexToRgb(0xd0d0d0), strength: 0.2 }, // Light silver
+  structural_baseplate_large:        { material: 'anodized_aluminum', tint: hexToRgb(0xd0d0d0), strength: 0.2 }, // Light silver — match small plate
   structural_ibeam_steel_small:      { material: 'brushed_steel',  tint: hexToRgb(0x888899), strength: 0.2 },
   structural_ibeam_aluminum_small:   { material: 'anodized_aluminum', tint: hexToRgb(0xb0b0b0), strength: 0.2 },
   structural_sheet_aluminum_1mm:     { material: 'anodized_aluminum', tint: hexToRgb(0xcccccc), strength: 0.2 },
