@@ -184,6 +184,19 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // Wheel axle on Y in STEP, preset puts it on Z. Rotate X by 90°: Y→Z.
   // preset [100,100,48] vs GLB [100,50,110]
   'mobility_mecanum_wheel': [Math.PI / 2, 0, 0],
+
+  // LiPo GLB (detailed pack with XT60 + balance lead) has length on Z (~103mm)
+  // and a near-square ~24×23mm cross-section. All three lipo presets put length
+  // on X with a rectangular 34×24 / 42×30 / 65×42 cross-section. Rotation
+  // [π/2, 0, π/2] permutes (X,Y,Z) → (Z,X,Y) so GLB Z becomes preset X (length),
+  // GLB X becomes preset Y, GLB Y becomes preset Z. Per-axis scale then widens
+  // the square GLB cross-section to the preset's rectangular footprint —
+  // 1.4-1.75× Y stretch on 3s/4s, up to 2.7× on the 6s pack; acceptable next to
+  // the much bigger servos/extrusions in the same scene.
+  // preset [105,34,24] / [137,42,30] / [165,65,42] vs GLB [24,23,103]
+  'power_lipo_3s_2200': [Math.PI / 2, 0, Math.PI / 2],
+  'power_lipo_4s_5000': [Math.PI / 2, 0, Math.PI / 2],
+  'power_lipo_6s_10000': [Math.PI / 2, 0, Math.PI / 2],
 }
 
 /** Get the per-component rotation override (XYZ Euler radians), or null if none. */
