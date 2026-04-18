@@ -10,6 +10,8 @@ import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNod
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { quatToRpy } from './rotationIO'
+import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
+import type { ValidationPreset } from './topologyValidation.ts'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -3079,162 +3081,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       return null
     }
 
-    // ── Graph grammar validation: reject invalid topologies early ──
-    function validateTopology(comps: typeof graph.components): string[] {
-      const errors: string[] = []
-      const linkNames = new Set(comps.map(c => c.link_name))
-
-      for (const comp of comps) {
-        // Rule 1: every non-root must reference a valid parent
-        if (comp.attach_to && !linkNames.has(comp.attach_to)) {
-          errors.push(`${comp.link_name} references unknown parent "${comp.attach_to}"`)
-        }
-        // Rule 2: component_id must exist in preset library
-        if (!findPreset(comp.component_id)) {
-          errors.push(`Unknown component_id "${comp.component_id}" on ${comp.link_name}`)
-        }
-        // Rule 3: sensors shouldn't be parents of other sensors
-        if (comp.attach_to) {
-          const parentComp = comps.find(c => c.link_name === comp.attach_to)
-          if (parentComp?.component_id.startsWith('sensor_') && comp.component_id.startsWith('sensor_')) {
-            errors.push(`Sensor ${comp.link_name} attached to sensor ${comp.attach_to} — sensors should attach to structural/actuator links`)
-          }
-        }
-        // Rule 4: end effectors should be terminal (no children)
-        if (comp.component_id.startsWith('effector_')) {
-          const hasChildren = comps.some(c => c.attach_to === comp.link_name)
-          if (hasChildren) {
-            errors.push(`End effector ${comp.link_name} has children — effectors should be terminal nodes`)
-          }
-        }
-        // Rule 5: link names must be unique
-        const dupes = comps.filter(c => c.link_name === comp.link_name)
-        if (dupes.length > 1) {
-          errors.push(`Duplicate link_name "${comp.link_name}"`)
-        }
-      }
-
-      // Rule 8: warn about multiple children on single-use shaft ports
-      // (not a hard error — logged as warning for diagnostics)
-      const shaftFaceCounts = new Map<string, number>()
-      let shaftPortsChecked = 0
-      for (const comp of comps) {
-        if (!comp.attach_to) continue
-        const parentDef = comps.find(c => c.link_name === comp.attach_to)
-        if (!parentDef) continue
-        const pp = findPreset(parentDef.component_id)
-        if (!pp) continue
-        const face = comp.attach_face || 'top'
-        const pPhys = pp.physical
-        const pBb = pPhys.bounding_box_mm ?? pPhys.cross_section_mm ?? [40, 40, 40]
-        const ports = componentPortsForPreset(pp.id, (pBb[0] ?? 40) / 2000, (pBb[1] ?? 40) / 2000, (pBb[2] ?? 40) / 2000, pp.mounting_logic)
-        const port = resolveFaceToPort(face, ports)
-        if (port?.cls === 'shaft' && port.single) {
-          shaftPortsChecked++
-          const key = `${comp.attach_to}::${face}`
-          shaftFaceCounts.set(key, (shaftFaceCounts.get(key) || 0) + 1)
-        }
-      }
-      console.log(`[assembly][ports] Rule 8: checked ${shaftPortsChecked} shaft port connections across ${shaftFaceCounts.size} unique ports`)
-      for (const [key, count] of shaftFaceCounts) {
-        if (count > 1) {
-          console.warn(`[assembly][ports] Topology warning: ${key} has ${count} children on a single-use shaft port`)
-        }
-      }
-
-      // Rule 6: must form a tree (exactly one root)
-      const roots = comps.filter(c => !c.attach_to)
-      if (roots.length > 1) {
-        errors.push(`Multiple root components: ${roots.map(r => r.link_name).join(', ')}`)
-      }
-
-      // Rule 7: no cycles (topological sort should complete)
-      const visited = new Set<string>()
-      const remaining = comps.filter(c => c.attach_to)
-      let maxIter = remaining.length * 2
-      const toProcess = [...remaining]
-      if (roots.length > 0) visited.add(roots[0].link_name)
-      while (toProcess.length > 0 && maxIter-- > 0) {
-        const idx = toProcess.findIndex(c => visited.has(c.attach_to!))
-        if (idx === -1) break
-        visited.add(toProcess.splice(idx, 1)[0].link_name)
-      }
-      if (toProcess.length > 0) {
-        errors.push(`Cycle or disconnected components: ${toProcess.map(c => c.link_name).join(', ')}`)
-      }
-
-      return errors
+    // ── Validation + auto-repair (delegated to pure topologyValidation module) ──
+    const validationCtx = {
+      findPreset: (id: string): ValidationPreset | null => findPreset(id) as ValidationPreset | null,
     }
 
-    // ── Auto-repairs: fix common topology issues before validation ──
     console.log(`[assembly][autorepair] Scanning ${graph.components.length} components for auto-repairable issues...`)
     console.log(`[assembly][autorepair] Input link_names: [${graph.components.map(c => c.link_name).join(', ')}]`)
-
-    // Auto-repair 1: Duplicate link_names → append incrementing suffix
-    // Strategy: first occurrence keeps its name. Later duplicates get renamed.
-    // Children that appear AFTER the duplicate (later in array) and reference
-    // the old name are updated to point to the new name, since they likely
-    // intended to reference the duplicate, not the original.
-    const seen = new Set<string>()
-    let dupesFixed = 0
-    for (let i = 0; i < graph.components.length; i++) {
-      const comp = graph.components[i]
-      if (!seen.has(comp.link_name)) {
-        seen.add(comp.link_name)
-        continue
-      }
-      const oldName = comp.link_name
-      const baseName = oldName.replace(/_\d+$/, '')
-      // Find next available suffix
-      let suffix = 2
-      while (seen.has(`${baseName}_${suffix}`)) suffix++
-      const newName = `${baseName}_${suffix}`
-      console.log(`[assembly][autorepair] Duplicate link_name: "${oldName}" → "${newName}"`)
-      // Update children that appear after this component and reference the old name
-      for (let j = i + 1; j < graph.components.length; j++) {
-        if (graph.components[j].attach_to === oldName) {
-          console.log(`[assembly][autorepair]   Updated child "${graph.components[j].link_name}" attach_to: "${oldName}" → "${newName}"`)
-          graph.components[j].attach_to = newName
-        }
-      }
-      comp.link_name = newName
-      seen.add(newName)
-      dupesFixed++
-    }
-    if (dupesFixed > 0) {
-      console.log(`[assembly][autorepair] Fixed ${dupesFixed} duplicate link_name(s). Updated names: [${graph.components.map(c => c.link_name).join(', ')}]`)
-    } else {
-      console.log(`[assembly][autorepair] No duplicate link_names found`)
-    }
-
-    // Auto-repair 2: Effector with children → reparent children to effector's parent
-    let effectorChildrenFixed = 0
-    for (const comp of graph.components) {
-      if (!comp.component_id.startsWith('effector_')) continue
-      const effectorChildren = graph.components.filter(c => c.attach_to === comp.link_name)
-      if (effectorChildren.length === 0) continue
-      console.log(`[assembly][autorepair] Effector "${comp.link_name}" has ${effectorChildren.length} children — reparenting to "${comp.attach_to}"`)
-      for (const child of effectorChildren) {
-        const oldParent = child.attach_to
-        child.attach_to = comp.attach_to
-        console.log(`[assembly][autorepair]   Reparented "${child.link_name}" from "${oldParent}" to "${child.attach_to}"`)
-        effectorChildrenFixed++
-      }
-    }
-    if (effectorChildrenFixed > 0) {
-      console.log(`[assembly][autorepair] Reparented ${effectorChildrenFixed} children off effector nodes`)
-    } else {
-      console.log(`[assembly][autorepair] No effector-with-children issues found`)
-    }
-
-    if (dupesFixed > 0 || effectorChildrenFixed > 0) {
-      console.log(`[assembly][autorepair] Total repairs: ${dupesFixed} duplicate names, ${effectorChildrenFixed} effector children`)
+    const { repairs } = runAutoRepair(graph, validationCtx)
+    if (repairs.length > 0) {
+      for (const r of repairs) console.log(`[assembly][autorepair] ${r.kind}: ${r.message}`)
       console.log(`[assembly][autorepair] Post-repair topology: ${graph.components.map(c => `${c.link_name}→${c.attach_to || 'ROOT'}`).join(', ')}`)
     } else {
       console.log(`[assembly][autorepair] No repairs needed — topology clean`)
     }
 
-    const topologyErrors = validateTopology(graph.components)
+    const { errors: topologyErrors, warnings: topologyWarnings } = runValidateTopology(graph.components, validationCtx)
+    if (topologyWarnings.length > 0) {
+      for (const w of topologyWarnings) console.warn(`[assembly][topology][warning] ${w}`)
+    }
     if (topologyErrors.length > 0) {
       console.error('[assembly] Topology validation failed:', topologyErrors)
       ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
