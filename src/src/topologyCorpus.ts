@@ -237,6 +237,87 @@ const fixtures: Fixture[] = [
     },
   },
 
+  // PORT_MISMATCH (auto-repair 5) ──────────────────────────────────────────
+  {
+    name: 'PORT_MISMATCH: shaft facing baseplate bottom → bracket inserted',
+    kind: 'auto_repair',
+    // No validator error is thrown for the mismatch (validator doesn't check
+    // port classes; placement does), so both pre- and post-repair pass.
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    expected_repair_kinds: ['port_mismatch_bracket'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate', attach_face: 'bottom' },
+      ],
+    },
+  },
+  {
+    name: 'PORT_MISMATCH: wheel on motor shaft is not repaired (legitimate)',
+    kind: 'auto_repair',
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    // Mobility children on motor shafts are the intended diff-drive pattern —
+    // no bracket insertion should happen.
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',   attach_to: null },
+        { link_name: 'motor1', component_id: 'motor_dc_small_130',     attach_to: 'plate',  attach_face: 'bottom' },
+        { link_name: 'wheelL', component_id: 'mobility_wheel_driven',  attach_to: 'motor1', attach_face: 'top' },
+      ],
+    },
+  },
+  {
+    name: 'PORT_MISMATCH: repair is idempotent (no bracket on pre-bracketed servo)',
+    kind: 'auto_repair',
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    // Servo on bracket on baseplate — bracket parent already exists, so no
+    // additional bracket should be inserted above the servo.
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',   component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'bracket', component_id: 'structural_bracket_u',    attach_to: 'plate',   attach_face: 'top' },
+        { link_name: 'servo1',  component_id: 'actuator_servo_standard', attach_to: 'bracket', attach_face: 'bottom' },
+      ],
+    },
+  },
+
+  // DIRECT_SERVO_STACK (warning) ───────────────────────────────────────────
+  {
+    name: 'DIRECT_SERVO_STACK: servo on servo emits warning',
+    kind: 'validate',
+    expected_pass: true,
+    expected_warnings: ['[DIRECT_SERVO_STACK]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate',  attach_face: 'top' },
+        { link_name: 'servo2', component_id: 'actuator_servo_standard', attach_to: 'servo1', attach_face: 'top' },
+      ],
+    },
+  },
+  {
+    name: 'DIRECT_SERVO_STACK: servos separated by extrusion stay silent',
+    kind: 'validate',
+    expected_pass: true,
+    forbidden_warnings: ['[DIRECT_SERVO_STACK]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',      attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_standard',   attach_to: 'plate',  attach_face: 'top' },
+        { link_name: 'ext1',   component_id: 'structural_extrusion_2020', attach_to: 'servo1', attach_face: 'top', length_mm: 200 },
+        { link_name: 'servo2', component_id: 'actuator_servo_standard',   attach_to: 'ext1',   attach_face: 'top' },
+      ],
+    },
+  },
+
   // TIPPY_PROPORTIONS ──────────────────────────────────────────────────────
   // Currently emitted as a WARNING, not a hard error — threshold is unverified
   // (postmortem: 4.1× was unstable, so 5× may be too lenient) AND only one

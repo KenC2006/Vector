@@ -32,6 +32,7 @@ export type RepairKind =
   | 'effector_children'
   | 'sensor_on_actuator'
   | 'shaft_fanout'
+  | 'port_mismatch_bracket'
 
 export interface RepairLogEntry {
   kind: RepairKind
@@ -73,6 +74,19 @@ function portsForComponent(
     (bb[2] ?? 40) / 2000,
     preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
   )
+}
+
+// Mirrors the oppositeFace table in urdfAssembly.ts — the child's contact face
+// is the opposite of the parent's attach_face. Kept in sync manually; tiny
+// enough that a shared constant isn't worth the cross-module coupling.
+const OPPOSITE_FACE: Record<string, string> = {
+  top: 'bottom', bottom: 'top',
+  front: 'back', back: 'front',
+  left: 'right', right: 'left',
+}
+
+function portClassAtFace(preset: ValidationPreset, face: string): string | undefined {
+  return resolveFaceToPort(face, portsForComponent(preset))?.cls
 }
 
 export function validateTopology(
@@ -154,6 +168,30 @@ export function validateTopology(
     if (isActuatorId(parentComp.component_id)) {
       errors.push(
         `[SENSOR_ON_ACTUATOR] ${comp.link_name}: sensor attached to ${parentComp.link_name} (${parentComp.component_id}). Sensors on actuators rotate/vibrate with the joint and have no rigid mounting face. Fix: attach ${comp.link_name} to a structural extrusion near the actuator instead.`,
+      )
+    }
+  }
+
+  // Rule 12 — DIRECT_SERVO_STACK (warning): actuator/motor directly parented to
+  // another actuator/motor with no structural link between them. Emitted as a
+  // warning because (a) the port-mismatch auto-repair already inserts a bracket
+  // for most cases, and (b) a real physical assembly uses an extrusion for this,
+  // not a bracket — the AI should learn to emit that pattern.
+  //
+  // Delivery today: warnings are surfaced only to the browser console by the
+  // urdfAssembly delegation block. Wiring `topologyWarnings` through
+  // `resolveAssemblyGraph`'s return into `viewportChat.ts` so the second-pass
+  // Gemini validator and the AI redesign loop see them is owned by the
+  // `vector-ai-context` workstream. Until that lands, this rule is a
+  // developer-facing diagnostic, not an AI-facing feedback signal.
+  for (const comp of components) {
+    if (!comp.attach_to) continue
+    if (!isActuatorId(comp.component_id)) continue
+    const parentComp = components.find(c => c.link_name === comp.attach_to)
+    if (!parentComp) continue
+    if (isActuatorId(parentComp.component_id)) {
+      warnings.push(
+        `[DIRECT_SERVO_STACK] ${comp.link_name} (${comp.component_id}) mounts directly on ${parentComp.link_name} (${parentComp.component_id}). Insert a bracket or extrusion between them for a realistic assembly.`,
       )
     }
   }
@@ -334,6 +372,75 @@ export function autoRepairTopology(
         message: `shaft "${key}" extra "${children[i].link_name}" moved from "${oldParent}" to "${newParent.link_name}"`,
       })
     }
+  }
+
+  // Repair 5: shaft ↔ mount_face port mismatch → insert a structural bracket
+  // between parent and child. Fires when an actuator/motor child connects to a
+  // parent via a class mismatch (the quadruped "hip servo shaft facing the
+  // baseplate" pattern, or a direct servo→servo stack). Skipped for mobility
+  // children on motor shafts — wheels on shafts are a legitimate connection.
+  // Skipped if the parent is already an auto-inserted bracket (idempotent).
+  //
+  // Limitation: inserting a bracket cleans the parent↔bracket connection
+  // (mount_face ↔ mount_face) but leaves the bracket↔child mismatch intact
+  // (brackets have only mount_face ports). The placement engine still emits
+  // the compatibility warning on the child side, but the assembly graph now
+  // reflects the structural intermediate a physical robot would have.
+  const existingNames = new Set(graph.components.map(c => c.link_name))
+  const isRepairableChild = (id: string) =>
+    id.startsWith('actuator_') || id.startsWith('motor_')
+  const insertions: Array<{ bracket: AssemblyComponent; beforeLinkName: string }> = []
+  let bracketSerial = 0
+
+  for (const comp of graph.components) {
+    if (!comp.attach_to) continue
+    if (!isRepairableChild(comp.component_id)) continue
+    const parent = graph.components.find(c => c.link_name === comp.attach_to)
+    if (!parent) continue
+    if (parent.component_id.startsWith('structural_bracket_')) continue
+    const parentPreset = ctx.findPreset(parent.component_id)
+    const childPreset = ctx.findPreset(comp.component_id)
+    if (!parentPreset || !childPreset) continue
+    const parentFace = comp.attach_face || 'top'
+    const childFace = OPPOSITE_FACE[parentFace] || 'bottom'
+    const pClass = portClassAtFace(parentPreset, parentFace)
+    const cClass = portClassAtFace(childPreset, childFace)
+    if (!pClass || !cClass) continue
+    const mismatched =
+      (pClass === 'shaft' && cClass === 'mount_face') ||
+      (pClass === 'mount_face' && cClass === 'shaft')
+    if (!mismatched) continue
+
+    bracketSerial++
+    let bracketName = `structural_bracket_auto_${bracketSerial}`
+    while (existingNames.has(bracketName)) {
+      bracketSerial++
+      bracketName = `structural_bracket_auto_${bracketSerial}`
+    }
+    existingNames.add(bracketName)
+
+    const bracket: AssemblyComponent = {
+      link_name: bracketName,
+      component_id: 'structural_bracket_u',
+      attach_to: parent.link_name,
+      attach_face: parentFace,
+      joint_type: 'fixed',
+      joint_axis: '0 0 1',
+    }
+    insertions.push({ bracket, beforeLinkName: comp.link_name })
+    comp.attach_to = bracketName
+    repairs.push({
+      kind: 'port_mismatch_bracket',
+      message: `inserted "${bracketName}" between "${parent.link_name}" (${pClass}) and "${comp.link_name}" (${cClass})`,
+    })
+  }
+
+  // Splice brackets into the components array just before their paired child so
+  // any order-sensitive consumer (e.g. placement's topo sort) sees parents first.
+  for (const ins of insertions) {
+    const childIdx = graph.components.findIndex(c => c.link_name === ins.beforeLinkName)
+    if (childIdx >= 0) graph.components.splice(childIdx, 0, ins.bracket)
+    else graph.components.push(ins.bracket)
   }
 
   return { graph, repairs }
