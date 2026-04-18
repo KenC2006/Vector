@@ -712,10 +712,16 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const detail = (f.detail || '').toLowerCase()
                 const aestheticChecks = new Set(['proportions', 'shape_match'])
                 if (!aestheticChecks.has(f.check)) return false
-                // Mentions visual style or non-actionable dimension language without
+                // Mentions visual style / dimension / anatomical-style language without
                 // naming a missing/wrong component or connection. Conservative — only
-                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", etc.
-                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall)|ratio|proportion(s|al)?)\b/
+                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", and a
+                // class of mammal-like/leg-mirror critiques that Gemini emits against
+                // Spot-style quadrupeds. Spot's actual design uses same-sign rpy on
+                // all 4 legs (per system prompt); a "legs should be mirrored" critique
+                // is anatomically mammal-correct but breaks the Spot look the user asked
+                // for, AND Claude's best attempt at it produces a horse-pose regression
+                // (front thighs angle backward, shins forward) — so treat it as aesthetic.
+                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mirror(ed)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund|knees?\s+(?:point|bend|should))\b/
                 const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
                 return aestheticHints.test(detail) && !actionableHints.test(detail)
               }
