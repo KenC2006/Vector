@@ -750,7 +750,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                   ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
                 const aestheticGuidance = aestheticTopoFailures.length > 0
-                  ? `\n\nDO NOT act on these aesthetic/dimensional critiques — no preset in the palette can satisfy them, and trying (e.g. swapping baseplate size, adding a torso extrusion) produces worse designs:\n${aestheticLines}\n\nKeep the baseplate choice and body layout from the previous attempt. Only address the topology items listed above.`
+                  ? `\n\nDO NOT act on these aesthetic/dimensional critiques — no preset in the palette can satisfy them, and trying (e.g. swapping baseplate size, adding a torso extrusion) produces worse designs:\n${aestheticLines}\n\nKeep the baseplate preset and existing component placements from the previous attempt EXCEPT where the "Fix ONLY these" list above requires adding, removing, or moving a specific component.`
                   : ''
                 // Phase 4: include the previous (failed) AssemblyGraph so Claude
                 // can reason "what did I try, what specifically failed, what to
