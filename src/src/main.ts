@@ -84,7 +84,17 @@ function groundRobot(robotGroup: THREE.Group) {
     tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
     if (tmpBox.min.y < minY) {
       minY = tmpBox.min.y
-      lowestLink = (ud?.urdfLinkName as string) || null
+      // Walk up if the mesh itself isn't tagged — applyRichVisuals replacements
+      // sometimes leave nested groups whose direct mesh children lost the tag.
+      let cur: THREE.Object3D | null = mesh
+      let foundLink: string | null = null
+      while (cur && !foundLink) {
+        const cud = cur.userData as Record<string, unknown> | undefined
+        const tag = cud?.urdfLinkName
+        if (typeof tag === 'string') foundLink = tag
+        cur = cur.parent
+      }
+      lowestLink = foundLink
     }
     meshCount++
   })
