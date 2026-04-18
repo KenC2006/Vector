@@ -11,7 +11,7 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getMeshOverrideUrl, getRotationOverride, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
 import { getComponentColor, getTintedMaterial } from './materials'
 
 
@@ -127,7 +127,17 @@ export const SLOW_MESH_BLACKLIST = new Set([
 // Cleared on each applyRichVisuals call to prevent stale material leaks.
 const _tintedMatCache = new Map<string, THREE.MeshStandardMaterial>()
 
-export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (linkName: string) => void): void {
+export function applyRichVisuals(
+  parsedRobot: ParsedRobotLike,
+  onMeshLoaded?: (linkName: string) => void,
+  /** Look up a component's authoritative bounding box (mm) from the preset catalog.
+   *  When provided, overrides measureLinkDims for multi-primitive components like
+   *  servos whose parametric placeholders extend beyond the preset bbox (e.g. mounting
+   *  ears at +15% X) and would otherwise distort GLB scaling. Returning null keeps the
+   *  current measureLinkDims behavior (right for single-primitive components like
+   *  extrusions, where per-instance length_mm is already in the URDF box). */
+  getPresetBoundingBoxMm?: (compId: string) => [number, number, number] | null,
+): void {
   // Dispose and clear previous tinted materials
   for (const mat of _tintedMatCache.values()) mat.dispose()
   _tintedMatCache.clear()
@@ -138,8 +148,13 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
     const generator = findRichGenerator(compId)
     if (!generator) continue
 
-    // Measure existing primitive geometry to get dimensions
-    const dims = measureLinkDims(linkGroup)
+    // Prefer the preset's authoritative bbox over measured placeholder geometry
+    // (which over-counts ears/horns for multi-primitive components like servos).
+    // Falls back to measureLinkDims for components without a 3-tuple bbox preset.
+    const presetBbox = getPresetBoundingBoxMm?.(compId) ?? null
+    const dims: GeneratorDims = presetBbox
+      ? { x: presetBbox[0] / 1000, y: presetBbox[1] / 1000, z: presetBbox[2] / 1000 }
+      : measureLinkDims(linkGroup)
 
     // Check for real mesh override (STEP file from manufacturer)
     const meshUrl = getMeshOverrideUrl(compId)
@@ -289,6 +304,28 @@ function applyMeshToLink(
   if (maxMeshDim > 0.0001) {
     if (maxMeshDim > maxExpectedDim * 10) {
       meshGroup.scale.setScalar(0.001) // mm → m
+    }
+
+    // Apply per-component rotation override by baking it into the geometry
+    // vertices BEFORE per-axis scaling. Setting meshGroup.rotation alone
+    // would not work: Three.js composes T*R*S, so a non-uniform scale.[xyz]
+    // applied after rotation acts on the original local axes — the per-axis
+    // scaling below would modify the wrong axis. Baking the rotation into
+    // the geometry realigns local axes with the desired world axes, so
+    // scale.x correctly controls the world X extent, etc.
+    // We clone the geometry first so the shared cached mesh isn't mutated.
+    const rotation = getRotationOverride(compId)
+    if (rotation) {
+      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'),
+      )
+      meshGroup.traverse(child => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry = child.geometry.clone()
+          child.geometry.applyMatrix4(rotMatrix)
+        }
+      })
+      meshGroup.updateMatrixWorld(true)
     }
 
     // Per-axis scaling: scale GLB to match the component's declared bounding_box_mm.

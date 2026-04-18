@@ -156,6 +156,56 @@ function summarizeAssemblyGraph(graph: AssemblyGraph): string {
   </div>`
 }
 
+/**
+ * Compact plain-text AssemblyGraph summary for the AI context (Phase 4).
+ *
+ * Unlike summarizeAssemblyGraph (HTML, user-facing), this serializes the
+ * component tree with the exact fields Claude needs to reason about edits:
+ * component_id, link_name, attach_to, attach_face, joint_type/axis, and
+ * non-zero attach_rpy. Cheaper than re-parsing URDF and lossless on
+ * orientation/elevation_angle/length_mm fields that URDF round-trips drop.
+ */
+function summarizeAssemblyGraphForAI(graph: AssemblyGraph): string {
+  if (!graph.components || graph.components.length === 0) return ''
+  const lines: string[] = ['## Current AssemblyGraph (structured)', `base_link: ${graph.base_link}`]
+  if (graph.ground_offset) lines.push('ground_offset: true')
+  lines.push(`components (${graph.components.length}):`)
+  for (const c of graph.components) {
+    const parts: string[] = [`  - ${c.link_name}: ${c.component_id}`]
+    // Match resolveAssemblyGraph's !c.attach_to root predicate (urdfAssembly.ts:3158)
+    // so this view never disagrees with what the engine actually built.
+    if (!c.attach_to) {
+      parts.push('(root)')
+    } else {
+      parts.push(`attach_to=${c.attach_to}`)
+      if (c.attach_face) parts.push(`face=${c.attach_face}`)
+    }
+    if (c.joint_type) parts.push(`joint=${c.joint_type}`)
+    if (c.joint_axis) parts.push(`axis=${c.joint_axis}`)
+    if (c.attach_rpy && c.attach_rpy.some(v => Math.abs(v) > 0.001)) {
+      parts.push(`attach_rpy=[${c.attach_rpy.map(v => v.toFixed(3)).join(', ')}]`)
+    }
+    if (c.length_mm) parts.push(`length_mm=${c.length_mm}`)
+    if (c.orientation) parts.push(`orientation="${c.orientation}"`)
+    if (typeof c.elevation_angle === 'number') parts.push(`elevation_angle=${c.elevation_angle}`)
+    lines.push(parts.join(', '))
+  }
+  return lines.join('\n') + '\n\n'
+}
+
+/** Render topology warnings as an inline amber block under the assistant message. */
+function formatWarningsHtml(warnings: string[] | undefined): string {
+  if (!warnings || warnings.length === 0) return ''
+  const items = warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('')
+  return `<div style="margin-top:8px;padding:6px 8px;border-left:3px solid #e5c07b;color:#e5c07b;font-size:11px;background:rgba(229,192,123,0.08);">Topology warnings (non-blocking):${items}</div>`
+}
+
+/** Render topology warnings as a plain-text block for redesign/retry prompts. */
+function formatWarningsForPrompt(warnings: string[] | undefined): string {
+  if (!warnings || warnings.length === 0) return ''
+  return `\n\nTopology warnings (non-blocking, but worth addressing in a redesign):\n${warnings.map(w => `- ${w}`).join('\n')}`
+}
+
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
   const oldLines = oldText.split('\n')
   const newLines = newText.split('\n')
@@ -411,13 +461,49 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
 
       // Augment context with per-component port occupancy so Claude can avoid
-      // shaft-fanout before attempting it (master plan W2). Only meaningful for
-      // edit/modify_topology calls — redesigns start from a blank graph.
+      // shaft-fanout before attempting it (master plan W2). Also include the
+      // structured AssemblyGraph (Phase 4) so Claude reasons about explicit
+      // component_id / attach_face / attach_rpy fields without re-deriving them
+      // from URDF text — and sees fields URDF round-trips can't preserve
+      // (orientation, elevation_angle, length_mm).
+      // Only meaningful for edit/modify_topology calls — redesigns start blank.
+      //
+      // Guard against cross-session stale context: the stored graph persists
+      // across browser reloads. If the editor's current URDF no longer matches
+      // it (user opened a different file, reset the editor, or kept the sample
+      // URDF from startup), the stored graph is a ghost — sending it as
+      // "current assembly" makes fresh design_robot calls look like edits and
+      // causes Claude to mimic the stale design. Only inject the graph when
+      // its base_link actually appears in the current editor URDF.
       const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
-      const portOccupancyCtx = !isRedesign && storedGraphForContext
+      // Structural match: require that most of the stored graph's components
+      // still appear in the editor URDF. A base_link-only check is too weak
+      // because the sample/reset URDF uses the generic `base_link` name, which
+      // would falsely match any stored graph whose root is also `base_link`.
+      const storedMatchesEditor = (() => {
+        if (!storedGraphForContext) return false
+        const comps = storedGraphForContext.components
+        if (comps.length === 0) return false
+        let matched = 0
+        for (const c of comps) {
+          if (fullUrdf.includes(`name="${c.link_name}"`)) matched++
+        }
+        // Require a supermajority — if the user deleted a few parts manually,
+        // the graph is still "mostly current". But a stale 46-component graph
+        // against a 1-link sample URDF matches 0-1 names and rightly fails.
+        const threshold = Math.max(2, Math.ceil(comps.length * 0.6))
+        return matched >= threshold
+      })()
+      const portOccupancyCtx = !isRedesign && storedGraphForContext && storedMatchesEditor
         ? buildPortOccupancyContext(storedGraphForContext)
         : ''
-      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx)
+      const graphSummaryCtx = !isRedesign && storedGraphForContext && storedMatchesEditor
+        ? summarizeAssemblyGraphForAI(storedGraphForContext)
+        : ''
+      if (storedGraphForContext && !storedMatchesEditor) {
+        console.log(`[AI] Stored graph base_link "${storedGraphForContext.base_link}" not found in current editor — skipping Phase 4 context (likely a fresh design after reload)`)
+      }
+      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx + graphSummaryCtx)
 
       const result = await invoke('ai_edit', {
         prompt,
@@ -453,7 +539,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
             const resolvedTargets = summarizeTopologyOps(result.topology_ops, currentGraph)
-            addVCMessage('assistant', `${resolvedTargets}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+            const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+            addVCMessage('assistant', `${resolvedTargets}${result.explanation}${warnBlock}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
               diff, newUrdf: assemblyOut.urdf,
             })
             deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
@@ -605,31 +692,96 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
               const placementFailures = allFailures.filter(c => c.fixable_by === 'placement')
 
-              // Redesign triggers (quadruped item 4):
-              //  (a) Gemini says needs_redesign AND at least one topology failure — original path.
-              //  (b) NEW: >=2 checklist failures AND any is fixable_by: "placement" — a structural
-              //      mismatch is often what causes placement to fail, so retrying with a different
-              //      topology frequently clears issues even when Gemini tags them placement-only.
-              const topologyRedesign = needsRedesign && topoFailures.length > 0
-              const placementRedesign = allFailures.length >= 2 && placementFailures.length > 0
-              const shouldRedesign = topologyRedesign || placementRedesign
+              // Redesign trigger: only when a topology-fixable failure exists.
+              // Placement-only failures (grounded fail, splay direction, etc.)
+              // are handled by the placement engine in urdfAssembly.ts — Claude's
+              // topology redesign can't influence them, so kicking off a redesign
+              // just reshuffles a viable topology without addressing the issue
+              // (and often regresses the good parts). Gemini already signals
+              // needs_redesign:false when only placement failures remain; this
+              // heuristic now aligns with that judgment instead of overriding it.
+              //
+              // Additional guard: when the topology failures are purely aesthetic
+              // dimension critiques on structural components (e.g. "baseplate
+              // should be 60-100mm thick" — no preset offers that), the redesign
+              // can't satisfy them. Claude tends to respond by stacking parts
+              // (extrusions as standoffs etc.) which Gemini then flags as ALSO
+              // wrong, so the second pass produces a visually worse result than
+              // the first. Detect and skip those cases.
+              const isAestheticDimensionCritique = (f: { check: string; detail: string }) => {
+                const detail = (f.detail || '').toLowerCase()
+                const aestheticChecks = new Set(['proportions', 'shape_match'])
+                if (!aestheticChecks.has(f.check)) return false
+                // Mentions visual style / dimension / anatomical-style language without
+                // naming a missing/wrong component or connection. Conservative — only
+                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", and a
+                // class of mammal-like/leg-mirror critiques that Gemini emits against
+                // Spot-style quadrupeds. Spot's actual design uses same-sign rpy on
+                // all 4 legs (per system prompt); a "legs should be mirrored" critique
+                // is anatomically mammal-correct but breaks the Spot look the user asked
+                // for, AND Claude's best attempt at it produces a horse-pose regression
+                // (front thighs angle backward, shins forward) — so treat it as aesthetic.
+                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund)\b|\bknees?\s+(?:point|bend|face|angle)\w*|mirror(?:ed)?\s+\w*\s*(?:pitch|leg|knee|hip|limb|orient|front|rear)|(?:leg|knee|hip|limb)s?\s+\w*\s*mirror(?:ed)?/
+                const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
+                return aestheticHints.test(detail) && !actionableHints.test(detail)
+              }
+              const actionableTopoFailures = topoFailures.filter(f => !isAestheticDimensionCritique(f))
+              const aestheticTopoFailures = topoFailures.filter(isAestheticDimensionCritique)
+              const allTopoFailuresAreAesthetic = topoFailures.length > 0 && actionableTopoFailures.length === 0
+              const shouldRedesign = actionableTopoFailures.length > 0
 
               if (shouldRedesign && retryCount < 1) {
-                const failures = allFailures
+                // Only include actionable topology failures in the "fix these" list.
+                // Aesthetic dimension critiques (e.g. "narrow baseplate to 140mm") have
+                // no preset that can satisfy them — when we fed them through verbatim
+                // Claude tried absurd responses (swapped to a smaller preset, added a
+                // central torso-extrusion tower). They go into a separate "ignore"
+                // section so Claude sees the reasoning but doesn't act on them.
+                const actionableLines = actionableTopoFailures
                   .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
                   .join('\n')
-                const reason = topologyRedesign
+                const placementLines = placementFailures
+                  .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const aestheticLines = aestheticTopoFailures
+                  .map(c => `- [ignored — no preset fits] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const failuresBlock = [actionableLines, placementLines].filter(Boolean).join('\n')
+                const reason = needsRedesign
                   ? 'Visual validation found topology issues. Redesigning...'
-                  : `Visual validation flagged ${allFailures.length} problems — retrying with a different topology.`
+                  : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
                 addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
                 const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
-                const placementGuidance = placementFailures.length > 0 && !topologyRedesign
+                const placementGuidance = placementFailures.length > 0
                   ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}\n\nPlease design a NEW topology from scratch that addresses these issues.`
+                const aestheticGuidance = aestheticTopoFailures.length > 0
+                  ? `\n\nDO NOT act on these aesthetic/dimensional critiques — no preset in the palette can satisfy them, and trying (e.g. swapping baseplate size, adding a torso extrusion) produces worse designs:\n${aestheticLines}\n\nKeep the baseplate preset and existing component placements from the previous attempt EXCEPT where the "Fix ONLY these" list above requires adding, removing, or moving a specific component.`
+                  : ''
+                // Phase 4: include the previous (failed) AssemblyGraph so Claude
+                // can reason "what did I try, what specifically failed, what to
+                // change" instead of redesigning blind from scratch. Trims the
+                // search space dramatically on the second attempt. Wording is
+                // careful: this is still a full design_robot call (not an
+                // incremental edit), so we say "produce a NEW full topology"
+                // but encourage reusing whatever the validator did not flag.
+                const previousGraph = result.assembly_graph as AssemblyGraph | undefined
+                const previousTopologyBlock = previousGraph
+                  ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
+                  : ''
+                const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
+              }
+              if (placementFailures.length > 0 && topoFailures.length === 0) {
+                console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
+              }
+              if (allTopoFailuresAreAesthetic) {
+                const lines = topoFailures.map(c => `  • ${c.check}: ${c.detail}`).join('\n')
+                console.log(`[AI][redesign] Skipping redesign — all topology failures are aesthetic dimension critiques no preset can satisfy:\n${lines}`)
+                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged aesthetic concerns the available presets can't satisfy (e.g. "needs boxier chassis"). Keeping current build — request a different style or part if you want to iterate.</span>`)
               }
             }
           } catch (valErr) {
@@ -638,7 +790,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
           const diff = computeSimpleDiff(fullUrdf, assemblyResult)
           const graphSummary = summarizeAssemblyGraph(result.assembly_graph as AssemblyGraph)
-          addVCMessage('assistant', `${graphSummary}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+          addVCMessage('assistant', `${graphSummary}${result.explanation}${warnBlock}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
             diff, newUrdf: assemblyResult,
           })
           deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
@@ -647,7 +800,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           if (topoErrors && topoErrors.length > 0) {
             addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
             const errorList = topoErrors.map(e => `- ${e}`).join('\n')
-            const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design.`
+            const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
+            const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
             vcSend.disabled = false
             unlisten?.()
             return sendVCMessage(retryPrompt, retryCount + 1)

@@ -344,6 +344,7 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
     })
 
     const linkGroup = new THREE.Group()
+    linkGroup.userData.urdfLinkName = linkName  // anchors parent-walk lookups (e.g. groundRobot diagnostic)
     linkGroup.add(geometryGroup)
     linkGroups.set(linkName, linkGroup)
     linkData.set(linkName, { name: linkName, mass, comPos, geometry: linkGroup })

@@ -56,6 +56,9 @@ function groundRobot(robotGroup: THREE.Group) {
   // and other helpers that are children of robotGroup but not actual robot geometry.
   const urdfWorld = robotGroup.getObjectByName('urdf_world')
   const target = urdfWorld || robotGroup
+  // Defensive: re-update target's matrices in case async mesh adds happened
+  // after robotGroup.updateMatrixWorld but before we got here.
+  target.updateMatrixWorld(true)
 
   // Walk the full scene graph under target. Computing each mesh's world-space AABB
   // from its geometry.boundingBox + matrixWorld explicitly (instead of Box3.setFromObject)
@@ -64,20 +67,40 @@ function groundRobot(robotGroup: THREE.Group) {
   // because the lowest mesh was buried in servo→servo→extrusion chains.
   let minY = Infinity
   let meshCount = 0
+  let lowestLink: string | null = null
   const tmpBox = new THREE.Box3()
   target.traverse((obj: THREE.Object3D) => {
     const mesh = obj as THREE.Mesh
     if (!mesh.isMesh || !mesh.visible) return
+    // Skip collision-visual meshes — they share linkGroups with real geometry but
+    // shouldn't influence ground offset (especially when toggled visible).
+    const ud = mesh.userData as Record<string, unknown> | undefined
+    if (ud?.isCollision) return
     const geom = mesh.geometry
     if (!geom) return
     if (!geom.boundingBox) geom.computeBoundingBox()
     const bb = geom.boundingBox
     if (!bb || bb.isEmpty()) return
     tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
-    if (tmpBox.min.y < minY) minY = tmpBox.min.y
+    if (tmpBox.min.y < minY) {
+      minY = tmpBox.min.y
+      // Walk up if the mesh itself isn't tagged — applyRichVisuals replacements
+      // sometimes leave nested groups whose direct mesh children lost the tag.
+      let cur: THREE.Object3D | null = mesh
+      let foundLink: string | null = null
+      while (cur && !foundLink) {
+        const cud = cur.userData as Record<string, unknown> | undefined
+        const tag = cud?.urdfLinkName
+        if (typeof tag === 'string') foundLink = tag
+        cur = cur.parent
+      }
+      lowestLink = foundLink
+    }
     meshCount++
   })
   if (!isFinite(minY) || meshCount === 0) return
+  // Diagnostic: visible into floating-robot debugging without re-instrumenting.
+  console.log(`[groundRobot] meshes=${meshCount} minY=${minY.toFixed(4)} lowestLink=${lowestLink || '?'} → shifting by ${(-minY).toFixed(4)}`)
   // In Three.js Y is up; shift so lowest mesh touches Y=0
   robotGroup.position.y = -minY
 }
@@ -1018,10 +1041,18 @@ worldGroup.name = 'urdf_world'
 worldGroup.rotation.x = -Math.PI / 2
 robot.add(worldGroup)
 
+// Forward-declare urdfAssemblyApi so the rich-visuals callback below can close over
+// it before initUrdfAssembly runs. Reassigned at the canonical init site (~L2549).
+let urdfAssemblyApi: UrdfAssemblyApi | null = null
+
+// Resolve preset bbox via urdfAssemblyApi when initialized; null on first-render
+// (sample URDF) is fine — measureLinkDims is correct for that simple model.
+const getPresetBboxMm = (compId: string) => urdfAssemblyApi?.getPresetBoundingBoxMm(compId) ?? null
+
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1549,7 +1580,8 @@ function buildKinematicContext(): string {
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
-let urdfAssemblyApi: UrdfAssemblyApi | null = null
+// urdfAssemblyApi declared near applyRichVisuals call site to avoid TDZ on the
+// preset-bbox callback closure (initialized at the initUrdfAssembly site below).
 
 function rebuildJointAxisVisuals() {
   axisVisuals.length = 0
@@ -1609,7 +1641,7 @@ function reparseURDF(xmlOverride?: string) {
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
           // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
           const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
           if (!skipHeavy) addEdgeLines(parsedRobot)
@@ -1652,7 +1684,7 @@ function reparseURDF(xmlOverride?: string) {
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
     // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
     const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
     if (!skipHeavy) addEdgeLines(parsedRobot)

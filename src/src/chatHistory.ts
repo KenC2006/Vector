@@ -50,7 +50,72 @@ export function initChatHistory(deps: {
 
   function saveChatHistory() {
     while (chatHistory.length > MAX_CHATS) chatHistory.shift()
-    localStorage.setItem('vector_chats', JSON.stringify(chatHistory))
+    // Cap persisted snapshots: a 50-component robot's URDF is ~85KB and
+    // retry storms can record 5+ system + assistant messages in seconds,
+    // blowing the ~5MB localStorage quota mid-session. We keep the most
+    // recent N snapshots per chat (rewind still works for recent turns)
+    // and try once more after evicting the oldest chat on quota failure.
+    const serialized = serializeForStorage(chatHistory)
+    try {
+      localStorage.setItem('vector_chats', serialized)
+    } catch (e) {
+      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
+        // Evict oldest chat and retry once. If we're already down to 1, drop snapshots from it too.
+        if (chatHistory.length > 1) {
+          chatHistory.shift()
+          try {
+            localStorage.setItem('vector_chats', serializeForStorage(chatHistory))
+            console.warn('[chatHistory] localStorage quota hit; evicted oldest chat to recover')
+            return
+          } catch {/* fall through to snapshot strip */}
+        }
+        // Last resort: strip ALL snapshots from the persisted form. In-memory snapshots
+        // still work for the current session — only cross-session rewind is lost.
+        try {
+          localStorage.setItem('vector_chats', serializeForStorage(chatHistory, 0))
+          console.warn('[chatHistory] localStorage quota hit; persisted form has no URDF snapshots (in-memory rewind still works this session)')
+        } catch {
+          console.error('[chatHistory] localStorage save failed even after stripping snapshots — cross-session history will not persist')
+        }
+      } else {
+        throw e
+      }
+    }
+  }
+
+  /** Serialize chat history with at most `keepSnapshots` URDF snapshots per chat
+   *  (most recent first). System messages never carry a snapshot in the persisted
+   *  form — they're transient status indicators, never rewound to. */
+  function serializeForStorage(chats: ChatConversation[], keepSnapshots = 10): string {
+    const trimmed = chats.map(chat => ({
+      ...chat,
+      messages: stripOldSnapshots(chat.messages, keepSnapshots),
+    }))
+    return JSON.stringify(trimmed)
+  }
+
+  function stripOldSnapshots(messages: ChatMessage[], keep: number): ChatMessage[] {
+    let kept = 0
+    const result: ChatMessage[] = []
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'system') {
+        // System messages are status; never persist their snapshot.
+        const { urdfSnapshot: _drop, ...rest } = m
+        void _drop
+        result.unshift(rest as ChatMessage)
+        continue
+      }
+      if (kept < keep && m.urdfSnapshot) {
+        result.unshift(m)
+        kept++
+      } else {
+        const { urdfSnapshot: _drop, ...rest } = m
+        void _drop
+        result.unshift(rest as ChatMessage)
+      }
+    }
+    return result
   }
 
   function getCurrentChat(): ChatConversation | undefined {

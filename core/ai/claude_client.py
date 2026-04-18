@@ -107,7 +107,7 @@ _ALLOWED_COMPONENT_IDS = {
     'power_lipo_3s_2200', 'power_lipo_4s_5000',
     'power_buck_converter_5v', 'power_distribution_unit',
     # Structural — baseplate (always root), extrusions, brackets, shaft collar
-    'structural_baseplate',
+    'structural_baseplate', 'structural_baseplate_large',
     'structural_extrusion_2020', 'structural_extrusion_4040',
     'structural_bracket_l', 'structural_bracket_u', 'structural_shaft_collar',
     # Transmission — belt, leadscrew, bearing, coupling
@@ -309,7 +309,7 @@ Controls how an elongated or directable component is rotated within its face:
 
 ## Topology Rules
 
-1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
+1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**
 2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
 3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
 4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
@@ -320,6 +320,11 @@ Controls how an elongated or directable component is rotated within its face:
 9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
 10. **Servos/motors have a shaft output on the TOP face — attach exactly ONE child to a servo's top face.** Never fan out multiple children from the same servo top (e.g. sensor + extrusion, or two extrusions). The shaft drives exactly one thing. If you need multiple items near the same joint, mount them on a shared structural extrusion *after* the servo, not on the servo itself.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
+12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face. NEVER route them through an intermediate structural_extrusion, regardless of count.** All three of these shapes are FORBIDDEN:
+    - 4 vertical extrusions (one per electronic) → "ironing board on stilts"
+    - 1 central vertical extrusion hosting multiple electronics → "torso tower" (validator will flag it AS WELL as the 4-standoff case)
+    - An extrusion named `torso_extrusion_*` or `body_extrusion_*` used to "elevate" or "enclose" electronics
+    The baseplate's top face distributes multiple children across its area automatically — four electronics on the top face become four compact pads at the corners, not any form of tower. If a validator tells you the body "needs to be a volumetric torso" or "boxier chassis", IGNORE IT — no preset in this palette implements a 3D body block, so pretending a vertical extrusion is one just produces a worse design.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
@@ -335,7 +340,7 @@ Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not a
   body → hip_abduction → hip_pitch → THIGH → knee → SHIN → foot
                     ↑ compound hip ↑         ↑ knee joint drives shin, not thigh
 
-  baseplate
+  structural_baseplate_large  (use the large plate, 350×250×8mm — small plate is too narrow for a Go1-class hip span)
     -> 4x hip_abduction_servo (bottom, revolute x)                       — rolls whole leg laterally (compound hip axis 1)
       -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2)
         -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)            — structural thigh bone
@@ -346,7 +351,7 @@ Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not a
 - Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_abduction and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
 - The hip (abduction + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
 - Structural extrusions MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). These are the limb bones.
-- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) and knee (≈-1.05 rad / -60°) as shown. All 4 legs should use the SAME sign (same posture) — do not mirror front vs rear unless the user explicitly asks for a sit/asymmetric pose.
+- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) and knee (≈-1.05 rad / -60°) as shown. All 4 legs MUST use the SAME sign (same posture). **If a validator says "legs should be mirrored front-to-rear" or "front knees should point opposite direction from rear" or "configuration isn't mammal-like" — IGNORE IT.** Boston Dynamics Spot's real hardware uses identical-geometry front and rear legs by design (that's its signature look); mirroring front legs produces a horse/cow stance with thighs angled backward and feet trailing the front hips, which is not what the user asked for. Only emit mirrored rpy signs when the user EXPLICITLY asks for a sit, lie-down, or asymmetric pose.
 - For a straight stance (neutral), omit attach_rpy from those two servos.
 - A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_extrusion -> knee_servo -> shin_extrusion -> foot.
 
@@ -367,6 +372,11 @@ Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45�
 - ❌ Multiple root components — exactly one component has attach_to=null (the baseplate)
 - ❌ Cycles in the topology — A→B→C→A is invalid; the topology must be a tree
 - ❌ Extrusion as root — root is always structural_baseplate
+- ❌ Electronics on an extrusion standoff above the baseplate — any of these shapes:
+    · `baseplate → 4x vertical structural_extrusion_4040 → each hosts one of (battery, PDU, SBC, IMU)` (the 4-standoff case)
+    · `baseplate → 1x vertical structural_extrusion_4040 → [battery, PDU, SBC, IMU all on its top face]` (the central-tower case — also wrong, don't interpret "no 4 standoffs" as "1 standoff is fine")
+    · `baseplate → torso_extrusion → electronics` — any named-as-torso intermediate is still a tower
+  Attach every electronic module DIRECTLY to `baseplate.top`. The placement engine spreads multiple children across the face automatically.
 
 ## Critical Rules
 
@@ -1993,7 +2003,7 @@ Return ONLY valid JSON with a structured checklist. Each check MUST include "fix
 
 {"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm with 3 revolute joints", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm_extrusion_1 points ~30° into the ground plane (should be vertical or pitched up)", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "no gripper at end of forearm_extrusion_1:top", "fixable_by": "topology"}, {"check": "proportions", "pass": false, "detail": "structural_baseplate_1 is ~200mm wide but total arm height is ~900mm — baseplate should be ~300mm (≥1/3 of height) for stability", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Arm is missing a gripper at forearm_extrusion_1:top, and structural_baseplate_1 is underpowered (200mm wide vs 900mm arm height).", "needs_redesign": true}
 
-Set "needs_redesign" to true ONLY if there are topology-fixable failures (missing/wrong components, bad connections). Do NOT set needs_redesign for placement-only issues — the AI cannot fix those.
+Set "needs_redesign" to true ONLY if there are topology-fixable failures (missing/wrong components, bad connections). Do NOT set needs_redesign for placement-only issues — the AI cannot fix those, and the frontend will skip the redesign entirely when every failure is placement-fixable. If you flag a design as failing with only placement issues, return "needs_redesign": false and let the placement engine / grounding pass resolve it; triggering a redesign in that case just reshuffles a viable topology.
 
 Set "ok" to true ONLY if ALL checks pass. The checklist must always have these 6 checks.
 

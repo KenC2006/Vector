@@ -151,3 +151,43 @@ export function hasMeshOverride(componentId: string): boolean {
   return componentId in MESH_OVERRIDES
 }
 
+/**
+ * Per-component Euler rotations (XYZ order, radians) applied to the loaded mesh
+ * BEFORE per-axis scaling in applyMeshToLink. Use when the STEP/GLB axes don't
+ * match the preset's bounding_box_mm convention — without this, per-axis scaling
+ * stretches a mismatched axis into a sliver.
+ *
+ * Determine the rotation by comparing preset bbox (X,Y,Z) to GLB raw bbox:
+ * pick the axis swap that makes GLB extents line up with preset extents.
+ */
+export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
+  // Disc thickness on Y in STEP, preset puts it on Z. Rotate X by 90°: Y→Z.
+  // preset [32,32,8] vs GLB [31.96,8,31.98]
+  'structural_servo_coupler_disc': [Math.PI / 2, 0, 0],
+
+  // Bearing axial direction on X in STEP, preset puts it on Z. Rotate Y by 90°: X→Z.
+  // preset [22,22,7] vs GLB [7,22,22]
+  'transmission_bearing_deep_groove': [0, Math.PI / 2, 0],
+  // preset [52,52,15] vs GLB [15,53,53]
+  'transmission_bearing_large': [0, Math.PI / 2, 0],
+
+  // SBC thickness on Y in STEP (20mm), preset puts it on Z (17mm). Rotate X by 90°.
+  // preset [85,56,17] vs GLB [89,20,58]
+  'compute_sbc_small': [Math.PI / 2, 0, 0],
+
+  // Motor driver board thickness on Y in STEP (28mm), preset puts it on Z (15mm).
+  // Rotate X by 90°. Without it: Y stretches 1.54x and Z squishes to 0.35x — a
+  // wide-but-thin sliver. With it: the board renders as a normal PCB.
+  // preset [43,43,15] vs GLB [43,28,43]
+  'compute_motor_driver_dual': [Math.PI / 2, 0, 0],
+
+  // Wheel axle on Y in STEP, preset puts it on Z. Rotate X by 90°: Y→Z.
+  // preset [100,100,48] vs GLB [100,50,110]
+  'mobility_mecanum_wheel': [Math.PI / 2, 0, 0],
+}
+
+/** Get the per-component rotation override (XYZ Euler radians), or null if none. */
+export function getRotationOverride(componentId: string): [number, number, number] | null {
+  return ROTATION_OVERRIDES[componentId] ?? null
+}
+

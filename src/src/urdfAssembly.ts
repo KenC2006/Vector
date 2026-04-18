@@ -123,7 +123,7 @@ export interface UrdfAssemblyApi {
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
-  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
   /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
@@ -138,6 +138,10 @@ export interface UrdfAssemblyApi {
   restoreUndoState(state: { undo: string[]; redo: string[] }): void
   /** True while resolveAssemblyGraph is batching edits. Callers (e.g. reparseURDF) skip heavy per-mesh rebuilds when active. */
   isBulkAssemblyMode(): boolean
+  /** Look up a component's authoritative bounding box from the preset catalog (in mm).
+   *  Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
+   *  where per-instance length_mm makes the link's URDF box the authoritative source. */
+  getPresetBoundingBoxMm(compId: string): [number, number, number] | null
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -1366,7 +1370,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { ixx: i, iyy: i, izz: i }
   }
 
-  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number } {
+  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
     // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
     // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
     // Strip trailing _N instance number to recover the component ID (e.g. "servo_micro_2" → "servo_micro").
@@ -1374,14 +1378,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const compId = compIdMatch?.[1] ?? parentLinkName
     const renderedDims = getRenderedMeshDims(compId)
     if (renderedDims && renderedDims.x > 0.001) {
-      // meshDimsCache is measured in the GLB's local space before worldGroup rotation.
-      // After worldGroup.rotation.x = -PI/2: local X → world X (URDF X),
-      // local Z → world Y (URDF Z, "up"), local Y → world -Z (URDF Y, "depth").
-      // So: hx = X half-extent, hy = Y half-extent (depth), hz = Z half-extent (height/up).
+      // GLB is re-centered on its AABB in applyMeshToLink, so AABB center sits at the
+      // link origin — report cx=cy=cz=0 for the rendered-mesh path.
       return {
         hx: renderedDims.x / 2,
         hy: renderedDims.y / 2,
         hz: renderedDims.z / 2,
+        cx: 0, cy: 0, cz: 0,
       }
     }
 
@@ -1389,10 +1392,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // <origin xyz> offset. This handles multi-piece shapes (body + shaft, body + horn, etc.)
     // where previously only the first visual was read, missing protrusions in URDF Z (up).
     const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
-    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
 
     const visuals = linkEl.querySelectorAll('visual')
-    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
 
     // Compute the full axis-aligned bounding box across all visuals, then derive
     // half-extents.  Previous code used `abs(offset) + half_extent` which equals a
@@ -1432,11 +1435,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
     }
 
-    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
+    // Guard against degenerate zero-extent dims only; legitimate thin parts
+    // (6mm coupler disc, 3mm IMU, PCBs) must report their real half-extent or
+    // placement stacks the next child above a phantom gap.
+    const xExtent = (maxX - minX) / 2
+    const yExtent = (maxY - minY) / 2
+    const zExtent = (maxZ - minZ) / 2
+    // AABB center offset from link origin — non-zero when the link has asymmetric
+    // protrusions (e.g. a servo's shaft sticks up beyond the body's symmetric ±half).
+    // Placement uses this to distinguish "body face distance" from "AABB half".
     return {
-      hx: Math.max((maxX - minX) / 2, 0.005),
-      hy: Math.max((maxY - minY) / 2, 0.005),
-      hz: Math.max((maxZ - minZ) / 2, 0.005),
+      hx: xExtent > 0 ? xExtent : 0.005,
+      hy: yExtent > 0 ? yExtent : 0.005,
+      hz: zExtent > 0 ? zExtent : 0.005,
+      cx: xExtent > 0 ? (maxX + minX) / 2 : 0,
+      cy: yExtent > 0 ? (maxY + minY) / 2 : 0,
+      cz: zExtent > 0 ? (maxZ + minZ) / 2 : 0,
     }
   }
 
@@ -1444,32 +1459,39 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     doc: Document, parentLinkName: string,
     comp: PresetComponent,
     childX: number, _childY: number, childZ: number,
+    childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const mount = (comp.mounting_logic?.primary as string) || 'face_mount'
     const gap = 0
+    // Body half-extents (see computeFacePlacement for rationale) — use these for
+    // face-normal stacking so asymmetric protrusions don't introduce gaps.
+    const parentBodyHX = parent.hx - Math.abs(parent.cx)
+    const parentBodyHZ = parent.hz - Math.abs(parent.cz)
+    const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
+    const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
 
     // face_mount / pcb_solder / bracket_mount → stack on top (Z+) of parent
     if (mount === 'face_mount' || mount === 'pcb_solder' || mount === 'bracket_mount') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // axial_shaft → coaxial along Z, placed at parent's top face
     if (mount === 'axial_shaft') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // rail_slot / side_rail_mount → mount on the side (X+) of parent
     if (mount === 'rail_slot' || mount === 'side_rail_mount' || mount === 'clamp_mount') {
-      const ox = parent.hx + childX / 2 + gap
+      const ox = parentBodyHX + childBodyHX + gap
       return { xyz: `${ox.toFixed(4)} 0 0`, rpy: '0 0 0' }
     }
 
     // hub_bore → coaxial, flush with parent face
     if (mount === 'hub_bore') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
@@ -1480,22 +1502,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     // linear_rod → extend along Z from parent
     if (mount === 'linear_rod') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // tool_changer_master/slave → stack on bottom (Z-) if slave
     if (mount === 'tool_changer_slave') {
-      const oz = -(parent.hz + childZ / 2 + gap)
+      const oz = -(parentBodyHZ + childBodyHZ + gap)
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
     if (mount === 'tool_changer_master') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // Default: stack on top
-    const oz = parent.hz + childZ / 2 + gap
+    const oz = parentBodyHZ + childBodyHZ + gap
     return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
   }
 
@@ -1549,9 +1571,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     childComponentId: string = '',
     elevationAngleDeg: number = 0,
     childSizes?: Array<{ hu: number; hv: number }>,
+    childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
+    // Distance from parent's link origin to its body face along each axis.
+    // For a symmetric part this equals hz; for a servo (shaft on +Z, body
+    // centered at origin) it collapses to the body half-height.
+    // Formula: body_face_distance = axis_half_extent - |axis_center_offset|.
+    const parentBodyHX = parent.hx - Math.abs(parent.cx)
+    const parentBodyHY = parent.hy - Math.abs(parent.cy)
+    const parentBodyHZ = parent.hz - Math.abs(parent.cz)
+    // Child's link-origin-to-body-face distance along each axis. Lets the
+    // child's body (not the tip of an off-center protrusion) sit flush.
+    const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
+    const childBodyHY = childY / 2 - Math.abs(childCenterOffset.cy)
+    const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
     console.log(`[placement] ${childComponentId || '?'} on ${parentLinkName} face=${attachFace || 'top'} | parent hx=${parent.hx.toFixed(4)} hy=${parent.hy.toFixed(4)} hz=${parent.hz.toFixed(4)} | child ${childX.toFixed(4)}×${childY.toFixed(4)}×${childZ.toFixed(4)}`)
 
     const face = attachFace || 'top'
@@ -1594,8 +1629,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
       // components whose long axis is already X or Y (batteries, sensor packs), pitching
       // stands them up — fall through to the normal 'top' case, applying just yaw.
-      const longestIsZ = childZ >= childX && childZ >= childY
-      if (longestIsZ) {
+      // Use sortedDims.indexOf(longest) so a tied axis (e.g. childX === childZ) resolves
+      // to the original index of the first match, not Z.
+      const dims = [childX, childY, childZ]
+      const sortedDims = [...dims].sort((a, b) => a - b)
+      const longest = sortedDims[2]
+      const longestAxisIdx = dims.indexOf(longest)
+      if (longestAxisIdx === 2) {
         // Pitch 90° swings X onto Z — use childX as the vertical extent.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
         const oz = parent.hz + vExtent / 2 + gap
@@ -1608,9 +1648,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const elevRad = elevationAngleDeg * (Math.PI / 180)
 
     // ── Face normal offset + tangential multi-child offset ──
+    // Normal-direction offsets use BODY half-extents (hz - |cz|, etc.), so asymmetric
+    // protrusions (servo shaft) don't inflate the stack spacing and leave visible gaps.
+    // Tangential offsets (tu, tv) and face-distribution still use AABB half-extents — a
+    // protrusion's footprint is real when arranging multiple children.
     switch (face) {
       case 'top': {
-        const oz = parent.hz + childZ / 2 + gap
+        const oz = parentBodyHZ + childBodyHZ + gap
         // 1c: numeric orientation → yaw (Z-rotation) on top face
         const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
@@ -1620,48 +1664,52 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 1a: topology-aware splay — splayAngle was pre-computed above
         let rollRad = 0
         let pitchRad = 0
-        let rpyStr = '0 0 0'
         if (isWheel) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
           rollRad = -Math.PI / 2
-          rpyStr = '-1.5708 0 0'
         } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
           rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
           pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-          rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} 0`
         }
-        const vExtent = verticalExtentForRotation(childX, childY, childZ, rollRad, pitchRad)
-        const oz = -(parent.hz + vExtent / 2 + gap)
+        // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
+        // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
+        // hip toward its corner now lands instead of being silently dropped.
+        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
+        // Rotation-aware vertical extent uses body half-extents so a rolled wheel
+        // or pitched bracket snaps to the body, not to a shaft/horn tip.
+        const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
+        const oz = -(parentBodyHZ + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
         // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${(parentBodyHX + childBodyHX + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'back': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
         const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${(-(parentBodyHX + childBodyHX + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'right': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Right face: elevation is a roll about X
         const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${tu.toFixed(4)} ${(parentBodyHY + childBodyHY + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'left': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Left face: elevation is an inverted roll about X
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${tu.toFixed(4)} ${(-(parentBodyHY + childBodyHY + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       default:
-        return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+        return { xyz: `0 0 ${(parentBodyHZ + childBodyHZ + gap).toFixed(4)}`, rpy: '0 0 0' }
     }
   }
 
@@ -3087,7 +3135,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } catch { /* localStorage full or unavailable — non-critical */ }
   }
 
-  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
@@ -3129,7 +3177,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (topologyErrors.length > 0) {
       console.error('[assembly] Topology validation failed:', topologyErrors)
       ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
-      return { urdf: null, topologyErrors }
+      return { urdf: null, topologyErrors, topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
     }
 
     // Topological sort: process components in dependency order
@@ -3359,8 +3407,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Log compatibility result
       if (parentPort && childPort) {
         const compat = nodesCompatible(childPort.cls, parentPort.cls)
-        const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
-        console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
+        // Expected-mismatch suppression: brackets and coupler discs exist precisely
+        // to mate a shaft against a mount_face (shaft drives the disc via friction
+        // /screws — the real mechanical interface). Auto-repair inserts these
+        // intentionally, so the resulting shaft↔mount_face pair is the design
+        // intent, not an error. Quiet the log line (12× spam per quadruped)
+        // while still leaving compat=false for any downstream code that cares.
+        const isCouplingPair = !compat
+          && childPort.cls === 'shaft'
+          && parentPort.cls === 'mount_face'
+          && (parentPreset!.id.startsWith('structural_bracket')
+              || parentPreset!.id.startsWith('structural_servo_coupler'))
+        if (!isCouplingPair) {
+          const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
+          console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
+        }
       } else {
         console.log(`[assembly][ports] Connection: ${comp.component_id} → ${comp.attach_to}.${attachFace} — port resolution incomplete (parent=${!!parentPort}, child=${!!childPort})`)
       }
@@ -3388,17 +3449,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
       // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
       // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
-      // auto-inserted shaft↔mount_face brackets, which otherwise tilt whole leg chains 30° outward.
+      // auto-inserted shaft↔mount_face brackets and servo coupler discs, which represent the
+      // START of a leg chain (not a stance element); splaying them tilts the whole chain ~30°.
       const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
         || comp.component_id.startsWith('structural_joint_plate')
         || comp.component_id.startsWith('structural_sheet')
+        || comp.component_id.startsWith('structural_servo_coupler')
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
       const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey))
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
@@ -3407,9 +3470,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,
-      // we'll directly build the URDF element for more control
-      const graph = ctx.getKinematicGraph()
-      const nextIdx2 = Object.keys(graph).length + 1
+      // we'll directly build the URDF element for more control.
+      // Use placedCount (not getKinematicGraph().length): the graph only updates
+      // on reparse, and bulk mode skips per-iteration reparses — so without this,
+      // every child would get `_2` and produce duplicate URDF link names.
+      const nextIdx2 = placedCount + 1
       const childName = `${preset.id}_${nextIdx2}`
       const jointName = `joint_${preset.id}_${nextIdx2}`
 
@@ -3572,7 +3637,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
-    return { urdf: ctx.getUrdfText() }
+    return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
   }
 
   // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────
@@ -3798,6 +3863,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       urdfRedo = [...state.redo]
     },
     isBulkAssemblyMode: () => _bulkMode,
+    getPresetBoundingBoxMm: (compId: string): [number, number, number] | null => {
+      if (!presetData) return null
+      for (const cat of Object.values(presetData.categories)) {
+        const p = cat.components.find(c => c.id === compId)
+        if (!p) continue
+        const bb = p.physical.bounding_box_mm
+        // Only return when a 3-tuple bbox exists. Extrusions (cross_section_mm only)
+        // get their length from per-instance length_mm — caller falls back to
+        // measureLinkDims, which reads the URDF's length-aware <box size>.
+        if (Array.isArray(bb) && bb.length === 3) {
+          return [bb[0] ?? 40, bb[1] ?? 40, bb[2] ?? 40]
+        }
+        return null
+      }
+      return null
+    },
   }
 }
 
