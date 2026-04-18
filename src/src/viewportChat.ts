@@ -605,31 +605,35 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
               const placementFailures = allFailures.filter(c => c.fixable_by === 'placement')
 
-              // Redesign triggers (quadruped item 4):
-              //  (a) Gemini says needs_redesign AND at least one topology failure — original path.
-              //  (b) NEW: >=2 checklist failures AND any is fixable_by: "placement" — a structural
-              //      mismatch is often what causes placement to fail, so retrying with a different
-              //      topology frequently clears issues even when Gemini tags them placement-only.
-              const topologyRedesign = needsRedesign && topoFailures.length > 0
-              const placementRedesign = allFailures.length >= 2 && placementFailures.length > 0
-              const shouldRedesign = topologyRedesign || placementRedesign
+              // Redesign trigger: only when a topology-fixable failure exists.
+              // Placement-only failures (grounded fail, splay direction, etc.)
+              // are handled by the placement engine in urdfAssembly.ts — Claude's
+              // topology redesign can't influence them, so kicking off a redesign
+              // just reshuffles a viable topology without addressing the issue
+              // (and often regresses the good parts). Gemini already signals
+              // needs_redesign:false when only placement failures remain; this
+              // heuristic now aligns with that judgment instead of overriding it.
+              const shouldRedesign = topoFailures.length > 0
 
               if (shouldRedesign && retryCount < 1) {
                 const failures = allFailures
                   .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
                   .join('\n')
-                const reason = topologyRedesign
+                const reason = needsRedesign
                   ? 'Visual validation found topology issues. Redesigning...'
-                  : `Visual validation flagged ${allFailures.length} problems — retrying with a different topology.`
+                  : `Visual validation flagged ${topoFailures.length} topology issue(s) — redesigning.`
                 addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
                 const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
-                const placementGuidance = placementFailures.length > 0 && !topologyRedesign
+                const placementGuidance = placementFailures.length > 0
                   ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
                 const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}\n\nPlease design a NEW topology from scratch that addresses these issues.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
+              }
+              if (placementFailures.length > 0 && topoFailures.length === 0) {
+                console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
               }
             }
           } catch (valErr) {
