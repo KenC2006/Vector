@@ -40,8 +40,12 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     const oldLines = oldText.split('\n')
     const newLines = newText.split('\n')
     const maxLen = Math.max(oldLines.length, newLines.length)
-    // Lines in oldText that will be modified or removed — decoratable now.
+    // Lines in oldText that will be modified or removed — decoratable if we
+    // revert the editor to oldText.
     const changedOldLines: number[] = []
+    // Lines in newText that differ from oldText (or are additions beyond its
+    // extent) — decoratable if we keep the editor on newText.
+    const changedNewLines: number[] = []
     let addedCount = 0
     let totalChanged = 0
 
@@ -50,27 +54,34 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
       const newLine = i < newLines.length ? newLines[i] : undefined
       if (oldLine === newLine) continue
       totalChanged++
-      if (oldLine !== undefined) {
-        changedOldLines.push(i + 1)
-      } else {
-        addedCount++
-      }
+      if (oldLine !== undefined) changedOldLines.push(i + 1)
+      if (newLine !== undefined) changedNewLines.push(i + 1)
+      if (oldLine === undefined) addedCount++
     }
 
-    // Show OLD text as the baseline while the user reviews — this makes Accept
-    // a visible action (text changes to newText on click) and Dismiss a no-op
-    // visually. If the editor already has newText (e.g. the assembly engine
-    // committed it before this call), we revert to oldText here and reparse so
-    // the 3D viewport also reflects the pre-change state during review.
-    const textWasReverted = editor.getValue() !== oldText
-    if (textWasReverted) {
-      editor.setValue(oldText)
+    // Two display modes:
+    //   (A) revert-to-old: editor shows oldText, decorate lines that WILL change.
+    //       Good for small edits — Accept is a visible action (text flips to newText).
+    //   (B) keep-new:      editor shows newText, decorate lines that ARE the change.
+    //       Good for fresh builds — oldText is a 4-line stub, so mode A produces only
+    //       a handful of highlights against a "+2388 new" banner, which looks broken.
+    // Heuristic: mode B when additions dominate the diff (fresh design / full rewrite).
+    // Threshold picked so a 200-line URDF with 50 small edits stays in mode A, while a
+    // stub → 2000-line build switches to mode B.
+    const useNewTextMode = addedCount > Math.max(50, changedOldLines.length * 5)
+
+    const editorValue = editor.getValue()
+    const targetText = useNewTextMode ? newText : oldText
+    const textWasChanged = editorValue !== targetText
+    if (textWasChanged) {
+      editor.setValue(targetText)
       // The debounced reparse in onDidChangeModelContent is suppressed while a
       // diff is pending (see main.ts), so trigger one explicitly to sync 3D.
       deps.reparseURDF()
     }
 
-    const decorations: monaco.editor.IModelDeltaDecoration[] = changedOldLines.map(lineNum => ({
+    const decoratedLines = useNewTextMode ? changedNewLines : changedOldLines
+    const decorations: monaco.editor.IModelDeltaDecoration[] = decoratedLines.map(lineNum => ({
       range: new monaco.Range(lineNum, 1, lineNum, 1),
       options: {
         isWholeLine: true,
@@ -91,7 +102,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
       if (pendingOldText === null) return
       inlineDiffCollection = editor.createDecorationsCollection(decorations)
     }
-    if (textWasReverted) {
+    if (textWasChanged) {
       requestAnimationFrame(applyDecorations)
     } else {
       applyDecorations()
@@ -121,7 +132,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     bar.querySelector('.idb-accept')!.addEventListener('click', () => acceptInlineDiff())
     bar.querySelector('.idb-dismiss')!.addEventListener('click', () => dismissInlineDiff())
 
-    if (changedOldLines.length > 0) editor.revealLineInCenter(changedOldLines[0])
+    if (decoratedLines.length > 0) editor.revealLineInCenter(decoratedLines[0])
   }
 
   function acceptInlineDiff() {
@@ -143,8 +154,10 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
 
-    // Apply newText now — showInlineDiff left oldText in the editor so Accept
-    // is the visible commit step. Skip the write if somehow already equal.
+    // Apply newText now. In revert-to-old mode this is the visible commit step.
+    // In keep-new mode the editor already shows newText so this is a no-op —
+    // the user still gets visible confirmation via the toast + chat button flip
+    // handled just below.
     if (editor && newText !== null && editor.getValue() !== newText) {
       editor.setValue(newText)
     }
