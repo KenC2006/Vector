@@ -172,11 +172,13 @@ function summarizeAssemblyGraphForAI(graph: AssemblyGraph): string {
   lines.push(`components (${graph.components.length}):`)
   for (const c of graph.components) {
     const parts: string[] = [`  - ${c.link_name}: ${c.component_id}`]
-    if (c.attach_to !== null && c.attach_to !== undefined) {
+    // Match resolveAssemblyGraph's !c.attach_to root predicate (urdfAssembly.ts:3158)
+    // so this view never disagrees with what the engine actually built.
+    if (!c.attach_to) {
+      parts.push('(root)')
+    } else {
       parts.push(`attach_to=${c.attach_to}`)
       if (c.attach_face) parts.push(`face=${c.attach_face}`)
-    } else {
-      parts.push('(root)')
     }
     if (c.joint_type) parts.push(`joint=${c.joint_type}`)
     if (c.joint_axis) parts.push(`axis=${c.joint_axis}`)
@@ -671,12 +673,15 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 // Phase 4: include the previous (failed) AssemblyGraph so Claude
                 // can reason "what did I try, what specifically failed, what to
                 // change" instead of redesigning blind from scratch. Trims the
-                // search space dramatically on the second attempt.
+                // search space dramatically on the second attempt. Wording is
+                // careful: this is still a full design_robot call (not an
+                // incremental edit), so we say "produce a NEW full topology"
+                // but encourage reusing whatever the validator did not flag.
                 const previousGraph = result.assembly_graph as AssemblyGraph | undefined
                 const previousTopologyBlock = previousGraph
                   ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
                   : ''
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}${previousTopologyBlock}\nPlease design a NEW topology that addresses these specific issues. Keep the parts that worked; change only what the validator flagged.`
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt that the validator did NOT flag — only change what the validator specifically called out.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
