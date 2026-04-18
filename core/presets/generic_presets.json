@@ -2457,7 +2457,7 @@
           "description": "Single rigid housing containing both abduction and pitch servos for a quadruped leg. Replaces the traditional shaft-bracket-shaft-bracket stack with one integrated unit. Based on the Dingo quadruped's Motor Hub Double design. Use on the baseplate bottom at each corner of a quadruped; attach the thigh extrusion to its output face.",
           "physical": {
             "mass_kg": 0.180,
-            "bounding_box_mm": [80, 70, 60],
+            "bounding_box_mm": [66, 58, 40],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6"
           },
@@ -2517,6 +2517,31 @@
             "thickness_mm": 5.0,
             "hole_patterns": ["M5_grid_20mm", "extrusion_2020_mount", "extrusion_4040_mount"],
             "max_load_n": 5000
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "output": ["rail_slot", "face_mount", "bracket_mount"],
+            "is_ground_contact": true
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "box"
+          }
+        },
+
+        {
+          "id": "structural_baseplate_large",
+          "name": "Robot Baseplate (Large)",
+          "description": "Larger aluminum baseplate sized for quadrupeds, humanoid torsos, and other robots whose hip/shoulder span exceeds ~250mm. Use as root in place of structural_baseplate when leg length, payload mass, or component count outgrows the 200x150mm default.",
+          "physical": {
+            "mass_kg": 2.100,
+            "bounding_box_mm": [350, 250, 8],
+            "inertia_primitive": "box",
+            "material": "aluminum_6061_t6"
+          },
+          "mechanical_electrical": {
+            "thickness_mm": 8.0,
+            "hole_patterns": ["M5_grid_20mm", "extrusion_2020_mount", "extrusion_4040_mount"],
+            "max_load_n": 12000
           },
           "mounting_logic": {
             "primary": "face_mount",

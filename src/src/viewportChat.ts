@@ -156,6 +156,43 @@ function summarizeAssemblyGraph(graph: AssemblyGraph): string {
   </div>`
 }
 
+/**
+ * Compact plain-text AssemblyGraph summary for the AI context (Phase 4).
+ *
+ * Unlike summarizeAssemblyGraph (HTML, user-facing), this serializes the
+ * component tree with the exact fields Claude needs to reason about edits:
+ * component_id, link_name, attach_to, attach_face, joint_type/axis, and
+ * non-zero attach_rpy. Cheaper than re-parsing URDF and lossless on
+ * orientation/elevation_angle/length_mm fields that URDF round-trips drop.
+ */
+function summarizeAssemblyGraphForAI(graph: AssemblyGraph): string {
+  if (!graph.components || graph.components.length === 0) return ''
+  const lines: string[] = ['## Current AssemblyGraph (structured)', `base_link: ${graph.base_link}`]
+  if (graph.ground_offset) lines.push('ground_offset: true')
+  lines.push(`components (${graph.components.length}):`)
+  for (const c of graph.components) {
+    const parts: string[] = [`  - ${c.link_name}: ${c.component_id}`]
+    // Match resolveAssemblyGraph's !c.attach_to root predicate (urdfAssembly.ts:3158)
+    // so this view never disagrees with what the engine actually built.
+    if (!c.attach_to) {
+      parts.push('(root)')
+    } else {
+      parts.push(`attach_to=${c.attach_to}`)
+      if (c.attach_face) parts.push(`face=${c.attach_face}`)
+    }
+    if (c.joint_type) parts.push(`joint=${c.joint_type}`)
+    if (c.joint_axis) parts.push(`axis=${c.joint_axis}`)
+    if (c.attach_rpy && c.attach_rpy.some(v => Math.abs(v) > 0.001)) {
+      parts.push(`attach_rpy=[${c.attach_rpy.map(v => v.toFixed(3)).join(', ')}]`)
+    }
+    if (c.length_mm) parts.push(`length_mm=${c.length_mm}`)
+    if (c.orientation) parts.push(`orientation="${c.orientation}"`)
+    if (typeof c.elevation_angle === 'number') parts.push(`elevation_angle=${c.elevation_angle}`)
+    lines.push(parts.join(', '))
+  }
+  return lines.join('\n') + '\n\n'
+}
+
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
   const oldLines = oldText.split('\n')
   const newLines = newText.split('\n')
@@ -411,13 +448,20 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
 
       // Augment context with per-component port occupancy so Claude can avoid
-      // shaft-fanout before attempting it (master plan W2). Only meaningful for
-      // edit/modify_topology calls — redesigns start from a blank graph.
+      // shaft-fanout before attempting it (master plan W2). Also include the
+      // structured AssemblyGraph (Phase 4) so Claude reasons about explicit
+      // component_id / attach_face / attach_rpy fields without re-deriving them
+      // from URDF text — and sees fields URDF round-trips can't preserve
+      // (orientation, elevation_angle, length_mm).
+      // Only meaningful for edit/modify_topology calls — redesigns start blank.
       const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
       const portOccupancyCtx = !isRedesign && storedGraphForContext
         ? buildPortOccupancyContext(storedGraphForContext)
         : ''
-      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx)
+      const graphSummaryCtx = !isRedesign && storedGraphForContext
+        ? summarizeAssemblyGraphForAI(storedGraphForContext)
+        : ''
+      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx + graphSummaryCtx)
 
       const result = await invoke('ai_edit', {
         prompt,
@@ -626,7 +670,18 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const placementGuidance = placementFailures.length > 0 && !topologyRedesign
                   ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}\n\nPlease design a NEW topology from scratch that addresses these issues.`
+                // Phase 4: include the previous (failed) AssemblyGraph so Claude
+                // can reason "what did I try, what specifically failed, what to
+                // change" instead of redesigning blind from scratch. Trims the
+                // search space dramatically on the second attempt. Wording is
+                // careful: this is still a full design_robot call (not an
+                // incremental edit), so we say "produce a NEW full topology"
+                // but encourage reusing whatever the validator did not flag.
+                const previousGraph = result.assembly_graph as AssemblyGraph | undefined
+                const previousTopologyBlock = previousGraph
+                  ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
+                  : ''
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt that the validator did NOT flag — only change what the validator specifically called out.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)

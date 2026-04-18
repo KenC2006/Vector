@@ -107,7 +107,7 @@ _ALLOWED_COMPONENT_IDS = {
     'power_lipo_3s_2200', 'power_lipo_4s_5000',
     'power_buck_converter_5v', 'power_distribution_unit',
     # Structural — baseplate (always root), extrusions, brackets, shaft collar
-    'structural_baseplate',
+    'structural_baseplate', 'structural_baseplate_large',
     'structural_extrusion_2020', 'structural_extrusion_4040',
     'structural_bracket_l', 'structural_bracket_u', 'structural_shaft_collar',
     # Transmission — belt, leadscrew, bearing, coupling
@@ -309,7 +309,7 @@ Controls how an elongated or directable component is rotated within its face:
 
 ## Topology Rules
 
-1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
+1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root.
 2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
 3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
 4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
@@ -335,7 +335,7 @@ Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not a
   body → hip_abduction → hip_pitch → THIGH → knee → SHIN → foot
                     ↑ compound hip ↑         ↑ knee joint drives shin, not thigh
 
-  baseplate
+  structural_baseplate_large  (use the large plate, 350×250×8mm — small plate is too narrow for a Go1-class hip span)
     -> 4x hip_abduction_servo (bottom, revolute x)                       — rolls whole leg laterally (compound hip axis 1)
       -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2)
         -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)            — structural thigh bone

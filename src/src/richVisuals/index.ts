@@ -11,7 +11,7 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getMeshOverrideUrl, getRotationOverride, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
 import { getComponentColor, getTintedMaterial } from './materials'
 
 
@@ -289,6 +289,28 @@ function applyMeshToLink(
   if (maxMeshDim > 0.0001) {
     if (maxMeshDim > maxExpectedDim * 10) {
       meshGroup.scale.setScalar(0.001) // mm → m
+    }
+
+    // Apply per-component rotation override by baking it into the geometry
+    // vertices BEFORE per-axis scaling. Setting meshGroup.rotation alone
+    // would not work: Three.js composes T*R*S, so a non-uniform scale.[xyz]
+    // applied after rotation acts on the original local axes — the per-axis
+    // scaling below would modify the wrong axis. Baking the rotation into
+    // the geometry realigns local axes with the desired world axes, so
+    // scale.x correctly controls the world X extent, etc.
+    // We clone the geometry first so the shared cached mesh isn't mutated.
+    const rotation = getRotationOverride(compId)
+    if (rotation) {
+      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'),
+      )
+      meshGroup.traverse(child => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry = child.geometry.clone()
+          child.geometry.applyMatrix4(rotMatrix)
+        }
+      })
+      meshGroup.updateMatrixWorld(true)
     }
 
     // Per-axis scaling: scale GLB to match the component's declared bounding_box_mm.
