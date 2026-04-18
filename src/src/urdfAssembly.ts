@@ -1594,8 +1594,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
       // components whose long axis is already X or Y (batteries, sensor packs), pitching
       // stands them up — fall through to the normal 'top' case, applying just yaw.
-      const longestIsZ = childZ >= childX && childZ >= childY
-      if (longestIsZ) {
+      // Use sortedDims.indexOf(longest) so a tied axis (e.g. childX === childZ) resolves
+      // to the original index of the first match, not Z.
+      const dims = [childX, childY, childZ]
+      const sortedDims = [...dims].sort((a, b) => a - b)
+      const longest = sortedDims[2]
+      const longestAxisIdx = dims.indexOf(longest)
+      if (longestAxisIdx === 2) {
         // Pitch 90° swings X onto Z — use childX as the vertical extent.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
         const oz = parent.hz + vExtent / 2 + gap
