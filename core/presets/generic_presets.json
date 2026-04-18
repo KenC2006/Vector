@@ -2427,6 +2427,58 @@
         },
 
         {
+          "id": "structural_servo_coupler_disc",
+          "name": "Servo Coupler Disc (25T)",
+          "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub.",
+          "physical": {
+            "mass_kg": 0.015,
+            "bounding_box_mm": [32, 32, 6],
+            "inertia_primitive": "cylinder",
+            "material": "aluminum_6061_t6"
+          },
+          "mechanical_electrical": {
+            "thickness_mm": 6.0,
+            "hole_pattern": "25T_spline_M3_bolt_ring",
+            "max_load_n": 500
+          },
+          "mounting_logic": {
+            "primary": "bracket_mount",
+            "accepts": "axial_shaft",
+            "output": "face_mount"
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "cylinder"
+          }
+        },
+
+        {
+          "id": "structural_hip_housing_2dof",
+          "name": "2-DOF Hip Housing (Compound)",
+          "description": "Single rigid housing containing both abduction and pitch servos for a quadruped leg. Replaces the traditional shaft-bracket-shaft-bracket stack with one integrated unit. Based on the Dingo quadruped's Motor Hub Double design. Use on the baseplate bottom at each corner of a quadruped; attach the thigh extrusion to its output face.",
+          "physical": {
+            "mass_kg": 0.180,
+            "bounding_box_mm": [80, 70, 60],
+            "inertia_primitive": "box",
+            "material": "aluminum_6061_t6"
+          },
+          "mechanical_electrical": {
+            "thickness_mm": 4.0,
+            "hole_pattern": "dual_servo_perpendicular",
+            "max_load_n": 800,
+            "dof": 2,
+            "rotation_axes": ["x", "y"]
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "accepts": "face_mount",
+            "output": "face_mount"
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "box"
+          }
+        },
+
+        {
           "id": "structural_joint_plate",
           "name": "Joint Mounting Plate",
           "description": "Flat machined plate for stacking actuators at joint intersections. Configurable hole patterns.",

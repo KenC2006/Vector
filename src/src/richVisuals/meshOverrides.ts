@@ -87,6 +87,8 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'structural_extrusion_4040': 'extrusion_4040.step',
   'structural_bracket_l': 'structural_bracket_l.step',
   'structural_bracket_u': 'structural_bracket_u.step',
+  'structural_servo_coupler_disc': 'servo_coupler_disc.step',
+  'structural_hip_housing_2dof': 'hip_housing_2dof.stp',
   'structural_hex_standoff_m3': 'structural_standoff.step',
   'structural_hex_standoff_m4': 'structural_standoff.step',
   'structural_shaft_collar': 'structural_shaft_collar.step',

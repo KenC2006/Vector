@@ -397,7 +397,15 @@ export function autoRepairTopology(
     if (!isRepairableChild(comp.component_id)) continue
     const parent = graph.components.find(c => c.link_name === comp.attach_to)
     if (!parent) continue
-    if (parent.component_id.startsWith('structural_bracket_')) continue
+    // Idempotency: skip when parent is already a coupler-type structural.
+    // Covers user-emitted brackets (structural_bracket_u / structural_bracket_l)
+    // AND the auto-inserted servo coupler disc. Without this, a second run
+    // of autoRepair (e.g., via modify_topology reverse-parse) would insert
+    // another coupler between the existing coupler and the servo.
+    if (
+      parent.component_id.startsWith('structural_bracket_') ||
+      parent.component_id === 'structural_servo_coupler_disc'
+    ) continue
     const parentPreset = ctx.findPreset(parent.component_id)
     const childPreset = ctx.findPreset(comp.component_id)
     if (!parentPreset || !childPreset) continue
@@ -421,11 +429,16 @@ export function autoRepairTopology(
 
     const bracket: AssemblyComponent = {
       link_name: bracketName,
-      component_id: 'structural_bracket_u',
+      // Use the thin 25T servo coupler disc instead of the bulky U-bracket —
+      // keeps shaft↔mount_face mechanically correct while collapsing the
+      // visual gap at each junction from ~40mm to ~6mm.
+      component_id: 'structural_servo_coupler_disc',
       attach_to: parent.link_name,
       attach_face: parentFace,
       joint_type: 'fixed',
-      joint_axis: '0 0 1',
+      // 'z' resolves through urdfAssembly's axisMap to '0 0 1' intentionally,
+      // instead of landing in the fallback branch via an unrecognized literal.
+      joint_axis: 'z',
     }
     insertions.push({ bracket, beforeLinkName: comp.link_name })
     comp.attach_to = bracketName

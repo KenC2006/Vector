@@ -179,6 +179,8 @@ const COMPONENT_COLORS: Record<string, ComponentColorDef> = {
   structural_cf_tube_square:         { material: 'dark_chrome',    tint: hexToRgb(0x1a1a1a), strength: 0.3 },   // Carbon fiber
   structural_bracket_l:              { material: 'anodized_aluminum', tint: hexToRgb(0xb0b0b0), strength: 0.2 },
   structural_bracket_u:              { material: 'anodized_aluminum', tint: hexToRgb(0xb0b0b0), strength: 0.2 },
+  structural_servo_coupler_disc:     { material: 'anodized_aluminum', tint: hexToRgb(0xc0c0c0), strength: 0.25 },
+  structural_hip_housing_2dof:       { material: 'anodized_aluminum', tint: hexToRgb(0x444455), strength: 0.35 },
   structural_joint_plate:            { material: 'anodized_aluminum', tint: hexToRgb(0xb0b0b0), strength: 0.2 },
   structural_baseplate:              { material: 'anodized_aluminum', tint: hexToRgb(0xd0d0d0), strength: 0.2 }, // Light silver
   structural_ibeam_steel_small:      { material: 'brushed_steel',  tint: hexToRgb(0x888899), strength: 0.2 },
