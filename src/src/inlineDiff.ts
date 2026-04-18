@@ -80,7 +80,22 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     }))
 
     if (inlineDiffCollection) inlineDiffCollection.clear()
-    inlineDiffCollection = editor.createDecorationsCollection(decorations)
+    // Defer decoration application past the setValue() event-loop tick.
+    // Monaco's setValue invalidates any decoration collection created in the
+    // same synchronous frame — applying after an rAF means the model is stable
+    // by the time our collection is attached. Without this the green gutter
+    // and line highlights silently disappear even though the widget bar shows.
+    const applyDecorations = () => {
+      // Model may have been replaced (tab switch) between setValue and rAF —
+      // skip if the pending diff was cleared in that window.
+      if (pendingOldText === null) return
+      inlineDiffCollection = editor.createDecorationsCollection(decorations)
+    }
+    if (textWasReverted) {
+      requestAnimationFrame(applyDecorations)
+    } else {
+      applyDecorations()
+    }
 
     if (inlineDiffWidget) inlineDiffWidget.remove()
     const bar = document.createElement('div')
