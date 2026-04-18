@@ -476,9 +476,24 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       // causes Claude to mimic the stale design. Only inject the graph when
       // its base_link actually appears in the current editor URDF.
       const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
-      const storedMatchesEditor = storedGraphForContext
-        ? fullUrdf.includes(`name="${storedGraphForContext.base_link}"`)
-        : false
+      // Structural match: require that most of the stored graph's components
+      // still appear in the editor URDF. A base_link-only check is too weak
+      // because the sample/reset URDF uses the generic `base_link` name, which
+      // would falsely match any stored graph whose root is also `base_link`.
+      const storedMatchesEditor = (() => {
+        if (!storedGraphForContext) return false
+        const comps = storedGraphForContext.components
+        if (comps.length === 0) return false
+        let matched = 0
+        for (const c of comps) {
+          if (fullUrdf.includes(`name="${c.link_name}"`)) matched++
+        }
+        // Require a supermajority — if the user deleted a few parts manually,
+        // the graph is still "mostly current". But a stale 46-component graph
+        // against a 1-link sample URDF matches 0-1 names and rightly fails.
+        const threshold = Math.max(2, Math.ceil(comps.length * 0.6))
+        return matched >= threshold
+      })()
       const portOccupancyCtx = !isRedesign && storedGraphForContext && storedMatchesEditor
         ? buildPortOccupancyContext(storedGraphForContext)
         : ''
