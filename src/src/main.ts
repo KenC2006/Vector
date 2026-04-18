@@ -31,6 +31,7 @@ import {
 import { initChatHistory, type ChatHistoryApi } from './chatHistory'
 import { initInlineDiff, type InlineDiffApi } from './inlineDiff'
 import { initSimManager, type SimManagerApi } from './simManager'
+import { initSimStage } from './simStage'
 import { initViewportChat, type ViewportChatApi } from './viewportChat'
 
 // Module-level API handles — initialized during startup sequence
@@ -1308,6 +1309,14 @@ let _resize: () => void = () => {}
 let _openSidebarPanel: (p: string) => void = () => {}
 let _createCheckpoint: (label: string, urdf: string, auto: boolean) => void = () => {}
 
+const simStage = initSimStage({
+  scene,
+  camera,
+  controls,
+  robot,
+  buildVisuals: [grid, groundMesh, originAxes],
+})
+
 simApi = initSimManager({
   robot,
   worldGroup,
@@ -1337,8 +1346,10 @@ simApi = initSimManager({
     syncViewportModeButton()
     urdfAssemblyApi?.onInteractionModeChanged('inspect')
     clearInspectFocus()
+    simStage.enter()
   },
   onExitSim: () => {
+    simStage.exit()
     viewportInteractionMode = 'build'
     syncViewportModeButton()
     urdfAssemblyApi?.onInteractionModeChanged('build')
@@ -1758,8 +1769,14 @@ toggleGraphBtn.addEventListener('click', () => {
     popover.classList.toggle('hidden')
   })
 
+  // Popover items forward the click to a hidden toggle button; that
+  // programmatic click bubbles up to document and would otherwise close
+  // the popover. Suppress the next outside-click while we're forwarding.
+  let suppressOutsideClick = false
+
   // Close on outside click
   document.addEventListener('click', (e) => {
+    if (suppressOutsideClick) { suppressOutsideClick = false; return }
     if (!popover.contains(e.target as Node) && e.target !== popoverBtn) {
       popover.classList.add('hidden')
     }
@@ -1786,6 +1803,7 @@ toggleGraphBtn.addEventListener('click', () => {
       e.stopPropagation()
       const targetId = item.dataset.target!
       const btn = document.getElementById(targetId)
+      suppressOutsideClick = true
       btn?.click()
       // Sync after a microtask so the click handler has toggled .active
       requestAnimationFrame(syncChecks)

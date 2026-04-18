@@ -775,31 +775,130 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-/* ── Simulation State Display ────────────────────────── */
-
-.sim-state-display {
-  scrollbar-width: thin;
-  scrollbar-color: #2a2a2e transparent;
-}
-
-.sim-state-display::-webkit-scrollbar {
-  width: 5px;
-}
-
-.sim-state-display::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sim-state-display::-webkit-scrollbar-thumb {
-  background: #2a2a2e;
-  border-radius: 3px;
-}
-
-.sim-state-display::-webkit-scrollbar-thumb:hover {
-  background: #3a3a3e;
-}
-
 /* ── Simulation Panel ───────────────────────────────── */
+
+.sim-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-muted, #858585);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.sim-empty-icon {
+  font-size: 22px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  opacity: 0.6;
+}
+.sim-empty-text strong { color: var(--accent); }
+
+.sim-status-card {
+  margin: 8px 12px 4px;
+  padding: 8px 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sim-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+}
+.sim-status-label { color: var(--text-muted, #858585); }
+.sim-status-val {
+  color: var(--text-bright);
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.sim-mass-info {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-dim);
+  font-size: 10px;
+  color: var(--text-muted, #858585);
+  line-height: 1.5;
+}
+
+.sim-field-row {
+  padding: 4px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-field-row-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.sim-field-label {
+  font-size: 11px;
+  color: var(--text-muted, #858585);
+  display: flex;
+  justify-content: space-between;
+}
+.sim-field-val {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sim-field-hint {
+  color: var(--text-muted, #858585);
+  font-size: 10px;
+}
+.sim-range {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.sim-input-num {
+  width: 100%;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+.sim-input-num:focus { outline: none; border-color: var(--accent); }
+
+.sim-advanced {
+  border-top: 1px solid var(--border-dim);
+  margin-top: 6px;
+}
+.sim-advanced-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.sim-advanced-summary::-webkit-details-marker { display: none; }
+.sim-advanced-summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 9px;
+  color: var(--text-muted, #858585);
+  transition: transform 0.12s ease;
+}
+.sim-advanced[open] > .sim-advanced-summary::before { transform: rotate(90deg); }
+.sim-subsection-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted, #858585);
+  letter-spacing: 0.06em;
+  padding: 8px 12px 3px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sim-btn-small { font-size: 10px; padding: 2px 6px; flex: 0 0 auto; }
+
+/* ── Simulation Panel (legacy classes) ──────────────── */
 
 .sim-gravity-toggle {
   display: flex; align-items: center; gap: 5px;
@@ -859,26 +958,26 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   gap: 5px;
 }
 
-/* ── Sim script runner (Phase C) ────────────────────── */
+/* ── Sim script runner ──────────────────────────────── */
 
-.sim-script-editor {
-  display: block;
-  width: calc(100% - 24px);
-  margin: 0 12px 6px;
-  background: #141414;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px;
-  font-family: var(--font);
-  font-size: 11px;
-  line-height: 1.5;
-  resize: vertical;
-  outline: none;
-  tab-size: 4;
+.sim-script-upload {
+  padding: 0 12px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.sim-script-editor:focus { border-color: var(--accent); }
-.sim-script-editor::placeholder { color: #4a4a4a; }
+.sim-script-upload .sim-pose-btn { flex: 0 0 auto; }
+.sim-script-status {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text-muted, #858585);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sim-script-status.active { color: var(--accent); font-style: normal; }
+.sim-script-status.error  { color: #f14c4c; font-style: normal; }
 
 .sim-script-error {
   margin: 0 12px 6px;

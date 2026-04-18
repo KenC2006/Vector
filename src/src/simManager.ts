@@ -65,37 +65,17 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simRtf = 0                           // measured real-time factor (last frame)
   let simErrorState = false
   let lastSimStagingPath: string | null = null
-  let simTraceEnabled = false
 
   const originalJointPoses = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>()
   const simPreviewLimits = new Map<string, { lower: number; upper: number }>()
   const simJointLimits = new Map<string, { lower: number; upper: number; effort: number }>()
   const simCurrentPositions = new Map<string, number>()
-  const simTraceData: Array<{ t: number; controls: Record<string, number> }> = []
-
-  let simKeyframes: Record<string, Record<string, number>> = {}
-
   // ── DOM refs (grabbed lazily) ──────────────────────────────────────────────
 
   const simNotActive = document.getElementById('sim-not-active')!
   const simControlsBody = document.getElementById('sim-controls-body')!
   const simJointSliders = document.getElementById('sim-joint-sliders')!
-  const simKfList = document.getElementById('sim-kf-list')!
   const simGravityEnabled = document.getElementById('sim-gravity-enabled') as HTMLInputElement | null
-
-  // ── State display overlay ─────────────────────────────────────────────────
-
-  const simStateDisplay = document.createElement('div')
-  simStateDisplay.id = 'sim-state-display'
-  simStateDisplay.className = 'sim-state-display'
-  simStateDisplay.style.cssText = `
-    position: absolute; top: 48px; right: 12px;
-    background: rgba(30, 30, 30, 0.95); border: 1px solid #3c3c3c;
-    border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px;
-    color: #cccccc; max-width: 240px; max-height: 300px; overflow-y: auto;
-    z-index: 100; display: none; backdrop-filter: blur(8px);
-  `
-  deps.viewportPanel.appendChild(simStateDisplay)
 
   // ── Phase D visualization groups ──────────────────────────────────────────
 
@@ -270,151 +250,64 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     })
   }
 
-  // ── Control Trace ──────────────────────────────────────────────────────────
-
-  function recordControlTrace(t: number, controlSnapshot: Record<string, number>) {
-    if (!simTraceEnabled) return
-    simTraceData.push({ t, controls: { ...controlSnapshot } })
-    const countEl = document.getElementById('sim-trace-count')
-    if (countEl) countEl.textContent = `${simTraceData.length} samples`
-    const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-    if (dlBtn) dlBtn.disabled = false
-  }
-
-  document.getElementById('sim-trace-enabled')?.addEventListener('change', (e) => {
-    simTraceEnabled = (e.target as HTMLInputElement).checked
-    if (!simTraceEnabled) {
-      simTraceData.length = 0
-      const countEl = document.getElementById('sim-trace-count')
-      if (countEl) countEl.textContent = '0 samples'
-      const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-      if (dlBtn) dlBtn.disabled = true
-    }
-  })
-
-  document.getElementById('sim-trace-download')?.addEventListener('click', () => {
-    if (simTraceData.length === 0) return
-    const allJoints = [...new Set(simTraceData.flatMap(d => Object.keys(d.controls)))]
-    const header = ['t', ...allJoints].join(',')
-    const rows = simTraceData.map(d =>
-      [d.t.toFixed(6), ...allJoints.map(j => (d.controls[j] ?? 0).toFixed(6))].join(',')
-    )
-    const csv = [header, ...rows].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'sim_control_trace.csv'
-    document.body.appendChild(a); a.click()
-    document.body.removeChild(a); URL.revokeObjectURL(url)
-  })
-
   // ── Script Runner ──────────────────────────────────────────────────────────
 
-  function showScriptError(msg: string) {
-    const el = document.getElementById('sim-script-error')
-    if (el) { el.textContent = msg; el.classList.remove('hidden') }
+  const scriptStatusEl = document.getElementById('sim-script-status')
+  const scriptFileInput = document.getElementById('sim-script-file') as HTMLInputElement | null
+  const scriptClearBtn = document.getElementById('sim-script-clear') as HTMLButtonElement | null
+
+  function setScriptStatus(text: string, state: 'idle' | 'active' | 'error' = 'idle') {
+    if (!scriptStatusEl) return
+    scriptStatusEl.textContent = text
+    scriptStatusEl.classList.remove('active', 'error')
+    if (state !== 'idle') scriptStatusEl.classList.add(state)
   }
 
-  function clearScriptError() {
-    const el = document.getElementById('sim-script-error')
-    if (el) el.classList.add('hidden')
-  }
+  document.getElementById('sim-script-upload-btn')?.addEventListener('click', () => {
+    scriptFileInput?.click()
+  })
 
-  document.getElementById('sim-script-apply')?.addEventListener('click', async () => {
-    if (!simCoreRunning) { deps.showToast('Start simulation first', 'warning'); return }
-    const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
-    const code = editor?.value.trim() ?? ''
+  scriptFileInput?.addEventListener('change', async () => {
+    const file = scriptFileInput.files?.[0]
+    if (!file) return
+    if (!simCoreRunning) {
+      deps.showToast('Start simulation first', 'warning')
+      scriptFileInput.value = ''
+      return
+    }
+    let code: string
+    try {
+      code = await file.text()
+    } catch (e) {
+      setScriptStatus(`${file.name} — read failed`, 'error')
+      deps.showToast(`Script upload failed: ${e}`, 'error')
+      scriptFileInput.value = ''
+      return
+    }
     try {
       const result = await invoke<{ status: string; message?: string }>('sim_set_script', { code })
       if (result.status === 'error') {
-        showScriptError(result.message ?? 'Script error')
-        deps.showToast('Script error — check panel', 'error')
-      } else if (result.status === 'cleared') {
-        clearScriptError(); deps.showToast('Script cleared', 'info')
+        setScriptStatus(`${file.name} — error`, 'error')
+        deps.showToast(`Script error: ${result.message ?? 'unknown'}`, 'error')
       } else {
-        clearScriptError(); deps.showToast('Script active', 'success')
+        setScriptStatus(`${file.name} — active`, 'active')
+        if (scriptClearBtn) scriptClearBtn.disabled = false
+        deps.showToast('Script active', 'success')
       }
     } catch (e) {
-      showScriptError(String(e)); deps.showToast('Script apply failed', 'error')
+      setScriptStatus(`${file.name} — failed`, 'error')
+      deps.showToast(`Script apply failed: ${e}`, 'error')
     }
+    scriptFileInput.value = ''   // allow re-uploading the same file
   })
 
-  document.getElementById('sim-script-clear')?.addEventListener('click', async () => {
-    const editor = document.getElementById('sim-script-editor') as HTMLTextAreaElement | null
-    if (editor) editor.value = ''
-    clearScriptError()
+  scriptClearBtn?.addEventListener('click', async () => {
     if (simCoreRunning) {
       try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore */ }
     }
+    setScriptStatus('No script loaded', 'idle')
+    if (scriptClearBtn) scriptClearBtn.disabled = true
     deps.showToast('Script cleared', 'info')
-  })
-
-  // ── Keyframe Storage ──────────────────────────────────────────────────────
-
-  function loadSimKeyframes() {
-    const key = `sim_keyframes::${deps.getCurrentFilePath() || '__default__'}`
-    try {
-      const raw = localStorage.getItem(key)
-      simKeyframes = raw ? JSON.parse(raw) : {}
-    } catch { simKeyframes = {} }
-  }
-
-  function saveSimKeyframesStorage() {
-    const key = `sim_keyframes::${deps.getCurrentFilePath() || '__default__'}`
-    try { localStorage.setItem(key, JSON.stringify(simKeyframes)) } catch { /* ignore */ }
-  }
-
-  function refreshSimKeyframeList() {
-    simKfList.innerHTML = ''
-    const names = Object.keys(simKeyframes)
-    if (names.length === 0) {
-      simKfList.innerHTML = '<div class="sim-kf-empty">No keyframes saved</div>'
-      return
-    }
-    for (const name of names) {
-      const row = document.createElement('div')
-      row.className = 'sim-kf-row'
-      row.innerHTML = `
-        <span class="sim-kf-name">${name}</span>
-        <button class="sim-kf-load" data-kf="${name}" title="Load keyframe">Load</button>
-        <button class="sim-kf-del" data-kf="${name}" title="Delete">✕</button>
-      `
-      simKfList.appendChild(row)
-    }
-    simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-load').forEach(btn => {
-      btn.addEventListener('click', () => loadKeyframe(btn.dataset.kf!))
-    })
-    simKfList.querySelectorAll<HTMLButtonElement>('.sim-kf-del').forEach(btn => {
-      btn.addEventListener('click', () => {
-        delete simKeyframes[btn.dataset.kf!]
-        saveSimKeyframesStorage()
-        refreshSimKeyframeList()
-      })
-    })
-  }
-
-  function loadKeyframe(name: string) {
-    if (!simCoreRunning) return
-    const kf = simKeyframes[name]
-    if (!kf) return
-    for (const [joint, pos] of Object.entries(kf)) {
-      const posSlider = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
-      if (posSlider) posSlider.value = String(pos)
-    }
-    deps.showToast(`Keyframe "${name}" loaded as target reference`, 'info')
-  }
-
-  // Save keyframe button
-  document.getElementById('sim-kf-save')?.addEventListener('click', () => {
-    if (!simCoreRunning) return
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const name = `kf-${timestamp}`
-    const snapshot: Record<string, number> = {}
-    simCurrentPositions.forEach((pos, joint) => { snapshot[joint] = pos })
-    simKeyframes[name] = snapshot
-    saveSimKeyframesStorage()
-    refreshSimKeyframeList()
-    deps.showToast(`Keyframe "${name}" saved`, 'success')
   })
 
   // ── Sim Panel UI ──────────────────────────────────────────────────────────
@@ -492,8 +385,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         sendSimControl()
       })
     })
-
-    refreshSimKeyframeList()
   }
 
   function sendSimControl() {
@@ -503,7 +394,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(s => {
       controls[s.dataset.joint!] = parseFloat(s.value) || 0
     })
-    recordControlTrace(simTime, controls)
     invoke('sim_set_control', { controls }).catch(() => { /* ignore */ })
   }
 
@@ -523,23 +413,15 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     simNotActive.classList.add('hidden')
     simControlsBody.classList.remove('hidden')
     buildSimPanel()
-    loadSimKeyframes()
   }
 
   function exitSimPanel() {
     simNotActive.classList.remove('hidden')
     simControlsBody.classList.add('hidden')
     simJointSliders.innerHTML = ''
-    clearScriptError()
     clearSimViz()
-    simTraceEnabled = false
-    simTraceData.length = 0
-    const traceToggle = document.getElementById('sim-trace-enabled') as HTMLInputElement | null
-    if (traceToggle) traceToggle.checked = false
-    const countEl = document.getElementById('sim-trace-count')
-    if (countEl) countEl.textContent = '0 samples'
-    const dlBtn = document.getElementById('sim-trace-download') as HTMLButtonElement | null
-    if (dlBtn) dlBtn.disabled = true
+    setScriptStatus('No script loaded', 'idle')
+    if (scriptClearBtn) scriptClearBtn.disabled = true
     const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
     if (followEl) followEl.checked = false
   }
@@ -567,47 +449,37 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   function updateSimStateDisplay(state: any) {
     try {
-      let html = '<div style="font-weight: bold; color: #569cd6; margin-bottom: 8px;">Simulation State</div>'
-      if (state && typeof state === 'object') {
-        if (state.time !== undefined) {
-          html += `<div><span style="color: #dcdcaa;">time:</span> ${(state.time as number).toFixed(3)} s</div>`
-        }
+      if (!state || typeof state !== 'object') return
+
+      const timeEl = document.getElementById('sim-status-time')
+      if (timeEl && typeof state.time === 'number') {
+        timeEl.textContent = `${state.time.toFixed(3)} s`
+      }
+
+      const energyRow = document.getElementById('sim-status-energy-row') as HTMLElement | null
+      const energyEl = document.getElementById('sim-status-energy')
+      if (energyRow && energyEl) {
         if (typeof state.energy_j === 'number') {
-          html += `<div><span style="color: #858585;">energy:</span> ${state.energy_j.toFixed(3)} J`
-          if (typeof state.kinetic_j === 'number') html += ` <span style="color:#858585;font-size:10px;">(KE ${state.kinetic_j.toFixed(2)} PE ${(state.energy_j - state.kinetic_j).toFixed(2)})</span>`
-          html += '</div>'
-        }
-        if (state.joints && typeof state.joints === 'object') {
-          html += '<div style="margin-top: 6px; color: #858585;">Joints (m / rad, m·s⁻¹ / rad·s⁻¹):</div>'
-          for (const [name, joint] of Object.entries(state.joints)) {
-            if (typeof joint === 'object' && joint !== null) {
-              const j = joint as any
-              const pos = j.position?.toFixed(3) ?? '0.000'
-              const vel = j.velocity?.toFixed(3) ?? '0.000'
-              html += `<div style="margin-left: 8px;">
-                <span style="color: #9cdcfe;">${name}</span>
-                <div style="margin-left: 8px; color: #858585; font-size: 10px;">pos: ${pos} | vel: ${vel}</div>
-              </div>`
-            }
-          }
-        }
-        if (Array.isArray(state.ee_poses) && state.ee_poses.length > 0) {
-          html += '<div style="margin-top: 6px; color: #858585;">End-effectors (m, rad·s⁻¹):</div>'
-          for (const ee of state.ee_poses as any[]) {
-            const p = (ee.pos_m as number[]).map((v: number) => v.toFixed(3)).join(', ')
-            const v = (ee.lin_vel_mps as number[]).map((v: number) => v.toFixed(2)).join(', ')
-            html += `<div style="margin-left: 8px;">
-              <span style="color: #ce9178;">${ee.name}</span>
-              <div style="margin-left: 8px; color: #858585; font-size: 10px;">pos: [${p}] m</div>
-              <div style="margin-left: 8px; color: #858585; font-size: 10px;">vel: [${v}] m/s</div>
-            </div>`
-          }
-        }
-        if (state.contacts !== undefined) {
-          html += `<div style="margin-top: 6px; color: #858585;">Contacts: <span style="color: #f14c4c;">${state.contacts}</span></div>`
+          energyRow.style.display = ''
+          const ke = typeof state.kinetic_j === 'number' ? state.kinetic_j : null
+          energyEl.textContent = ke !== null
+            ? `${state.energy_j.toFixed(2)} J  (KE ${ke.toFixed(2)})`
+            : `${state.energy_j.toFixed(3)} J`
+        } else {
+          energyRow.style.display = 'none'
         }
       }
-      simStateDisplay.innerHTML = html
+
+      const contactsRow = document.getElementById('sim-status-contacts-row') as HTMLElement | null
+      const contactsEl = document.getElementById('sim-status-contacts')
+      if (contactsRow && contactsEl) {
+        if (typeof state.contacts === 'number') {
+          contactsRow.style.display = ''
+          contactsEl.textContent = String(state.contacts)
+        } else {
+          contactsRow.style.display = 'none'
+        }
+      }
 
       // Keep scrub slider range in sync with ring buffer size
       if (typeof state.ring_frames === 'number') {
@@ -691,14 +563,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
     console.log('[Sim] Loading robot model from', simPath)
     const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
-    const seedRaw = (document.getElementById('sim-seed') as HTMLInputElement | null)?.value ?? ''
-    const seed = seedRaw.trim() !== '' ? parseInt(seedRaw, 10) : undefined
     let modelInfo: Record<string, unknown> = {}
     try {
       modelInfo = await invoke<Record<string, unknown>>('sim_load', {
         path: simPath,
         freeBase,
-        ...(seed !== undefined && Number.isFinite(seed) ? { seed } : {}),
       })
     } catch (loadErr) {
       try { await invoke('remove_sim_staging_urdf', { path: simPath }) } catch { /* ignore */ }
@@ -732,7 +601,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (typeof initialState.time === 'number' && !Number.isNaN(initialState.time)) {
       simTime = initialState.time
     }
-    simStateDisplay.style.display = 'block'
     updateSimStateDisplay(initialState)
     updateSimUI()
   }
@@ -746,7 +614,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       }
       await invoke('stop_core')
       simCoreRunning = false
-      simStateDisplay.style.display = 'none'
       const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
       if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
       const scrubRow = document.getElementById('sim-scrub-row') as HTMLElement | null
@@ -784,10 +651,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     // Cap at 16 substeps (16 ms / 1 ms dt = 16).  Keeps frame budget bounded.
     const maxSteps = 16
     const nSteps = Math.max(1, Math.min(Math.round(simBehind / simModelDt), maxSteps))
-    const canKeepUp = simBehind < maxSteps * simModelDt * 2         // 2× budget headroom
-    // Surface a warning when the physics can't pace with wall time
-    const rtfBadge = document.getElementById('sim-rtf-badge')
-    if (rtfBadge) rtfBadge.classList.toggle('hidden', canKeepUp)
 
     try {
       const stepStart = performance.now()
@@ -804,8 +667,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       tickSimViz(state)
       updateSimUI()
       clearSimError()
-      if (state.script_error) showScriptError(state.script_error as string)
-      else clearScriptError()
+      if (state.script_error) {
+        setScriptStatus(`Script error — ${state.script_error}`, 'error')
+      }
     } catch (error) {
       console.error('[Sim] Error stepping simulation:', error)
       showSimError(String(error))
@@ -1137,21 +1001,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       clearSimError()
       updateSimUI()
     } catch (e) { deps.showToast(`Reset failed: ${e}`, 'error') }
-  })
-
-  document.getElementById('sim-reset-editor')?.addEventListener('click', async () => {
-    if (!simCoreRunning) return
-    const parsedRobot = deps.getParsedRobot()
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      const original = originalJointPoses.get(jointName)
-      if (original) {
-        jointInfo.group.position.copy(original.position)
-        jointInfo.group.quaternion.copy(original.quaternion)
-      }
-    }
-    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-torque-slider').forEach(s => { s.value = '0' })
-    sendSimControl()
-    deps.showToast('Restored editor pose (visual only; physics at home)', 'info')
   })
 
   // App-close cleanup

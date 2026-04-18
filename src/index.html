@@ -154,94 +154,59 @@
 
           <!-- Simulation panel -->
           <div class="sidebar-panel hidden" id="panel-sim">
-            <div class="sp-title">Simulation
-              <div class="sp-title-actions">
-                <label class="sim-gravity-toggle" title="Toggle gravity">
-                  <input type="checkbox" id="sim-gravity-enabled" checked>
-                  <span>Gravity</span>
-                </label>
+            <div class="sp-title">Simulation</div>
+
+            <!-- Empty state (shown when sim not running) -->
+            <div id="sim-not-active" class="sim-empty">
+              <div class="sim-empty-icon">&#9881;</div>
+              <div class="sim-empty-text">
+                Click <strong>Simulate</strong> in the toolbar to start physics.
               </div>
             </div>
-            <div id="sim-not-active" style="padding:12px;color:#858585;font-size:11px;">
-              Click <strong>Simulate</strong> in the toolbar to start physics.
-              <div style="margin-top:10px;">
-                <label class="sim-gravity-toggle" title="Free-floating root — for mobile robots / UAVs">
-                  <input type="checkbox" id="sim-free-base">
-                  <span>Free Base</span>
-                </label>
-              </div>
-              <div style="margin-top:8px;display:flex;align-items:center;gap:6px;">
-                <label style="color:#858585;font-size:11px;" title="Determinism seed for numpy random (blank = random)">Seed:
-                  <input type="number" id="sim-seed" min="0" max="2147483647" placeholder="random"
-                    style="width:72px;background:#2d2d2d;color:#ccc;border:1px solid #3c3c3c;border-radius:3px;padding:2px 5px;font-size:11px;">
-                </label>
-              </div>
-            </div>
+
+            <!-- Active sim body -->
             <div id="sim-controls-body" class="hidden">
-              <!-- Pose reset row -->
-              <div class="sim-section-title">Reset Pose</div>
-              <div class="sim-pose-row">
-                <button class="sim-pose-btn" id="sim-reset-home" title="Reset to MuJoCo initial state">Home</button>
-                <button class="sim-pose-btn" id="sim-reset-editor" title="Reset to pose from editor">Editor Pose</button>
+
+              <!-- Status card: time, RTF, mass/COM -->
+              <div class="sim-status-card">
+                <div class="sim-status-row">
+                  <span class="sim-status-label">Time</span>
+                  <span class="sim-status-val" id="sim-status-time">0.000 s</span>
+                </div>
+                <div class="sim-status-row">
+                  <span class="sim-status-label">RTF</span>
+                  <span class="sim-status-val" id="sim-status-rtf">—</span>
+                </div>
+                <div class="sim-status-row" id="sim-status-energy-row" style="display:none;">
+                  <span class="sim-status-label">Energy</span>
+                  <span class="sim-status-val" id="sim-status-energy">—</span>
+                </div>
+                <div class="sim-status-row" id="sim-status-contacts-row" style="display:none;">
+                  <span class="sim-status-label">Contacts</span>
+                  <span class="sim-status-val" id="sim-status-contacts">0</span>
+                </div>
+                <div id="sim-mass-info" class="sim-mass-info" style="display:none;"></div>
               </div>
-              <!-- Camera -->
-              <div class="sim-section-title">Camera</div>
-              <div class="sim-pose-row">
-                <label class="sim-gravity-toggle" title="Orbit target tracks the robot base link each frame">
-                  <input type="checkbox" id="sim-camera-follow">
-                  <span>Follow Base</span>
-                </label>
-              </div>
-              <!-- Keyframes -->
-              <div class="sim-section-title">Keyframes
-                <button class="sim-kf-save" id="sim-kf-save" title="Save current joint positions as a keyframe">+ Save</button>
-              </div>
-              <div id="sim-kf-list" class="sim-kf-list">
+
+              <!-- Joint Controls -->
+              <div class="sim-section-title">Joint Controls</div>
+              <div id="sim-joint-sliders" class="sim-joint-sliders">
                 <!-- populated by JS -->
               </div>
-              <!-- Control Trace -->
-              <div class="sim-section-title">Control Trace
-                <button class="sim-pose-btn" id="sim-trace-download" title="Download recorded trace as CSV" disabled style="font-size:10px;padding:2px 6px;">&#8595; CSV</button>
-              </div>
-              <div class="sim-pose-row" style="align-items:center;gap:8px;">
-                <label class="sim-gravity-toggle" title="Record (t, controls) on every sim_set_control call">
-                  <input type="checkbox" id="sim-trace-enabled">
-                  <span>Record</span>
-                </label>
-                <span id="sim-trace-count" style="color:#858585;font-size:10px;">0 samples</span>
-              </div>
-              <!-- Script Runner -->
-              <div class="sim-section-title">Script Runner
-                <button class="sim-pose-btn" id="sim-script-apply" style="font-size:10px;padding:2px 6px;">Apply</button>
-              </div>
-              <div id="sim-script-error" class="sim-script-error hidden"></div>
-              <textarea id="sim-script-editor" class="sim-script-editor" rows="9" spellcheck="false"
-                placeholder="def step(t, state):
-    # t: sim time (s)
-    # state['joints'] → {name: {position, velocity}}
-    # return controls dict
-    return {}"></textarea>
+
+              <!-- Pose -->
+              <div class="sim-section-title">Pose</div>
               <div class="sim-pose-row">
-                <button class="sim-pose-btn" id="sim-script-clear" title="Remove active script">Clear</button>
+                <button class="sim-pose-btn" id="sim-reset-home" title="Reset to MuJoCo initial state">Reset to Home</button>
               </div>
-              <!-- Physics tuning -->
-              <div class="sim-section-title">Physics</div>
-              <div class="sim-pose-row" style="flex-direction:column;gap:4px;">
-                <label style="font-size:11px;color:#858585;">Floor friction: <span id="sim-floor-friction-val">1.5</span></label>
-                <input type="range" id="sim-floor-friction" min="0" max="3" step="0.05" value="1.5"
-                  style="width:100%;accent-color:#569cd6;">
-              </div>
-              <!-- Mass / COM info (populated on sim load) -->
-              <div id="sim-mass-info" style="display:none;margin-top:6px;font-size:10px;color:#858585;line-height:1.5;"></div>
-              <!-- Timeline scrub (visible only when paused and ring has data) -->
-              <div id="sim-scrub-row" style="display:none;flex-direction:column;gap:4px;margin-top:6px;">
-                <label style="font-size:11px;color:#858585;">Scrub: <span id="sim-scrub-val">0</span></label>
-                <input type="range" id="sim-scrub" min="0" max="100" step="1" value="100"
-                  style="width:100%;accent-color:#569cd6;">
-              </div>
-              <!-- Visualization overlays (Phase D) -->
-              <div class="sim-section-title">Visualization</div>
+
+              <!-- View -->
+              <div class="sim-section-title">View</div>
               <div class="sim-viz-toggles">
+                <label class="sim-gravity-toggle" title="Orbit target tracks the robot base link each frame">
+                  <input type="checkbox" id="sim-camera-follow">
+                  <span>Camera Follow Base</span>
+                </label>
                 <label class="sim-gravity-toggle" title="Draw CoM position trail while running">
                   <input type="checkbox" id="sim-viz-com-trail">
                   <span>CoM Trail</span>
@@ -255,11 +220,48 @@
                   <span>Torque Heatmap</span>
                 </label>
               </div>
-              <!-- Joint sliders -->
-              <div class="sim-section-title">Joint Controls</div>
-              <div id="sim-joint-sliders" class="sim-joint-sliders">
-                <!-- populated by JS -->
+
+              <!-- Physics -->
+              <div class="sim-section-title">Physics</div>
+              <div class="sim-viz-toggles">
+                <label class="sim-gravity-toggle" title="Toggle gravity">
+                  <input type="checkbox" id="sim-gravity-enabled" checked>
+                  <span>Gravity</span>
+                </label>
+                <label class="sim-gravity-toggle" title="Free-floating root — for mobile robots / UAVs (reloads model)">
+                  <input type="checkbox" id="sim-free-base">
+                  <span>Free Base</span>
+                </label>
               </div>
+              <div class="sim-field-row">
+                <label class="sim-field-label" for="sim-floor-friction">
+                  Floor friction <span class="sim-field-val" id="sim-floor-friction-val">1.5</span>
+                </label>
+                <input type="range" id="sim-floor-friction" class="sim-range"
+                  min="0" max="3" step="0.05" value="1.5">
+              </div>
+
+              <!-- Script Runner -->
+              <div class="sim-section-title">Script Runner</div>
+              <div class="sim-script-upload">
+                <input type="file" id="sim-script-file" accept=".py,text/x-python" hidden>
+                <button class="sim-pose-btn" id="sim-script-upload-btn" title="Upload a Python script defining step(t, state)">
+                  &#8593; Upload .py
+                </button>
+                <div id="sim-script-status" class="sim-script-status">No script loaded</div>
+              </div>
+              <div class="sim-pose-row">
+                <button class="sim-pose-btn" id="sim-script-clear" title="Remove active script" disabled>Clear</button>
+              </div>
+
+              <div id="sim-scrub-row" class="sim-field-row" style="display:none;">
+                <label class="sim-field-label" for="sim-scrub">
+                  Scrub frame <span class="sim-field-val" id="sim-scrub-val">0</span>
+                </label>
+                <input type="range" id="sim-scrub" class="sim-range"
+                  min="0" max="100" step="1" value="100">
+              </div>
+
             </div>
           </div>
 
@@ -484,7 +486,6 @@
               <span id="sim-speed-display" style="min-width:28px;text-align:center;font-size:11px;color:#aaa;" title="Simulation speed multiplier">1.0×</span>
               <button class="sim-btn" id="sim-speed-up" title="Speed up (2× max)">&#43;</button>
               <span id="sim-rtf-display" style="font-size:10px;color:#aaa;min-width:36px;" title="Real-time factor"></span>
-              <span id="sim-rtf-badge" class="hidden" style="font-size:10px;color:#f14c4c;margin-left:2px;" title="Physics can't keep up with real time">&#9888;</span>
               <div id="sim-timeline"><div id="sim-progress"></div></div>
               <span id="sim-time">0.000s</span>
               <span id="sim-error-overlay" class="hidden" style="color:#f14c4c;font-size:11px;margin-left:8px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
