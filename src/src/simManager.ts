@@ -57,9 +57,12 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simRunning = false
   let simTime = 0
   let simCoreRunning = false
-  let simStepIntervalId: number | null = null
+  let simRafId: number | null = null       // requestAnimationFrame handle
   let simModelDt = 0.002
-  let simLastStepWallTime = 0
+  let simWallStart = 0                     // wall clock when sim started (ms)
+  let simTimeAtStart = 0                   // simTime when sim started
+  let simSpeedMult = 1.0                   // user-controlled speed multiplier
+  let simRtf = 0                           // measured real-time factor (last frame)
   let simErrorState = false
   let lastSimStagingPath: string | null = null
   let simTraceEnabled = false
@@ -567,15 +570,20 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       let html = '<div style="font-weight: bold; color: #569cd6; margin-bottom: 8px;">Simulation State</div>'
       if (state && typeof state === 'object') {
         if (state.time !== undefined) {
-          html += `<div><span style="color: #dcdcaa;">time:</span> ${(state.time as number).toFixed(3)}s</div>`
+          html += `<div><span style="color: #dcdcaa;">time:</span> ${(state.time as number).toFixed(3)} s</div>`
+        }
+        if (typeof state.energy_j === 'number') {
+          html += `<div><span style="color: #858585;">energy:</span> ${state.energy_j.toFixed(3)} J`
+          if (typeof state.kinetic_j === 'number') html += ` <span style="color:#858585;font-size:10px;">(KE ${state.kinetic_j.toFixed(2)} PE ${(state.energy_j - state.kinetic_j).toFixed(2)})</span>`
+          html += '</div>'
         }
         if (state.joints && typeof state.joints === 'object') {
-          html += '<div style="margin-top: 6px; color: #858585;">Joints:</div>'
+          html += '<div style="margin-top: 6px; color: #858585;">Joints (m / rad, m·s⁻¹ / rad·s⁻¹):</div>'
           for (const [name, joint] of Object.entries(state.joints)) {
             if (typeof joint === 'object' && joint !== null) {
               const j = joint as any
-              const pos = j.position?.toFixed(3) || '0.000'
-              const vel = j.velocity?.toFixed(3) || '0.000'
+              const pos = j.position?.toFixed(3) ?? '0.000'
+              const vel = j.velocity?.toFixed(3) ?? '0.000'
               html += `<div style="margin-left: 8px;">
                 <span style="color: #9cdcfe;">${name}</span>
                 <div style="margin-left: 8px; color: #858585; font-size: 10px;">pos: ${pos} | vel: ${vel}</div>
@@ -583,14 +591,33 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
             }
           }
         }
+        if (Array.isArray(state.ee_poses) && state.ee_poses.length > 0) {
+          html += '<div style="margin-top: 6px; color: #858585;">End-effectors (m, rad·s⁻¹):</div>'
+          for (const ee of state.ee_poses as any[]) {
+            const p = (ee.pos_m as number[]).map((v: number) => v.toFixed(3)).join(', ')
+            const v = (ee.lin_vel_mps as number[]).map((v: number) => v.toFixed(2)).join(', ')
+            html += `<div style="margin-left: 8px;">
+              <span style="color: #ce9178;">${ee.name}</span>
+              <div style="margin-left: 8px; color: #858585; font-size: 10px;">pos: [${p}] m</div>
+              <div style="margin-left: 8px; color: #858585; font-size: 10px;">vel: [${v}] m/s</div>
+            </div>`
+          }
+        }
         if (state.contacts !== undefined) {
           html += `<div style="margin-top: 6px; color: #858585;">Contacts: <span style="color: #f14c4c;">${state.contacts}</span></div>`
         }
-        if (state.energy !== undefined) {
-          html += `<div style="margin-top: 6px; color: #858585;">Energy: <span style="color: #569cd6;">${(state.energy as number).toFixed(3)}J</span></div>`
-        }
       }
       simStateDisplay.innerHTML = html
+
+      // Keep scrub slider range in sync with ring buffer size
+      if (typeof state.ring_frames === 'number') {
+        const scrubSlider = document.getElementById('sim-scrub') as HTMLInputElement | null
+        if (scrubSlider) {
+          scrubSlider.setAttribute('data-ring-max', String(state.ring_frames))
+          scrubSlider.max = String(Math.max(0, state.ring_frames - 1))
+          if (!simRunning) scrubSlider.value = scrubSlider.max  // track newest frame
+        }
+      }
     } catch (e) {
       console.error('[Sim] Error updating display:', e)
     }
@@ -659,7 +686,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
     const simPath = await invoke<string>('write_sim_staging_urdf', {
       content: urdf,
-      neighbor_urdf_path: neighborUrdfPath,
+      neighborUrdfPath,
     })
 
     console.log('[Sim] Loading robot model from', simPath)
@@ -679,9 +706,24 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     }
     lastSimStagingPath = simPath
     simModelDt = (typeof modelInfo?.timestep === 'number' && modelInfo.timestep > 0)
-      ? modelInfo.timestep : 0.002
+      ? modelInfo.timestep : 0.001
     simErrorState = false
     console.log('[Sim] Robot model loaded, dt =', simModelDt)
+
+    // Show mass / COM info in sim panel
+    const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
+    if (massInfoEl) {
+      const kg = typeof modelInfo.total_mass_kg === 'number' ? modelInfo.total_mass_kg : null
+      const com = Array.isArray(modelInfo.com_m) ? modelInfo.com_m as number[] : null
+      const warn = typeof modelInfo.mass_warning === 'string' ? modelInfo.mass_warning : null
+      let massHtml = ''
+      if (kg !== null) massHtml += `Mass: ${kg >= 1 ? kg.toFixed(2) + ' kg' : (kg * 1000).toFixed(1) + ' g'}`
+      if (com) massHtml += `<br>COM: [${com.map(v => v.toFixed(3)).join(', ')}] m`
+      if (warn) massHtml += `<br><span style="color:#f14c4c;">⚠ ${warn}</span>`
+      massInfoEl.innerHTML = massHtml
+      massInfoEl.style.display = massHtml ? 'block' : 'none'
+      if (warn) deps.showToast(warn, 'warning')
+    }
 
     simCoreRunning = true
     console.log('[Sim] Getting initial state...')
@@ -697,7 +739,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   async function shutdownSimulation() {
     try {
-      if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+      stopSimLoop()
       if (lastSimStagingPath) {
         try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
         lastSimStagingPath = null
@@ -705,6 +747,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       await invoke('stop_core')
       simCoreRunning = false
       simStateDisplay.style.display = 'none'
+      const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
+      if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
+      const scrubRow = document.getElementById('sim-scrub-row') as HTMLElement | null
+      if (scrubRow) scrubRow.style.display = 'none'
       console.log('[Sim] Core stopped')
     } catch (error) {
       console.error('[Sim] Error stopping simulation:', error)
@@ -715,7 +761,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   function showSimError(msg: string) {
     simErrorState = true
     simRunning = false
-    if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+    stopSimLoop()
     const errEl = document.getElementById('sim-error-overlay')
     if (errEl) { errEl.textContent = `⚠ Sim error: ${msg}`; errEl.classList.remove('hidden') }
     updateSimUI()
@@ -731,12 +777,25 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   async function stepSimulation() {
     if (!simCoreRunning || simErrorState) return
     const now = performance.now()
-    const elapsed = simLastStepWallTime > 0 ? Math.min(now - simLastStepWallTime, 100) : simModelDt * 1000
-    simLastStepWallTime = now
-    const nSteps = Math.max(1, Math.min(Math.floor(elapsed / (simModelDt * 1000)), 20))
+    // How much simulated time should have elapsed since we started this run?
+    const wallElapsed = now - simWallStart                           // ms of real time
+    const simTarget = simTimeAtStart + (wallElapsed / 1000) * simSpeedMult
+    const simBehind = simTarget - simTime                            // seconds of deficit
+    // Cap at 16 substeps (16 ms / 1 ms dt = 16).  Keeps frame budget bounded.
+    const maxSteps = 16
+    const nSteps = Math.max(1, Math.min(Math.round(simBehind / simModelDt), maxSteps))
+    const canKeepUp = simBehind < maxSteps * simModelDt * 2         // 2× budget headroom
+    // Surface a warning when the physics can't pace with wall time
+    const rtfBadge = document.getElementById('sim-rtf-badge')
+    if (rtfBadge) rtfBadge.classList.toggle('hidden', canKeepUp)
 
     try {
-      const rawState = await invoke('sim_step', { n_steps: nSteps })
+      const stepStart = performance.now()
+      const rawState = await invoke('sim_step', { nSteps })
+      const stepMs = performance.now() - stepStart
+      // RTF = simulated seconds / real seconds spent stepping
+      const simStepped = nSteps * simModelDt
+      simRtf = stepMs > 0 ? (simStepped / (stepMs / 1000)) : 0
       const state = normalizeMuJoCoState(rawState)
       if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
       updateSimStateDisplay(state)
@@ -780,8 +839,30 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         if (rootBody?.position && rootBody?.rotation) {
           const [px, py, pz] = rootBody.position
           const [qw, qx, qy, qz] = rootBody.rotation
-          deps.robot.position.set(px, py, pz)
-          deps.robot.quaternion.set(qx, qy, qz, qw)
+          // MuJoCo is Z-up; the worldGroup child has rotation.x = -π/2 which converts
+          // URDF Z-up geometry to Three.js Y-up.  robot.position is in Three.js world
+          // space (Y-up), so we must apply the same mapping to the body position:
+          //   Rx(-π/2): (x, y, z)_zup → (x, z, -y)_yup
+          deps.robot.position.set(px, pz, -py)
+          // For the quaternion, conjugate-rotate by Rx(-π/2):
+          //   q_threejs = Rx(-π/2) * q_mujoco * Rx(+π/2)
+          // Rx(-π/2) as quaternion: axis=(1,0,0), angle=-π/2 → (w=cos(-π/4), x=sin(-π/4), y=0, z=0)
+          const RX_W = Math.SQRT1_2   //  cos(-π/4)
+          const RX_X = -Math.SQRT1_2  //  sin(-π/4)
+          // q_threejs = rxNeg * q_mujoco * rxPos
+          // rxNeg = (RX_W, RX_X, 0, 0),  rxPos = (RX_W, -RX_X, 0, 0)
+          const mqw = qw, mqx = qx, mqy = qy, mqz = qz
+          // left-multiply by rxNeg
+          const lw = RX_W * mqw - RX_X * mqx
+          const lx = RX_W * mqx + RX_X * mqw
+          const ly = RX_W * mqy - RX_X * mqz  // corrected sign
+          const lz = RX_W * mqz + RX_X * mqy  // corrected sign
+          // right-multiply by rxPos = (RX_W, -RX_X, 0, 0)
+          const fw = lw * RX_W - lx * (-RX_X)
+          const fx = lw * (-RX_X) + lx * RX_W
+          const fy = ly * RX_W + lz * (-RX_X)
+          const fz = -ly * (-RX_X) + lz * RX_W
+          deps.robot.quaternion.set(fx, fy, fz, fw)
         }
       }
     } catch (e) {
@@ -796,6 +877,18 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.simPause.classList.toggle('active', !simRunning && simActive)
     deps.simTimeEl.textContent = simTime.toFixed(3) + 's'
     deps.simProgress.style.width = `${Math.min((simTime / 10) * 100, 100)}%`
+    const rtfEl = document.getElementById('sim-rtf-display')
+    if (rtfEl && simRunning) rtfEl.textContent = `RTF ${simRtf.toFixed(1)}×`
+    const speedEl = document.getElementById('sim-speed-display')
+    if (speedEl) speedEl.textContent = `${simSpeedMult.toFixed(1)}×`
+    // Show scrub slider when paused and ring has data
+    const scrubRow = document.getElementById('sim-scrub-row') as HTMLElement | null
+    const scrubSlider = document.getElementById('sim-scrub') as HTMLInputElement | null
+    if (scrubRow && scrubSlider) {
+      const ringMax = parseInt(scrubSlider.getAttribute('data-ring-max') || '0', 10)
+      const showScrub = !simRunning && simCoreRunning && ringMax > 0
+      scrubRow.style.display = showScrub ? 'flex' : 'none'
+    }
   }
 
   // ── Phase C: Camera Follow ────────────────────────────────────────────────
@@ -897,21 +990,60 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.resize()
   })
 
+  // Free-base checkbox: the value is baked into the MJCF at load time, so a
+  // toggle has no effect until the model is reloaded. Rebuild the sim when the
+  // user changes it mid-session so the click doesn't silently do nothing.
+  const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
+  if (freeBaseEl) {
+    let reloading = false
+    freeBaseEl.addEventListener('change', async () => {
+      if (!simActive || reloading) return
+      reloading = true
+      simRunning = false
+      stopSimLoop()
+      try {
+        await initializeSimulation()
+        deps.showToast(`Free base ${freeBaseEl.checked ? 'enabled' : 'disabled'} — model reloaded`, 'info')
+      } catch (error) {
+        console.error('[Sim] Free-base reload failed:', error)
+        deps.showToast(`Reload failed: ${error instanceof Error ? error.message : String(error)}`, 'error')
+      } finally {
+        reloading = false
+      }
+    })
+  }
+
+  function startSimLoop() {
+    if (simRafId !== null) cancelAnimationFrame(simRafId)
+    // Anchor wall clock to current simTime so we step exactly the deficit.
+    simWallStart = performance.now()
+    simTimeAtStart = simTime
+    let stepping = false
+    function rafTick() {
+      if (!simRunning || !simCoreRunning) return
+      simRafId = requestAnimationFrame(rafTick)
+      if (stepping) return          // previous step still in-flight — skip this frame
+      stepping = true
+      stepSimulation().finally(() => { stepping = false })
+    }
+    simRafId = requestAnimationFrame(rafTick)
+  }
+
+  function stopSimLoop() {
+    if (simRafId !== null) { cancelAnimationFrame(simRafId); simRafId = null }
+  }
+
   deps.simPlay.addEventListener('click', () => {
     if (!simCoreRunning) return
     clearSimError()
     simRunning = true
-    simLastStepWallTime = 0
-    if (simStepIntervalId !== null) clearInterval(simStepIntervalId)
-    simStepIntervalId = setInterval(async () => {
-      await stepSimulation()
-    }, 1000 / 60) as unknown as number
+    startSimLoop()
     updateSimUI()
   })
 
   deps.simPause.addEventListener('click', () => {
     simRunning = false
-    if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+    stopSimLoop()
     updateSimUI()
   })
 
@@ -919,7 +1051,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (!simCoreRunning) return
     simRunning = false
     simErrorState = false
-    if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+    stopSimLoop()
     try {
       await invoke('sim_reset')
       const state = normalizeMuJoCoState(await invoke('sim_get_state'))
@@ -933,11 +1065,53 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       }
       updateRobotFromSimState(state)
       simTime = typeof state.time === 'number' && !Number.isNaN(state.time) ? state.time : 0
+      // Re-anchor wall clock so the next play() starts from this simTime, not a stale delta.
+      simWallStart = performance.now()
+      simTimeAtStart = simTime
       clearSimError()
       updateSimUI()
     } catch (error) {
       console.error('[Sim] Reset error:', error)
     }
+  })
+
+  // Scrub slider — replays ring buffer when paused
+  document.getElementById('sim-scrub')?.addEventListener('input', async (e) => {
+    if (simRunning || !simCoreRunning) return
+    const slider = e.target as HTMLInputElement
+    const pct = parseFloat(slider.value) / parseFloat(slider.max)
+    const ringFrames = parseInt(slider.getAttribute('data-ring-max') || '0', 10)
+    if (ringFrames === 0) return
+    const frameIdx = Math.round(pct * (ringFrames - 1))
+    document.getElementById('sim-scrub-val')!.textContent = frameIdx.toString()
+    try {
+      const state = normalizeMuJoCoState(await invoke('sim_scrub', { frameIdx }))
+      if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
+      updateSimStateDisplay(state)
+      updateRobotFromSimState(state)
+      updateSimUI()
+    } catch { /* ignore */ }
+  })
+
+  // Sim speed ±
+  document.getElementById('sim-speed-down')?.addEventListener('click', () => {
+    simSpeedMult = Math.max(0.1, parseFloat((simSpeedMult - 0.1).toFixed(1)))
+    if (simRunning) { simWallStart = performance.now(); simTimeAtStart = simTime }
+    updateSimUI()
+  })
+  document.getElementById('sim-speed-up')?.addEventListener('click', () => {
+    simSpeedMult = Math.min(2.0, parseFloat((simSpeedMult + 0.1).toFixed(1)))
+    if (simRunning) { simWallStart = performance.now(); simTimeAtStart = simTime }
+    updateSimUI()
+  })
+
+  // Floor friction slider
+  document.getElementById('sim-floor-friction')?.addEventListener('input', async (e) => {
+    const v = parseFloat((e.target as HTMLInputElement).value)
+    const valEl = document.getElementById('sim-floor-friction-val')
+    if (valEl) valEl.textContent = v.toFixed(2)
+    if (!simCoreRunning) return
+    try { await invoke('sim_set_floor_friction', { friction: v }) } catch { /* ignore */ }
   })
 
   // Gravity toggle
@@ -954,7 +1128,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   document.getElementById('sim-reset-home')?.addEventListener('click', async () => {
     if (!simCoreRunning) return
     simRunning = false
-    if (simStepIntervalId !== null) { clearInterval(simStepIntervalId); simStepIntervalId = null }
+    stopSimLoop()
     try {
       await invoke('sim_reset')
       const state = normalizeMuJoCoState(await invoke('sim_get_state'))

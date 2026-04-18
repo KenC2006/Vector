@@ -74,6 +74,49 @@ def _extract_link_data(link_elem: etree._Element, urdf_dir: str) -> Dict[str, An
                 pass
         collision_list.append({"geometry": geom, "origin_xyz": xyz, "origin_rpy": rpy_vals})
 
+    # Collect visual meshes for trimesh inertia estimation.  Only meshes with a
+    # zero <origin> are eligible — otherwise inertia about the mesh COM cannot be
+    # written at the link origin without a parallel-axis shift, which would
+    # silently produce a wrong tensor.  We also capture the scale so volume-based
+    # inertia is computed against the rendered geometry, not the unit-scale file.
+    visual_mesh_files: List[Dict[str, Any]] = []
+    for vis_elem in link_elem.findall(".//visual"):
+        geom_el = vis_elem.find("geometry/mesh")
+        if geom_el is None:
+            continue
+        fname = geom_el.get("filename", "")
+        if fname and not os.path.isabs(fname):
+            fname = os.path.join(urdf_dir, fname)
+        if not (fname and os.path.exists(fname)):
+            continue
+        origin_xyz = [0.0, 0.0, 0.0]
+        origin_rpy = [0.0, 0.0, 0.0]
+        origin_el = vis_elem.find("origin")
+        if origin_el is not None:
+            try:
+                origin_xyz = [float(v) for v in origin_el.get("xyz", "0 0 0").split()]
+            except (ValueError, TypeError):
+                pass
+            try:
+                origin_rpy = [float(v) for v in origin_el.get("rpy", "0 0 0").split()]
+            except (ValueError, TypeError):
+                pass
+        scale = [1.0, 1.0, 1.0]
+        scale_str = geom_el.get("scale")
+        if scale_str:
+            try:
+                parts = [float(v) for v in scale_str.split()]
+                if len(parts) == 3:
+                    scale = parts
+            except (ValueError, TypeError):
+                pass
+        visual_mesh_files.append({
+            "file": fname,
+            "origin_xyz": origin_xyz,
+            "origin_rpy": origin_rpy,
+            "scale": scale,
+        })
+
     # Fall back to visual geometry if no collision elements
     if not collision_list:
         visual_elem = link_elem.find(".//visual/geometry")
@@ -91,6 +134,7 @@ def _extract_link_data(link_elem: etree._Element, urdf_dir: str) -> Dict[str, An
         "mass": mass,
         "explicit_inertia": explicit_inertia,
         "collision_list": collision_list,
+        "visual_mesh_files": visual_mesh_files,
     }
 
 
@@ -143,14 +187,31 @@ def _extract_geometry(geom_elem: etree._Element, urdf_dir: str) -> Optional[Dict
         # Resolve relative paths
         if filename and not os.path.isabs(filename):
             filename = os.path.join(urdf_dir, filename)
+        # Parse optional <mesh scale="sx sy sz"> — URDF default is 1 1 1.
+        scale = [1.0, 1.0, 1.0]
+        scale_str = mesh_elem.get("scale")
+        if scale_str:
+            try:
+                parts = [float(v) for v in scale_str.split()]
+                if len(parts) == 3:
+                    scale = parts
+            except (ValueError, TypeError):
+                pass
         if filename and os.path.exists(filename):
-            # Generate stable asset name: strip extension, sanitize
+            # Generate stable asset name: strip extension, sanitize. Include scale
+            # in the name so different scales of the same file get distinct meshes.
             raw_name = os.path.splitext(os.path.basename(filename))[0]
-            mesh_name = "".join(c if c.isalnum() or c == "_" else "_" for c in raw_name)
+            base_mesh_name = "".join(c if c.isalnum() or c == "_" else "_" for c in raw_name)
+            if scale != [1.0, 1.0, 1.0]:
+                scale_tag = "_s" + "_".join(f"{s:g}".replace(".", "p").replace("-", "n") for s in scale)
+                mesh_name = base_mesh_name + scale_tag
+            else:
+                mesh_name = base_mesh_name
             return {
                 "type": "mesh",
                 "filename": filename,
                 "mesh_name": mesh_name,
+                "scale": scale,
             }
 
     return None
@@ -175,8 +236,28 @@ def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
 
 # ── Contact / material helpers ────────────────────────────────────────────────
 
-# Link-name keywords that identify foot contact surfaces.
-_FOOT_KEYWORDS = frozenset(("foot", "toe", "pad", "paw", "tip", "sole"))
+# Link-name keywords that identify contact surface categories.
+_FOOT_KEYWORDS    = frozenset(("foot", "toe", "pad", "paw", "tip", "sole"))
+_WHEEL_KEYWORDS   = frozenset(("wheel", "roller", "caster", "tire", "tyre"))
+_GRIPPER_KEYWORDS = frozenset(("gripper", "finger", "claw", "thumb", "palm", "grasp"))
+_IMU_KEYWORDS     = frozenset(("imu",))
+_EE_KEYWORDS_MJCF = frozenset(("ee", "end_effector", "end-effector", "tool", "tcp"))
+
+import re as _re
+_TOKEN_SPLIT = _re.compile(r"[_\-\s]+")
+
+
+def _name_tokens(name: str) -> set:
+    return {t for t in _TOKEN_SPLIT.split(name.lower()) if t}
+
+
+def _is_imu_link(link_name: str) -> bool:
+    return bool(_name_tokens(link_name) & _IMU_KEYWORDS)
+
+
+def _is_ee_link(link_name: str) -> bool:
+    tokens = _name_tokens(link_name)
+    return any(kw in tokens for kw in _EE_KEYWORDS_MJCF)
 
 
 def _is_foot_link(link_name: str) -> bool:
@@ -185,11 +266,75 @@ def _is_foot_link(link_name: str) -> bool:
     return any(kw in lower for kw in _FOOT_KEYWORDS)
 
 
+def _is_wheel_link(link_name: str) -> bool:
+    """Heuristic: does this link name suggest a wheel / roller?"""
+    lower = link_name.lower()
+    return any(kw in lower for kw in _WHEEL_KEYWORDS)
+
+
+def _is_gripper_link(link_name: str) -> bool:
+    """Heuristic: does this link name suggest a gripper / finger contact?"""
+    lower = link_name.lower()
+    return any(kw in lower for kw in _GRIPPER_KEYWORDS)
+
+
+def _link_has_cylinder_collision(link_data: Dict[str, Any]) -> bool:
+    """Return True if the link's primary collision geometry is a cylinder."""
+    for coll in link_data.get("collision_list", []):
+        if coll["geometry"].get("type") == "cylinder":
+            return True
+    return False
+
+
 # ── Inertia helpers ───────────────────────────────────────────────────────────
 
 # Default density for robot parts with unknown material (kg/m³).
-# ~1200 is typical ABS/PLA plastic; aluminium extrusion would be ~2700.
 _PLASTIC_DENSITY = 1200.0
+
+# Named material densities (kg/m³) that the UI can pass to override the default.
+MATERIAL_DENSITIES: Dict[str, float] = {
+    "pla":      1240.0,
+    "abs":      1050.0,
+    "petg":     1270.0,
+    "aluminum": 2700.0,
+    "aluminium": 2700.0,
+    "steel":    7850.0,
+    "carbon":   1600.0,  # CFRP laminate typical
+    "titanium": 4500.0,
+}
+
+
+def _trimesh_inertia(
+    mesh_file: str,
+    mass: float,
+    scale: Optional[List[float]] = None,
+) -> Optional[np.ndarray]:
+    """
+    Compute 3×3 inertia matrix (about mesh COM) from a mesh file using trimesh.
+
+    Returns None if trimesh is not installed or the mesh is degenerate.
+    The result is expressed in the mesh's local coordinate frame; callers are
+    responsible for ensuring the link's visual <origin> is zero (otherwise this
+    cannot be placed at the link origin without a parallel-axis shift).
+    """
+    try:
+        import trimesh
+    except ImportError:
+        return None
+    try:
+        mesh = trimesh.load(mesh_file, force="mesh", process=False)
+        if not isinstance(mesh, trimesh.Trimesh) or mesh.volume <= 0:
+            return None
+        if scale is not None and scale != [1.0, 1.0, 1.0]:
+            mesh = mesh.copy()
+            mesh.apply_scale(scale)
+            if mesh.volume <= 0:
+                return None
+        # Scale inertia to the target mass (trimesh assumes density=1).
+        density_scale = mass / (mesh.volume * 1.0)
+        return np.array(mesh.moment_inertia) * density_scale
+    except Exception:
+        return None
 
 
 def _primitive_volume(geom: Dict[str, Any]) -> float:
@@ -316,11 +461,21 @@ def _create_body_element(
     parent_elem: Optional[etree._Element] = None,
     mesh_assets: Optional[Dict[str, str]] = None,
     is_foot: bool = False,
+    is_wheel: bool = False,
+    is_gripper: bool = False,
+    is_imu: bool = False,
 ) -> etree._Element:
     """Create a MuJoCo body element for a URDF link."""
 
     body = etree.Element("body")
     body.set("name", link_data["name"])
+
+    # IMU site at body origin so the accelerometer/gyro sensors compile.
+    # Without this, MJCF compile fails for any URDF with an imu* link.
+    if is_imu:
+        site = etree.SubElement(body, "site")
+        site.set("name", link_data["name"])
+        site.set("size", "0.005")
 
     # ── Position / orientation from the joint that connects to this body ───────
     if joint_elem is not None:
@@ -340,17 +495,23 @@ def _create_body_element(
 
     # ── Mass / inertia ─────────────────────────────────────────────────────────
     collision_list = link_data.get("collision_list", [])
+    visual_mesh_files = link_data.get("visual_mesh_files", [])
     mass = link_data["mass"]
     explicit_inertia = link_data.get("explicit_inertia")
+    mass_auto_estimated = False
 
-    # Auto-estimate mass from geometry volume if not given in the URDF
+    # Auto-estimate mass from geometry volume if not given in the URDF.
+    # Tag the link so the model-info warning can be surfaced in the UI.
     if mass < 1e-6 and collision_list:
         total_vol = sum(_primitive_volume(c["geometry"]) for c in collision_list)
         mass = max(total_vol * _PLASTIC_DENSITY, 0.001)  # floor at 1 g
+        mass_auto_estimated = True
 
     if mass > 1e-6:
         inertial = etree.SubElement(body, "inertial")
         inertial.set("mass", f"{mass:.6g}")
+        if mass_auto_estimated:
+            inertial.set("user", "1")  # sentinel for post-processing / UI warning
 
         if explicit_inertia is not None:
             # URDF provided a precise tensor (e.g. from CAD export) — use it as-is
@@ -358,25 +519,48 @@ def _create_body_element(
             inertial.set("pos", "0 0 0")
             inertial.set("fullinertia",
                          f"{ixx:.6g} {iyy:.6g} {izz:.6g} {ixy:.6g} {ixz:.6g} {iyz:.6g}")
-        elif collision_list:
-            # Compute shape-based inertia from all collision primitives
-            I_com, com_pos = _compute_inertia_from_collision_list(collision_list, mass)
-            px, py, pz = com_pos
-            inertial.set("pos", f"{px:.6g} {py:.6g} {pz:.6g}")
-            ixx, iyy, izz = I_com[0, 0], I_com[1, 1], I_com[2, 2]
-            ixy, ixz, iyz = I_com[0, 1], I_com[0, 2], I_com[1, 2]
-            # Use fullinertia only when off-diagonal terms are non-negligible
-            max_diag = max(ixx, iyy, izz)
-            if max(abs(ixy), abs(ixz), abs(iyz)) > 1e-4 * max_diag:
+        else:
+            # Try trimesh inertia from visual mesh when:
+            #   (a) no explicit inertia from URDF, AND
+            #   (b) visual geometry is a richer mesh (common for CAD robots).
+            # This is the biggest single accuracy win for mesh robots.
+            trimesh_I: Optional[np.ndarray] = None
+            for vm in visual_mesh_files:
+                # Skip meshes with non-zero <origin> — trimesh inertia is about the
+                # mesh COM and we can't write it at link origin without a shift.
+                if any(abs(v) > 1e-9 for v in vm["origin_xyz"]) or any(
+                    abs(v) > 1e-9 for v in vm["origin_rpy"]
+                ):
+                    continue
+                trimesh_I = _trimesh_inertia(vm["file"], mass, vm["scale"])
+                if trimesh_I is not None:
+                    break
+
+            if trimesh_I is not None:
+                # Trimesh gives inertia about the mesh's own COM — use it directly.
+                ixx = trimesh_I[0, 0]; iyy = trimesh_I[1, 1]; izz = trimesh_I[2, 2]
+                ixy = trimesh_I[0, 1]; ixz = trimesh_I[0, 2]; iyz = trimesh_I[1, 2]
+                inertial.set("pos", "0 0 0")
                 inertial.set("fullinertia",
                              f"{ixx:.6g} {iyy:.6g} {izz:.6g} {ixy:.6g} {ixz:.6g} {iyz:.6g}")
+            elif collision_list:
+                # Compute shape-based inertia from all collision primitives
+                I_com, com_pos = _compute_inertia_from_collision_list(collision_list, mass)
+                px, py, pz = com_pos
+                inertial.set("pos", f"{px:.6g} {py:.6g} {pz:.6g}")
+                ixx, iyy, izz = I_com[0, 0], I_com[1, 1], I_com[2, 2]
+                ixy, ixz, iyz = I_com[0, 1], I_com[0, 2], I_com[1, 2]
+                max_diag = max(ixx, iyy, izz)
+                if max(abs(ixy), abs(ixz), abs(iyz)) > 1e-4 * max_diag:
+                    inertial.set("fullinertia",
+                                 f"{ixx:.6g} {iyy:.6g} {izz:.6g} {ixy:.6g} {ixz:.6g} {iyz:.6g}")
+                else:
+                    inertial.set("diaginertia", f"{ixx:.6g} {iyy:.6g} {izz:.6g}")
             else:
-                inertial.set("diaginertia", f"{ixx:.6g} {iyy:.6g} {izz:.6g}")
-        else:
-            # No geometry — tiny isotropic fallback so MuJoCo doesn't reject the body
-            d = max(1e-6 * mass, 1e-9)
-            inertial.set("pos", "0 0 0")
-            inertial.set("diaginertia", f"{d:.6g} {d:.6g} {d:.6g}")
+                # No geometry — tiny isotropic fallback so MuJoCo doesn't reject the body
+                d = max(1e-6 * mass, 1e-9)
+                inertial.set("pos", "0 0 0")
+                inertial.set("diaginertia", f"{d:.6g} {d:.6g} {d:.6g}")
 
     # ── Collision geoms — one <geom> per collision primitive ───────────────────
     for coll in collision_list:
@@ -388,9 +572,13 @@ def _create_body_element(
         geom_type = geom.get("type", "box")
         geom_elem.set("type", geom_type)
         geom_elem.set("material", "MatGray")
-        # Foot geoms inherit the "foot" default class (higher torsional friction)
+        # Assign contact class based on link role for appropriate friction parameters.
         if is_foot:
             geom_elem.set("class", "foot")
+        elif is_wheel:
+            geom_elem.set("class", "wheel")
+        elif is_gripper:
+            geom_elem.set("class", "gripper")
 
         # Geom position offset
         if any(abs(v) > 1e-9 for v in (ox, oy, oz)):
@@ -420,9 +608,10 @@ def _create_body_element(
         elif geom_type == "mesh":
             filename = geom.get("filename", "")
             mesh_name = geom.get("mesh_name", "")
+            scale = geom.get("scale", [1.0, 1.0, 1.0])
             if filename and mesh_name:
                 if mesh_assets is not None:
-                    mesh_assets[mesh_name] = filename
+                    mesh_assets[mesh_name] = (filename, scale)
                 geom_elem.set("mesh", mesh_name)
 
     return body
@@ -500,13 +689,19 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
             except (ValueError, TypeError):
                 pass
 
-        # Read URDF <dynamics> for damping and friction
-        dynamics = {"damping": 0.1, "friction": 0.0}
+        # Read URDF <dynamics> for damping and friction.
+        # None means "not specified in URDF" so joint-building code can apply
+        # physics-based defaults instead of blindly using 0.1 / 0.0.
+        dynamics = {"damping": None, "friction": None}
         dynamics_elem = joint_elem.find("dynamics")
         if dynamics_elem is not None:
             try:
-                dynamics["damping"] = float(dynamics_elem.get("damping", "0.1"))
-                dynamics["friction"] = float(dynamics_elem.get("friction", "0.0"))
+                d = dynamics_elem.get("damping")
+                f = dynamics_elem.get("friction")
+                if d is not None:
+                    dynamics["damping"] = float(d)
+                if f is not None:
+                    dynamics["friction"] = float(f)
             except (ValueError, TypeError):
                 pass
 
@@ -537,9 +732,24 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     mjcf_root.set("model", robot_name)
 
     # Add option
+    # timestep=0.001: tighter than default (0.002) — needed for stiff actuators.
+    # integrator=implicitfast: A-stable, much better than Euler for stiff joints.
+    # solver=Newton, iterations=100, tolerance=1e-10: tight convergence.
+    # cone=elliptic + impratio=10: eliminates the "ice-skating" feel of pyramidal cone.
+    # noslip_iterations=3: kills residual tangential drift at rest contacts.
     option = etree.SubElement(mjcf_root, "option")
-    option.set("timestep", "0.002")
+    option.set("timestep", "0.001")
     option.set("gravity", "0 0 -9.81")
+    option.set("integrator", "implicitfast")
+    option.set("solver", "Newton")
+    option.set("iterations", "100")
+    option.set("tolerance", "1e-10")
+    option.set("cone", "elliptic")
+    option.set("impratio", "10")
+    option.set("noslip_iterations", "3")
+    # Energy tracking: lets us assert conservation in tests and display KE+PE in the UI.
+    flag_elem = etree.SubElement(option, "flag")
+    flag_elem.set("energy", "enable")
 
     # Add contact/solver defaults
     # condim=4: tangential + torsional friction (good for most links, avoids sliding)
@@ -558,6 +768,23 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     foot_geom.set("condim", "6")
     foot_geom.set("solref", "0.005 1")
     foot_geom.set("solimp", "0.9 0.95 0.001")
+    # Wheel sub-class: high lateral friction, low torsional/rolling — prevents
+    # lateral slip but allows rolling with minimal resistance.
+    wheel_cls = etree.SubElement(default_block, "default")
+    wheel_cls.set("class", "wheel")
+    wheel_geom = etree.SubElement(wheel_cls, "geom")
+    wheel_geom.set("friction", "1.2 0.002 0.0001")
+    wheel_geom.set("condim", "6")
+    wheel_geom.set("solref", "0.005 1")
+    wheel_geom.set("solimp", "0.9 0.95 0.001")
+    # Gripper/finger sub-class: high friction in all directions for secure grasping.
+    gripper_cls = etree.SubElement(default_block, "default")
+    gripper_cls.set("class", "gripper")
+    gripper_geom = etree.SubElement(gripper_cls, "geom")
+    gripper_geom.set("friction", "2.0 0.2 0.02")
+    gripper_geom.set("condim", "6")
+    gripper_geom.set("solref", "0.005 1")
+    gripper_geom.set("solimp", "0.9 0.95 0.001")
 
     # Add visual settings
     visual = etree.SubElement(mjcf_root, "visual")
@@ -585,8 +812,8 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     floor_geom.set("friction", "1.5 0.1 0.01")
     floor_geom.set("condim", "6")
 
-    # Track mesh assets that need declarations in <asset>
-    mesh_assets: Dict[str, str] = {}
+    # Track mesh assets that need declarations in <asset>: name → (file, [sx, sy, sz])
+    mesh_assets: Dict[str, Tuple[str, List[float]]] = {}
 
     # Recursively add bodies
     def add_body_recursive(parent_body_elem: etree._Element, link_name: str, visited: set):
@@ -607,12 +834,26 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 incoming_joint = joint
                 break
 
+        # Classify contact role: foot > wheel (continuous joint + cylinder) > gripper > default.
+        # Wheel detection: a continuous joint whose child has cylinder collision geometry
+        # is almost certainly a driven wheel — apply rolling-friction class.
+        is_continuous_joint = incoming_joint is not None and incoming_joint["type"] == "continuous"
+        is_wheel = (
+            _is_wheel_link(link_name)
+            or (is_continuous_joint and _link_has_cylinder_collision(link_data))
+        )
+        is_gripper = _is_gripper_link(link_name)
+        is_imu = _is_imu_link(link_name)
+
         # Create body element (mesh_assets dict accumulates mesh file declarations)
         body_elem = _create_body_element(
             link_data,
             incoming_joint["elem"] if incoming_joint else None,
             mesh_assets=mesh_assets,
             is_foot=_is_foot_link(link_name),
+            is_wheel=is_wheel and not _is_foot_link(link_name),
+            is_gripper=is_gripper and not _is_foot_link(link_name) and not is_wheel,
+            is_imu=is_imu,
         )
         parent_body_elem.append(body_elem)
 
@@ -642,13 +883,42 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 if limits.get("velocity", 0.0) > 0:
                     joint_elem.set("actuatorfrcrange", f"-{limits['effort']} {limits['effort']}")
 
-            # Damping and frictionloss from URDF <dynamics> tag
+            # ── Joint dynamics ────────────────────────────────────────────────
             dyn = incoming_joint.get("dynamics", {})
-            damping = dyn.get("damping", 0.1)
-            friction = dyn.get("friction", 0.0)
-            joint_elem.set("damping", str(damping))
-            if friction > 0:
-                joint_elem.set("frictionloss", str(friction))
+            is_prismatic = urdf_joint_type == "prismatic"
+            effort = incoming_joint["limits"]["effort"] if incoming_joint["limits"] else 10.0
+
+            # Damping (viscous friction).  Use URDF value when provided; otherwise
+            # scale with sqrt(effort) so heavier joints settle at a similar rate
+            # regardless of stiffness.  Prismatic joints are 10× stiffer by default
+            # because linear slides have higher viscous losses.
+            urdf_damping = dyn.get("damping")
+            if urdf_damping is not None:
+                damping = urdf_damping
+            elif is_prismatic:
+                damping = max(0.5, 1.0 * (effort / 10.0) ** 0.5)
+            else:
+                damping = max(0.05, 0.1 * (effort / 10.0) ** 0.5)
+            joint_elem.set("damping", f"{damping:.6g}")
+
+            # Frictionloss (Coulomb / dry friction).  URDF default is 0, which lets
+            # joints drift indefinitely when control is released.  A small non-zero
+            # value prevents this without fighting the actuator.
+            urdf_friction = dyn.get("friction")
+            if urdf_friction is not None and urdf_friction > 1e-9:
+                frictionloss = urdf_friction
+            elif is_prismatic:
+                frictionloss = 0.5   # N — typical linear-slide Coulomb friction
+            else:
+                frictionloss = 0.02  # Nm — typical revolute dry friction
+            joint_elem.set("frictionloss", f"{frictionloss:.6g}")
+
+            # Armature (reflected rotor inertia).  Even a tiny value dramatically
+            # stabilises PD control and prevents high-frequency jitter, at negligible
+            # computational cost.  Scale conservatively with effort so that a 1 Nm
+            # servo and a 100 Nm drive don't share the same value.
+            armature = (5e-4 if not is_prismatic else 1e-3) * max(1.0, (effort / 10.0) ** 0.5)
+            joint_elem.set("armature", f"{armature:.6g}")
 
         # Add children
         for joint in joints:
@@ -668,10 +938,12 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 root_bodies[0].insert(0, free_joint)
 
     # Back-fill mesh asset declarations now that all bodies have been built
-    for mesh_name, mesh_file in mesh_assets.items():
+    for mesh_name, (mesh_file, mesh_scale) in mesh_assets.items():
         mesh_decl = etree.SubElement(asset, "mesh")
         mesh_decl.set("name", mesh_name)
         mesh_decl.set("file", mesh_file)
+        if mesh_scale != [1.0, 1.0, 1.0]:
+            mesh_decl.set("scale", " ".join(f"{s:.6g}" for s in mesh_scale))
 
     # Self-collision excludes: suppress contacts between every adjacent body pair.
     # Touching neighbors (parent/child across a joint) almost always cause spurious
@@ -727,6 +999,46 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
             pos_act.set("ctrllimited", "true")
             pos_act.set("ctrlrange", f"{lower:.6f} {upper:.6f}")
             pos_act.set("forcerange", f"{-effort:.4f} {effort:.4f}")
+
+    # Add sensor section — jointpos/jointvel/jointactuatorfrc per non-fixed joint,
+    # plus end-effector pose sensors for any link tagged <vector:ee> or named *ee*/*end*.
+    sensor_section = etree.SubElement(mjcf_root, "sensor")
+    for joint in joints:
+        if joint["type"] == "fixed":
+            continue
+        jname = joint["name"]
+        jp = etree.SubElement(sensor_section, "jointpos")
+        jp.set("name", f"{jname}_pos_sens")
+        jp.set("joint", jname)
+        jv = etree.SubElement(sensor_section, "jointvel")
+        jv.set("name", f"{jname}_vel_sens")
+        jv.set("joint", jname)
+        jf = etree.SubElement(sensor_section, "jointactuatorfrc")
+        jf.set("name", f"{jname}_frc_sens")
+        jf.set("joint", jname)
+
+    # End-effector sensors: token-aware match so 'knee' doesn't match 'ee'.
+    for link_name in links:
+        if _is_ee_link(link_name):
+            fp = etree.SubElement(sensor_section, "framepos")
+            fp.set("name", f"{link_name}_pos_sens")
+            fp.set("objtype", "body")
+            fp.set("objname", link_name)
+            fq = etree.SubElement(sensor_section, "framequat")
+            fq.set("name", f"{link_name}_quat_sens")
+            fq.set("objtype", "body")
+            fq.set("objname", link_name)
+
+    # IMU sensors: a <site> with the link name was emitted into each imu* body
+    # by _create_body_element above, so the site reference here resolves.
+    for link_name in links:
+        if _is_imu_link(link_name):
+            acc = etree.SubElement(sensor_section, "accelerometer")
+            acc.set("name", f"{link_name}_acc_sens")
+            acc.set("site", link_name)
+            gyro = etree.SubElement(sensor_section, "gyro")
+            gyro.set("name", f"{link_name}_gyro_sens")
+            gyro.set("site", link_name)
 
     # Convert to string
     xml_string = etree.tostring(

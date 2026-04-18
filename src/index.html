@@ -224,6 +224,21 @@
               <div class="sim-pose-row">
                 <button class="sim-pose-btn" id="sim-script-clear" title="Remove active script">Clear</button>
               </div>
+              <!-- Physics tuning -->
+              <div class="sim-section-title">Physics</div>
+              <div class="sim-pose-row" style="flex-direction:column;gap:4px;">
+                <label style="font-size:11px;color:#858585;">Floor friction: <span id="sim-floor-friction-val">1.5</span></label>
+                <input type="range" id="sim-floor-friction" min="0" max="3" step="0.05" value="1.5"
+                  style="width:100%;accent-color:#569cd6;">
+              </div>
+              <!-- Mass / COM info (populated on sim load) -->
+              <div id="sim-mass-info" style="display:none;margin-top:6px;font-size:10px;color:#858585;line-height:1.5;"></div>
+              <!-- Timeline scrub (visible only when paused and ring has data) -->
+              <div id="sim-scrub-row" style="display:none;flex-direction:column;gap:4px;margin-top:6px;">
+                <label style="font-size:11px;color:#858585;">Scrub: <span id="sim-scrub-val">0</span></label>
+                <input type="range" id="sim-scrub" min="0" max="100" step="1" value="100"
+                  style="width:100%;accent-color:#569cd6;">
+              </div>
               <!-- Visualization overlays (Phase D) -->
               <div class="sim-section-title">Visualization</div>
               <div class="sim-viz-toggles">
@@ -465,7 +480,11 @@
               <button class="sim-btn" id="sim-pause" title="Pause">&#10074;&#10074;</button>
               <button class="sim-btn" id="sim-reset" title="Reset">&#8634;</button>
               <div class="sim-sep"></div>
-              <span id="sim-speed">1.0x</span>
+              <button class="sim-btn" id="sim-speed-down" title="Slow down (0.1× min)">&#8722;</button>
+              <span id="sim-speed-display" style="min-width:28px;text-align:center;font-size:11px;color:#aaa;" title="Simulation speed multiplier">1.0×</span>
+              <button class="sim-btn" id="sim-speed-up" title="Speed up (2× max)">&#43;</button>
+              <span id="sim-rtf-display" style="font-size:10px;color:#aaa;min-width:36px;" title="Real-time factor"></span>
+              <span id="sim-rtf-badge" class="hidden" style="font-size:10px;color:#f14c4c;margin-left:2px;" title="Physics can't keep up with real time">&#9888;</span>
               <div id="sim-timeline"><div id="sim-progress"></div></div>
               <span id="sim-time">0.000s</span>
               <span id="sim-error-overlay" class="hidden" style="color:#f14c4c;font-size:11px;margin-left:8px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>

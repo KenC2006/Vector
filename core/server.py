@@ -83,6 +83,34 @@ except ImportError as e:
 from ai.local_completions import generate_local_completion as _generate_local_completion
 
 
+# ── sim_set_script sandbox ────────────────────────────────────────────────────
+# Whitelisted builtins available to user-authored sim scripts. Anything not in
+# this set (open, exec, eval, __import__, compile, getattr, setattr, ...) is
+# unavailable, so a malicious script cannot reach the filesystem, the network,
+# or arbitrary Python attributes.
+import math as _math
+import builtins as _builtins
+_SAFE_BUILTINS = {
+    name: getattr(_builtins, name)
+    for name in (
+        "abs", "min", "max", "round", "sum", "len", "range", "enumerate", "zip",
+        "map", "filter", "sorted", "reversed", "all", "any",
+        "int", "float", "bool", "str", "list", "tuple", "dict", "set",
+        "print", "isinstance",
+    )
+}
+_SCRIPT_GLOBALS: Dict[str, Any] = {
+    "__builtins__": _SAFE_BUILTINS,
+    "math": _math,
+}
+# Names a script may not use, even though they aren't reachable through
+# builtins — defense in depth against future _SAFE_BUILTINS additions.
+_SCRIPT_NAME_DENY = frozenset({
+    "eval", "exec", "compile", "open", "__import__", "getattr", "setattr",
+    "delattr", "globals", "locals", "vars", "input", "help",
+})
+
+
 class JSONRPCServer:
     """Simple JSON-RPC 2.0 server."""
 
@@ -102,6 +130,8 @@ class JSONRPCServer:
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
             "sim_set_gravity": self.handle_sim_set_gravity,
+            "sim_set_floor_friction": self.handle_sim_set_floor_friction,
+            "sim_scrub": self.handle_sim_scrub,
             "sim_set_script": self.handle_sim_set_script,
             "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
@@ -275,6 +305,11 @@ class JSONRPCServer:
                     np.random.seed(int(seed))
                 except Exception:
                     pass
+                try:
+                    import mujoco as _mj
+                    _mj.mj_setSeed(int(seed))
+                except Exception:
+                    pass
             return self.simulator.load_urdf(path, free_base=free_base)
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
@@ -388,6 +423,37 @@ class JSONRPCServer:
         except Exception as e:
             raise ValueError(f"Failed to get state: {e}")
 
+    def handle_sim_set_floor_friction(self, params: Dict[str, Any]) -> None:
+        """
+        Update the floor geom's lateral friction coefficient.
+
+        Params:
+            friction (float): Lateral friction (0 = frictionless, 3 = very sticky).
+        """
+        self._require_simulator()
+        friction = params.get("friction", 1.5)
+        try:
+            self.simulator.set_floor_friction(float(friction))
+        except Exception as e:
+            raise ValueError(f"Failed to set floor friction: {e}")
+
+    def handle_sim_scrub(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Restore the simulation to a ring-buffer frame index and return state.
+
+        Params:
+            frame_idx (int): 0 = oldest frame, -1 or omitted = newest.
+
+        Returns:
+            Simulation state at that frame.
+        """
+        self._require_simulator()
+        frame_idx = int(params.get("frame_idx", -1))
+        try:
+            return self.simulator.scrub(frame_idx)
+        except Exception as e:
+            raise ValueError(f"Failed to scrub: {e}")
+
     def handle_sim_set_script(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Compile and install a Python step-callback script.
@@ -405,9 +471,9 @@ class JSONRPCServer:
             self.sim_script_error = None
             return {"status": "cleared"}
         try:
-            namespace: Dict[str, Any] = {"__builtins__": __builtins__}
-            exec(compile(code, "<sim_script>", "exec"), namespace)
-            fn = namespace.get("step")
+            self._reject_unsafe_script(code)
+            exec(compile(code, "<sim_script>", "exec"), _SCRIPT_GLOBALS)
+            fn = _SCRIPT_GLOBALS.pop("step", None)
             if fn is None or not callable(fn):
                 raise ValueError("Script must define a callable 'step(t, state)' function")
             self.sim_script_fn = fn
@@ -417,6 +483,19 @@ class JSONRPCServer:
             self.sim_script_fn = None
             self.sim_script_error = str(e)
             return {"status": "error", "message": str(e)}
+
+    @staticmethod
+    def _reject_unsafe_script(code: str) -> None:
+        """Static AST scan: reject imports, attribute access into dunders, exec/eval."""
+        import ast
+        tree = ast.parse(code, mode="exec")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                raise ValueError("Imports are not allowed in sim scripts")
+            if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+                raise ValueError(f"Dunder attribute access not allowed: {node.attr}")
+            if isinstance(node, ast.Name) and node.id in _SCRIPT_NAME_DENY:
+                raise ValueError(f"Use of '{node.id}' is not allowed in sim scripts")
 
     def handle_sim_render(self, params: Dict[str, Any]) -> str:
         """
