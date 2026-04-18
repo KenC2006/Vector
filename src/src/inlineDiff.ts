@@ -27,6 +27,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
   let inlineDiffCollection: monaco.editor.IEditorDecorationsCollection | null = null
   let inlineDiffWidget: HTMLElement | null = null
   let pendingOldText: string | null = null
+  let pendingNewText: string | null = null
   let activeChatActionsId: string | null = null
 
   function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
@@ -34,23 +35,42 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     if (!editor) return
 
     pendingOldText = oldText
+    pendingNewText = newText
 
     const oldLines = oldText.split('\n')
     const newLines = newText.split('\n')
     const maxLen = Math.max(oldLines.length, newLines.length)
-    const changedLines: number[] = []
+    // Lines in oldText that will be modified or removed — decoratable now.
+    const changedOldLines: number[] = []
+    let addedCount = 0
+    let totalChanged = 0
 
     for (let i = 0; i < maxLen; i++) {
       const oldLine = i < oldLines.length ? oldLines[i] : undefined
       const newLine = i < newLines.length ? newLines[i] : undefined
-      if (oldLine !== newLine && newLine !== undefined) {
-        changedLines.push(i + 1)
+      if (oldLine === newLine) continue
+      totalChanged++
+      if (oldLine !== undefined) {
+        changedOldLines.push(i + 1)
+      } else {
+        addedCount++
       }
     }
 
-    editor.setValue(newText)
+    // Show OLD text as the baseline while the user reviews — this makes Accept
+    // a visible action (text changes to newText on click) and Dismiss a no-op
+    // visually. If the editor already has newText (e.g. the assembly engine
+    // committed it before this call), we revert to oldText here and reparse so
+    // the 3D viewport also reflects the pre-change state during review.
+    const textWasReverted = editor.getValue() !== oldText
+    if (textWasReverted) {
+      editor.setValue(oldText)
+      // The debounced reparse in onDidChangeModelContent is suppressed while a
+      // diff is pending (see main.ts), so trigger one explicitly to sync 3D.
+      deps.reparseURDF()
+    }
 
-    const decorations: monaco.editor.IModelDeltaDecoration[] = changedLines.map(lineNum => ({
+    const decorations: monaco.editor.IModelDeltaDecoration[] = changedOldLines.map(lineNum => ({
       range: new monaco.Range(lineNum, 1, lineNum, 1),
       options: {
         isWholeLine: true,
@@ -65,8 +85,9 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     if (inlineDiffWidget) inlineDiffWidget.remove()
     const bar = document.createElement('div')
     bar.className = 'inline-diff-bar'
+    const addedSuffix = addedCount > 0 ? ` (+${addedCount} new)` : ''
     bar.innerHTML = `
-      <span class="idb-label">${changedLines.length} lines changed</span>
+      <span class="idb-label">${totalChanged} lines changed${addedSuffix}</span>
       <button class="idb-accept">✓ Accept</button>
       <button class="idb-dismiss">✗ Dismiss</button>
     `
@@ -85,10 +106,12 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     bar.querySelector('.idb-accept')!.addEventListener('click', () => acceptInlineDiff())
     bar.querySelector('.idb-dismiss')!.addEventListener('click', () => dismissInlineDiff())
 
-    if (changedLines.length > 0) editor.revealLineInCenter(changedLines[0])
+    if (changedOldLines.length > 0) editor.revealLineInCenter(changedOldLines[0])
   }
 
   function acceptInlineDiff() {
+    const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+    const newText = pendingNewText
     const urdfApi = deps.getUrdfAssemblyApi()
     if (pendingOldText && urdfApi) {
       urdfApi.recordUndoExternal(pendingOldText)
@@ -100,14 +123,20 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
 
     clearInlineDiff()
     pendingOldText = null
+    pendingNewText = null
 
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
 
+    // Apply newText now — showInlineDiff left oldText in the editor so Accept
+    // is the visible commit step. Skip the write if somehow already equal.
+    if (editor && newText !== null && editor.getValue() !== newText) {
+      editor.setValue(newText)
+    }
+
     deps.showToast('Changes accepted', 'success')
     syncChatActions('accept')
 
-    const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
     if (editor) {
       deps.reparseURDF()
       deps.runLocalValidation()
@@ -120,12 +149,16 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
 
     clearInlineDiff()
     pendingOldText = null
+    pendingNewText = null
 
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
 
+    // showInlineDiff left oldText in the editor, so usually we have nothing to
+    // revert in the text. But the 3D scene may still reflect newText from a
+    // prior assembly commit — always reparse so the viewport matches oldText.
     if (editor && oldText !== null) {
-      editor.setValue(oldText)
+      if (editor.getValue() !== oldText) editor.setValue(oldText)
       deps.reparseURDF()
     }
 
@@ -163,6 +196,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
   function clearPendingDiff() {
     clearInlineDiff()
     pendingOldText = null
+    pendingNewText = null
   }
 
   return {
