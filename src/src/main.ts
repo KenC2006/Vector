@@ -56,6 +56,9 @@ function groundRobot(robotGroup: THREE.Group) {
   // and other helpers that are children of robotGroup but not actual robot geometry.
   const urdfWorld = robotGroup.getObjectByName('urdf_world')
   const target = urdfWorld || robotGroup
+  // Defensive: re-update target's matrices in case async mesh adds happened
+  // after robotGroup.updateMatrixWorld but before we got here.
+  target.updateMatrixWorld(true)
 
   // Walk the full scene graph under target. Computing each mesh's world-space AABB
   // from its geometry.boundingBox + matrixWorld explicitly (instead of Box3.setFromObject)
@@ -64,20 +67,30 @@ function groundRobot(robotGroup: THREE.Group) {
   // because the lowest mesh was buried in servo→servo→extrusion chains.
   let minY = Infinity
   let meshCount = 0
+  let lowestLink: string | null = null
   const tmpBox = new THREE.Box3()
   target.traverse((obj: THREE.Object3D) => {
     const mesh = obj as THREE.Mesh
     if (!mesh.isMesh || !mesh.visible) return
+    // Skip collision-visual meshes — they share linkGroups with real geometry but
+    // shouldn't influence ground offset (especially when toggled visible).
+    const ud = mesh.userData as Record<string, unknown> | undefined
+    if (ud?.isCollision) return
     const geom = mesh.geometry
     if (!geom) return
     if (!geom.boundingBox) geom.computeBoundingBox()
     const bb = geom.boundingBox
     if (!bb || bb.isEmpty()) return
     tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
-    if (tmpBox.min.y < minY) minY = tmpBox.min.y
+    if (tmpBox.min.y < minY) {
+      minY = tmpBox.min.y
+      lowestLink = (ud?.urdfLinkName as string) || null
+    }
     meshCount++
   })
   if (!isFinite(minY) || meshCount === 0) return
+  // Diagnostic: visible into floating-robot debugging without re-instrumenting.
+  console.log(`[groundRobot] meshes=${meshCount} minY=${minY.toFixed(4)} lowestLink=${lowestLink || '?'} → shifting by ${(-minY).toFixed(4)}`)
   // In Three.js Y is up; shift so lowest mesh touches Y=0
   robotGroup.position.y = -minY
 }

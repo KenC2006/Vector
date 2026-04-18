@@ -193,6 +193,19 @@ function summarizeAssemblyGraphForAI(graph: AssemblyGraph): string {
   return lines.join('\n') + '\n\n'
 }
 
+/** Render topology warnings as an inline amber block under the assistant message. */
+function formatWarningsHtml(warnings: string[] | undefined): string {
+  if (!warnings || warnings.length === 0) return ''
+  const items = warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('')
+  return `<div style="margin-top:8px;padding:6px 8px;border-left:3px solid #e5c07b;color:#e5c07b;font-size:11px;background:rgba(229,192,123,0.08);">Topology warnings (non-blocking):${items}</div>`
+}
+
+/** Render topology warnings as a plain-text block for redesign/retry prompts. */
+function formatWarningsForPrompt(warnings: string[] | undefined): string {
+  if (!warnings || warnings.length === 0) return ''
+  return `\n\nTopology warnings (non-blocking, but worth addressing in a redesign):\n${warnings.map(w => `- ${w}`).join('\n')}`
+}
+
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
   const oldLines = oldText.split('\n')
   const newLines = newText.split('\n')
@@ -497,7 +510,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
             const resolvedTargets = summarizeTopologyOps(result.topology_ops, currentGraph)
-            addVCMessage('assistant', `${resolvedTargets}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+            const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+            addVCMessage('assistant', `${resolvedTargets}${result.explanation}${warnBlock}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
               diff, newUrdf: assemblyOut.urdf,
             })
             deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
@@ -681,7 +695,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const previousTopologyBlock = previousGraph
                   ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
                   : ''
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt that the validator did NOT flag — only change what the validator specifically called out.`
+                const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${warnLine}${placementGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt that the validator did NOT flag — only change what the validator specifically called out.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
@@ -693,7 +708,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
           const diff = computeSimpleDiff(fullUrdf, assemblyResult)
           const graphSummary = summarizeAssemblyGraph(result.assembly_graph as AssemblyGraph)
-          addVCMessage('assistant', `${graphSummary}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+          addVCMessage('assistant', `${graphSummary}${result.explanation}${warnBlock}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
             diff, newUrdf: assemblyResult,
           })
           deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
@@ -702,7 +718,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           if (topoErrors && topoErrors.length > 0) {
             addVCMessage('system', `<span style="color:#e5c07b;">Topology validation failed. Redesigning...</span>`)
             const errorList = topoErrors.map(e => `- ${e}`).join('\n')
-            const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}\n\nPlease fix these issues in your new design.`
+            const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
+            const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
             vcSend.disabled = false
             unlisten?.()
             return sendVCMessage(retryPrompt, retryCount + 1)

@@ -123,7 +123,7 @@ export interface UrdfAssemblyApi {
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
-  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
   /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
@@ -1594,8 +1594,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
       // components whose long axis is already X or Y (batteries, sensor packs), pitching
       // stands them up — fall through to the normal 'top' case, applying just yaw.
-      const longestIsZ = childZ >= childX && childZ >= childY
-      if (longestIsZ) {
+      // Use sortedDims.indexOf(longest) so a tied axis (e.g. childX === childZ) resolves
+      // to the original index of the first match, not Z.
+      const dims = [childX, childY, childZ]
+      const sortedDims = [...dims].sort((a, b) => a - b)
+      const longest = sortedDims[2]
+      const longestAxisIdx = dims.indexOf(longest)
+      if (longestAxisIdx === 2) {
         // Pitch 90° swings X onto Z — use childX as the vertical extent.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
         const oz = parent.hz + vExtent / 2 + gap
@@ -1620,18 +1625,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 1a: topology-aware splay — splayAngle was pre-computed above
         let rollRad = 0
         let pitchRad = 0
-        let rpyStr = '0 0 0'
         if (isWheel) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
           rollRad = -Math.PI / 2
-          rpyStr = '-1.5708 0 0'
         } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
           rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
           pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-          rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} 0`
         }
+        // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
+        // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
+        // hip toward its corner now lands instead of being silently dropped.
+        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         const vExtent = verticalExtentForRotation(childX, childY, childZ, rollRad, pitchRad)
         const oz = -(parent.hz + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
@@ -3103,7 +3110,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } catch { /* localStorage full or unavailable — non-critical */ }
   }
 
-  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
@@ -3145,7 +3152,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (topologyErrors.length > 0) {
       console.error('[assembly] Topology validation failed:', topologyErrors)
       ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
-      return { urdf: null, topologyErrors }
+      return { urdf: null, topologyErrors, topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
     }
 
     // Topological sort: process components in dependency order
@@ -3404,10 +3411,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
       // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
       // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
-      // auto-inserted shaft↔mount_face brackets, which otherwise tilt whole leg chains 30° outward.
+      // auto-inserted shaft↔mount_face brackets and servo coupler discs, which represent the
+      // START of a leg chain (not a stance element); splaying them tilts the whole chain ~30°.
       const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
         || comp.component_id.startsWith('structural_joint_plate')
         || comp.component_id.startsWith('structural_sheet')
+        || comp.component_id.startsWith('structural_servo_coupler')
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
@@ -3590,7 +3599,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
-    return { urdf: ctx.getUrdfText() }
+    return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
   }
 
   // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────

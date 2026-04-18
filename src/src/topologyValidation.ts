@@ -178,12 +178,10 @@ export function validateTopology(
   // for most cases, and (b) a real physical assembly uses an extrusion for this,
   // not a bracket — the AI should learn to emit that pattern.
   //
-  // Delivery today: warnings are surfaced only to the browser console by the
-  // urdfAssembly delegation block. Wiring `topologyWarnings` through
-  // `resolveAssemblyGraph`'s return into `viewportChat.ts` so the second-pass
-  // Gemini validator and the AI redesign loop see them is owned by the
-  // `vector-ai-context` workstream. Until that lands, this rule is a
-  // developer-facing diagnostic, not an AI-facing feedback signal.
+  // Delivery: warnings flow through `resolveAssemblyGraph`'s `topologyWarnings`
+  // return field into `viewportChat.ts`, where they surface inline in the chat
+  // panel and append to the redesign-retry prompt so subsequent Claude turns
+  // see them as feedback.
   for (const comp of components) {
     if (!comp.attach_to) continue
     if (!isActuatorId(comp.component_id)) continue
