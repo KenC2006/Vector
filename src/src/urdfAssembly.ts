@@ -123,7 +123,7 @@ export interface UrdfAssemblyApi {
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
-  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] }
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
   /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
@@ -3110,7 +3110,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } catch { /* localStorage full or unavailable — non-critical */ }
   }
 
-  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[] } {
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
@@ -3152,7 +3152,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (topologyErrors.length > 0) {
       console.error('[assembly] Topology validation failed:', topologyErrors)
       ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
-      return { urdf: null, topologyErrors }
+      return { urdf: null, topologyErrors, topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
     }
 
     // Topological sort: process components in dependency order
@@ -3599,7 +3599,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
-    return { urdf: ctx.getUrdfText() }
+    return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
   }
 
   // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────
