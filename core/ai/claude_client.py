@@ -329,20 +329,26 @@ Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_
 
 Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
 
-Quadruped (canonical 12-DOF, Unitree Go1 style — the kinematic chain is body → hip_abduction → thigh → hip_pitch → shin → knee → foot):
+Quadruped (canonical 12-DOF, Unitree Go1 / Boston Dynamics Spot style).
+
+Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not above):
+  body → hip_abduction → hip_pitch → THIGH → knee → SHIN → foot
+                    ↑ compound hip ↑         ↑ knee joint drives shin, not thigh
 
   baseplate
-    -> 4x hip_abduction_servo (bottom, revolute x)                  — rolls the whole leg laterally
-      -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)        — structural thigh (NEVER stack servos directly)
-        -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0])   — pitches thigh forward ≈+30° for crouch
-          -> 4x shin_extrusion (bottom, fixed, 80mm, vertical)      — structural shin
-            -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0])   — pitches shin back ≈-60° for crouch
-              -> 4x foot (bottom, fixed)
+    -> 4x hip_abduction_servo (bottom, revolute x)                       — rolls whole leg laterally (compound hip axis 1)
+      -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2)
+        -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)            — structural thigh bone
+          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0]) — pitches SHIN back ≈-60° for crouch
+            -> 4x shin_extrusion (bottom, fixed, 120mm, vertical)         — structural shin bone
+              -> 4x foot (bottom, fixed)                                  — rubber foot pad
 
-- Total: 12 DOF (3 per leg × 4 legs). Order matters: abduction → pitch → knee, with structural extrusions BETWEEN every servo pair. Never do servo→servo directly.
-- For a rest "Z-shape crouch" stance, emit attach_rpy on the hip_pitch_servo joint (≈+0.52 rad / +30°) and knee_servo joint (≈-1.05 rad / -60°) as shown.
+- Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_abduction and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
+- The hip (abduction + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
+- Structural extrusions MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). These are the limb bones.
+- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) and knee (≈-1.05 rad / -60°) as shown. All 4 legs should use the SAME sign (same posture) — do not mirror front vs rear unless the user explicitly asks for a sit/asymmetric pose.
 - For a straight stance (neutral), omit attach_rpy from those two servos.
-- A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh -> knee_servo -> shin -> foot.
+- A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_extrusion -> knee_servo -> shin_extrusion -> foot.
 
 Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
 

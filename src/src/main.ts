@@ -1341,15 +1341,22 @@ function rebuildWireframes() {
   wireframeGroup.clear()
   wireframeBuilt = false
 
-    robot.traverse(child => {
+  // wireframeGroup is a child of robot, which has a non-identity position after
+  // groundRobot (robot.position.y = -minY). We capture each mesh's world-space
+  // transform and convert to wireframeGroup-local so clones sit where the solids do.
+  // Must update matrices first — groundRobot mutates robot.position and we may run
+  // before a render cycle refreshes matrixWorld.
+  robot.updateMatrixWorld(true)
+  robot.traverse(child => {
     if (child instanceof THREE.Mesh && child.material !== wireMat && child.material !== defaultMat && child.geometry) {
-        const clone = new THREE.Mesh(child.geometry, wireMat)
-        child.getWorldPosition(clone.position)
-        child.getWorldQuaternion(clone.quaternion)
-        child.getWorldScale(clone.scale)
-        wireframeGroup.add(clone)
-      }
-    })
+      const clone = new THREE.Mesh(child.geometry, wireMat)
+      child.getWorldPosition(clone.position)
+      wireframeGroup.worldToLocal(clone.position)
+      child.getWorldQuaternion(clone.quaternion)
+      child.getWorldScale(clone.scale)
+      wireframeGroup.add(clone)
+    }
+  })
   wireframeBuilt = true
 }
 
@@ -1606,11 +1613,13 @@ function reparseURDF(xmlOverride?: string) {
           addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
-          rebuildWireframes()
           rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           groundRobot(robot)
+          // Wireframes must rebuild AFTER groundRobot so world-space capture
+          // reflects the final robot position.
+          rebuildWireframes()
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
           showToast(
@@ -1648,8 +1657,7 @@ function reparseURDF(xmlOverride?: string) {
     // Update CoM marker
     updateComMarker()
 
-    // Rebuild wireframes and collision visuals
-    rebuildWireframes()
+    // Collision visuals can rebuild here — they don't depend on ground offset.
     rebuildCollisionVisuals(urdfContent)
 
     // Update viewport info
@@ -1658,6 +1666,10 @@ function reparseURDF(xmlOverride?: string) {
     urdfAssemblyApi?.onModelUpdated()
 
     groundRobot(robot)
+
+    // Wireframes must rebuild AFTER groundRobot so world-space capture
+    // reflects the final robot position.
+    rebuildWireframes()
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
