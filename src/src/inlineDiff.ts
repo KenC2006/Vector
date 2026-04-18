@@ -182,9 +182,10 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
 
-    // showInlineDiff left oldText in the editor, so usually we have nothing to
-    // revert in the text. But the 3D scene may still reflect newText from a
-    // prior assembly commit — always reparse so the viewport matches oldText.
+    // Restore oldText in the editor and 3D viewport. In revert-to-old mode
+    // showInlineDiff already left oldText in place, so the setValue is a no-op
+    // and we just reparse to keep 3D in sync. In keep-new mode the editor
+    // holds newText — the getValue check fires and setValue flips it back.
     if (editor && oldText !== null) {
       if (editor.getValue() !== oldText) editor.setValue(oldText)
       deps.reparseURDF()
