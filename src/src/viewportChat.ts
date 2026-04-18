@@ -721,7 +721,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 // is anatomically mammal-correct but breaks the Spot look the user asked
                 // for, AND Claude's best attempt at it produces a horse-pose regression
                 // (front thighs angle backward, shins forward) — so treat it as aesthetic.
-                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mirror(ed)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund|knees?\s+(?:point|bend|should))\b/
+                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund)\b|\bknees?\s+(?:point|bend|face|angle)\w*|mirror(?:ed)?\s+\w*\s*(?:pitch|leg|knee|hip|limb|orient|front|rear)|(?:leg|knee|hip|limb)s?\s+\w*\s*mirror(?:ed)?/
                 const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
                 return aestheticHints.test(detail) && !actionableHints.test(detail)
               }
