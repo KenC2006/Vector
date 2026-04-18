@@ -467,13 +467,27 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       // from URDF text — and sees fields URDF round-trips can't preserve
       // (orientation, elevation_angle, length_mm).
       // Only meaningful for edit/modify_topology calls — redesigns start blank.
+      //
+      // Guard against cross-session stale context: the stored graph persists
+      // across browser reloads. If the editor's current URDF no longer matches
+      // it (user opened a different file, reset the editor, or kept the sample
+      // URDF from startup), the stored graph is a ghost — sending it as
+      // "current assembly" makes fresh design_robot calls look like edits and
+      // causes Claude to mimic the stale design. Only inject the graph when
+      // its base_link actually appears in the current editor URDF.
       const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
-      const portOccupancyCtx = !isRedesign && storedGraphForContext
+      const storedMatchesEditor = storedGraphForContext
+        ? fullUrdf.includes(`name="${storedGraphForContext.base_link}"`)
+        : false
+      const portOccupancyCtx = !isRedesign && storedGraphForContext && storedMatchesEditor
         ? buildPortOccupancyContext(storedGraphForContext)
         : ''
-      const graphSummaryCtx = !isRedesign && storedGraphForContext
+      const graphSummaryCtx = !isRedesign && storedGraphForContext && storedMatchesEditor
         ? summarizeAssemblyGraphForAI(storedGraphForContext)
         : ''
+      if (storedGraphForContext && !storedMatchesEditor) {
+        console.log(`[AI] Stored graph base_link "${storedGraphForContext.base_link}" not found in current editor — skipping Phase 4 context (likely a fresh design after reload)`)
+      }
       const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx + graphSummaryCtx)
 
       const result = await invoke('ai_edit', {
