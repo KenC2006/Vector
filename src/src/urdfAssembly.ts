@@ -3386,8 +3386,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Log compatibility result
       if (parentPort && childPort) {
         const compat = nodesCompatible(childPort.cls, parentPort.cls)
-        const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
-        console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
+        // Expected-mismatch suppression: brackets and coupler discs exist precisely
+        // to mate a shaft against a mount_face (shaft drives the disc via friction
+        // /screws — the real mechanical interface). Auto-repair inserts these
+        // intentionally, so the resulting shaft↔mount_face pair is the design
+        // intent, not an error. Quiet the log line (12× spam per quadruped)
+        // while still leaving compat=false for any downstream code that cares.
+        const isCouplingPair = !compat
+          && childPort.cls === 'shaft'
+          && parentPort.cls === 'mount_face'
+          && (parentPreset!.id.startsWith('structural_bracket')
+              || parentPreset!.id.startsWith('structural_servo_coupler'))
+        if (!isCouplingPair) {
+          const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
+          console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
+        }
       } else {
         console.log(`[assembly][ports] Connection: ${comp.component_id} → ${comp.attach_to}.${attachFace} — port resolution incomplete (parent=${!!parentPort}, child=${!!childPort})`)
       }
