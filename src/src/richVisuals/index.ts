@@ -11,7 +11,7 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getMeshOverrideUrl, getRotationOverride, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
 import { getComponentColor, getTintedMaterial } from './materials'
 
 
@@ -291,6 +291,15 @@ function applyMeshToLink(
       meshGroup.scale.setScalar(0.001) // mm → m
     }
 
+    // Apply per-component rotation override BEFORE per-axis scaling so the
+    // bounds measured below reflect the rotated mesh — otherwise per-axis
+    // scaling would squish a mismatched-axis mesh into a sliver.
+    const rotation = getRotationOverride(compId)
+    if (rotation) {
+      meshGroup.rotation.set(rotation[0], rotation[1], rotation[2])
+      meshGroup.updateMatrixWorld(true)
+    }
+
     // Per-axis scaling: scale GLB to match the component's declared bounding_box_mm.
     // Skip odd-shaped components (grippers, end effectors) whose GLB meshes don't
     // scale cleanly along independent axes.
@@ -322,6 +331,13 @@ function applyMeshToLink(
     finalBox.getSize(finalSize)
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
       meshDimsCache.set(compId, finalSize.clone())
+    }
+    if (rotation) {
+      console.log(`[richVisuals:rotation-override] ${compId} rendered size mm:`,
+        (finalSize.x * 1000).toFixed(2),
+        (finalSize.y * 1000).toFixed(2),
+        (finalSize.z * 1000).toFixed(2),
+        'expected mm:', (dims.x * 1000).toFixed(2), (dims.y * 1000).toFixed(2), (dims.z * 1000).toFixed(2))
     }
   }
 
