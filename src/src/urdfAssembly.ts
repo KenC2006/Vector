@@ -1370,7 +1370,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { ixx: i, iyy: i, izz: i }
   }
 
-  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number } {
+  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
     // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
     // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
     // Strip trailing _N instance number to recover the component ID (e.g. "servo_micro_2" → "servo_micro").
@@ -1378,14 +1378,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const compId = compIdMatch?.[1] ?? parentLinkName
     const renderedDims = getRenderedMeshDims(compId)
     if (renderedDims && renderedDims.x > 0.001) {
-      // meshDimsCache is measured in the GLB's local space before worldGroup rotation.
-      // After worldGroup.rotation.x = -PI/2: local X → world X (URDF X),
-      // local Z → world Y (URDF Z, "up"), local Y → world -Z (URDF Y, "depth").
-      // So: hx = X half-extent, hy = Y half-extent (depth), hz = Z half-extent (height/up).
+      // GLB is re-centered on its AABB in applyMeshToLink, so AABB center sits at the
+      // link origin — report cx=cy=cz=0 for the rendered-mesh path.
       return {
         hx: renderedDims.x / 2,
         hy: renderedDims.y / 2,
         hz: renderedDims.z / 2,
+        cx: 0, cy: 0, cz: 0,
       }
     }
 
@@ -1393,10 +1392,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // <origin xyz> offset. This handles multi-piece shapes (body + shaft, body + horn, etc.)
     // where previously only the first visual was read, missing protrusions in URDF Z (up).
     const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
-    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
 
     const visuals = linkEl.querySelectorAll('visual')
-    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
 
     // Compute the full axis-aligned bounding box across all visuals, then derive
     // half-extents.  Previous code used `abs(offset) + half_extent` which equals a
@@ -1436,11 +1435,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
     }
 
-    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05 }
+    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
+    // Guard against degenerate zero-extent dims only; legitimate thin parts
+    // (6mm coupler disc, 3mm IMU, PCBs) must report their real half-extent or
+    // placement stacks the next child above a phantom gap.
+    const xExtent = (maxX - minX) / 2
+    const yExtent = (maxY - minY) / 2
+    const zExtent = (maxZ - minZ) / 2
+    // AABB center offset from link origin — non-zero when the link has asymmetric
+    // protrusions (e.g. a servo's shaft sticks up beyond the body's symmetric ±half).
+    // Placement uses this to distinguish "body face distance" from "AABB half".
     return {
-      hx: Math.max((maxX - minX) / 2, 0.005),
-      hy: Math.max((maxY - minY) / 2, 0.005),
-      hz: Math.max((maxZ - minZ) / 2, 0.005),
+      hx: xExtent > 0 ? xExtent : 0.005,
+      hy: yExtent > 0 ? yExtent : 0.005,
+      hz: zExtent > 0 ? zExtent : 0.005,
+      cx: xExtent > 0 ? (maxX + minX) / 2 : 0,
+      cy: yExtent > 0 ? (maxY + minY) / 2 : 0,
+      cz: zExtent > 0 ? (maxZ + minZ) / 2 : 0,
     }
   }
 
@@ -1448,32 +1459,39 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     doc: Document, parentLinkName: string,
     comp: PresetComponent,
     childX: number, _childY: number, childZ: number,
+    childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const mount = (comp.mounting_logic?.primary as string) || 'face_mount'
     const gap = 0
+    // Body half-extents (see computeFacePlacement for rationale) — use these for
+    // face-normal stacking so asymmetric protrusions don't introduce gaps.
+    const parentBodyHX = parent.hx - Math.abs(parent.cx)
+    const parentBodyHZ = parent.hz - Math.abs(parent.cz)
+    const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
+    const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
 
     // face_mount / pcb_solder / bracket_mount → stack on top (Z+) of parent
     if (mount === 'face_mount' || mount === 'pcb_solder' || mount === 'bracket_mount') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // axial_shaft → coaxial along Z, placed at parent's top face
     if (mount === 'axial_shaft') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // rail_slot / side_rail_mount → mount on the side (X+) of parent
     if (mount === 'rail_slot' || mount === 'side_rail_mount' || mount === 'clamp_mount') {
-      const ox = parent.hx + childX / 2 + gap
+      const ox = parentBodyHX + childBodyHX + gap
       return { xyz: `${ox.toFixed(4)} 0 0`, rpy: '0 0 0' }
     }
 
     // hub_bore → coaxial, flush with parent face
     if (mount === 'hub_bore') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
@@ -1484,22 +1502,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     // linear_rod → extend along Z from parent
     if (mount === 'linear_rod') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // tool_changer_master/slave → stack on bottom (Z-) if slave
     if (mount === 'tool_changer_slave') {
-      const oz = -(parent.hz + childZ / 2 + gap)
+      const oz = -(parentBodyHZ + childBodyHZ + gap)
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
     if (mount === 'tool_changer_master') {
-      const oz = parent.hz + childZ / 2 + gap
+      const oz = parentBodyHZ + childBodyHZ + gap
       return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
     }
 
     // Default: stack on top
-    const oz = parent.hz + childZ / 2 + gap
+    const oz = parentBodyHZ + childBodyHZ + gap
     return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
   }
 
@@ -1553,9 +1571,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     childComponentId: string = '',
     elevationAngleDeg: number = 0,
     childSizes?: Array<{ hu: number; hv: number }>,
+    childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
+    // Distance from parent's link origin to its body face along each axis.
+    // For a symmetric part this equals hz; for a servo (shaft on +Z, body
+    // centered at origin) it collapses to the body half-height.
+    // Formula: body_face_distance = axis_half_extent - |axis_center_offset|.
+    const parentBodyHX = parent.hx - Math.abs(parent.cx)
+    const parentBodyHY = parent.hy - Math.abs(parent.cy)
+    const parentBodyHZ = parent.hz - Math.abs(parent.cz)
+    // Child's link-origin-to-body-face distance along each axis. Lets the
+    // child's body (not the tip of an off-center protrusion) sit flush.
+    const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
+    const childBodyHY = childY / 2 - Math.abs(childCenterOffset.cy)
+    const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
     console.log(`[placement] ${childComponentId || '?'} on ${parentLinkName} face=${attachFace || 'top'} | parent hx=${parent.hx.toFixed(4)} hy=${parent.hy.toFixed(4)} hz=${parent.hz.toFixed(4)} | child ${childX.toFixed(4)}×${childY.toFixed(4)}×${childZ.toFixed(4)}`)
 
     const face = attachFace || 'top'
@@ -1617,9 +1648,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const elevRad = elevationAngleDeg * (Math.PI / 180)
 
     // ── Face normal offset + tangential multi-child offset ──
+    // Normal-direction offsets use BODY half-extents (hz - |cz|, etc.), so asymmetric
+    // protrusions (servo shaft) don't inflate the stack spacing and leave visible gaps.
+    // Tangential offsets (tu, tv) and face-distribution still use AABB half-extents — a
+    // protrusion's footprint is real when arranging multiple children.
     switch (face) {
       case 'top': {
-        const oz = parent.hz + childZ / 2 + gap
+        const oz = parentBodyHZ + childBodyHZ + gap
         // 1c: numeric orientation → yaw (Z-rotation) on top face
         const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
@@ -1643,36 +1678,38 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // hip toward its corner now lands instead of being silently dropped.
         const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
-        const vExtent = verticalExtentForRotation(childX, childY, childZ, rollRad, pitchRad)
-        const oz = -(parent.hz + vExtent / 2 + gap)
+        // Rotation-aware vertical extent uses body half-extents so a rolled wheel
+        // or pitched bracket snaps to the body, not to a shaft/horn tip.
+        const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
+        const oz = -(parentBodyHZ + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
         // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(parent.hx + childX / 2 + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${(parentBodyHX + childBodyHX + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'back': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
         const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(-(parent.hx + childX / 2 + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${(-(parentBodyHX + childBodyHX + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'right': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Right face: elevation is a roll about X
         const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(parent.hy + childY / 2 + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${tu.toFixed(4)} ${(parentBodyHY + childBodyHY + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'left': {
-        const zOffset = tv + (elevRad !== 0 ? parent.hz * Math.sin(elevRad) : 0)
+        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Left face: elevation is an inverted roll about X
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(-(parent.hy + childY / 2 + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        return { xyz: `${tu.toFixed(4)} ${(-(parentBodyHY + childBodyHY + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       default:
-        return { xyz: `0 0 ${(parent.hz + childZ / 2 + gap).toFixed(4)}`, rpy: '0 0 0' }
+        return { xyz: `0 0 ${(parentBodyHZ + childBodyHZ + gap).toFixed(4)}`, rpy: '0 0 0' }
     }
   }
 
@@ -3440,7 +3477,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey))
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology

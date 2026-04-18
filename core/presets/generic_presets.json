@@ -2432,12 +2432,12 @@
           "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub.",
           "physical": {
             "mass_kg": 0.015,
-            "bounding_box_mm": [32, 32, 6],
+            "bounding_box_mm": [32, 32, 8],
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6"
           },
           "mechanical_electrical": {
-            "thickness_mm": 6.0,
+            "thickness_mm": 8.0,
             "hole_pattern": "25T_spline_M3_bolt_ring",
             "max_load_n": 500
           },

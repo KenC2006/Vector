@@ -162,7 +162,7 @@ export function hasMeshOverride(componentId: string): boolean {
  */
 export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // Disc thickness on Y in STEP, preset puts it on Z. Rotate X by 90°: Y→Z.
-  // preset [32,32,6] vs GLB [31.96,8,31.98]
+  // preset [32,32,8] vs GLB [31.96,8,31.98]
   'structural_servo_coupler_disc': [Math.PI / 2, 0, 0],
 
   // Bearing axial direction on X in STEP, preset puts it on Z. Rotate Y by 90°: X→Z.
