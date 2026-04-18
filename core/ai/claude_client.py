@@ -85,8 +85,51 @@ def _log_cache_usage(label: str, response) -> None:
 # ── Conversation history store (keyed by session_id) ──────────────────────────
 # Each entry is a list of {"role": "user"|"assistant", "content": str} dicts.
 # Capped to last 20 messages to avoid unbounded token growth.
+#
+# NOTE: images are never persisted here. The text-only summary produced by
+# `_build_history_summary` is what gets stored; attached reference images live
+# only in the turn that sent them. On history replay from localStorage the
+# text summary is restored, but the images are intentionally dropped
+# (they'd bloat localStorage 5MB+ per turn and don't survive a reload anyway).
 _conversation_history: dict[str, list] = defaultdict(list)
 _MAX_HISTORY_MESSAGES = 20
+
+
+def _build_user_content(text: str, images: list | None):
+    """
+    Build a user message `content` field. Returns a plain string when no
+    valid images are attached (preserves the existing wire format so
+    conversation history replay stays unchanged); returns a list of content
+    blocks ordered text-first, images-after when images are present.
+
+    Anthropic Messages API shape per
+    https://platform.claude.com/docs/en/build-with-claude/vision :
+        {"type": "image",
+         "source": {"type": "base64",
+                    "media_type": "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+                    "data": "<raw base64, no data: prefix>"}}
+    """
+    if not images:
+        return text
+    image_blocks: list = []
+    for img in images:
+        media_type = img.get("media_type") if isinstance(img, dict) else None
+        data = img.get("data") if isinstance(img, dict) else None
+        if not media_type or not data:
+            continue
+        image_blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        })
+    if not image_blocks:
+        # All entries were malformed — fall back to plain-string form so we
+        # don't silently change the wire format when images == [].
+        return text
+    return [{"type": "text", "text": text}, *image_blocks]
 
 
 # Component IDs that have verified GLB meshes available in the UI.
@@ -1174,7 +1217,9 @@ def _build_urdf_from_state(assembly_state: dict) -> str:
 
 
 def generate_assembly_with_tools(prompt: str, session_id: str = "default",
-                                  on_progress=None) -> dict:
+                                  on_progress=None,
+                                  model: str = "claude-sonnet-4-6",
+                                  images: list | None = None) -> dict:
     """
     Use Claude's tool-use API to build a robot iteratively.
     Claude calls add_component one at a time, seeing the state after each placement.
@@ -1184,7 +1229,8 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
 
     system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
-    messages = [{"role": "user", "content": f"Build this robot: {prompt}"}]
+    first_user_content = _build_user_content(f"Build this robot: {prompt}", images)
+    messages = [{"role": "user", "content": first_user_content}]
     assembly_state = {"links": {}, "face_counts": {}}
 
     max_rounds = 30  # safety limit
@@ -1198,7 +1244,7 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
         print(f"[tool-agent] Round {round_num}, {len(assembly_state['links'])} links placed", file=sys.stderr)
 
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=model,
             max_tokens=4096,
             system=[{
                 "type": "text",
@@ -1376,7 +1422,9 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
 
 
 def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
-                   kinematic_context: str = None, session_id: str = "default") -> dict:
+                   kinematic_context: str = None, session_id: str = "default",
+                   model: str = "claude-sonnet-4-6",
+                   images: list | None = None) -> dict:
     """
     Call Claude API to generate a robot edit based on natural language.
     Maintains conversation history per session for multi-turn context.
@@ -1430,12 +1478,12 @@ User Request: {prompt}"""
 
     # Build messages array with conversation history
     history = _conversation_history[session_id]
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
     system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=64000,
         system=[{
             "type": "text",
@@ -1466,7 +1514,9 @@ User Request: {prompt}"""
 
 def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                              kinematic_context: str = None, session_id: str = "default",
-                             on_progress=None) -> dict:
+                             on_progress=None,
+                             model: str = "claude-sonnet-4-6",
+                             images: list | None = None) -> dict:
     """
     Streaming version of generate_edit. Calls on_progress(stage, text) as tokens arrive.
     Stages: "thinking", "generating", "applying"
@@ -1500,7 +1550,7 @@ Robot Structure Summary:
 User Request: {prompt}"""
 
     history = _conversation_history[session_id]
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
     system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
@@ -1511,7 +1561,7 @@ User Request: {prompt}"""
     # Stream text for progress, then get final message with tool_use blocks
     try:
         with client.messages.stream(
-            model="claude-sonnet-4-6",
+            model=model,
             max_tokens=64000,
             system=[{
                 "type": "text",

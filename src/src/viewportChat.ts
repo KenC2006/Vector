@@ -52,6 +52,48 @@ export interface ViewportChatApi {
   getVcInput(): HTMLTextAreaElement
 }
 
+export interface ImageAttachment {
+  media_type: 'image/png' | 'image/jpeg'
+  data: string // base64, no data: prefix
+  // Frontend-only preview (not sent to backend):
+  dataUrl?: string
+}
+
+const MAX_IMAGES_PER_PROMPT = 3
+const MAX_IMAGE_EDGE_PX = 1568 // Anthropic's recommended ceiling; they downscale past this
+const IMAGE_JPEG_QUALITY = 0.85
+const MODEL_STORAGE_KEY = 'vector_ai_model'
+const DEFAULT_MODEL = 'claude-sonnet-4-6'
+const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-7'] as const
+
+async function compressImageFile(file: File): Promise<ImageAttachment | null> {
+  if (!file.type.startsWith('image/')) return null
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image()
+    el.onload = () => resolve(el)
+    el.onerror = () => reject(new Error('Image decode failed'))
+    el.src = dataUrl
+  })
+  const scale = Math.min(1, MAX_IMAGE_EDGE_PX / Math.max(img.width, img.height))
+  const w = Math.max(1, Math.round(img.width * scale))
+  const h = Math.max(1, Math.round(img.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(img, 0, 0, w, h)
+  const jpegDataUrl = canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY)
+  const base64 = jpegDataUrl.split(',', 2)[1] ?? ''
+  return { media_type: 'image/jpeg', data: base64, dataUrl: jpegDataUrl }
+}
+
 /**
  * Build a Claude-facing summary of which faces are already occupied on each component.
  * Helps the AI avoid shaft-fanout (2+ children on the same servo face) before it's
@@ -228,9 +270,133 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   const vcMessages = document.getElementById('vc-messages')!
   const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
   const vcSend = document.getElementById('vc-send') as HTMLButtonElement
+  const vcModelSelect = document.getElementById('vc-model-select') as HTMLSelectElement | null
+  const vcAttachBtn = document.getElementById('vc-attach-btn') as HTMLButtonElement | null
+  const vcAttachInput = document.getElementById('vc-attach-input') as HTMLInputElement | null
+  const vcAttachThumbs = document.getElementById('vc-attach-thumbs') as HTMLDivElement | null
   const viewportTabs = document.querySelectorAll('.vp-tab')
 
   let activeViewportView: '3d' | 'chat' = '3d'
+
+  // ── Model selection (persisted via localStorage) ──────────────────────────
+  let currentModel: string = (() => {
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY)
+    return stored && (ALLOWED_MODELS as readonly string[]).includes(stored)
+      ? stored
+      : DEFAULT_MODEL
+  })()
+  if (vcModelSelect) {
+    vcModelSelect.value = currentModel
+    vcModelSelect.addEventListener('change', () => {
+      const v = vcModelSelect.value
+      if ((ALLOWED_MODELS as readonly string[]).includes(v)) {
+        currentModel = v
+        localStorage.setItem(MODEL_STORAGE_KEY, v)
+        console.log(`[VC] AI model switched to ${v}`)
+      }
+    })
+  }
+
+  // ── Image attachments (ephemeral — cleared on send, not persisted) ────────
+  let attachedImages: ImageAttachment[] = []
+
+  function renderAttachThumbs() {
+    if (!vcAttachThumbs) return
+    if (attachedImages.length === 0) {
+      vcAttachThumbs.classList.add('hidden')
+      vcAttachThumbs.innerHTML = ''
+      return
+    }
+    vcAttachThumbs.classList.remove('hidden')
+    vcAttachThumbs.innerHTML = ''
+    attachedImages.forEach((img, idx) => {
+      const wrap = document.createElement('div')
+      wrap.className = 'vc-thumb'
+      const el = document.createElement('img')
+      el.src = img.dataUrl ?? `data:${img.media_type};base64,${img.data}`
+      wrap.appendChild(el)
+      const remove = document.createElement('button')
+      remove.className = 'vc-thumb-remove'
+      remove.type = 'button'
+      remove.title = 'Remove'
+      remove.textContent = '×'
+      remove.addEventListener('click', () => {
+        attachedImages.splice(idx, 1)
+        renderAttachThumbs()
+      })
+      wrap.appendChild(remove)
+      vcAttachThumbs.appendChild(wrap)
+    })
+  }
+
+  async function addImageFiles(files: File[] | FileList) {
+    const list = Array.from(files).filter(f => f.type.startsWith('image/'))
+    for (const f of list) {
+      if (attachedImages.length >= MAX_IMAGES_PER_PROMPT) {
+        deps.showToast(`Max ${MAX_IMAGES_PER_PROMPT} images per prompt`, 'warning')
+        break
+      }
+      try {
+        const att = await compressImageFile(f)
+        if (att) attachedImages.push(att)
+      } catch (err) {
+        console.warn('[VC] Image compression failed:', err)
+        deps.showToast('Image failed to load', 'error')
+      }
+    }
+    renderAttachThumbs()
+  }
+
+  if (vcAttachBtn && vcAttachInput) {
+    vcAttachBtn.addEventListener('click', () => vcAttachInput.click())
+    vcAttachInput.addEventListener('change', async () => {
+      if (vcAttachInput.files && vcAttachInput.files.length > 0) {
+        await addImageFiles(vcAttachInput.files)
+      }
+      vcAttachInput.value = ''
+    })
+  }
+
+  // Paste images into the chat input
+  vcInput.addEventListener('paste', async (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imgFiles: File[] = []
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile()
+        if (f) imgFiles.push(f)
+      }
+    }
+    if (imgFiles.length > 0) {
+      e.preventDefault()
+      await addImageFiles(imgFiles)
+    }
+  })
+
+  // Drag-and-drop onto the chat panel or viewport canvas
+  const dragTargets = [viewportChat, viewportCanvas]
+  for (const target of dragTargets) {
+    if (!target) continue
+    target.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) {
+        e.preventDefault()
+        target.classList.add('vc-dragover')
+      }
+    })
+    target.addEventListener('dragleave', () => target.classList.remove('vc-dragover'))
+    target.addEventListener('drop', async (e) => {
+      target.classList.remove('vc-dragover')
+      if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return
+      const imgs = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
+      if (imgs.length === 0) return
+      e.preventDefault()
+      // If user drops on the 3D viewport, auto-switch to the chat view so they
+      // see the attachment they just added.
+      if (target === viewportCanvas) switchViewportView('chat')
+      await addImageFiles(imgs)
+    })
+  }
 
   // ── Chat UI init ──────────────────────────────────────────────────────────
 
@@ -301,6 +467,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   function addVCMessage(role: 'user' | 'assistant' | 'system', content: string, extras?: {
     diff?: { added: string[]; removed: string[] }
     newUrdf?: string
+    images?: ImageAttachment[]
   }) {
     const plainContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
     if (plainContent) deps.recordChatMessage(role, plainContent)
@@ -309,7 +476,16 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     msg.className = `ai-msg ${role}`
 
     if (role === 'user') {
-      msg.innerHTML = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
+      let html = `<div class="ai-msg-content">${escapeHtml(content)}</div>`
+      if (extras?.images && extras.images.length > 0) {
+        html += `<div class="ai-msg-images">`
+        for (const img of extras.images) {
+          const src = img.dataUrl ?? `data:${img.media_type};base64,${img.data}`
+          html += `<img src="${src}" alt="attached image">`
+        }
+        html += `</div>`
+      }
+      msg.innerHTML = html
     } else if (role === 'assistant') {
       let html = `<div class="ai-msg-content">${content}</div>`
 
@@ -410,12 +586,16 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
   // ── AI send ───────────────────────────────────────────────────────────────
 
-  async function sendVCMessage(prompt: string, retryCount = 0) {
+  async function sendVCMessage(prompt: string, retryCount = 0, imagesOverride?: ImageAttachment[]) {
     if (!prompt.trim()) return
 
     if (!deps.getEditorValue()) {
       deps.createNewFile('robot.urdf', deps.SAMPLE_URDF, null)
     }
+
+    // On the first turn, snapshot what the user attached so retries can re-send
+    // the same reference image(s). Retries pass the captured list back in.
+    const imagesForThisSend: ImageAttachment[] = imagesOverride ?? attachedImages.slice()
 
     if (retryCount === 0) {
       // Resync conversation history to backend BEFORE recording the new message,
@@ -431,9 +611,13 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         }
       }
 
-      addVCMessage('user', prompt)
+      addVCMessage('user', prompt, imagesForThisSend.length > 0 ? { images: imagesForThisSend } : undefined)
       vcInput.value = ''
       vcInput.style.height = 'auto'
+      // Clear pending attachments now that they're sent — the snapshot above
+      // keeps them alive for retries without leaving thumbs in the input bar.
+      attachedImages = []
+      renderAttachThumbs()
     }
 
     vcSend.disabled = true
@@ -510,6 +694,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         urdfContent: currentUrdf,
         kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
+        model: currentModel,
+        images: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       thinking.remove()
@@ -773,7 +959,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
                 vcSend.disabled = false
                 unlisten?.()
-                return sendVCMessage(redesignPrompt, retryCount + 1)
+                return sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
               }
               if (placementFailures.length > 0 && topoFailures.length === 0) {
                 console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
@@ -804,13 +990,13 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
             vcSend.disabled = false
             unlisten?.()
-            return sendVCMessage(retryPrompt, retryCount + 1)
+            return sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
           } else {
             addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
             const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components.`
             vcSend.disabled = false
             unlisten?.()
-            return sendVCMessage(retryPrompt, retryCount + 1)
+            return sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
           }
         } else {
           addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. Try describing a simpler robot.</span>`)
@@ -835,7 +1021,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           await new Promise(r => setTimeout(r, waitSec * 1000))
           unlisten?.()
           vcSend.disabled = false
-          return sendVCMessage(prompt, retryCount + 1)
+          return sendVCMessage(prompt, retryCount + 1, imagesForThisSend)
         }
         addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
       } else {

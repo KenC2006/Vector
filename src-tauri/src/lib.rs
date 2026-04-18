@@ -424,7 +424,16 @@ async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Opti
 
 /// Use Claude AI to generate a robot model edit from natural language
 #[tauri::command]
-async fn ai_edit(app: AppHandle, state: State<'_, AppState>, prompt: String, urdf_content: String, kinematic_context: Option<String>, session_id: Option<String>) -> Result<serde_json::Value, String> {
+async fn ai_edit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    prompt: String,
+    urdf_content: String,
+    kinematic_context: Option<String>,
+    session_id: Option<String>,
+    model: Option<String>,
+    images: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -433,7 +442,9 @@ async fn ai_edit(app: AppHandle, state: State<'_, AppState>, prompt: String, urd
         "prompt": prompt,
         "urdf_content": urdf_content,
         "kinematic_context": kinematic_context,
-        "session_id": session_id.unwrap_or_else(|| "default".to_string())
+        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+        "model": model,
+        "images": images.unwrap_or_default(),
     }), 1, &app)
 }
 
