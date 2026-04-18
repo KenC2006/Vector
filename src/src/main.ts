@@ -1610,16 +1610,19 @@ function reparseURDF(xmlOverride?: string) {
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-          addEdgeLines(parsedRobot)
+          // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+          const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+          if (!skipHeavy) addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
-          rebuildCollisionVisuals(processed)
+          if (!skipHeavy) rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           groundRobot(robot)
           // Wireframes must rebuild AFTER groundRobot so world-space capture
-          // reflects the final robot position.
-          rebuildWireframes()
+          // reflects the final robot position. Also skipped during bulk
+          // assembly — the final reparse after the loop runs it once.
+          if (!skipHeavy) rebuildWireframes()
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
           showToast(
@@ -1650,7 +1653,9 @@ function reparseURDF(xmlOverride?: string) {
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-    addEdgeLines(parsedRobot)
+    // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+    const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+    if (!skipHeavy) addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()
 
@@ -1658,7 +1663,7 @@ function reparseURDF(xmlOverride?: string) {
     updateComMarker()
 
     // Collision visuals can rebuild here — they don't depend on ground offset.
-    rebuildCollisionVisuals(urdfContent)
+    if (!skipHeavy) rebuildCollisionVisuals(urdfContent)
 
     // Update viewport info
     updateViewportInfo()
@@ -1668,8 +1673,9 @@ function reparseURDF(xmlOverride?: string) {
     groundRobot(robot)
 
     // Wireframes must rebuild AFTER groundRobot so world-space capture
-    // reflects the final robot position.
-    rebuildWireframes()
+    // reflects the final robot position. Skipped during bulk assembly —
+    // the final reparse after the loop runs it once.
+    if (!skipHeavy) rebuildWireframes()
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
