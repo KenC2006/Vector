@@ -671,7 +671,28 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               // (and often regresses the good parts). Gemini already signals
               // needs_redesign:false when only placement failures remain; this
               // heuristic now aligns with that judgment instead of overriding it.
-              const shouldRedesign = topoFailures.length > 0
+              //
+              // Additional guard: when the topology failures are purely aesthetic
+              // dimension critiques on structural components (e.g. "baseplate
+              // should be 60-100mm thick" — no preset offers that), the redesign
+              // can't satisfy them. Claude tends to respond by stacking parts
+              // (extrusions as standoffs etc.) which Gemini then flags as ALSO
+              // wrong, so the second pass produces a visually worse result than
+              // the first. Detect and skip those cases.
+              const isAestheticDimensionCritique = (f: { check: string; detail: string }) => {
+                const detail = (f.detail || '').toLowerCase()
+                const aestheticChecks = new Set(['proportions', 'shape_match'])
+                if (!aestheticChecks.has(f.check)) return false
+                // Mentions visual style or non-actionable dimension language without
+                // naming a missing/wrong component or connection. Conservative — only
+                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", etc.
+                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall)|ratio|proportion(s|al)?)\b/
+                const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
+                return aestheticHints.test(detail) && !actionableHints.test(detail)
+              }
+              const allTopoFailuresAreAesthetic = topoFailures.length > 0
+                && topoFailures.every(isAestheticDimensionCritique)
+              const shouldRedesign = topoFailures.length > 0 && !allTopoFailuresAreAesthetic
 
               if (shouldRedesign && retryCount < 1) {
                 const failures = allFailures
@@ -704,6 +725,11 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               }
               if (placementFailures.length > 0 && topoFailures.length === 0) {
                 console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
+              }
+              if (allTopoFailuresAreAesthetic) {
+                const lines = topoFailures.map(c => `  • ${c.check}: ${c.detail}`).join('\n')
+                console.log(`[AI][redesign] Skipping redesign — all topology failures are aesthetic dimension critiques no preset can satisfy:\n${lines}`)
+                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged aesthetic concerns the available presets can't satisfy (e.g. "needs boxier chassis"). Keeping current build — request a different style or part if you want to iterate.</span>`)
               }
             }
           } catch (valErr) {
