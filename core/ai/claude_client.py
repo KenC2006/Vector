@@ -300,6 +300,13 @@ Controls how an elongated or directable component is rotated within its face:
 - Example: a depth camera on the front face with elevation_angle=-20 angles 20° downward to see the floor.
 - Range: typically −45 to +45. Applied as pitch (front/back) or roll (left/right).
 
+### attach_rpy
+**Optional 3-element [roll, pitch, yaw] in RADIANS** applied verbatim to the joint origin relative to the parent. Overrides the engine's default rotation — use for rest-pose joint angles (quadruped crouch, forward-splayed shoulder, etc.).
+- Omit (or pass [0, 0, 0]) to let the engine auto-rotate. That's the default for almost every component.
+- Example (Z-crouch hip pitch ≈ +30°): `attach_rpy=[0, 0.52, 0]` on the thigh-to-hip-pitch-servo link.
+- Example (Z-crouch knee ≈ -60°): `attach_rpy=[0, -1.05, 0]` on the shin-to-knee-servo link.
+- Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
+
 ## Topology Rules
 
 1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
@@ -311,21 +318,37 @@ Controls how an elongated or directable component is rotated within its face:
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: attach wheels DIRECTLY to the baseplate bottom face (revolute y). Do NOT put servos between baseplate and wheels — wheel components have built-in motor semantics.
 9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
+10. **Servos/motors have a shaft output on the TOP face — attach exactly ONE child to a servo's top face.** Never fan out multiple children from the same servo top (e.g. sensor + extrusion, or two extrusions). The shaft drives exactly one thing. If you need multiple items near the same joint, mount them on a shared structural extrusion *after* the servo, not on the servo itself.
+11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
 Arms: baseplate -> base_servo(top, revolute z) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
 Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.
+Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_servo or gripper.
 
 Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
 
-Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(bottom, fixed, 100mm, vertical) -> 4x knee_servo(bottom, revolute y) -> 4x lower_leg_extrusion(bottom, fixed, 80mm, vertical)
+Quadruped (canonical 12-DOF, Unitree Go1 style — the kinematic chain is body → hip_abduction → thigh → hip_pitch → shin → knee → foot):
+
+  baseplate
+    -> 4x hip_abduction_servo (bottom, revolute x)                  — rolls the whole leg laterally
+      -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)        — structural thigh (NEVER stack servos directly)
+        -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0])   — pitches thigh forward ≈+30° for crouch
+          -> 4x shin_extrusion (bottom, fixed, 80mm, vertical)      — structural shin
+            -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0])   — pitches shin back ≈-60° for crouch
+              -> 4x foot (bottom, fixed)
+
+- Total: 12 DOF (3 per leg × 4 legs). Order matters: abduction → pitch → knee, with structural extrusions BETWEEN every servo pair. Never do servo→servo directly.
+- For a rest "Z-shape crouch" stance, emit attach_rpy on the hip_pitch_servo joint (≈+0.52 rad / +30°) and knee_servo joint (≈-1.05 rad / -60°) as shown.
+- For a straight stance (neutral), omit attach_rpy from those two servos.
+- A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh -> knee_servo -> shin -> foot.
 
 Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
 
 Tail: baseplate -> tail_servo(back, revolute z) -> tail_extrusion(back, fixed, 80-120mm, horizontal). One servo and one extrusion is enough.
 
-Sensor mount: any_link -> sensor(top/front/left/right, fixed)
+Sensor mount: any_structural_link -> sensor(top/front/left/right, fixed). Remember — sensors attach to structural links (extrusions, baseplates, brackets), never to servo shafts or effectors.
 Angled sensor: any_link -> depth_camera(front, fixed, elevation_angle=-20) — tilts 20° downward to see the floor.
 Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45° on the top face.
 
@@ -378,6 +401,13 @@ DESIGN_ROBOT_TOOL = {
                         "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links, 80-120 for leg segments."},
                         "orientation": {"type": "string", "description": "Rotation within the face. Keywords: 'vertical' (default, extend +Z), 'horizontal' (extend +X), 'auto'. Or a numeric string in degrees for yaw around the face normal (e.g. '45', '-30'). Combine keyword+degrees as 'horizontal+45'."},
                         "elevation_angle": {"type": "number", "description": "Tilt in degrees for side-face attachments (front/back/left/right only). Positive=up, negative=down. E.g. -20 angles a front camera 20° downward. Ignored on top/bottom faces."},
+                        "attach_rpy": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": "Optional [roll, pitch, yaw] in RADIANS applied to the joint origin. Use for rest-pose joint angles (quadruped crouch, splayed shoulders). Example: [0, 0.52, 0] for +30° pitch, [0, -1.05, 0] for -60° pitch. Omit or pass [0,0,0] to let the engine auto-rotate.",
+                        },
                     },
                     "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
                 },
@@ -448,6 +478,13 @@ MODIFY_TOPOLOGY_TOOL = {
                         "elevation_angle": {
                             "type": "number",
                             "description": "Tilt for side-face attachments.",
+                        },
+                        "attach_rpy": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": "Optional [roll, pitch, yaw] in RADIANS. Same as design_robot — use for rest-pose joint angles like quadruped crouch.",
                         },
                     },
                     "required": ["op", "link_name"],
@@ -1932,11 +1969,23 @@ The robot is built in two stages: (1) an AI designs the TOPOLOGY (which componen
 5. **proportions**: Segments wildly wrong sizes? (topology if wrong length_mm specified, placement if correct sizes but bad layout)
 6. **grounded**: Floating or buried? (placement — the grounding function handles this)
 
+## Be SPECIFIC in every `detail` string
+
+Generic critiques ("proportions are wrong", "parts overlap") waste a redesign round. Every `detail` MUST:
+
+1. **Name the specific link(s)** involved using URDF `link_name` values (e.g. `structural_baseplate_1`, `sensor_depth_camera_small_1`, `actuator_servo_standard_13_3`). Parse them from the URDF's `<link name="...">` attributes. Do NOT say "the baseplate" — say `structural_baseplate_1`.
+2. **Quantify the problem** when possible: include a numeric delta with units — e.g. "baseplate should be ~8cm wider", "thigh_extrusion_2 is 100mm but should be ~180mm for Go1 proportions", "foot_1 is floating ~50mm above the ground plane". Prefer cm or mm. When a ratio is obvious, state it (e.g. "baseplate width 200mm is only 1/5 of robot height 1000mm — needs to be ≥1/3 for stability").
+3. **For missing components**, say what's missing AND where it should attach — e.g. "no gripper at end of forearm_extrusion_1:top", not just "missing gripper".
+4. **For overlaps/clipping**, name BOTH links involved — e.g. "wheel_front_left_1 clips through structural_baseplate_1 along -Z by ~15mm".
+5. **In the top-level `notes` field**, write a 1–2 sentence summary that also names the top 1–3 offending `link_name`s. Example: "Baseplate `structural_baseplate_1` is too narrow for the 900mm-tall arm — widen it or add a pedestal. Also `sensor_depth_camera_small_1` is attached to `actuator_servo_standard_13_3` (a wrist servo shaft) instead of the forearm."
+
+If you cannot determine exact numbers from the image, estimate with a `~` prefix ("~ widen by ~5cm"). Do NOT omit the estimate — even a rough number is more actionable than a vague word.
+
 ## Response Format
 
 Return ONLY valid JSON with a structured checklist. Each check MUST include "fixable_by": "topology" or "placement":
 
-{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm points into ground", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "missing gripper at end of arm", "fixable_by": "topology"}, {"check": "proportions", "pass": true, "detail": "segments reasonable", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Missing gripper — the arm topology needs an effector at the end.", "needs_redesign": true}
+{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm with 3 revolute joints", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm_extrusion_1 points ~30° into the ground plane (should be vertical or pitched up)", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "no gripper at end of forearm_extrusion_1:top", "fixable_by": "topology"}, {"check": "proportions", "pass": false, "detail": "structural_baseplate_1 is ~200mm wide but total arm height is ~900mm — baseplate should be ~300mm (≥1/3 of height) for stability", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Arm is missing a gripper at forearm_extrusion_1:top, and structural_baseplate_1 is underpowered (200mm wide vs 900mm arm height).", "needs_redesign": true}
 
 Set "needs_redesign" to true ONLY if there are topology-fixable failures (missing/wrong components, bad connections). Do NOT set needs_redesign for placement-only issues — the AI cannot fix those.
 
@@ -1945,6 +1994,7 @@ Set "ok" to true ONLY if ALL checks pass. The checklist must always have these 6
 CRITICAL RULES:
 - Do NOT include "edits" with modified xyz/rpy coordinates. You cannot do spatial math.
 - Classify every failure as "topology" or "placement" — this determines whether a redesign is triggered.
+- Every `detail` for a failing check must name at least one `link_name` from the URDF and include a numeric estimate where applicable.
 - Your job is to DESCRIBE what's wrong and WHO can fix it (topology AI vs placement engine).
 
 REMINDER: Return ONLY JSON. Start with { end with }.
