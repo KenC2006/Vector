@@ -136,6 +136,8 @@ export interface UrdfAssemblyApi {
   getUndoState(): { undo: string[]; redo: string[] }
   /** Restore a previously saved undo/redo snapshot (call after switching files). */
   restoreUndoState(state: { undo: string[]; redo: string[] }): void
+  /** True while resolveAssemblyGraph is batching edits. Callers (e.g. reparseURDF) skip heavy per-mesh rebuilds when active. */
+  isBulkAssemblyMode(): boolean
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -264,6 +266,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   let urdfUndo: string[] = []
   let urdfRedo: string[] = []
   let rootDragWarned = false
+
+  // Bulk-assembly mode: while active, commitUrdf mutates an in-memory URDF buffer
+  // instead of writing to the Monaco editor + triggering a full reparse. Set by
+  // resolveAssemblyGraph around its placement loop so a 50-component build fires
+  // exactly one reparse at the end instead of one per component (~30× faster).
+  let _bulkMode = false
+  let _bulkUrdfBuffer: string | null = null
 
   // ── Attachment nodes (mount-frame links) ────────────────────────────────────
   const nodesGroup = new THREE.Group()
@@ -765,18 +774,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function commitUrdf(mutator: (doc: Document) => boolean, opts?: { defer?: boolean }): boolean {
-    const current = ctx.getUrdfText()
     const parser = new DOMParser()
-    const doc = parser.parseFromString(current, 'application/xml')
+    const doc = parser.parseFromString(getCurrentUrdfText(), 'application/xml')
     if (doc.documentElement.nodeName === 'parsererror') {
       ctx.showToast('Cannot edit invalid URDF', 'error')
       return false
     }
-    recordUndo()
+    // In bulk mode the pre-bulk snapshot was already pushed by setBulkAssemblyMode(true);
+    // per-iteration recordUndo would spam N identical entries and evict older history.
+    if (!_bulkMode) recordUndo()
     const changed = mutator(doc)
     if (!changed) {
-      urdfUndo.pop()
+      if (!_bulkMode) urdfUndo.pop()
       return false
+    }
+    // Skip formatXml in bulk mode — buffer is only read by the next DOMParser pass,
+    // and the pretty-print step at the end of resolveAssemblyGraph reformats anyway.
+    if (_bulkMode) {
+      _bulkUrdfBuffer = new XMLSerializer().serializeToString(doc)
+      return true
     }
     const xml = formatXml(doc)
     ctx.setUrdfText(xml)
@@ -788,6 +804,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.reparseUrdf(xml)
     }
     return true
+  }
+
+  function setBulkAssemblyMode(active: boolean): void {
+    if (active === _bulkMode) return
+    if (active) {
+      // Record one pre-bulk snapshot so Ctrl+Z reverts the entire assembly in a
+      // single step. Individual commitUrdf calls skip recordUndo while bulk is active.
+      recordUndo()
+      _bulkMode = true
+      _bulkUrdfBuffer = ctx.getUrdfText()
+    } else {
+      _bulkMode = false
+      const pending = _bulkUrdfBuffer
+      _bulkUrdfBuffer = null
+      if (pending !== null) {
+        ctx.setUrdfText(pending)
+        ctx.reparseUrdf(pending)
+      }
+    }
+  }
+
+  // Returns the current URDF text, preferring the in-memory bulk buffer when
+  // bulk-assembly mode is active (so mid-loop readers see the latest mutations
+  // without a reparse).
+  function getCurrentUrdfText(): string {
+    return _bulkMode && _bulkUrdfBuffer !== null ? _bulkUrdfBuffer : ctx.getUrdfText()
   }
 
   let _pickTargetCache: THREE.Mesh[] | null = null
@@ -3205,6 +3247,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     editor.setValue(baseUrdf)
     ctx.reparseUrdf()
 
+    // try/finally is load-bearing: if the loop throws we MUST clear _bulkMode,
+    // else every future commitUrdf in the session writes to an orphaned buffer.
+    setBulkAssemblyMode(true)
+    try {
+
     nameMap.set(root.link_name, rootLinkName)
     processed.add(root.link_name)
     placedCount++
@@ -3349,7 +3396,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const childIdx = faceChildIndex.get(faceKey) || 0
       faceChildIndex.set(faceKey, childIdx + 1)
 
-      const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
+      const doc = new DOMParser().parseFromString(getCurrentUrdfText(), 'application/xml')
       const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
       const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
       const orientation = comp.orientation || 'auto'
@@ -3474,8 +3521,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         nameMap.set(comp.link_name, childName)
         placedCount++
         console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
-        // Reparse so next component sees updated geometry
-        ctx.reparseUrdf()
+        // Reparse so next component sees updated geometry. Skipped in bulk mode
+        // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
+        // to URDF-visual dims when the rendered-mesh cache is stale).
+        if (!_bulkMode) ctx.reparseUrdf()
       } else {
         console.warn(`[assembly] ✗ Failed to place ${comp.component_id} on ${parentLinkName}`)
       }
@@ -3492,6 +3541,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const shaftOverloads = [...portOccupancy.entries()].filter(([_key, count]) => count > 1)
     if (shaftOverloads.length > 0) {
       console.warn(`[assembly][ports] Ports with multiple children:`, shaftOverloads.map(([k, c]) => `${k}=${c}`).join(', '))
+    }
+
+    } finally {
+      // Always exit bulk mode — flushes the accumulated URDF to the editor and
+      // triggers the single reparse covering every component placed in the loop.
+      setBulkAssemblyMode(false)
     }
 
     // Pretty-print the URDF so the editor doesn't show everything on one line.
@@ -3758,6 +3813,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       urdfUndo = [...state.undo]
       urdfRedo = [...state.redo]
     },
+    isBulkAssemblyMode: () => _bulkMode,
   }
 }
 

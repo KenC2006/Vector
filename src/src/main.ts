@@ -1603,11 +1603,13 @@ function reparseURDF(xmlOverride?: string) {
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-          addEdgeLines(parsedRobot)
+          // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+          const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+          if (!skipHeavy) addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
-          rebuildWireframes()
-          rebuildCollisionVisuals(processed)
+          if (!skipHeavy) rebuildWireframes()
+          if (!skipHeavy) rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           groundRobot(robot)
@@ -1641,7 +1643,9 @@ function reparseURDF(xmlOverride?: string) {
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-    addEdgeLines(parsedRobot)
+    // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+    const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+    if (!skipHeavy) addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()
 
@@ -1649,8 +1653,8 @@ function reparseURDF(xmlOverride?: string) {
     updateComMarker()
 
     // Rebuild wireframes and collision visuals
-    rebuildWireframes()
-    rebuildCollisionVisuals(urdfContent)
+    if (!skipHeavy) rebuildWireframes()
+    if (!skipHeavy) rebuildCollisionVisuals(urdfContent)
 
     // Update viewport info
     updateViewportInfo()
