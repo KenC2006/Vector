@@ -127,7 +127,17 @@ export const SLOW_MESH_BLACKLIST = new Set([
 // Cleared on each applyRichVisuals call to prevent stale material leaks.
 const _tintedMatCache = new Map<string, THREE.MeshStandardMaterial>()
 
-export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (linkName: string) => void): void {
+export function applyRichVisuals(
+  parsedRobot: ParsedRobotLike,
+  onMeshLoaded?: (linkName: string) => void,
+  /** Look up a component's authoritative bounding box (mm) from the preset catalog.
+   *  When provided, overrides measureLinkDims for multi-primitive components like
+   *  servos whose parametric placeholders extend beyond the preset bbox (e.g. mounting
+   *  ears at +15% X) and would otherwise distort GLB scaling. Returning null keeps the
+   *  current measureLinkDims behavior (right for single-primitive components like
+   *  extrusions, where per-instance length_mm is already in the URDF box). */
+  getPresetBoundingBoxMm?: (compId: string) => [number, number, number] | null,
+): void {
   // Dispose and clear previous tinted materials
   for (const mat of _tintedMatCache.values()) mat.dispose()
   _tintedMatCache.clear()
@@ -138,8 +148,13 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
     const generator = findRichGenerator(compId)
     if (!generator) continue
 
-    // Measure existing primitive geometry to get dimensions
-    const dims = measureLinkDims(linkGroup)
+    // Prefer the preset's authoritative bbox over measured placeholder geometry
+    // (which over-counts ears/horns for multi-primitive components like servos).
+    // Falls back to measureLinkDims for components without a 3-tuple bbox preset.
+    const presetBbox = getPresetBoundingBoxMm?.(compId) ?? null
+    const dims: GeneratorDims = presetBbox
+      ? { x: presetBbox[0] / 1000, y: presetBbox[1] / 1000, z: presetBbox[2] / 1000 }
+      : measureLinkDims(linkGroup)
 
     // Check for real mesh override (STEP file from manufacturer)
     const meshUrl = getMeshOverrideUrl(compId)

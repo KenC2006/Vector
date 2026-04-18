@@ -138,6 +138,10 @@ export interface UrdfAssemblyApi {
   restoreUndoState(state: { undo: string[]; redo: string[] }): void
   /** True while resolveAssemblyGraph is batching edits. Callers (e.g. reparseURDF) skip heavy per-mesh rebuilds when active. */
   isBulkAssemblyMode(): boolean
+  /** Look up a component's authoritative bounding box from the preset catalog (in mm).
+   *  Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
+   *  where per-instance length_mm makes the link's URDF box the authoritative source. */
+  getPresetBoundingBoxMm(compId: string): [number, number, number] | null
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -3825,6 +3829,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       urdfRedo = [...state.redo]
     },
     isBulkAssemblyMode: () => _bulkMode,
+    getPresetBoundingBoxMm: (compId: string): [number, number, number] | null => {
+      if (!presetData) return null
+      for (const cat of Object.values(presetData.categories)) {
+        const p = cat.components.find(c => c.id === compId)
+        if (!p) continue
+        const bb = p.physical.bounding_box_mm
+        // Only return when a 3-tuple bbox exists. Extrusions (cross_section_mm only)
+        // get their length from per-instance length_mm — caller falls back to
+        // measureLinkDims, which reads the URDF's length-aware <box size>.
+        if (Array.isArray(bb) && bb.length === 3) {
+          return [bb[0] ?? 40, bb[1] ?? 40, bb[2] ?? 40]
+        }
+        return null
+      }
+      return null
+    },
   }
 }
 

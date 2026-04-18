@@ -1031,10 +1031,18 @@ worldGroup.name = 'urdf_world'
 worldGroup.rotation.x = -Math.PI / 2
 robot.add(worldGroup)
 
+// Forward-declare urdfAssemblyApi so the rich-visuals callback below can close over
+// it before initUrdfAssembly runs. Reassigned at the canonical init site (~L2549).
+let urdfAssemblyApi: UrdfAssemblyApi | null = null
+
+// Resolve preset bbox via urdfAssemblyApi when initialized; null on first-render
+// (sample URDF) is fine — measureLinkDims is correct for that simple model.
+const getPresetBboxMm = (compId: string) => urdfAssemblyApi?.getPresetBoundingBoxMm(compId) ?? null
+
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1562,7 +1570,8 @@ function buildKinematicContext(): string {
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
-let urdfAssemblyApi: UrdfAssemblyApi | null = null
+// urdfAssemblyApi declared near applyRichVisuals call site to avoid TDZ on the
+// preset-bbox callback closure (initialized at the initUrdfAssembly site below).
 
 function rebuildJointAxisVisuals() {
   axisVisuals.length = 0
@@ -1622,7 +1631,7 @@ function reparseURDF(xmlOverride?: string) {
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
           // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
           const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
           if (!skipHeavy) addEdgeLines(parsedRobot)
@@ -1665,7 +1674,7 @@ function reparseURDF(xmlOverride?: string) {
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
+    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
     // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
     const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
     if (!skipHeavy) addEdgeLines(parsedRobot)
