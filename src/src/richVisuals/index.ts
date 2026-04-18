@@ -291,12 +291,25 @@ function applyMeshToLink(
       meshGroup.scale.setScalar(0.001) // mm → m
     }
 
-    // Apply per-component rotation override BEFORE per-axis scaling so the
-    // bounds measured below reflect the rotated mesh — otherwise per-axis
-    // scaling would squish a mismatched-axis mesh into a sliver.
+    // Apply per-component rotation override by baking it into the geometry
+    // vertices BEFORE per-axis scaling. Setting meshGroup.rotation alone
+    // would not work: Three.js composes T*R*S, so a non-uniform scale.[xyz]
+    // applied after rotation acts on the original local axes — the per-axis
+    // scaling below would modify the wrong axis. Baking the rotation into
+    // the geometry realigns local axes with the desired world axes, so
+    // scale.x correctly controls the world X extent, etc.
+    // We clone the geometry first so the shared cached mesh isn't mutated.
     const rotation = getRotationOverride(compId)
     if (rotation) {
-      meshGroup.rotation.set(rotation[0], rotation[1], rotation[2])
+      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'),
+      )
+      meshGroup.traverse(child => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry = child.geometry.clone()
+          child.geometry.applyMatrix4(rotMatrix)
+        }
+      })
       meshGroup.updateMatrixWorld(true)
     }
 
