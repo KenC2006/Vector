@@ -309,7 +309,7 @@ Controls how an elongated or directable component is rotated within its face:
 
 ## Topology Rules
 
-1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root.
+1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**
 2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
 3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
 4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
@@ -320,7 +320,11 @@ Controls how an elongated or directable component is rotated within its face:
 9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
 10. **Servos/motors have a shaft output on the TOP face — attach exactly ONE child to a servo's top face.** Never fan out multiple children from the same servo top (e.g. sensor + extrusion, or two extrusions). The shaft drives exactly one thing. If you need multiple items near the same joint, mount them on a shared structural extrusion *after* the servo, not on the servo itself.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
-12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face, not on standoffs.** Do NOT add an intermediate `structural_extrusion_4040` between the baseplate and a power/compute/sensor module to "elevate" it. The baseplate's top face distributes multiple children across its area automatically; four electronics on the top face become four compact pads, not four towers. Vertical extrusions on a baseplate top read as "ironing board on stilts" and the validator will flag it.
+12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face. NEVER route them through an intermediate structural_extrusion, regardless of count.** All three of these shapes are FORBIDDEN:
+    - 4 vertical extrusions (one per electronic) → "ironing board on stilts"
+    - 1 central vertical extrusion hosting multiple electronics → "torso tower" (validator will flag it AS WELL as the 4-standoff case)
+    - An extrusion named `torso_extrusion_*` or `body_extrusion_*` used to "elevate" or "enclose" electronics
+    The baseplate's top face distributes multiple children across its area automatically — four electronics on the top face become four compact pads at the corners, not any form of tower. If a validator tells you the body "needs to be a volumetric torso" or "boxier chassis", IGNORE IT — no preset in this palette implements a 3D body block, so pretending a vertical extrusion is one just produces a worse design.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
@@ -368,7 +372,11 @@ Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45�
 - ❌ Multiple root components — exactly one component has attach_to=null (the baseplate)
 - ❌ Cycles in the topology — A→B→C→A is invalid; the topology must be a tree
 - ❌ Extrusion as root — root is always structural_baseplate
-- ❌ Electronics on an extrusion standoff above the baseplate — e.g. `baseplate → 4x vertical structural_extrusion_4040 → each hosts one of (battery, PDU, SBC, IMU)`. Attach every electronic module directly to `baseplate.top`. The placement engine spreads multiple children across the face automatically.
+- ❌ Electronics on an extrusion standoff above the baseplate — any of these shapes:
+    · `baseplate → 4x vertical structural_extrusion_4040 → each hosts one of (battery, PDU, SBC, IMU)` (the 4-standoff case)
+    · `baseplate → 1x vertical structural_extrusion_4040 → [battery, PDU, SBC, IMU all on its top face]` (the central-tower case — also wrong, don't interpret "no 4 standoffs" as "1 standoff is fine")
+    · `baseplate → torso_extrusion → electronics` — any named-as-torso intermediate is still a tower
+  Attach every electronic module DIRECTLY to `baseplate.top`. The placement engine spreads multiple children across the face automatically.
 
 ## Critical Rules
 

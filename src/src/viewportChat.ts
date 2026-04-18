@@ -719,21 +719,38 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
                 return aestheticHints.test(detail) && !actionableHints.test(detail)
               }
-              const allTopoFailuresAreAesthetic = topoFailures.length > 0
-                && topoFailures.every(isAestheticDimensionCritique)
-              const shouldRedesign = topoFailures.length > 0 && !allTopoFailuresAreAesthetic
+              const actionableTopoFailures = topoFailures.filter(f => !isAestheticDimensionCritique(f))
+              const aestheticTopoFailures = topoFailures.filter(isAestheticDimensionCritique)
+              const allTopoFailuresAreAesthetic = topoFailures.length > 0 && actionableTopoFailures.length === 0
+              const shouldRedesign = actionableTopoFailures.length > 0
 
               if (shouldRedesign && retryCount < 1) {
-                const failures = allFailures
+                // Only include actionable topology failures in the "fix these" list.
+                // Aesthetic dimension critiques (e.g. "narrow baseplate to 140mm") have
+                // no preset that can satisfy them — when we fed them through verbatim
+                // Claude tried absurd responses (swapped to a smaller preset, added a
+                // central torso-extrusion tower). They go into a separate "ignore"
+                // section so Claude sees the reasoning but doesn't act on them.
+                const actionableLines = actionableTopoFailures
                   .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
                   .join('\n')
+                const placementLines = placementFailures
+                  .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const aestheticLines = aestheticTopoFailures
+                  .map(c => `- [ignored — no preset fits] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const failuresBlock = [actionableLines, placementLines].filter(Boolean).join('\n')
                 const reason = needsRedesign
                   ? 'Visual validation found topology issues. Redesigning...'
-                  : `Visual validation flagged ${topoFailures.length} topology issue(s) — redesigning.`
+                  : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
                 addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
                 const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
                 const placementGuidance = placementFailures.length > 0
                   ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
+                  : ''
+                const aestheticGuidance = aestheticTopoFailures.length > 0
+                  ? `\n\nDO NOT act on these aesthetic/dimensional critiques — no preset in the palette can satisfy them, and trying (e.g. swapping baseplate size, adding a torso extrusion) produces worse designs:\n${aestheticLines}\n\nKeep the baseplate choice and body layout from the previous attempt. Only address the topology items listed above.`
                   : ''
                 // Phase 4: include the previous (failed) AssemblyGraph so Claude
                 // can reason "what did I try, what specifically failed, what to
@@ -747,7 +764,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                   ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
                   : ''
                 const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${warnLine}${placementGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt that the validator did NOT flag — only change what the validator specifically called out.`
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
