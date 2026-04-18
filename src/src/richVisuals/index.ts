@@ -332,13 +332,6 @@ function applyMeshToLink(
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
       meshDimsCache.set(compId, finalSize.clone())
     }
-    if (rotation) {
-      console.log(`[richVisuals:rotation-override] ${compId} rendered size mm:`,
-        (finalSize.x * 1000).toFixed(2),
-        (finalSize.y * 1000).toFixed(2),
-        (finalSize.z * 1000).toFixed(2),
-        'expected mm:', (dims.x * 1000).toFixed(2), (dims.y * 1000).toFixed(2), (dims.z * 1000).toFixed(2))
-    }
   }
 
   // Replace geometry in link group
