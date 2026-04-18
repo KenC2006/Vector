@@ -1625,18 +1625,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 1a: topology-aware splay — splayAngle was pre-computed above
         let rollRad = 0
         let pitchRad = 0
-        let rpyStr = '0 0 0'
         if (isWheel) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
           rollRad = -Math.PI / 2
-          rpyStr = '-1.5708 0 0'
         } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
           rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
           pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-          rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} 0`
         }
+        // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
+        // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
+        // hip toward its corner now lands instead of being silently dropped.
+        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         const vExtent = verticalExtentForRotation(childX, childY, childZ, rollRad, pitchRad)
         const oz = -(parent.hz + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
