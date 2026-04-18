@@ -3423,9 +3423,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,
-      // we'll directly build the URDF element for more control
-      const graph = ctx.getKinematicGraph()
-      const nextIdx2 = Object.keys(graph).length + 1
+      // we'll directly build the URDF element for more control.
+      // Use placedCount (not getKinematicGraph().length): the graph only updates
+      // on reparse, and bulk mode skips per-iteration reparses — so without this,
+      // every child would get `_2` and produce duplicate URDF link names.
+      const nextIdx2 = placedCount + 1
       const childName = `${preset.id}_${nextIdx2}`
       const jointName = `joint_${preset.id}_${nextIdx2}`
 
