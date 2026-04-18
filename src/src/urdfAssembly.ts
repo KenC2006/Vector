@@ -3404,10 +3404,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
       // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
       // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
-      // auto-inserted shaft↔mount_face brackets, which otherwise tilt whole leg chains 30° outward.
+      // auto-inserted shaft↔mount_face brackets and servo coupler discs, which represent the
+      // START of a leg chain (not a stance element); splaying them tilts the whole chain ~30°.
       const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
         || comp.component_id.startsWith('structural_joint_plate')
         || comp.component_id.startsWith('structural_sheet')
+        || comp.component_id.startsWith('structural_servo_coupler')
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
