@@ -15,24 +15,30 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
+const DEFAULT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
+}
+
+/** Main body material tinted with the per-component color. */
+function catBody(base: string = 'matte_plastic', strength = 0.5) {
+  return getTintedMaterial(base, ...CAT_COLOR, strength)
 }
 
 // ── Servo ─────────────────────────────────────────────────────────────────────
 
 function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, z: h, y: d } = dims
 
   const isHeavy = id.includes('heavy') || id.includes('high_torque')
 
   // Servo housing — NURBS filleted box (smooth mathematically exact edges)
   const housing = new THREE.Mesh(
     nurbsFilletBox(w, h * 0.72, d, Math.min(w, d) * 0.06, 16),
-    getMaterial('matte_plastic'),
+    catBody(),
   )
   g.add(housing)
 
@@ -41,7 +47,7 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   const earH = h * 0.1
   const ear = new THREE.Mesh(
     nurbsFilletBox(earW, earH, d, Math.min(earW, d) * 0.04, 8),
-    getMaterial('matte_plastic', 0x1a1a1a),
+    catBody('matte_plastic', 0.6),
   )
   ear.position.y = h * 0.30
   g.add(ear)
@@ -440,7 +446,8 @@ function generateLinearActuator(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
-export function generateRichActuator(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichActuator(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('bldc')) return generateBLDC(id, dims)
   if (id.includes('stepper') || id.includes('nema')) return generateStepper(id, dims)
   if (id.includes('linear')) return generateLinearActuator(id, dims)

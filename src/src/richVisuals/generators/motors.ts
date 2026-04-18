@@ -13,7 +13,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsMotorHousing, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.91, 0.30, 0.24] // red-orange
+const DEFAULT_COLOR: [number, number, number] = [0.91, 0.30, 0.24] // red-orange
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
@@ -632,7 +633,8 @@ function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichMotor(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichMotor(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('hub')) return generateHubMotor(id, dims)
   if (id.includes('harmonic')) return generateHarmonicDrive(id, dims)
   if (id.includes('pancake')) return generatePancake(id, dims)

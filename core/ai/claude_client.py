@@ -265,8 +265,13 @@ When you specify attach_face, you are choosing which DIRECTION from the parent t
 ## Tools
 
 You MUST respond by calling one of the provided tools:
-- **design_robot**: For any "build", "create", "design", or "make" request. Specify the full component topology.
-- **edit_robot**: For small edits to existing robots ("change arm length", "remove sensor", "add a camera"). Use search/replace on the URDF.
+- **design_robot**: For "build", "create", "design", or "make" requests — when building a robot from scratch or the user wants a complete redesign. Specify the full component topology.
+- **modify_topology**: For iterative edits to an existing robot — "add a camera", "remove the tail", "make the arms longer", "add 2 more wheels", "replace the gripper with a suction cup". Specifies add/remove/modify operations on the existing component tree. The placement engine re-resolves the full assembly.
+
+### When to use which tool:
+- User describes a NEW robot or says "start over" → **design_robot**
+- User wants to CHANGE an existing robot (add, remove, modify components) → **modify_topology**
+- When in doubt: if the current URDF has real components (not just a base_link placeholder), prefer **modify_topology**.
 
 ## What the Backend Handles Automatically
 
@@ -295,6 +300,13 @@ Controls how an elongated or directable component is rotated within its face:
 - Example: a depth camera on the front face with elevation_angle=-20 angles 20° downward to see the floor.
 - Range: typically −45 to +45. Applied as pitch (front/back) or roll (left/right).
 
+### attach_rpy
+**Optional 3-element [roll, pitch, yaw] in RADIANS** applied verbatim to the joint origin relative to the parent. Overrides the engine's default rotation — use for rest-pose joint angles (quadruped crouch, forward-splayed shoulder, etc.).
+- Omit (or pass [0, 0, 0]) to let the engine auto-rotate. That's the default for almost every component.
+- Example (Z-crouch hip pitch ≈ +30°): `attach_rpy=[0, 0.52, 0]` on the thigh-to-hip-pitch-servo link.
+- Example (Z-crouch knee ≈ -60°): `attach_rpy=[0, -1.05, 0]` on the shin-to-knee-servo link.
+- Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
+
 ## Topology Rules
 
 1. Root is ALWAYS structural_baseplate. Never use an extrusion as root.
@@ -306,21 +318,43 @@ Controls how an elongated or directable component is rotated within its face:
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: attach wheels DIRECTLY to the baseplate bottom face (revolute y). Do NOT put servos between baseplate and wheels — wheel components have built-in motor semantics.
 9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
+10. **Servos/motors have a shaft output on the TOP face — attach exactly ONE child to a servo's top face.** Never fan out multiple children from the same servo top (e.g. sensor + extrusion, or two extrusions). The shaft drives exactly one thing. If you need multiple items near the same joint, mount them on a shared structural extrusion *after* the servo, not on the servo itself.
+11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
 Arms: baseplate -> base_servo(top, revolute z) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
 Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.
+Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_servo or gripper.
 
 Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
 
-Quadruped: baseplate -> 4x hip_servo(bottom, revolute y) -> 4x upper_leg_extrusion(bottom, fixed, 100mm, vertical) -> 4x knee_servo(bottom, revolute y) -> 4x lower_leg_extrusion(bottom, fixed, 80mm, vertical)
+Quadruped (canonical 12-DOF, Unitree Go1 / Boston Dynamics Spot style).
+
+Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not above):
+  body → hip_abduction → hip_pitch → THIGH → knee → SHIN → foot
+                    ↑ compound hip ↑         ↑ knee joint drives shin, not thigh
+
+  baseplate
+    -> 4x hip_abduction_servo (bottom, revolute x)                       — rolls whole leg laterally (compound hip axis 1)
+      -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2)
+        -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)            — structural thigh bone
+          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0]) — pitches SHIN back ≈-60° for crouch
+            -> 4x shin_extrusion (bottom, fixed, 120mm, vertical)         — structural shin bone
+              -> 4x foot (bottom, fixed)                                  — rubber foot pad
+
+- Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_abduction and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
+- The hip (abduction + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
+- Structural extrusions MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). These are the limb bones.
+- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) and knee (≈-1.05 rad / -60°) as shown. All 4 legs should use the SAME sign (same posture) — do not mirror front vs rear unless the user explicitly asks for a sit/asymmetric pose.
+- For a straight stance (neutral), omit attach_rpy from those two servos.
+- A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_extrusion -> knee_servo -> shin_extrusion -> foot.
 
 Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
 
 Tail: baseplate -> tail_servo(back, revolute z) -> tail_extrusion(back, fixed, 80-120mm, horizontal). One servo and one extrusion is enough.
 
-Sensor mount: any_link -> sensor(top/front/left/right, fixed)
+Sensor mount: any_structural_link -> sensor(top/front/left/right, fixed). Remember — sensors attach to structural links (extrusions, baseplates, brackets), never to servo shafts or effectors.
 Angled sensor: any_link -> depth_camera(front, fixed, elevation_angle=-20) — tilts 20° downward to see the floor.
 Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45° on the top face.
 
@@ -336,7 +370,8 @@ Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45�
 
 ## Critical Rules
 
-- ALWAYS use design_robot tool for building robots. NEVER write raw URDF.
+- ALWAYS use design_robot or modify_topology. NEVER write raw URDF.
+- Use modify_topology when the user wants to change an existing robot. Use design_robot only for new builds or complete redesigns.
 - Use component IDs exactly as listed in the library.
 - The backend handles ALL geometry. You handle ALL design decisions.
 """
@@ -372,6 +407,13 @@ DESIGN_ROBOT_TOOL = {
                         "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links, 80-120 for leg segments."},
                         "orientation": {"type": "string", "description": "Rotation within the face. Keywords: 'vertical' (default, extend +Z), 'horizontal' (extend +X), 'auto'. Or a numeric string in degrees for yaw around the face normal (e.g. '45', '-30'). Combine keyword+degrees as 'horizontal+45'."},
                         "elevation_angle": {"type": "number", "description": "Tilt in degrees for side-face attachments (front/back/left/right only). Positive=up, negative=down. E.g. -20 angles a front camera 20° downward. Ignored on top/bottom faces."},
+                        "attach_rpy": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": "Optional [roll, pitch, yaw] in RADIANS applied to the joint origin. Use for rest-pose joint angles (quadruped crouch, splayed shoulders). Example: [0, 0.52, 0] for +30° pitch, [0, -1.05, 0] for -60° pitch. Omit or pass [0,0,0] to let the engine auto-rotate.",
+                        },
                     },
                     "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
                 },
@@ -385,9 +427,9 @@ DESIGN_ROBOT_TOOL = {
     },
 }
 
-EDIT_ROBOT_TOOL = {
-    "name": "edit_robot",
-    "description": "Make small edits to an existing robot URDF using search/replace operations.",
+MODIFY_TOPOLOGY_TOOL = {
+    "name": "modify_topology",
+    "description": "Modify an existing robot's topology by adding, removing, or changing components. Use for iterative edits like 'add a camera', 'remove the tail', 'make the arms longer'. The placement engine re-resolves the full assembly after applying changes.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -395,28 +437,75 @@ EDIT_ROBOT_TOOL = {
                 "type": "string",
                 "description": "Describe what you're changing and why",
             },
-            "edits": {
+            "operations": {
                 "type": "array",
-                "description": "List of search/replace operations applied in order",
+                "description": "List of topology operations to apply in order",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "search": {"type": "string", "description": "Exact substring to find in the URDF"},
-                        "replace": {"type": "string", "description": "Replacement text"},
+                        "op": {
+                            "type": "string",
+                            "enum": ["add", "remove", "modify"],
+                            "description": "add: insert a new component (MUST include component_id, attach_to, attach_face, joint_type, joint_axis), remove: delete an existing component and all its children, modify: change properties of an existing component (only include fields to change)",
+                        },
+                        "link_name": {
+                            "type": "string",
+                            "description": "For remove/modify: the existing link_name to target. For add: the new unique link_name (use component_id + number, e.g. 'sensor_depth_camera_small_2').",
+                        },
+                        "component_id": {
+                            "type": "string",
+                            "description": "REQUIRED for add. Component ID from the library. For modify: new component_id (omit to keep current).",
+                        },
+                        "attach_to": {
+                            "type": ["string", "null"],
+                            "description": "REQUIRED for add. Parent's link_name. For modify: new parent (omit to keep current).",
+                        },
+                        "attach_face": {
+                            "type": "string",
+                            "enum": ["top", "bottom", "front", "back", "left", "right"],
+                            "description": "REQUIRED for add. Face on parent to attach to. For modify: new face (omit to keep current).",
+                        },
+                        "joint_type": {
+                            "type": "string",
+                            "enum": ["fixed", "revolute", "prismatic"],
+                        },
+                        "joint_axis": {
+                            "type": "string",
+                            "enum": ["x", "y", "z"],
+                        },
+                        "length_mm": {
+                            "type": "number",
+                            "description": "Override length for extrusions.",
+                        },
+                        "orientation": {
+                            "type": "string",
+                            "description": "Rotation within the face (same as design_robot).",
+                        },
+                        "elevation_angle": {
+                            "type": "number",
+                            "description": "Tilt for side-face attachments.",
+                        },
+                        "attach_rpy": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": "Optional [roll, pitch, yaw] in RADIANS. Same as design_robot — use for rest-pose joint angles like quadruped crouch.",
+                        },
                     },
-                    "required": ["search", "replace"],
+                    "required": ["op", "link_name"],
                 },
             },
             "changes_summary": {
                 "type": "string",
-                "description": "Brief summary of changes",
+                "description": "Brief summary: what was added/removed/changed",
             },
         },
-        "required": ["explanation", "edits", "changes_summary"],
+        "required": ["explanation", "operations", "changes_summary"],
     },
 }
 
-ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, EDIT_ROBOT_TOOL]
+ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
 
@@ -440,66 +529,6 @@ Rules:
 - Do NOT repeat code that already exists after the cursor in ===CONTEXT===.
 - Use link/joint names from ===ROBOT=== when available.
 - Match the indentation style of the surrounding code."""
-
-
-def _apply_edits(urdf: str, edits: list) -> str:
-    """
-    Apply a list of search/replace edit operations to a URDF string.
-
-    Each edit is a dict with "search" and "replace" keys. Edits are applied
-    sequentially -- each one modifies the URDF for the next.
-
-    If a search string is not found, it tries whitespace-normalized matching
-    as a fallback (handles minor indentation differences from the model).
-
-    Raises ValueError if a search string cannot be found at all.
-    """
-    result = urdf
-
-    for i, edit in enumerate(edits):
-        if not isinstance(edit, dict):
-            print(f"[ai_edit] Skipping non-dict edit at index {i}", file=sys.stderr)
-            continue
-
-        search = edit.get("search", "")
-        replace = edit.get("replace", "")
-
-        if not search:
-            print(f"[ai_edit] Skipping edit {i} with empty search string", file=sys.stderr)
-            continue
-
-        # Try exact match first
-        if search in result:
-            result = result.replace(search, replace, 1)
-            print(f"[ai_edit] Applied edit {i}: exact match ({len(search)}c -> {len(replace)}c)", file=sys.stderr)
-            continue
-
-        # Fallback: whitespace-normalized matching
-        # Normalize both the search and every possible window of the URDF
-        search_normalized = re.sub(r'[ \t]+', ' ', search.strip())
-        lines = result.split('\n')
-
-        # Try to find a contiguous block of lines that matches when normalized
-        search_line_count = len(search.strip().split('\n'))
-        matched = False
-
-        for start in range(len(lines)):
-            end = min(start + search_line_count + 2, len(lines))  # +2 for tolerance
-            for e in range(start + 1, end + 1):
-                candidate = '\n'.join(lines[start:e])
-                candidate_normalized = re.sub(r'[ \t]+', ' ', candidate.strip())
-                if candidate_normalized == search_normalized:
-                    result = result.replace(candidate, replace, 1)
-                    print(f"[ai_edit] Applied edit {i}: whitespace-normalized match (lines {start+1}-{e})", file=sys.stderr)
-                    matched = True
-                    break
-            if matched:
-                break
-
-        if not matched:
-            print(f"[ai_edit] WARNING: Could not find search text for edit {i}: {search[:80]!r}...", file=sys.stderr)
-
-    return result
 
 
 def _assemble_from_graph(assembly: dict) -> str:
@@ -603,25 +632,37 @@ def _assemble_from_graph(assembly: dict) -> str:
             if attach_face in ("top", "coaxial") and _is_elongated(c_bbox):
                 rpy = [0, math.pi/2, 0]  # pitch 90°
                 print(f"[assembly] Auto-rotating elongated child to horizontal (pitch 90°)", file=sys.stderr)
+            # Auto-roll: wheels and casters on the "bottom" face need -90° roll so
+            # the axle lies along Y (standard ROS convention for wheeled bases).
+            # Applied deterministically so the URDF is correct even when the model
+            # didn't emit attach_rpy. Mirrors the isWheel branch in urdfAssembly.ts.
+            child_id = (child_preset or {}).get("id", "")
+            if ("wheel" in child_id or "caster" in child_id) and attach_face == "bottom":
+                rpy = [-math.pi / 2, 0, 0]
+                print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face wheel mount", file=sys.stderr)
 
         # Half-extents (geometry is always centered at link frame origin)
         px, py, pz = p_bbox[0]/2, p_bbox[1]/2, p_bbox[2]/2
         cx, cy, cz = c_bbox[0]/2, c_bbox[1]/2, c_bbox[2]/2
 
         child_is_rod = _is_elongated(c_bbox)
-        is_rotated = abs(rpy[1] - math.pi/2) < 0.01
+        # Rotation-aware extents: a ±90° pitch swings X onto Z; a ±90° roll
+        # swings Y onto Z. Without this, sideways cylinders (wheels, rollers,
+        # horizontal bearings) get placed using their pre-rotation thickness
+        # instead of their post-rotation radius and clip into their parent.
+        RIGHT = math.pi / 2
+        is_pitch_rotated = abs(abs(rpy[1]) - RIGHT) < 0.1
+        is_roll_rotated = abs(abs(rpy[0]) - RIGHT) < 0.1
 
         if child_is_rod:
             # Rod geometry is offset in local +Z, so it extends forward from the joint.
             # The joint only needs to clear the rod's cross-section, not half its length.
-            if is_rotated:
-                cx_eff = cx  # cross-section in rotated X (was originally X)
-                cz_eff = cx  # cross-section in Z (was originally X)
-            else:
-                cx_eff = cx
-                cz_eff = cx  # cross-section, not half-length
-        elif is_rotated:
-            cx_eff, cz_eff = cz, cx  # swap Z and X extents
+            cx_eff = cx
+            cz_eff = cx  # cross-section, not half-length (true regardless of rotation)
+        elif is_pitch_rotated:
+            cx_eff, cz_eff = cz, cx  # ±90° pitch: old Z → X, old X → Z
+        elif is_roll_rotated:
+            cx_eff, cz_eff = cx, cy  # ±90° roll: old Y → Z (X unchanged)
         else:
             cx_eff, cz_eff = cx, cz
 
@@ -1280,14 +1321,14 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
                     "new_urdf": current_urdf,
                     "stats": tool_input.get("changes_summary", f"{n} components"),
                 }
-            elif block.name == "edit_robot":
-                edits = tool_input.get("edits", [])
-                new_urdf = _apply_edits(current_urdf, edits)
-                print(f"[ai_edit] Tool-use edit_robot: {len(edits)} edits (structured output)", file=sys.stderr)
+            elif block.name == "modify_topology":
+                operations = tool_input.get("operations", [])
+                print(f"[ai_edit] Tool-use modify_topology: {len(operations)} operations (structured output)", file=sys.stderr)
                 return {
-                    "explanation": tool_input.get("explanation", "Changes applied"),
-                    "new_urdf": new_urdf,
-                    "stats": tool_input.get("changes_summary", "Edit complete"),
+                    "explanation": tool_input.get("explanation", "Topology modified"),
+                    "topology_ops": operations,
+                    "new_urdf": current_urdf,
+                    "stats": tool_input.get("changes_summary", f"{len(operations)} topology changes"),
                 }
 
     # Fallback: extract text and parse as JSON (backward compat)
@@ -1317,12 +1358,10 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
             "stats": result.get("changes_summary", "Edit complete"),
         }
     else:
-        edits = result.get("edits", [])
-        new_urdf = _apply_edits(current_urdf, edits)
         return {
-            "explanation": result.get("explanation", "Changes applied"),
-            "new_urdf": new_urdf,
-            "stats": result.get("changes_summary", "Edit complete"),
+            "explanation": result.get("explanation", "No changes"),
+            "new_urdf": current_urdf,
+            "stats": result.get("changes_summary", "No structured output"),
         }
 
 
@@ -1407,8 +1446,8 @@ User Request: {prompt}"""
     # Handle tool-use response (structured output)
     result = _extract_tool_result(response, current_urdf)
 
-    # Store assistant response in history
-    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
+    # Store richer assistant response with tool context
+    history.append({"role": "assistant", "content": _build_history_summary(result)})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
@@ -1497,11 +1536,34 @@ User Request: {prompt}"""
     # Extract result from tool-use or text fallback
     result = _extract_tool_result(final_response, current_urdf)
 
-    history.append({"role": "assistant", "content": result.get("explanation", "Done")})
+    history.append({"role": "assistant", "content": _build_history_summary(result)})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
     return result
+
+
+def _build_history_summary(result: dict) -> str:
+    """Build a richer history entry so Claude remembers what tool it used and what it built."""
+    explanation = result.get("explanation", "Done")
+    stats = result.get("stats") or ""
+
+    if "assembly_graph" in result:
+        graph = result["assembly_graph"]
+        components = graph.get("components", [])
+        comp_names = [c.get("link_name", "?") for c in components[:10]]
+        comp_list = ", ".join(comp_names)
+        if len(components) > 10:
+            comp_list += f", ... ({len(components)} total)"
+        return f"[Used design_robot] {explanation}. Components: {comp_list}. {stats}"
+    elif "topology_ops" in result:
+        ops = result["topology_ops"]
+        op_summary = ", ".join(f"{o.get('op', '?')} {o.get('link_name', '?')}" for o in ops[:5])
+        if len(ops) > 5:
+            op_summary += f", ... ({len(ops)} total)"
+        return f"[Used modify_topology] {explanation}. Operations: {op_summary}. {stats}"
+    else:
+        return f"[Response] {explanation}. {stats}"
 
 
 def _extract_partial_explanation(text: str) -> str:
@@ -1511,6 +1573,58 @@ def _extract_partial_explanation(text: str) -> str:
     if match:
         return match.group(1).replace('\\"', '"').replace('\\n', ' ')
     return ""
+
+
+def set_conversation_history(session_id: str, messages: list) -> dict:
+    """
+    Set conversation history for a session from frontend localStorage data.
+    Called on reconnect/session start to restore context lost on backend restart.
+
+    Args:
+        session_id: Session identifier matching the frontend chat ID
+        messages: List of {role, content} dicts from frontend chat history.
+                  Roles: 'user', 'assistant', 'system'. System messages are skipped.
+
+    Returns:
+        Dict with status and count of messages loaded.
+    """
+    history = _conversation_history[session_id]
+
+    # Only restore if backend has no history for this session (i.e., it restarted).
+    # If history is already populated, skip to preserve enriched _build_history_summary entries.
+    if len(history) > 0:
+        print(f"[ai_history] Session {session_id} already has {len(history)} messages — skipping resync", file=sys.stderr)
+        return {"status": "skipped", "count": len(history)}
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content or role == "system":
+            continue
+        if role not in ("user", "assistant"):
+            continue
+        # Match the format that generate_edit/generate_edit_streaming stores
+        if role == "user":
+            history.append({"role": "user", "content": f"[Edit request] {content}"})
+        else:
+            # Wrap assistant messages to indicate tool context (even if we can't
+            # reconstruct the exact _build_history_summary format from plain text)
+            if content.startswith("[Used "):
+                history.append({"role": "assistant", "content": content})
+            else:
+                history.append({"role": "assistant", "content": f"[Previous response] {content}"})
+
+    # Cap to max history size
+    while len(history) > _MAX_HISTORY_MESSAGES:
+        history.pop(0)
+
+    # Ensure history ends on an assistant turn (Claude API requires role alternation)
+    while history and history[-1]["role"] == "user":
+        history.pop()
+
+    count = len(history)
+    print(f"[ai_history] Restored {count} messages for session {session_id}", file=sys.stderr)
+    return {"status": "ok", "count": count}
 
 
 def clear_conversation(session_id: str = "default") -> None:
@@ -1861,11 +1975,23 @@ The robot is built in two stages: (1) an AI designs the TOPOLOGY (which componen
 5. **proportions**: Segments wildly wrong sizes? (topology if wrong length_mm specified, placement if correct sizes but bad layout)
 6. **grounded**: Floating or buried? (placement — the grounding function handles this)
 
+## Be SPECIFIC in every `detail` string
+
+Generic critiques ("proportions are wrong", "parts overlap") waste a redesign round. Every `detail` MUST:
+
+1. **Name the specific link(s)** involved using URDF `link_name` values (e.g. `structural_baseplate_1`, `sensor_depth_camera_small_1`, `actuator_servo_standard_13_3`). Parse them from the URDF's `<link name="...">` attributes. Do NOT say "the baseplate" — say `structural_baseplate_1`.
+2. **Quantify the problem** when possible: include a numeric delta with units — e.g. "baseplate should be ~8cm wider", "thigh_extrusion_2 is 100mm but should be ~180mm for Go1 proportions", "foot_1 is floating ~50mm above the ground plane". Prefer cm or mm. When a ratio is obvious, state it (e.g. "baseplate width 200mm is only 1/5 of robot height 1000mm — needs to be ≥1/3 for stability").
+3. **For missing components**, say what's missing AND where it should attach — e.g. "no gripper at end of forearm_extrusion_1:top", not just "missing gripper".
+4. **For overlaps/clipping**, name BOTH links involved — e.g. "wheel_front_left_1 clips through structural_baseplate_1 along -Z by ~15mm".
+5. **In the top-level `notes` field**, write a 1–2 sentence summary that also names the top 1–3 offending `link_name`s. Example: "Baseplate `structural_baseplate_1` is too narrow for the 900mm-tall arm — widen it or add a pedestal. Also `sensor_depth_camera_small_1` is attached to `actuator_servo_standard_13_3` (a wrist servo shaft) instead of the forearm."
+
+If you cannot determine exact numbers from the image, estimate with a `~` prefix ("~ widen by ~5cm"). Do NOT omit the estimate — even a rough number is more actionable than a vague word.
+
 ## Response Format
 
 Return ONLY valid JSON with a structured checklist. Each check MUST include "fixable_by": "topology" or "placement":
 
-{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm points into ground", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "missing gripper at end of arm", "fixable_by": "topology"}, {"check": "proportions", "pass": true, "detail": "segments reasonable", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Missing gripper — the arm topology needs an effector at the end.", "needs_redesign": true}
+{"ok": false, "checklist": [{"check": "shape_match", "pass": true, "detail": "looks like an arm with 3 revolute joints", "fixable_by": "topology"}, {"check": "direction", "pass": false, "detail": "forearm_extrusion_1 points ~30° into the ground plane (should be vertical or pitched up)", "fixable_by": "placement"}, {"check": "completeness", "pass": false, "detail": "no gripper at end of forearm_extrusion_1:top", "fixable_by": "topology"}, {"check": "proportions", "pass": false, "detail": "structural_baseplate_1 is ~200mm wide but total arm height is ~900mm — baseplate should be ~300mm (≥1/3 of height) for stability", "fixable_by": "topology"}, {"check": "grounded", "pass": true, "detail": "sitting on floor", "fixable_by": "placement"}, {"check": "overlap", "pass": true, "detail": "no clipping", "fixable_by": "placement"}], "notes": "Arm is missing a gripper at forearm_extrusion_1:top, and structural_baseplate_1 is underpowered (200mm wide vs 900mm arm height).", "needs_redesign": true}
 
 Set "needs_redesign" to true ONLY if there are topology-fixable failures (missing/wrong components, bad connections). Do NOT set needs_redesign for placement-only issues — the AI cannot fix those.
 
@@ -1874,6 +2000,7 @@ Set "ok" to true ONLY if ALL checks pass. The checklist must always have these 6
 CRITICAL RULES:
 - Do NOT include "edits" with modified xyz/rpy coordinates. You cannot do spatial math.
 - Classify every failure as "topology" or "placement" — this determines whether a redesign is triggered.
+- Every `detail` for a failing check must name at least one `link_name` from the URDF and include a numeric estimate where applicable.
 - Your job is to DESCRIBE what's wrong and WHO can fix it (topology AI vs placement engine).
 
 REMINDER: Return ONLY JSON. Start with { end with }.
@@ -1924,7 +2051,7 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
     parts = []
     parts.append(_genai_types.Part.from_text(text=VALIDATION_SYSTEM_PROMPT))
 
-    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
+    view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
     has_images = False
 
     if screenshots and len(screenshots) >= 3:
@@ -1973,70 +2100,12 @@ Assembled URDF:
     return _process_validation_result(response_text)
 
 
-def _validate_assembly_claude(urdf_content: str, original_prompt: str,
-                               screenshot_base64: str = None,
-                               screenshots: list = None) -> dict:
-    """Claude Sonnet fallback for visual validation. ~$0.05 per call."""
-    client = _get_client()
-
-    content = []
-    view_labels = ["Front-right view", "Rear-left view", "Top-down view"]
-    has_images = False
-
-    if screenshots and len(screenshots) >= 3:
-        for img, label in zip(screenshots[:3], view_labels):
-            if img:
-                content.append({"type": "text", "text": f"**{label}:**"})
-                content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/png", "data": img},
-                })
-                has_images = True
-        total_kb = sum(len(s) for s in screenshots[:3]) // 1024
-        print(f"[ai_validate] [Claude fallback] Including 3 viewport screenshots ({total_kb}KB total)", file=sys.stderr)
-    elif screenshot_base64:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png", "data": screenshot_base64},
-        })
-        has_images = True
-
-    content.append({
-        "type": "text",
-        "text": f"""Original user request: "{original_prompt}"
-
-Assembled URDF:
-```xml
-{urdf_content}
-```
-
-{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}""",
-    })
-
-    t0 = time.time()
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        system=VALIDATION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-        timeout=60.0,
-    )
-    elapsed = time.time() - t0
-    if not response.content:
-        return {"ok": True, "notes": "Validation returned empty response"}
-    response_text = ""
-    for block in response.content:
-        if hasattr(block, "text"):
-            response_text += block.text
-    if not response_text:
-        return {"ok": True, "notes": "Validation returned no text"}
-    print(f"[ai_validate] [Claude fallback] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
-    return _process_validation_result(response_text)
-
-
 def _process_validation_result(response_text: str) -> dict:
     """Shared parsing logic for validation responses from Gemini or Claude."""
     result = _parse_json_response(response_text)
+    # Gemini sometimes wraps JSON responses in an array — unwrap it
+    if isinstance(result, list):
+        result = result[0] if result else {}
 
     checklist = result.get("checklist", [])
     if checklist:

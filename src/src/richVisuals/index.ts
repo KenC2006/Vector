@@ -12,52 +12,8 @@ import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
 import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
-import { getMaterial } from './materials'
+import { getComponentColor, getTintedMaterial } from './materials'
 
-/** Get a category-appropriate material for STEP meshes that lack embedded colors. */
-function getCategoryMaterial(compId: string): THREE.MeshStandardMaterial {
-  if (compId.startsWith('actuator_servo') || compId.startsWith('actuator_continuous') || compId.startsWith('actuator_high_speed'))
-    return getMaterial('matte_plastic')  // dark plastic servo body
-  if (compId.startsWith('actuator_bldc') || compId.startsWith('motor_brushless'))
-    return getMaterial('anodized_aluminum', 0x444455)  // dark metal motor
-  if (compId.startsWith('actuator_stepper'))
-    return getMaterial('matte_plastic')  // black stepper body
-  if (compId.startsWith('actuator_linear'))
-    return getMaterial('anodized_aluminum')
-  if (compId.startsWith('motor_dc') || compId.startsWith('motor_coreless') || compId.startsWith('motor_pancake'))
-    return getMaterial('brushed_steel')
-  if (compId.startsWith('motor_gear') || compId.startsWith('motor_worm'))
-    return getMaterial('anodized_aluminum', 0x555555)
-  if (compId.startsWith('motor_hub'))
-    return getMaterial('matte_plastic')
-  if (compId.startsWith('motor_harmonic'))
-    return getMaterial('anodized_aluminum')
-  if (compId.startsWith('sensor_'))
-    return getMaterial('matte_plastic', 0x333333)  // dark sensor housing
-  if (compId.startsWith('compute_'))
-    return getMaterial('pcb_green')
-  if (compId.startsWith('power_lipo') || compId.startsWith('power_18650'))
-    return getMaterial('glossy_plastic', 0x2255bb)  // blue battery
-  if (compId.startsWith('power_estop'))
-    return getMaterial('glossy_plastic', 0xcc2222)  // red e-stop
-  if (compId.startsWith('power_solar'))
-    return getMaterial('glossy_plastic', 0x112244)  // dark blue panel
-  if (compId.startsWith('power_'))
-    return getMaterial('pcb_green')
-  if (compId.startsWith('structural_'))
-    return getMaterial('anodized_aluminum')
-  if (compId.startsWith('transmission_bearing'))
-    return getMaterial('brushed_steel')
-  if (compId.startsWith('transmission_'))
-    return getMaterial('anodized_aluminum')
-  if (compId.startsWith('effector_'))
-    return getMaterial('anodized_aluminum', 0x556677)  // teal-ish metal
-  if (compId.startsWith('mobility_wheel') || compId.startsWith('mobility_mecanum') || compId.startsWith('mobility_omni'))
-    return getMaterial('rubber_black')
-  if (compId.startsWith('mobility_'))
-    return getMaterial('matte_plastic')
-  return getMaterial('anodized_aluminum')  // generic fallback
-}
 
 interface ParsedRobotLike {
   group: THREE.Group
@@ -166,7 +122,15 @@ export const SLOW_MESH_BLACKLIST = new Set([
   'motor_harmonic_drive_large',        // same mislabeled STEP
 ])
 
+// Cache tinted GLB materials per (compId, sourceMaterialUUID) to avoid
+// re-cloning identical materials for repeated instances (e.g., 8 servos).
+// Cleared on each applyRichVisuals call to prevent stale material leaks.
+const _tintedMatCache = new Map<string, THREE.MeshStandardMaterial>()
+
 export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (linkName: string) => void): void {
+  // Dispose and clear previous tinted materials
+  for (const mat of _tintedMatCache.values()) mat.dispose()
+  _tintedMatCache.clear()
   for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
     const compId = extractComponentId(linkName)
     if (!compId) continue
@@ -199,7 +163,8 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
     // Generate rich visual group (parametric fallback)
     let richGroup: THREE.Group
     try {
-      richGroup = generator(compId, dims)
+      const compColor = getComponentColor(compId)
+      richGroup = generator(compId, dims, compColor.tint)
     } catch (e) {
       console.warn(`[richVisuals] Generator failed for ${compId}:`, e)
       continue  // keep primitive visuals
@@ -239,6 +204,10 @@ export function applyRichVisuals(parsedRobot: ParsedRobotLike, onMeshLoaded?: (l
               }
             }
           }
+        } else if (child instanceof THREE.LineSegments) {
+          // Feature-edge LineSegments (added by addEdgeLines) own their
+          // EdgesGeometry — dispose it so async mesh replacement doesn't leak.
+          child.geometry?.dispose()
         }
       })
 
@@ -271,9 +240,17 @@ function applyMeshToLink(
   dims: GeneratorDims,
   compId: string,
 ) {
-  // Use GLB embedded materials (from STEP colors) when available.
-  // Only fall back to category material for meshes with default gray (0x888888).
-  const catMat = getCategoryMaterial(compId)
+  // Apply per-component color tint to GLB meshes.
+  // Default-gray meshes get full material replacement; others get a cached tint blend.
+  const compColor = getComponentColor(compId)
+  const catMat = getTintedMaterial(compColor.material, ...compColor.tint, compColor.strength ?? 0.4)
+  const tintColor = new THREE.Color(compColor.tint[0], compColor.tint[1], compColor.tint[2])
+  const tintStrength = compColor.strength ?? 0.4
+  // Materials where the real-world color dominates the PBR look and should
+  // never be softened by a source-material blend. Rubber parts are physically
+  // black regardless of whatever generic color the STEP converter emitted.
+  const forceReplaceMaterials = new Set(['rubber_black'])
+  const forceReplace = forceReplaceMaterials.has(compColor.material)
   meshGroup.traverse(child => {
     if (child instanceof THREE.Mesh) {
       const mat = child.material as THREE.MeshStandardMaterial
@@ -281,8 +258,18 @@ function applyMeshToLink(
         Math.abs(mat.color.r - 0.533) < 0.05 &&
         Math.abs(mat.color.g - 0.533) < 0.05 &&
         Math.abs(mat.color.b - 0.533) < 0.05
-      if (isDefaultGray) {
+      if (forceReplace || isDefaultGray) {
         child.material = catMat
+      } else if (mat?.color) {
+        // Cache tinted materials per (compId, sourceMaterial) to share across instances
+        const cacheKey = `${compId}_${mat.uuid}`
+        let tinted = _tintedMatCache.get(cacheKey)
+        if (!tinted) {
+          tinted = mat.clone()
+          tinted.color.lerp(tintColor, tintStrength)
+          _tintedMatCache.set(cacheKey, tinted)
+        }
+        child.material = tinted
       }
       child.castShadow = true
       child.receiveShadow = true

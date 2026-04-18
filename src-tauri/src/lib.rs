@@ -437,6 +437,19 @@ async fn ai_edit(app: AppHandle, state: State<'_, AppState>, prompt: String, urd
     }), 1, &app)
 }
 
+/// Restore conversation history for an AI session from frontend localStorage
+#[tauri::command]
+async fn ai_set_history(state: State<'_, AppState>, session_id: String, history: serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("ai_set_history", json!({
+        "session_id": session_id,
+        "history": history
+    }), 1)
+}
+
 /// Second-pass AI validation of assembled URDF — checks spatial correctness
 #[tauri::command]
 async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>) -> Result<serde_json::Value, String> {
@@ -932,6 +945,7 @@ pub fn run() {
             sim_set_script,
             sim_render,
             ai_edit,
+            ai_set_history,
             ai_validate_assembly,
             ai_complete,
             save_file,

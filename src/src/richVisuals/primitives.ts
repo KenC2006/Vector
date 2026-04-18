@@ -495,9 +495,9 @@ export function cablePort(radius: number, tubeRadius: number): THREE.Mesh {
 }
 
 /** PCB board with copper traces. */
-export function pcbBoard(w: number, h: number, thickness: number): THREE.Group {
+export function pcbBoard(w: number, h: number, thickness: number, boardMaterial?: THREE.MeshStandardMaterial): THREE.Group {
   const group = new THREE.Group()
-  const board = new THREE.Mesh(chamferedBox(w, h, thickness, Math.min(w, h) * 0.03), getMaterial('pcb_green'))
+  const board = new THREE.Mesh(chamferedBox(w, h, thickness, Math.min(w, h) * 0.03), boardMaterial ?? getMaterial('pcb_green'))
   group.add(board)
   const traceMat = getMaterial('copper_trace')
   const traceH = thickness * 0.3

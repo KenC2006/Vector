@@ -4,6 +4,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
@@ -54,18 +56,30 @@ function groundRobot(robotGroup: THREE.Group) {
   // and other helpers that are children of robotGroup but not actual robot geometry.
   const urdfWorld = robotGroup.getObjectByName('urdf_world')
   const target = urdfWorld || robotGroup
-  // Compute bbox from only Mesh objects (excludes edge Lines, ArrowHelpers, etc.)
-  const box = new THREE.Box3()
-  const meshBox = new THREE.Box3()
+
+  // Walk the full scene graph under target. Computing each mesh's world-space AABB
+  // from its geometry.boundingBox + matrixWorld explicitly (instead of Box3.setFromObject)
+  // avoids silently missing components deep in serial chains when setFromObject's limited
+  // (false, false) world-matrix refresh can't recurse — a previous bug where robots floated
+  // because the lowest mesh was buried in servo→servo→extrusion chains.
+  let minY = Infinity
+  let meshCount = 0
+  const tmpBox = new THREE.Box3()
   target.traverse((obj: THREE.Object3D) => {
-    if ((obj as THREE.Mesh).isMesh) {
-      meshBox.setFromObject(obj)
-      if (!meshBox.isEmpty()) box.union(meshBox)
-    }
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.visible) return
+    const geom = mesh.geometry
+    if (!geom) return
+    if (!geom.boundingBox) geom.computeBoundingBox()
+    const bb = geom.boundingBox
+    if (!bb || bb.isEmpty()) return
+    tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
+    if (tmpBox.min.y < minY) minY = tmpBox.min.y
+    meshCount++
   })
-  if (box.isEmpty()) return
-  // In Three.js Y is up; shift so bottom of bounding box = 0
-  robotGroup.position.y = -box.min.y
+  if (!isFinite(minY) || meshCount === 0) return
+  // In Three.js Y is up; shift so lowest mesh touches Y=0
+  robotGroup.position.y = -minY
 }
 
 /**
@@ -803,7 +817,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.setClearColor(VIEWPORT_BG[(localStorage.getItem('vector_theme') || 'dark') as ThemeId] || 0x1a1a1a)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
+renderer.shadowMap.type = THREE.PCFShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 renderer.toneMappingExposure = 1.1
 
@@ -835,7 +849,7 @@ controls.mouseButtons = {
   RIGHT: THREE.MOUSE.PAN,  // right-click also pans (CAD-style)
 }
 
-const viewportNavClock = new THREE.Clock()
+const viewportNavTimer = new THREE.Timer()
 const keysViewportPan = { w: false, a: false, s: false, d: false }
 let shiftViewportPanHeld = false
 
@@ -860,9 +874,18 @@ window.addEventListener('blur', () => {
 
 let cameraFocusTween: CameraFocusTween | null = null
 
-// ── Post-processing pipeline (SSAO + output) ───────────────────────────────
-
-const composer = new EffectComposer(renderer)
+// ── Post-processing pipeline (MSAA + SMAA + output) ─────────────────────────
+// The composer's internal render target otherwise silently bypasses the
+// WebGLRenderer antialias:true flag. Provide an MSAA render target explicitly.
+const _initSize = renderer.getSize(new THREE.Vector2())
+const _dpr = renderer.getPixelRatio()
+const msaaRenderTarget = new THREE.WebGLRenderTarget(
+  Math.max(1, _initSize.x * _dpr),
+  Math.max(1, _initSize.y * _dpr),
+  { type: THREE.HalfFloatType, samples: 4 },
+)
+msaaRenderTarget.texture.name = 'EffectComposer.rt1.msaa'
+const composer = new EffectComposer(renderer, msaaRenderTarget)
 composer.setPixelRatio(renderer.getPixelRatio())
 // Sync initial size after a frame (viewport layout not done yet at this point)
 requestAnimationFrame(() => {
@@ -880,6 +903,11 @@ composer.addPass(renderPass)
 // const gtaoPass = new GTAOPass(scene, camera)
 // gtaoPass.blendIntensity = 0.15
 // composer.addPass(gtaoPass)
+
+// SMAA: sub-pixel silhouette cleanup. Handles edges that slip past MSAA —
+// especially thin rounded parts at far zoom. Sized automatically via composer.setSize.
+const smaaPass = new SMAAPass()
+composer.addPass(smaaPass)
 
 // Output pass (tone mapping + color space conversion)
 const outputPass = new OutputPass()
@@ -975,6 +1003,9 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       if (simApi.isSimActive()) return          // don't disturb sim joint state
       groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
+      // STEP/GLB meshes load async — re-run edges so late arrivals get the
+      // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
+      addEdgeLines(parsedRobot)
     }, 150)
   }
 }
@@ -995,22 +1026,28 @@ addEdgeLines(parsedRobot)
 groundRobot(robot)
 
 // ── Edge lines (CAD-style silhouette edges) ─────────────────────────────────
+// Gives the Fusion 360 feature-edge look: silhouettes stay crisp at any zoom
+// because edges are 1-px vector lines, independent of triangle tessellation.
 
 const edgeMaterial = new THREE.LineBasicMaterial({
-  color: 0x000000,
+  color: 0x0a0a0a,
   transparent: true,
-  opacity: 0.3,
+  opacity: 0.55,
   depthTest: true,
 })
 
 function addEdgeLines(parsed: typeof parsedRobot) {
   parsed.group.traverse(child => {
-    if (child instanceof THREE.Mesh && child.geometry) {
-      const edges = new THREE.EdgesGeometry(child.geometry, 30) // 30° threshold
-      const line = new THREE.LineSegments(edges, edgeMaterial)
-      line.raycast = () => {} // don't interfere with raycasting
-      child.add(line)
-    }
+    if (!(child instanceof THREE.Mesh) || !child.geometry) return
+    // Idempotency: skip meshes that already have a feature-edge child.
+    // Async STEP/GLB loads call this again; don't double up.
+    if ((child.userData as Record<string, unknown>).__hasFeatureEdges) return
+    const edges = new THREE.EdgesGeometry(child.geometry, 20) // 20° = Fusion-like
+    const line = new THREE.LineSegments(edges, edgeMaterial)
+    line.raycast = () => {} // don't interfere with raycasting
+    ;(line.userData as Record<string, unknown>).__featureEdge = true
+    child.add(line)
+    ;(child.userData as Record<string, unknown>).__hasFeatureEdges = true
   })
 }
 
@@ -1304,22 +1341,30 @@ function rebuildWireframes() {
   wireframeGroup.clear()
   wireframeBuilt = false
 
-    robot.traverse(child => {
+  // wireframeGroup is a child of robot, which has a non-identity position after
+  // groundRobot (robot.position.y = -minY). We capture each mesh's world-space
+  // transform and convert to wireframeGroup-local so clones sit where the solids do.
+  // Must update matrices first — groundRobot mutates robot.position and we may run
+  // before a render cycle refreshes matrixWorld.
+  robot.updateMatrixWorld(true)
+  robot.traverse(child => {
     if (child instanceof THREE.Mesh && child.material !== wireMat && child.material !== defaultMat && child.geometry) {
-        const clone = new THREE.Mesh(child.geometry, wireMat)
-        child.getWorldPosition(clone.position)
-        child.getWorldQuaternion(clone.quaternion)
-        child.getWorldScale(clone.scale)
-        wireframeGroup.add(clone)
-      }
-    })
+      const clone = new THREE.Mesh(child.geometry, wireMat)
+      child.getWorldPosition(clone.position)
+      wireframeGroup.worldToLocal(clone.position)
+      child.getWorldQuaternion(clone.quaternion)
+      child.getWorldScale(clone.scale)
+      wireframeGroup.add(clone)
+    }
+  })
   wireframeBuilt = true
 }
 
 function animate() {
   requestAnimationFrame(animate)
 
-  const navDt = Math.min(viewportNavClock.getDelta(), 0.05)
+  viewportNavTimer.update()
+  const navDt = Math.min(viewportNavTimer.getDelta(), 0.05)
 
   // Build wireframes once
   if (!wireframeBuilt) {
@@ -1565,14 +1610,19 @@ function reparseURDF(xmlOverride?: string) {
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-          addEdgeLines(parsedRobot)
+          // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+          const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+          if (!skipHeavy) addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
-          rebuildWireframes()
-          rebuildCollisionVisuals(processed)
+          if (!skipHeavy) rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           groundRobot(robot)
+          // Wireframes must rebuild AFTER groundRobot so world-space capture
+          // reflects the final robot position. Also skipped during bulk
+          // assembly — the final reparse after the loop runs it once.
+          if (!skipHeavy) rebuildWireframes()
         } catch (e) {
           console.warn('[xacro] Parse error after preprocessing:', e)
           showToast(
@@ -1603,16 +1653,17 @@ function reparseURDF(xmlOverride?: string) {
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot))
-    addEdgeLines(parsedRobot)
+    // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
+    const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+    if (!skipHeavy) addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()
 
     // Update CoM marker
     updateComMarker()
 
-    // Rebuild wireframes and collision visuals
-    rebuildWireframes()
-    rebuildCollisionVisuals(urdfContent)
+    // Collision visuals can rebuild here — they don't depend on ground offset.
+    if (!skipHeavy) rebuildCollisionVisuals(urdfContent)
 
     // Update viewport info
     updateViewportInfo()
@@ -1620,6 +1671,11 @@ function reparseURDF(xmlOverride?: string) {
     urdfAssemblyApi?.onModelUpdated()
 
     groundRobot(robot)
+
+    // Wireframes must rebuild AFTER groundRobot so world-space capture
+    // reflects the final robot position. Skipped during bulk assembly —
+    // the final reparse after the loop runs it once.
+    if (!skipHeavy) rebuildWireframes()
 
     console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
@@ -2260,6 +2316,7 @@ viewportChatApi = initViewportChat({
   camera,
   groundRobot: () => groundRobot(robot),
   autoFrameRobot: () => autoFrameRobot(robot, camera, controls),
+  exportForBackend: (chatId) => chatApi.exportForBackend(chatId),
   getUrdfAssemblyApi: () => urdfAssemblyApi,
   getCoreAvailable: () => coreAvailable,
   showToast,
@@ -2517,6 +2574,7 @@ urdfAssemblyApi = initUrdfAssembly({
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
+  getActiveFileName: () => activeFile || 'robot.urdf',
   isViewport3D: () => viewportChatApi?.isViewport3D() ?? true,
   getInteractionMode: () => viewportInteractionMode,
   isSimActive: () => simApi.isSimActive(),

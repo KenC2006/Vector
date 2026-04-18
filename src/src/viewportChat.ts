@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { escapeHtml } from './chatHistory'
-import type { UrdfAssemblyApi } from './urdfAssembly'
+import type { UrdfAssemblyApi, TopologyOp, AssemblyGraph } from './urdfAssembly'
 
 export interface ViewportChatDeps {
   // Editor
@@ -35,6 +35,8 @@ export interface ViewportChatDeps {
   camera: THREE.PerspectiveCamera
   groundRobot(): void
   autoFrameRobot(): void
+  // Chat history
+  exportForBackend(chatId?: string): Array<{ role: string; content: string }>
   // Misc
   getUrdfAssemblyApi(): UrdfAssemblyApi | null
   getCoreAvailable(): boolean
@@ -48,6 +50,110 @@ export interface ViewportChatApi {
   switchViewportView(view: '3d' | 'chat'): void
   isViewport3D(): boolean
   getVcInput(): HTMLTextAreaElement
+}
+
+/**
+ * Build a Claude-facing summary of which faces are already occupied on each component.
+ * Helps the AI avoid shaft-fanout (2+ children on the same servo face) before it's
+ * attempted. Flags overloaded faces explicitly so Claude can reason about free ports
+ * rather than re-discovering occupancy via the validator.
+ */
+function buildPortOccupancyContext(graph: AssemblyGraph): string {
+  const allFaces = ['top', 'bottom', 'front', 'back', 'left', 'right']
+  // parent link_name → face → child link_names attached there
+  const usage = new Map<string, Map<string, string[]>>()
+  for (const comp of graph.components) {
+    if (!comp.attach_to || !comp.attach_face) continue
+    let byFace = usage.get(comp.attach_to)
+    if (!byFace) { byFace = new Map(); usage.set(comp.attach_to, byFace) }
+    const bucket = byFace.get(comp.attach_face) || []
+    bucket.push(comp.link_name)
+    byFace.set(comp.attach_face, bucket)
+  }
+  const lines: string[] = []
+  for (const comp of graph.components) {
+    const byFace = usage.get(comp.link_name)
+    if (!byFace || byFace.size === 0) continue
+    const takenEntries: string[] = []
+    const overloaded: string[] = []
+    for (const [face, children] of byFace) {
+      takenEntries.push(`${face}=[${children.join(', ')}]`)
+      if (children.length > 1) overloaded.push(face)
+    }
+    const free = allFaces.filter(f => !byFace.has(f))
+    const warn = overloaded.length > 0 ? `  ⚠ OVERLOADED faces (must reparent extras to a structural link): ${overloaded.join(', ')}` : ''
+    lines.push(`  - ${comp.link_name} (${comp.component_id}): taken ${takenEntries.join(', ')}; free [${free.join(', ')}]${warn}`)
+  }
+  if (lines.length === 0) return ''
+  return `\n\nPort occupancy (existing children per face). Rules:
+- Servos/motors have a shaft output on TOP; attach exactly ONE child to a servo's top face.
+- Do NOT attach a second child to an already-taken face of an actuator — reparent to a structural link (extrusion, bracket) instead.
+${lines.join('\n')}`
+}
+
+/**
+ * Build a "I'll change X" banner that names the resolved targets a set of topology
+ * operations will affect — Cursor-style echo-before-apply (master plan W2). Surfaced
+ * alongside the Apply/Dismiss buttons so the user can sanity-check the resolution
+ * before committing (e.g. "move wrist camera" → sensor_depth_camera_small_1).
+ */
+function summarizeTopologyOps(ops: TopologyOp[], currentGraph: AssemblyGraph): string {
+  const byName = new Map(currentGraph.components.map(c => [c.link_name, c]))
+  const rows: string[] = []
+  for (const op of ops) {
+    if (op.op === 'add') {
+      const parent = op.attach_to || '(root)'
+      rows.push(`<b>add</b> <code>${escapeHtml(op.link_name)}</code> (${escapeHtml(op.component_id || '?')}) on <code>${escapeHtml(parent)}:${escapeHtml(op.attach_face || '?')}</code>`)
+    } else if (op.op === 'remove') {
+      const existing = byName.get(op.link_name)
+      const tag = existing ? ` (${escapeHtml(existing.component_id)})` : ''
+      rows.push(`<b>remove</b> <code>${escapeHtml(op.link_name)}</code>${tag} and its subtree`)
+    } else if (op.op === 'modify') {
+      const existing = byName.get(op.link_name)
+      const tag = existing ? ` (${escapeHtml(existing.component_id)})` : ''
+      const changes: string[] = []
+      if (op.attach_to !== undefined) changes.push(`parent→${escapeHtml(String(op.attach_to))}`)
+      if (op.attach_face !== undefined) changes.push(`face→${escapeHtml(op.attach_face)}`)
+      if (op.component_id !== undefined) changes.push(`component_id→${escapeHtml(op.component_id)}`)
+      if (op.joint_type !== undefined) changes.push(`joint_type→${escapeHtml(op.joint_type)}`)
+      if (op.joint_axis !== undefined) changes.push(`joint_axis→${escapeHtml(op.joint_axis)}`)
+      if (op.length_mm !== undefined) changes.push(`length_mm→${op.length_mm}`)
+      if (op.orientation !== undefined) changes.push(`orientation→${escapeHtml(op.orientation)}`)
+      if (op.elevation_angle !== undefined) changes.push(`elevation_angle→${op.elevation_angle}°`)
+      const changeText = changes.length > 0 ? changes.join(', ') : '(no field changes)'
+      rows.push(`<b>modify</b> <code>${escapeHtml(op.link_name)}</code>${tag}: ${changeText}`)
+    }
+  }
+  if (rows.length === 0) return ''
+  return `<div class="ai-resolved-targets" style="margin:6px 0;padding:8px 10px;border-left:3px solid #4d78cc;background:#1b1f2b;border-radius:3px;font-size:12px;line-height:1.6;">
+    <div style="color:#9aa7c2;font-weight:600;margin-bottom:4px;">I'll change:</div>
+    ${rows.map(r => `<div>• ${r}</div>`).join('')}
+  </div>`
+}
+
+/**
+ * One-line summary of a fresh assembly graph (design_robot path) — helps the user
+ * catch wrong-shape outputs before applying (e.g. "expected an arm, got a rover").
+ */
+function summarizeAssemblyGraph(graph: AssemblyGraph): string {
+  const comps = graph.components
+  if (comps.length === 0) return ''
+  const dof = comps.filter(c => c.joint_type === 'revolute' || c.joint_type === 'prismatic').length
+  const sensors = comps.filter(c => c.component_id.startsWith('sensor_')).length
+  const actuators = comps.filter(c => c.component_id.startsWith('actuator_') || c.component_id.startsWith('motor_')).length
+  const structural = comps.filter(c => c.component_id.startsWith('structural_')).length
+  const wheels = comps.filter(c => c.component_id.includes('wheel') || c.component_id.includes('caster')).length
+  const effectors = comps.filter(c => c.component_id.includes('gripper') || c.component_id.includes('effector') || c.component_id.includes('suction')).length
+  const parts: string[] = [`${comps.length} components`, `${dof} DOF`]
+  if (actuators > 0) parts.push(`${actuators} actuator${actuators > 1 ? 's' : ''}`)
+  if (structural > 0) parts.push(`${structural} structural`)
+  if (sensors > 0) parts.push(`${sensors} sensor${sensors > 1 ? 's' : ''}`)
+  if (wheels > 0) parts.push(`${wheels} wheel${wheels > 1 ? 's' : ''}`)
+  if (effectors > 0) parts.push(`${effectors} effector${effectors > 1 ? 's' : ''}`)
+  return `<div class="ai-resolved-targets" style="margin:6px 0;padding:8px 10px;border-left:3px solid #4d78cc;background:#1b1f2b;border-radius:3px;font-size:12px;">
+    <div style="color:#9aa7c2;font-weight:600;margin-bottom:2px;">I'll build:</div>
+    <div>${parts.join(', ')}  •  base=<code>${escapeHtml(graph.base_link)}</code></div>
+  </div>`
 }
 
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
@@ -146,7 +252,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     diff?: { added: string[]; removed: string[] }
     newUrdf?: string
   }) {
-    const plainContent = content.replace(/<[^>]*>/g, '').trim()
+    const plainContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
     if (plainContent) deps.recordChatMessage(role, plainContent)
 
     const msg = document.createElement('div')
@@ -262,6 +368,19 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     }
 
     if (retryCount === 0) {
+      // Resync conversation history to backend BEFORE recording the new message,
+      // so the current prompt isn't duplicated (generate_edit adds it separately).
+      const chatId = deps.getCurrentChatId()
+      const history = deps.exportForBackend(chatId)
+      if (history.length > 0) {
+        try {
+          await invoke('ai_set_history', { sessionId: chatId, history })
+          console.log(`[VC] Resynced ${history.length} messages for session ${chatId}`)
+        } catch (err) {
+          console.warn('[VC] History resync failed (non-critical):', err)
+        }
+      }
+
       addVCMessage('user', prompt)
       vcInput.value = ''
       vcInput.style.height = 'auto'
@@ -280,6 +399,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     }
 
     try {
+
       const fullUrdf = deps.getEditorValue()
       const kinematicContext = deps.buildKinematicContext()
       const isRedesign = retryCount > 0
@@ -290,17 +410,59 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.log(`[AI][redesign] Sending minimal URDF for redesign (skipping ${fullUrdf.length} char URDF)`)
       }
 
+      // Augment context with per-component port occupancy so Claude can avoid
+      // shaft-fanout before attempting it (master plan W2). Only meaningful for
+      // edit/modify_topology calls — redesigns start from a blank graph.
+      const storedGraphForContext = deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() || null
+      const portOccupancyCtx = !isRedesign && storedGraphForContext
+        ? buildPortOccupancyContext(storedGraphForContext)
+        : ''
+      const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx)
+
       const result = await invoke('ai_edit', {
         prompt,
         urdfContent: currentUrdf,
-        kinematicContext: isRedesign ? '' : kinematicContext,
+        kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
-      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown }
+      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       thinking.remove()
 
       const urdfAssemblyApi = deps.getUrdfAssemblyApi()
-      if (result.assembly_graph && urdfAssemblyApi) {
+
+      // ── modify_topology path: parse current URDF → apply ops → re-resolve ──
+      if (result.topology_ops && result.topology_ops.length > 0 && urdfAssemblyApi) {
+        console.log(`[AI] Received ${result.topology_ops.length} topology operations — applying to current assembly`)
+        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback)
+        const storedGraph = urdfAssemblyApi.getLastAssemblyGraph()
+        const currentGraph = storedGraph || urdfAssemblyApi.urdfToAssemblyGraph(fullUrdf)
+        if (currentGraph && !storedGraph) {
+          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available')
+        }
+        if (!currentGraph) {
+          addVCMessage('assistant', `<span style="color:#f85149;">Could not parse current URDF for topology editing. Try "start over" to redesign from scratch.</span>`)
+        } else {
+          const modifiedGraph = urdfAssemblyApi.applyTopologyOps(currentGraph, result.topology_ops)
+          console.log(`[AI] Modified graph: ${modifiedGraph.components.length} components (was ${currentGraph.components.length})`)
+          const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(modifiedGraph)
+          if (assemblyOut.urdf) {
+            // Ground and frame the modified robot (same as assembly_graph path)
+            await new Promise(r => setTimeout(r, 400))
+            deps.groundRobot()
+            deps.autoFrameRobot()
+
+            const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
+            const resolvedTargets = summarizeTopologyOps(result.topology_ops, currentGraph)
+            addVCMessage('assistant', `${resolvedTargets}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+              diff, newUrdf: assemblyOut.urdf,
+            })
+            deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+          } else {
+            const errors = assemblyOut.topologyErrors?.join(', ') || 'unknown error'
+            addVCMessage('assistant', `<span style="color:#f85149;">Topology modification failed: ${escapeHtml(errors)}</span>`)
+          }
+        }
+      } else if (result.assembly_graph && urdfAssemblyApi) {
         console.log('[AI] Received assembly_graph — resolving via frontend snap system')
         const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
         let assemblyResult = assemblyOut.urdf
@@ -321,15 +483,70 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             robotBox.getCenter(robotCenter)
             robotBox.getSize(robotSize)
             const maxDim = Math.max(robotSize.x, robotSize.y, robotSize.z, 0.3)
-            const dist = maxDim * 2.5
-            const captureSize = 512
+            const captureSize = 768    // VLMs downscale to ~768px tiles; matches their native resolution
 
+            // Three canonical views with per-view distance for optimal framing
             const viewAngles = [
-              { label: 'front-right', az: 0.75, el: 0.5, depth: 0.75 },
-              { label: 'rear-left', az: -0.75, el: 0.5, depth: -0.75 },
-              { label: 'top-down', az: 0.2, el: 1.2, depth: 0.2 },
+              { label: 'side-low',      az: Math.PI * 0.05, el: Math.PI * 0.06, dist: maxDim * 0.95 },  // ~11° elevation — profile/grounding
+              { label: 'three-quarter', az: Math.PI * 0.30, el: Math.PI * 0.10, dist: maxDim * 0.85 },  // ~18° elevation, ~54° azimuth — low 3/4 like standing nearby
+              { label: 'overhead',      az: Math.PI * -0.15, el: Math.PI * 0.35, dist: maxDim * 0.85 },  // ~63° elevation — top-down layout
             ]
             const screenshots: string[] = []
+
+            // ── Prepare clean scene for capture ──
+            // Hide everything except the robot meshes and lights.
+            // Strategy: hide all scene children except the robot group and lights,
+            // then inside the robot hide any debug/overlay groups.
+            const hiddenObjects: THREE.Object3D[] = []
+
+            // Hide top-level scene objects that aren't the robot or lights
+            for (const child of deps.scene.children) {
+              if (!child.visible) continue
+              if (child === deps.robot) continue
+              if (child instanceof THREE.Light) continue
+              child.visible = false
+              hiddenObjects.push(child)
+            }
+
+            // Hide debug overlays inside the robot group (wireframe, CoM, axis visuals, etc.)
+            deps.robot.traverse(obj => {
+              if (!obj.visible) return
+              const dominated =
+                obj instanceof THREE.AxesHelper
+                || obj instanceof THREE.ArrowHelper
+                || obj.name === 'attachment_nodes'
+                || obj.name === 'attachment_node_rings'
+                || obj.name === 'node-axis-rings'
+                || obj.type === 'Line'
+                || obj.type === 'LineLoop'
+                || obj.type === 'LineSegments'
+                // BoxGeometry node meshes (12×12×12mm cubes used for mount nodes)
+                || (obj instanceof THREE.Mesh && (obj.geometry as any)?.parameters?.width === 0.012)
+                // TorusGeometry axis rings
+                || (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.TorusGeometry)
+              if (dominated) {
+                obj.visible = false
+                hiddenObjects.push(obj)
+              }
+            })
+
+            // Swap to light gray background for better contrast (VLMs parse light BGs better)
+            const origBackground = deps.scene.background
+            deps.scene.background = new THREE.Color(0xd8dce3)
+
+            // Add a temporary fill light to reduce harsh shadows in captures
+            const captureFill = new THREE.HemisphereLight(0xffffff, 0x8899aa, 0.5)
+            deps.scene.add(captureFill)
+
+            // Visible ground plane so the floor line is clear in low-angle shots
+            const captureGround = new THREE.Mesh(
+              new THREE.PlaneGeometry(6, 6),
+              new THREE.MeshStandardMaterial({ color: 0xbcc0c8, roughness: 0.9 }),
+            )
+            captureGround.rotation.x = -Math.PI / 2
+            captureGround.position.y = 0.0001  // just above origin to avoid z-fighting
+            captureGround.receiveShadow = true
+            deps.scene.add(captureGround)
 
             const offCanvas = document.createElement('canvas')
             offCanvas.width = captureSize
@@ -337,15 +554,18 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
             offRenderer.setSize(captureSize, captureSize)
             offRenderer.shadowMap.enabled = true
+            offRenderer.setClearColor(0xd8dce3, 1)
 
             const offCam = deps.camera.clone()
             offCam.aspect = 1
 
             for (const view of viewAngles) {
+              // Spherical coordinates: azimuth around Y-up, elevation from ground plane
+              const d = view.dist
               offCam.position.set(
-                robotCenter.x + dist * view.az,
-                robotCenter.y + dist * view.el,
-                robotCenter.z + dist * view.depth,
+                robotCenter.x + d * Math.cos(view.el) * Math.sin(view.az),
+                robotCenter.y + d * Math.sin(view.el),
+                robotCenter.z + d * Math.cos(view.el) * Math.cos(view.az),
               )
               offCam.lookAt(robotCenter)
               offCam.updateProjectionMatrix()
@@ -354,6 +574,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
             }
             offRenderer.dispose()
+
+            // ── Restore scene state ──
+            deps.scene.background = origBackground
+            deps.scene.remove(captureFill)
+            deps.scene.remove(captureGround)
+            ;(captureGround.material as THREE.Material).dispose()
+            captureGround.geometry.dispose()
+            for (const obj of hiddenObjects) obj.visible = true
 
             const totalKB = screenshots.reduce((sum, s) => sum + s.length, 0) / 1024
             console.log(`[AI] Captured 3 views (${captureSize}x${captureSize}, ${totalKB.toFixed(0)}KB total)`)
@@ -371,18 +599,34 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             if (!valResult.ok) {
               console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
-              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string }[] | undefined
+              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string }[] | undefined
               const needsRedesign = (valResult as any).needs_redesign
-              const topoFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'topology') : []
-              const placementFailures = checklist ? checklist.filter(c => !c.pass && (c as any).fixable_by === 'placement') : []
+              const allFailures = checklist ? checklist.filter(c => !c.pass) : []
+              const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
+              const placementFailures = allFailures.filter(c => c.fixable_by === 'placement')
 
-              if (needsRedesign && topoFailures.length > 0 && retryCount < 1) {
-                const failures = topoFailures.map(c => `- ${c.check}: ${c.detail}`).join('\n')
-                const placementNote = placementFailures.length > 0
-                  ? `\n\n(Note: the validator also found ${placementFailures.length} placement issue(s) — these are handled by the placement engine. Ignore them.)`
+              // Redesign triggers (quadruped item 4):
+              //  (a) Gemini says needs_redesign AND at least one topology failure — original path.
+              //  (b) NEW: >=2 checklist failures AND any is fixable_by: "placement" — a structural
+              //      mismatch is often what causes placement to fail, so retrying with a different
+              //      topology frequently clears issues even when Gemini tags them placement-only.
+              const topologyRedesign = needsRedesign && topoFailures.length > 0
+              const placementRedesign = allFailures.length >= 2 && placementFailures.length > 0
+              const shouldRedesign = topologyRedesign || placementRedesign
+
+              if (shouldRedesign && retryCount < 1) {
+                const failures = allFailures
+                  .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
+                  .join('\n')
+                const reason = topologyRedesign
+                  ? 'Visual validation found topology issues. Redesigning...'
+                  : `Visual validation flagged ${allFailures.length} problems — retrying with a different topology.`
+                addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
+                const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
+                const placementGuidance = placementFailures.length > 0 && !topologyRedesign
+                  ? `\n\nNote: items tagged [placement] are computed by the placement engine, not by you directly. However, a different component choice, connection order, or attach_face often avoids them — e.g. a wider baseplate preset, a structural bracket between stacked servos, or rest-pose attach_rpy on leg joints.`
                   : ''
-                addVCMessage('system', `<span style="color:#e5c07b;">Visual validation found topology issues. Redesigning...</span>`)
-                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these TOPOLOGY problems that YOU need to fix:\n${failures}${placementNote}\n\nPlease design a NEW topology from scratch that fixes the topology issues listed above.`
+                const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. The validator found these problems:\n${failures}${notesLine}${placementGuidance}\n\nPlease design a NEW topology from scratch that addresses these issues.`
                 vcSend.disabled = false
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1)
@@ -393,7 +637,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           }
 
           const diff = computeSimpleDiff(fullUrdf, assemblyResult)
-          addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
+          const graphSummary = summarizeAssemblyGraph(result.assembly_graph as AssemblyGraph)
+          addVCMessage('assistant', `${graphSummary}${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
             diff, newUrdf: assemblyResult,
           })
           deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)

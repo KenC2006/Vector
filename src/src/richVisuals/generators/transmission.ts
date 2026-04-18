@@ -13,7 +13,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.56, 0.27, 0.68]  // purple
+const DEFAULT_COLOR: [number, number, number] = [0.56, 0.27, 0.68]  // purple
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(base: string = 'anodized_aluminum', strength = 0.3) {
   return getTintedMaterial(base, ...CAT_COLOR, strength)
@@ -669,7 +670,8 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichTransmission(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichTransmission(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('timing_belt'))
     return generateTimingBelt(id, dims)
   if (id.includes('leadscrew') || id.includes('ballscrew'))

@@ -21,6 +21,8 @@ export interface UrdfVisualDesc {
 
 // ── Category colour palette ──────────────────────────────────────────────────
 
+import { getComponentColor } from './richVisuals/materials'
+
 export const CATEGORY_COLORS: Record<string, [number, number, number, number]> = {
   actuators:      [0.90, 0.49, 0.13, 1],  // orange
   motors:         [0.91, 0.30, 0.24, 1],  // red-orange
@@ -33,8 +35,18 @@ export const CATEGORY_COLORS: Record<string, [number, number, number, number]> =
   mobility:       [0.20, 0.29, 0.37, 1],  // dark slate
 }
 
+// Per-shape-generator component ID — set by generateVisuals before dispatching
+let _currentCompId: string | null = null
+
 function catColor(category: string, darken = 0): [number, number, number, number] {
-  const c = CATEGORY_COLORS[category] ?? [0.6, 0.6, 0.6, 1]
+  // Use per-component color when available (set by generateVisuals)
+  let c: [number, number, number, number]
+  if (_currentCompId) {
+    const cc = getComponentColor(_currentCompId)
+    c = [cc.tint[0], cc.tint[1], cc.tint[2], 1]
+  } else {
+    c = CATEGORY_COLORS[category] ?? [0.6, 0.6, 0.6, 1]
+  }
   if (darken === 0) return c
   const f = 1 - darken * 0.25
   return [c[0] * f, c[1] * f, c[2] * f, c[3]]
@@ -101,14 +113,14 @@ function servoShape(
   const hornR = Math.min(w, d) * 0.35
   const hornH = h * 0.12
   return [
-    // Main body
-    box(w, h * 0.76, d, 0, 0, 0, c),
+    // Main body — height along Z (URDF up), depth along Y
+    box(w, d, h * 0.76, 0, 0, 0, c),
     // Mounting ears (midway up the body)
-    box(earW, earH, d, 0, h * 0.32, 0, c2),
+    box(earW, d, earH, 0, 0, h * 0.32, c2),
     // Output horn (top)
-    cyl(hornR, hornH, 0, h * 0.44, 0, c3),
+    cyl(hornR, hornH, 0, 0, h * 0.44, c3),
     // Shaft nub
-    cyl(hornR * 0.25, hornH * 0.8, 0, h * 0.52, 0, c2),
+    cyl(hornR * 0.25, hornH * 0.8, 0, 0, h * 0.52, c2),
   ]
 }
 
@@ -1179,6 +1191,8 @@ export function generateVisuals(comp: {
   physical: { mass_kg?: number; mass_kg_per_100mm?: number; bounding_box_mm?: number[]; cross_section_mm?: number[]; inertia_primitive?: string; outer_diameter_mm?: number; inner_diameter_mm?: number; wall_thickness_mm?: number }
   mechanical_electrical: Record<string, unknown>
 }, category: string): UrdfVisualDesc[] {
+  _currentCompId = comp.id
+  try {
   const p = comp.physical
   const bb = p.bounding_box_mm ?? p.cross_section_mm ?? [40, 40, 40]
   const xm = mm(bb[0] ?? 40)
@@ -1330,4 +1344,7 @@ export function generateVisuals(comp: {
   if (shape === 'cylinder') return [cyl(Math.max(xm, ym) / 2, zm, 0, 0, 0, c)]
   if (shape === 'sphere') return [sphere(Math.max(xm, ym, zm) / 2, 0, 0, 0, c)]
   return [box(xm, ym, zm, 0, 0, 0, c)]
+  } finally {
+    _currentCompId = null
+  }
 }

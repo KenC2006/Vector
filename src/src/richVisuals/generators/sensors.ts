@@ -15,7 +15,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.20, 0.60, 0.86] // blue
+const DEFAULT_COLOR: [number, number, number] = [0.20, 0.60, 0.86] // blue
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
@@ -23,6 +24,10 @@ function catMetal(strength = 0.3) {
 
 function catPlastic(strength = 0.25) {
   return getTintedMaterial('matte_plastic', ...CAT_COLOR, strength)
+}
+
+function catPcb(strength = 0.4) {
+  return getTintedMaterial('pcb_green', ...CAT_COLOR, strength)
 }
 
 // ── Depth Camera ────────────────────────────────────────────────────────────
@@ -36,7 +41,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
   // Main housing — chamferedBox (wide thin box)
   const body = new THREE.Mesh(
     nurbsFilletBox(w, h, d, chamfer, 16),
-    getMaterial('matte_plastic'),
+    catPlastic(),
   )
   g.add(body)
 
@@ -341,7 +346,7 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
   void id
 
   // PCB board base
-  const pcb = pcbBoard(w, h, d * 0.3)
+  const pcb = pcbBoard(w, h, d * 0.3, catPcb())
   g.add(pcb)
 
   // Main IC chip (dark QFN package)
@@ -511,7 +516,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
   void id
 
   // PCB base
-  const pcb = pcbBoard(w, h, d * 0.3)
+  const pcb = pcbBoard(w, h, d * 0.3, catPcb())
   g.add(pcb)
 
   // Sensor IC (small dark chip)
@@ -738,7 +743,7 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
   // Main body — chamferedBox
   const body = new THREE.Mesh(
     nurbsFilletBox(w, h, d, chamfer, 16),
-    getMaterial('matte_plastic'),
+    catPlastic(),
   )
   g.add(body)
 
@@ -1005,7 +1010,7 @@ function generateCurrentVoltage(id: string, dims: GeneratorDims): THREE.Group {
   void id
 
   // PCB
-  const pcb = pcbBoard(w, h, d * 0.25)
+  const pcb = pcbBoard(w, h, d * 0.25, catPcb())
   g.add(pcb)
 
   // Main IC
@@ -1054,7 +1059,7 @@ function generateColorLight(id: string, dims: GeneratorDims): THREE.Group {
   void id
 
   // Tiny PCB
-  const pcb = pcbBoard(w, h, d * 0.3)
+  const pcb = pcbBoard(w, h, d * 0.3, catPcb())
   g.add(pcb)
 
   // Lens dome (half sphere)
@@ -1109,7 +1114,7 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
   void id
 
   // Tiny PCB
-  const pcb = pcbBoard(w, h, d * 0.3)
+  const pcb = pcbBoard(w, h, d * 0.3, catPcb())
   g.add(pcb)
 
   // Pressure sensor dome (small dome)
@@ -1160,7 +1165,8 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichSensor(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichSensor(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('depth_camera')) return generateDepthCamera(id, dims)
   if (id.includes('lidar_3d')) return generateLidar3D(id, dims)
   if (id.includes('lidar_2d') || id.includes('lidar')) return generateLidar2D(id, dims)

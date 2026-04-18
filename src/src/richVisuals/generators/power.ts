@@ -12,10 +12,19 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsTorus } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.95, 0.77, 0.06]  // yellow
+const DEFAULT_COLOR: [number, number, number] = [0.95, 0.77, 0.06]  // yellow
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(strength = 0.3) {
   return getTintedMaterial('anodized_aluminum', ...CAT_COLOR, strength)
+}
+
+function catBody(base: string = 'matte_plastic', strength = 0.5) {
+  return getTintedMaterial(base, ...CAT_COLOR, strength)
+}
+
+function catPcb(strength = 0.4) {
+  return getTintedMaterial('pcb_green', ...CAT_COLOR, strength)
 }
 
 // ── LiPo Battery ────────────────────────────────────────────────────────────
@@ -31,7 +40,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   const bodyH = h * 0.85
   const body = new THREE.Mesh(
     nurbsFilletBox(bodyW, bodyD, bodyH, chamfer, 16),
-    getMaterial('glossy_plastic', 0x2255aa),
+    catBody('glossy_plastic', 0.5),
   )
   g.add(body)
 
@@ -112,7 +121,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
   // Main housing
   const body = new THREE.Mesh(
     nurbsFilletBox(w * 0.9, d * 0.85, h * 0.8, chamfer, 16),
-    getMaterial('matte_plastic', 0x222222),
+    catBody('matte_plastic', 0.4),
   )
   g.add(body)
 
@@ -176,7 +185,7 @@ function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
 
   // PCB board base
   const pcbH = h * 0.08
-  const pcb = pcbBoard(w * 0.85, d * 0.8, pcbH)
+  const pcb = pcbBoard(w * 0.85, d * 0.8, pcbH, catPcb())
   g.add(pcb)
 
   // Inductor — chamferedCylinder (prominent toroidal shape)
@@ -483,7 +492,7 @@ function generateSupercapacitor(id: string, dims: GeneratorDims): THREE.Group {
   const bodyH = h * 0.8
   const body = new THREE.Mesh(
     nurbsCylinder(bodyR, bodyH, chamfer, 32),
-    getMaterial('glossy_plastic', 0x333355),
+    catBody('glossy_plastic', 0.4),
   )
   g.add(body)
 
@@ -538,7 +547,7 @@ function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
 
   // PCB board
   const pcbH = h * 0.08
-  const pcb = pcbBoard(w * 0.85, d * 0.75, pcbH)
+  const pcb = pcbBoard(w * 0.85, d * 0.75, pcbH, catPcb())
   g.add(pcb)
 
   // USB-C connector
@@ -594,7 +603,8 @@ function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichPower(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichPower(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('lipo') || id.includes('lipo_')) return generateLipo(id, dims)
   if (id.includes('18650') || id.includes('battery_pack') || id.includes('cell_holder')) return generateCellHolder(id, dims)
   if (id.includes('supercap')) return generateSupercapacitor(id, dims)

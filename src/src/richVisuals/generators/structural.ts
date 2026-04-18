@@ -13,7 +13,8 @@ import {
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder } from '../nurbs'
 
-const CAT_COLOR: [number, number, number] = [0.66, 0.70, 0.72]  // silver-grey
+const DEFAULT_COLOR: [number, number, number] = [0.66, 0.70, 0.72]  // silver-grey
+let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
 
 function catMetal(base: string = 'anodized_aluminum', strength = 0.3) {
   return getTintedMaterial(base, ...CAT_COLOR, strength)
@@ -728,7 +729,8 @@ function generateDINRail(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichStructural(id: string, dims: GeneratorDims): THREE.Group {
+export function generateRichStructural(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+  CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('extrusion') || id.includes('2020') || id.includes('4040'))
     return generateExtrusion(id, dims)
   if (id.includes('ibeam') || id.includes('i_beam'))
