@@ -2457,7 +2457,7 @@
           "description": "Single rigid housing containing both abduction and pitch servos for a quadruped leg. Replaces the traditional shaft-bracket-shaft-bracket stack with one integrated unit. Based on the Dingo quadruped's Motor Hub Double design. Use on the baseplate bottom at each corner of a quadruped; attach the thigh extrusion to its output face.",
           "physical": {
             "mass_kg": 0.180,
-            "bounding_box_mm": [80, 70, 60],
+            "bounding_box_mm": [66, 58, 40],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6"
           },
