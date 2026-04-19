@@ -558,6 +558,31 @@ class JSONRPCServer:
         if not isinstance(urdf_content, str):
             raise ValueError("Parameter 'urdf_content' must be a string")
 
+        # Model whitelist — reject unknown IDs by falling back to Sonnet
+        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"}
+        model = params.get("model") or "claude-sonnet-4-6"
+        if model not in _ALLOWED_MODELS:
+            print(f"[ai_edit] Unknown model '{model}', falling back to claude-sonnet-4-6", file=sys.stderr)
+            model = "claude-sonnet-4-6"
+
+        # Normalize images: strip any data:image/...;base64, prefix the frontend
+        # may have included (Anthropic SDK rejects it).
+        raw_images = params.get("images") or []
+        images: list = []
+        if isinstance(raw_images, list):
+            for img in raw_images:
+                if not isinstance(img, dict):
+                    continue
+                media_type = img.get("media_type")
+                data = img.get("data", "")
+                if not isinstance(data, str) or not isinstance(media_type, str):
+                    continue
+                if data.startswith("data:"):
+                    comma = data.find(",")
+                    if comma != -1:
+                        data = data[comma + 1:]
+                images.append({"media_type": media_type, "data": data})
+
         try:
             # Tool-use assembly agent (disabled by default — too many API calls / expensive)
             # To enable: pass "use_tools": true in params
@@ -566,6 +591,8 @@ class JSONRPCServer:
                 result = _generate_assembly_with_tools(
                     prompt, session_id,
                     on_progress=self._emit_progress,
+                    model=model,
+                    images=images,
                 )
                 self._emit_progress("done", "Complete")
                 return {
@@ -587,10 +614,16 @@ class JSONRPCServer:
                 result = _generate_edit_streaming(
                     prompt, urdf_content, kg_json, kinematic_context, session_id,
                     on_progress=self._emit_progress,
+                    model=model,
+                    images=images,
                 )
             else:
                 self._emit_progress("thinking", "Processing request...")
-                result = _generate_edit(prompt, urdf_content, kg_json, kinematic_context, session_id)
+                result = _generate_edit(
+                    prompt, urdf_content, kg_json, kinematic_context, session_id,
+                    model=model,
+                    images=images,
+                )
 
             self._emit_progress("done", "Complete")
 

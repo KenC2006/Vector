@@ -454,8 +454,13 @@
                 <button id="vc-new-chat" title="New Chat">+ New</button>
               </div>
               <div id="vc-messages"></div>
+              <div id="vc-attach-thumbs" class="hidden"></div>
               <div id="vc-input-area">
                 <textarea id="vc-input" placeholder="Describe a change to your robot..." rows="2"></textarea>
+                <button id="vc-attach-btn" type="button" title="Attach image (or drop/paste)">
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 5.5L6 11a2.5 2.5 0 1 1-3.5-3.5l6-6a4 4 0 0 1 5.5 5.5l-6 6a1.5 1.5 0 0 1-2-2l5-5"/></svg>
+                </button>
+                <input type="file" id="vc-attach-input" accept="image/*" multiple style="display:none" />
                 <button id="vc-send" title="Send (Enter)">
                   <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1 1l14 7-14 7V9.5L9 8 1 6.5V1z"/></svg>
                 </button>
