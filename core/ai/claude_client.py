@@ -377,6 +377,12 @@ Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_
 
 Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
 
+Vehicle vocabulary (all map to the wheeled base above — DEFAULT 4 wheels):
+- "car", "truck", "vehicle", "rover", "buggy", "cart" → 4 wheels. NEVER emit a 2-wheel car; real cars have 4 wheels at corners. Only drop below 4 if the user explicitly says "two-wheeled" or "bike/motorcycle/unicycle".
+- "6-wheeled rover" / "hexapod rover" / "Mars rover" → 6 wheels (backend distributes 2 rows × 3).
+- "tank" / "tracked" → still use 4 wheels (closest palette match); no track preset exists.
+- Always add at least 1 sensor (camera on front face) and electronics (battery + SBC on top) for any vehicle request — a bare chassis with wheels is not a recognizable car.
+
 Quadruped (canonical 12-DOF, Unitree Go1 / Boston Dynamics Spot style).
 
 Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not above):
