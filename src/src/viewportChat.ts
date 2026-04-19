@@ -168,7 +168,6 @@ function summarizeAssemblyGraph(graph: AssemblyGraph): string {
 function summarizeAssemblyGraphForAI(graph: AssemblyGraph): string {
   if (!graph.components || graph.components.length === 0) return ''
   const lines: string[] = ['## Current AssemblyGraph (structured)', `base_link: ${graph.base_link}`]
-  if (graph.ground_offset) lines.push('ground_offset: true')
   lines.push(`components (${graph.components.length}):`)
   for (const c of graph.components) {
     const parts: string[] = [`  - ${c.link_name}: ${c.component_id}`]

@@ -292,6 +292,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       } else {
         setScriptStatus(`${file.name} — active`, 'active')
         if (scriptClearBtn) scriptClearBtn.disabled = false
+        activeScriptCode = code
+        if (modifyBtn) modifyBtn.disabled = false
         deps.showToast('Script active', 'success')
       }
     } catch (e) {
@@ -307,7 +309,121 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     }
     setScriptStatus('No script loaded', 'idle')
     if (scriptClearBtn) scriptClearBtn.disabled = true
+    activeScriptCode = ''
+    modifyBtn && (modifyBtn.disabled = true)
     deps.showToast('Script cleared', 'info')
+  })
+
+  // ── AI Script Generator ───────────────────────────────────────────────────
+
+  const aiPromptEl = document.getElementById('sim-ai-prompt') as HTMLTextAreaElement | null
+  const aiGenBtn = document.getElementById('sim-ai-generate') as HTMLButtonElement | null
+  const modifyBtn = document.getElementById('sim-ai-modify') as HTMLButtonElement | null
+  const aiStatusEl = document.getElementById('sim-ai-status')
+  const aiPreviewEl = document.getElementById('sim-ai-preview') as HTMLPreElement | null
+  const aiApplyRow = document.getElementById('sim-ai-apply-row')
+  const aiApplyBtn = document.getElementById('sim-ai-apply') as HTMLButtonElement | null
+  const aiDiscardBtn = document.getElementById('sim-ai-discard') as HTMLButtonElement | null
+
+  let pendingAiCode = ''
+  let activeScriptCode = ''   // last code successfully applied to the sim
+
+  function setAiStatus(text: string, state: 'idle' | 'active' | 'error' = 'idle') {
+    if (!aiStatusEl) return
+    aiStatusEl.textContent = text
+    aiStatusEl.classList.remove('active', 'error')
+    if (state !== 'idle') aiStatusEl.classList.add(state)
+  }
+
+  function showAiPreview(code: string) {
+    pendingAiCode = code
+    if (aiPreviewEl) {
+      aiPreviewEl.textContent = code
+      aiPreviewEl.hidden = false
+    }
+    if (aiApplyRow) aiApplyRow.hidden = false
+  }
+
+  function hideAiPreview() {
+    pendingAiCode = ''
+    if (aiPreviewEl) aiPreviewEl.hidden = true
+    if (aiApplyRow) aiApplyRow.hidden = true
+  }
+
+  async function runGenerate(modify: boolean) {
+    const prompt = aiPromptEl?.value.trim() ?? ''
+    const urdf = deps.getEditorValue()
+    if (!urdf.trim()) { deps.showToast('Load a URDF first', 'warning'); return }
+    setAiStatus('Generating…', 'idle')
+    if (aiGenBtn) aiGenBtn.disabled = true
+    if (modifyBtn) modifyBtn.disabled = true
+    try {
+      const result = await invoke<{ status: string; code?: string; message?: string }>(
+        'ai_gen_sim_script',
+        {
+          prompt,
+          urdfContent: urdf,
+          currentScript: modify ? activeScriptCode : '',
+        }
+      )
+      if (result.status !== 'ok' || !result.code) {
+        setAiStatus(`Error: ${result.message ?? 'unknown'}`, 'error')
+        if (result.code) showAiPreview(result.code)   // show rejected code for debugging
+        deps.showToast(`AI generation failed: ${result.message ?? 'unknown'}`, 'error')
+      } else {
+        setAiStatus('Ready — review & apply', 'active')
+        showAiPreview(result.code)
+      }
+    } catch (e) {
+      setAiStatus(`Failed: ${e}`, 'error')
+      deps.showToast(`AI request failed: ${e}`, 'error')
+    } finally {
+      if (aiGenBtn) aiGenBtn.disabled = false
+      if (modifyBtn) modifyBtn.disabled = !activeScriptCode
+    }
+  }
+
+  aiGenBtn?.addEventListener('click', () => runGenerate(false))
+  modifyBtn?.addEventListener('click', () => runGenerate(true))
+
+  aiPromptEl?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      runGenerate(!!activeScriptCode)
+    }
+  })
+
+  aiApplyBtn?.addEventListener('click', async () => {
+    if (!pendingAiCode) return
+    if (!simCoreRunning) {
+      deps.showToast('Start simulation first', 'warning')
+      return
+    }
+    try {
+      const result = await invoke<{ status: string; message?: string }>(
+        'sim_set_script', { code: pendingAiCode }
+      )
+      if (result.status === 'error') {
+        setAiStatus(`Apply failed: ${result.message ?? 'unknown'}`, 'error')
+        deps.showToast(`Script error: ${result.message ?? 'unknown'}`, 'error')
+      } else {
+        activeScriptCode = pendingAiCode
+        setAiStatus('Applied', 'active')
+        setScriptStatus('AI script — active', 'active')
+        if (scriptClearBtn) scriptClearBtn.disabled = false
+        if (modifyBtn) modifyBtn.disabled = false
+        deps.showToast('AI script active', 'success')
+        hideAiPreview()
+      }
+    } catch (e) {
+      setAiStatus(`Apply failed: ${e}`, 'error')
+      deps.showToast(`Apply failed: ${e}`, 'error')
+    }
+  })
+
+  aiDiscardBtn?.addEventListener('click', () => {
+    hideAiPreview()
+    setAiStatus('Discarded', 'idle')
   })
 
   // ── Sim Panel UI ──────────────────────────────────────────────────────────
@@ -375,16 +491,34 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     }
 
     simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(slider => {
-      slider.addEventListener('input', () => sendSimControl())
+      slider.addEventListener('input', () => {
+        stopActiveScriptForManualControl()
+        sendSimControl()
+      })
     })
     simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-pos-center').forEach(btn => {
       btn.addEventListener('click', () => {
+        stopActiveScriptForManualControl()
         const joint = btn.dataset.joint!
         const s = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
         if (s) s.value = '0'
         sendSimControl()
       })
     })
+  }
+
+  // If a step-script is running, any manual slider touch cancels it —
+  // otherwise the script would overwrite the user's target every tick.
+  function stopActiveScriptForManualControl() {
+    if (!activeScriptCode && scriptClearBtn?.disabled !== false) return
+    activeScriptCode = ''
+    if (simCoreRunning) {
+      invoke('sim_set_script', { code: '' }).catch(() => { /* ignore */ })
+    }
+    setScriptStatus('No script loaded', 'idle')
+    if (scriptClearBtn) scriptClearBtn.disabled = true
+    if (modifyBtn) modifyBtn.disabled = true
+    deps.showToast('Manual control — script stopped', 'info')
   }
 
   function sendSimControl() {
@@ -822,20 +956,45 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         deps.showToast('Entered simulation mode (MuJoCo)', 'success')
       } catch (error) {
         console.error('[Sim] Failed to initialize:', error)
+        // Unwind: restore joint poses captured on enter, revert build-mode
+        // state via onExitSim, hide sim UI. Stay on the 3D build plane.
+        simRunning = false
         simActive = false
         simCoreRunning = false
+        const parsedRobot = deps.getParsedRobot()
+        for (const [jointName, jointInfo] of parsedRobot.joints) {
+          const original = originalJointPoses.get(jointName)
+          if (original) {
+            jointInfo.group.position.copy(original.position)
+            jointInfo.group.quaternion.copy(original.quaternion)
+          }
+        }
+        originalJointPoses.clear()
+        deps.onExitSim()
         deps.simToggle.classList.remove('running')
         deps.simBar.classList.add('hidden')
         deps.simToggle.querySelector('span')!.textContent = 'Simulate'
         deps.viewportLabel.textContent = '3D Preview'
-        deps.showToast(`Simulation: ${error instanceof Error ? error.message : String(error)}`, 'error')
+        const rawMsg = error instanceof Error ? error.message : String(error)
+        let friendly = rawMsg
+        try {
+          const m = rawMsg.match(/\{.*\}/s)
+          if (m) {
+            const parsed = JSON.parse(m[0])
+            if (typeof parsed.data === 'string') friendly = parsed.data
+            else if (typeof parsed.message === 'string') friendly = parsed.message
+          }
+        } catch {}
+        deps.showToast(`Simulation failed: ${friendly}`, 'error')
       }
     } else {
-      deps.onExitSim()
+      // Stop the sim loop + core FIRST so no in-flight tick can overwrite
+      // the robot transform after we restore it below.
       simRunning = false
       simTime = 0
       await shutdownSimulation()
 
+      // Restore joint-group transforms captured on enter.
       const parsedRobot = deps.getParsedRobot()
       for (const [jointName, jointInfo] of parsedRobot.joints) {
         const original = originalJointPoses.get(jointName)
@@ -847,6 +1006,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         }
       }
       originalJointPoses.clear()
+
+      // Restore robot group transform (position/quaternion) + build visuals.
+      deps.onExitSim()
+
       exitSimPanel()
       updateSimUI()
       deps.showToast('Exited simulation mode', 'info')

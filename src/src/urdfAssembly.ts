@@ -97,7 +97,6 @@ export interface AssemblyComponent {
 
 export interface AssemblyGraph {
   base_link: string
-  ground_offset?: boolean
   components: AssemblyComponent[]
 }
 
@@ -132,6 +131,7 @@ export interface UrdfAssemblyApi {
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
+  refreshMountNodeTransforms(): void
   /** Snapshot the current undo/redo stacks (call before switching files). */
   getUndoState(): { undo: string[]; redo: string[] }
   /** Restore a previously saved undo/redo snapshot (call after switching files). */
@@ -1664,23 +1664,28 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 1a: topology-aware splay — splayAngle was pre-computed above
         let rollRad = 0
         let pitchRad = 0
-        if (isWheel) {
-          // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
-          // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
-          rollRad = -Math.PI / 2
-        } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
+        if (!isWheel && splayAngle > 0 && (tu !== 0 || tv !== 0)) {
           // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
           rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
           pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
         }
+        // Wheels: the preset visuals already orient the cylinder axle laterally
+        // (visual rpy="pi/2 0 0" lays cyl-Z onto link-Y), so a -pi/2 joint roll
+        // would double-rotate and leave the wheel flat (axle vertical). Joint
+        // rpy stays 0; the joint axis "y" from the preset already matches the
+        // laid-down axle.
         // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
         // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
         // hip toward its corner now lands instead of being silently dropped.
         const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
-        // Rotation-aware vertical extent uses body half-extents so a rolled wheel
-        // or pitched bracket snaps to the body, not to a shaft/horn tip.
-        const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
+        // Vertical extent: for wheels the preset bbox (diameter, diameter, width)
+        // describes the pre-visual-rpy cylinder, so childZ is the axle width, not
+        // the rolling height. Use max(childX, childY) = diameter so the wheel
+        // hangs by a full radius below the parent face instead of clipping in.
+        const vExtent = isWheel
+          ? Math.max(childBodyHX * 2, childBodyHY * 2)
+          : verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
         const oz = -(parentBodyHZ + vExtent / 2 + gap)
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
@@ -3466,7 +3471,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
-      const jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+      let jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+
+      // urdf_to_mjcf maps continuous→torque motor and revolute→position actuator.
+      // Wheels need the former — a bounded revolute locks the wheel angle so it
+      // can't roll. Auto-promote wheel/caster revolute joints to continuous and
+      // pin the axle along Y when bottom-mounted (matches the rolling direction).
+      const isWheel = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
+      if (isWheel && comp.joint_type === 'revolute') {
+        comp.joint_type = 'continuous'
+        if (comp.attach_face === 'bottom') jointAxis = '0 1 0'
+        console.log(`[assembly] Promoting ${comp.component_id} joint to continuous (rolling wheel)`)
+      }
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,
@@ -3560,6 +3576,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
           limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
           joint.appendChild(limit)
+        } else if (comp.joint_type === 'continuous') {
+          // Continuous joints are unbounded (no lower/upper) but URDF still
+          // requires effort/velocity for actuator sizing downstream.
+          const limit = urdfDoc.createElement('limit')
+          const me = preset.mechanical_electrical || {}
+          const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
+          limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '10.0')
+          joint.appendChild(limit)
         }
 
         robot.appendChild(link); robot.appendChild(joint)
@@ -3633,7 +3657,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       attach_to: c.attach_to ? (nameMap.get(c.attach_to) || c.attach_to) : null,
     }))
     const remappedBase = nameMap.get(graph.base_link) || graph.base_link
-    _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
+    _lastAssemblyGraph = { base_link: remappedBase, components: remappedComponents }
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
@@ -3759,7 +3783,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       console.log(`[assembly] Reverse-parsed URDF → ${components.length} components`)
       return {
         base_link: rootName,
-        ground_offset: true,
         components,
       }
     } catch (err) {
@@ -3837,7 +3860,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     return {
       base_link: graph.base_link,
-      ground_offset: true,
       components,
     }
   }
@@ -3857,6 +3879,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     urdfToAssemblyGraph,
     applyTopologyOps,
     rebuildMountNodes,
+    refreshMountNodeTransforms: () => refreshNodeWorldTransforms(),
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),
     restoreUndoState: (state: { undo: string[]; redo: string[] }) => {
       urdfUndo = [...state.undo]

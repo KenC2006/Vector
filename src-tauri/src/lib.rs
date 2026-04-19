@@ -400,6 +400,27 @@ async fn sim_set_script(state: State<'_, AppState>, code: String) -> Result<serd
     process.send_rpc("sim_set_script", json!({ "code": code }), 1)
 }
 
+/// Generate a sandbox-compliant sim script via Claude.
+#[tauri::command]
+async fn ai_gen_sim_script(
+    state: State<'_, AppState>,
+    prompt: String,
+    urdf_content: String,
+    current_script: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    process.send_rpc(
+        "ai_gen_sim_script",
+        json!({
+            "prompt": prompt,
+            "urdf_content": urdf_content,
+            "current_script": current_script.unwrap_or_default(),
+        }),
+        1,
+    )
+}
+
 /// Render the simulation viewport to PNG and return base64
 #[tauri::command]
 async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Option<u32>) -> Result<String, String> {
@@ -948,6 +969,7 @@ pub fn run() {
             ai_set_history,
             ai_validate_assembly,
             ai_complete,
+            ai_gen_sim_script,
             save_file,
             open_file,
             read_binary_file,

@@ -241,6 +241,25 @@
                   min="0" max="3" step="0.05" value="1.5">
               </div>
 
+              <!-- AI Script Generator -->
+              <div class="sim-section-title">AI Generator</div>
+              <div class="sim-ai-gen">
+                <textarea id="sim-ai-prompt" class="sim-ai-prompt"
+                  rows="2"
+                  placeholder="Optional — describe the robot or desired motion. Leave blank to auto-infer from URDF."></textarea>
+                <div class="sim-pose-row">
+                  <button class="sim-pose-btn" id="sim-ai-generate">Generate</button>
+                  <button class="sim-pose-btn" id="sim-ai-modify" disabled
+                    title="Edit the current script using your prompt">Modify</button>
+                </div>
+                <div id="sim-ai-status" class="sim-script-status">Idle</div>
+                <pre id="sim-ai-preview" class="sim-ai-preview" hidden></pre>
+                <div class="sim-pose-row" id="sim-ai-apply-row" hidden>
+                  <button class="sim-pose-btn" id="sim-ai-apply">Apply to Sim</button>
+                  <button class="sim-pose-btn" id="sim-ai-discard">Discard</button>
+                </div>
+              </div>
+
               <!-- Script Runner -->
               <div class="sim-section-title">Script Runner</div>
               <div class="sim-script-upload">

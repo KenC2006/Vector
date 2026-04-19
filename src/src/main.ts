@@ -104,6 +104,11 @@ function groundRobot(robotGroup: THREE.Group) {
   console.log(`[groundRobot] meshes=${meshCount} minY=${minY.toFixed(4)} lowestLink=${lowestLink || '?'} → shifting by ${(-minY).toFixed(4)}`)
   // In Three.js Y is up; shift so lowest mesh touches Y=0
   robotGroup.position.y = -minY
+  // Mount-node meshes live in a separate scene group (not under robotGroup), so
+  // their cached world positions from rebuildMountNodes() become stale after this
+  // shift — AI-generated robots showed attachment nodes buried under the floor.
+  robotGroup.updateMatrixWorld(true)
+  urdfAssemblyApi?.refreshMountNodeTransforms()
 }
 
 /**
@@ -1353,6 +1358,12 @@ simApi = initSimManager({
     viewportInteractionMode = 'build'
     syncViewportModeButton()
     urdfAssemblyApi?.onInteractionModeChanged('build')
+    // After sim mutated robot.position/quaternion and per-joint group
+    // transforms, the cached world positions of attachment-node meshes are
+    // stale. Force matrix recomputation then resync node meshes so they
+    // line up with the restored build-mode link poses.
+    robot.updateMatrixWorld(true)
+    urdfAssemblyApi?.refreshMountNodeTransforms()
   },
 })
 
@@ -1662,6 +1673,8 @@ function reparseURDF(xmlOverride?: string) {
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           groundRobot(robot)
+          robot.updateMatrixWorld(true)
+          urdfAssemblyApi?.refreshMountNodeTransforms()
           // Wireframes must rebuild AFTER groundRobot so world-space capture
           // reflects the final robot position. Also skipped during bulk
           // assembly — the final reparse after the loop runs it once.
@@ -1714,6 +1727,8 @@ function reparseURDF(xmlOverride?: string) {
     urdfAssemblyApi?.onModelUpdated()
 
     groundRobot(robot)
+    robot.updateMatrixWorld(true)
+    urdfAssemblyApi?.refreshMountNodeTransforms()
 
     // Wireframes must rebuild AFTER groundRobot so world-space capture
     // reflects the final robot position. Skipped during bulk assembly —

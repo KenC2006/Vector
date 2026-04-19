@@ -979,6 +979,44 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 .sim-script-status.active { color: var(--accent); font-style: normal; }
 .sim-script-status.error  { color: #f14c4c; font-style: normal; }
 
+.sim-ai-gen {
+  padding: 0 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim-ai-prompt {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 40px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text, #ccc);
+  background: var(--input-bg, #1e1e1e);
+  border: 1px solid var(--border, #3c3c3c);
+  border-radius: 3px;
+}
+.sim-ai-prompt:focus {
+  outline: none;
+  border-color: var(--accent, #3a7bd5);
+}
+.sim-ai-preview {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text, #ccc);
+  background: var(--input-bg, #1e1e1e);
+  border: 1px solid var(--border, #3c3c3c);
+  border-radius: 3px;
+  white-space: pre;
+}
+
 .sim-script-error {
   margin: 0 12px 6px;
   padding: 6px 8px;
