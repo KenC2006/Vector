@@ -74,8 +74,9 @@ _ai_import_error = None
 _generate_assembly_with_tools = None
 _validate_assembly = None
 _set_conversation_history = None
+_generate_sim_script = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -140,6 +141,7 @@ class JSONRPCServer:
             "ai_complete": self.handle_ai_complete,
             "ai_validate_assembly": self.handle_ai_validate_assembly,
             "ai_set_history": self.handle_ai_set_history,
+            "ai_gen_sim_script": self.handle_ai_gen_sim_script,
         }
 
     def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -760,6 +762,87 @@ class JSONRPCServer:
             return _set_conversation_history(session_id, history)
         except Exception as e:
             raise ValueError(f"Failed to set history: {e}")
+
+    def handle_ai_gen_sim_script(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate a sandbox-compliant sim control script via Claude.
+
+        Params:
+            prompt (str): Natural-language request.
+            urdf_content (str): Current URDF; used to extract joint names/limits.
+            current_script (str, optional): If provided, treat prompt as a
+                modification of this script instead of generating fresh.
+
+        Returns:
+            {"status": "ok", "code": str, "joint_names": [...]} on success,
+            {"status": "error", "message": str} on rejection or API failure.
+        """
+        if _generate_sim_script is None:
+            raise ValueError(
+                f"Claude AI not installed. Run: pip install anthropic\n"
+                f"Error: {_ai_import_error}"
+            )
+
+        prompt = params.get("prompt", "") or ""
+        urdf_content = params.get("urdf_content", "")
+        current_script = params.get("current_script", "") or ""
+        if not isinstance(prompt, str):
+            raise ValueError("Parameter 'prompt' must be a string")
+        if not isinstance(urdf_content, str) or not urdf_content.strip():
+            raise ValueError("Parameter 'urdf_content' must be a non-empty string")
+
+        # Extract joint names + limits from the URDF.
+        joint_names: list = []
+        joint_limits: Dict[str, tuple] = {}
+        try:
+            import xml.etree.ElementTree as _ET
+            root = _ET.fromstring(urdf_content)
+            for j in root.iter("joint"):
+                name = j.get("name")
+                jtype = j.get("type")
+                if not name or jtype in ("fixed", None):
+                    continue
+                joint_names.append(name)
+                lim = j.find("limit")
+                if lim is not None:
+                    try:
+                        lo = float(lim.get("lower", "nan"))
+                        hi = float(lim.get("upper", "nan"))
+                        joint_limits[name] = (lo, hi)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as e:
+            return {"status": "error",
+                    "message": f"Could not parse URDF joints: {e}"}
+
+        if not joint_names:
+            return {"status": "error",
+                    "message": "No controllable joints found in URDF"}
+
+        try:
+            code = _generate_sim_script(
+                prompt, joint_names, current_script, joint_limits
+            )
+        except Exception as e:
+            return {"status": "error", "message": f"AI call failed: {e}"}
+
+        if not code.strip():
+            return {"status": "error", "message": "AI returned empty code"}
+
+        # Validate: must compile and pass sandbox scan.
+        try:
+            self._reject_unsafe_script(code)
+            compile(code, "<ai_sim_script>", "exec")
+        except SyntaxError as e:
+            return {"status": "error",
+                    "message": f"Generated script has syntax error: {e}",
+                    "code": code}
+        except ValueError as e:
+            return {"status": "error",
+                    "message": f"Generated script rejected by sandbox: {e}",
+                    "code": code}
+
+        return {"status": "ok", "code": code, "joint_names": joint_names}
 
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """

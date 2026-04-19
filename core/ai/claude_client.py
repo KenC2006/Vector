@@ -847,6 +847,7 @@ def _assemble_from_graph(assembly: dict) -> str:
                 joint_axis = raw_axis
             else:
                 joint_axis = [0, 0, 1]
+
             joint_name = f"j_{link_name}"
 
             joint_el = ET.SubElement(robot, "joint", name=joint_name, type=joint_type)
@@ -2203,3 +2204,132 @@ def _process_validation_result(response_text: str) -> dict:
         "notes": result.get("notes", "Assembly looks correct"),
         "checklist": checklist,
     }
+
+
+# ── Sim Script Generator ──────────────────────────────────────────────────────
+
+SIM_SCRIPT_SYSTEM_PROMPT = r"""You generate Python control scripts for a robot simulator.
+
+## Contract
+
+Your output MUST be a single Python module defining exactly this function:
+
+    def step(t, state):
+        # return {joint_name: target_position_radians_or_meters, ...}
+        return {...}
+
+- `t` is simulation time in seconds (float, starts at 0).
+- `state` is a dict; you may ignore it. It is a read-only snapshot.
+- Return a dict mapping joint names (strings, exactly as listed under JOINTS) to
+  target positions. Revolute joints are radians; prismatic are meters. Omitted
+  joints hold their last command.
+
+## Sandbox — HARD RULES
+
+The script runs in a restricted sandbox. Violations will be rejected.
+
+- **No import statements.** None. `math` is already a global — use `math.sin`,
+  `math.pi`, etc. directly, without `import math`.
+- No use of: eval, exec, compile, open, __import__, getattr, setattr, delattr,
+  globals, locals, vars, input, help.
+- No dunder attribute access (anything starting with `__`).
+- Only these builtins are available: abs, min, max, round, sum, len, range,
+  enumerate, zip, map, filter, sorted, reversed, all, any, int, float, bool,
+  str, list, tuple, dict, set, print, isinstance.
+- Module-level code (constants, helper functions) is allowed and runs once.
+- `step` is called every sim tick; keep it cheap. No unbounded loops.
+
+## Output format
+
+Return ONLY the Python code. No markdown fences, no prose before or after.
+Do not include `import math`. Do not wrap in ```python. Just the code."""
+
+
+def generate_sim_script(
+    prompt: str,
+    joint_names: list,
+    current_script: str = "",
+    joint_limits: dict = None,
+) -> str:
+    """
+    Generate a sim-sandbox Python script from a natural-language prompt.
+
+    Args:
+        prompt: user's natural-language description (e.g. "make it trot")
+        joint_names: exact joint names the robot exposes
+        current_script: if non-empty, treat prompt as a modification request
+        joint_limits: optional {name: (lower, upper)} for revolute joints
+
+    Returns the raw Python source (no fences).
+    """
+    client = _get_client()
+
+    joints_block = "\n".join(f"  - {n}" for n in joint_names) or "  (none)"
+    limits_block = ""
+    if joint_limits:
+        rows = []
+        for n in joint_names:
+            lim = joint_limits.get(n)
+            if lim and all(x is not None for x in lim):
+                rows.append(f"  - {n}: [{lim[0]:.3f}, {lim[1]:.3f}]")
+        if rows:
+            limits_block = "\n\nLIMITS (rad or m):\n" + "\n".join(rows)
+
+    p = prompt.strip()
+    if current_script.strip():
+        request_line = (
+            f"MODIFY REQUEST: {p}" if p else
+            "MODIFY REQUEST: Improve the script — make the motion smoother, "
+            "more natural, and better matched to the robot's morphology."
+        )
+        user_msg = (
+            f"JOINTS:\n{joints_block}{limits_block}\n\n"
+            f"CURRENT SCRIPT:\n{current_script}\n\n"
+            f"{request_line}\n\n"
+            f"Return the full modified script. Keep the same joint names."
+        )
+    else:
+        if p:
+            request_line = f"REQUEST: {p}"
+        else:
+            request_line = (
+                "REQUEST: Infer the robot's morphology from joint names "
+                "(e.g. 'hip'/'knee' → legged; 'shoulder'/'elbow' → arm; "
+                "numeric suffixes → limb indices) and generate a sensible "
+                "default control script:\n"
+                "  - legged robot → a stable diagonal trot or walk gait\n"
+                "  - arm / manipulator → a smooth reach-and-return motion\n"
+                "  - gripper / claw → a slow open/close cycle\n"
+                "  - otherwise → a gentle sinusoidal idle across all joints\n"
+                "Include a brief SETTLE_TIME ramp so motion eases in from zero."
+            )
+        user_msg = (
+            f"JOINTS:\n{joints_block}{limits_block}\n\n"
+            f"{request_line}\n\n"
+            f"Write a sandbox-compliant script."
+        )
+
+    print(f"[ai_gen_sim_script] Calling Claude Sonnet: {prompt[:80]}", file=sys.stderr)
+    t0 = time.time()
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=3000,
+        temperature=0.2,
+        system=SIM_SCRIPT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+        timeout=60.0,
+    )
+    elapsed = time.time() - t0
+    print(f"[ai_gen_sim_script] Responded in {elapsed:.1f}s", file=sys.stderr)
+
+    text = response.content[0].text.strip()
+    # Strip fences if the model ignored instructions.
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
+    # Strip stray `import math` if it slipped through — math is pre-provided.
+    lines = [ln for ln in text.split("\n")
+             if not re.match(r"^\s*(import|from)\s+math(\s|$)", ln)]
+    return "\n".join(lines).strip()

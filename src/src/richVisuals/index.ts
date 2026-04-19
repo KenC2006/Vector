@@ -226,23 +226,22 @@ export function applyRichVisuals(
         }
       })
 
-      // Replace: clear primitive children, add rich group
-      // Preserve the geometryGroup's transform
-      richGroup.position.copy(geometryChild.position)
-      richGroup.quaternion.copy(geometryChild.quaternion)
-      richGroup.scale.copy(geometryChild.scale)
+      // Preserve the first visual's rotation (URDF <visual rpy>). Generators
+      // produce content in the component's natural frame — e.g. wheels with
+      // axles along Z — and rely on the URDF visual rpy (typically π/2 about X
+      // for wheels) to rotate that into the link's URDF frame. Without this,
+      // wheels land flat on their sides and motor shafts point the wrong way.
+      const firstVisual = geometryChild.children.find(c => c instanceof THREE.Group) as THREE.Group | undefined
+      const visualQuat = firstVisual ? firstVisual.quaternion.clone() : new THREE.Quaternion()
 
-      // Remove all children from geometryChild, then add rich geometry
       while (geometryChild.children.length > 0) {
         geometryChild.remove(geometryChild.children[0])
       }
 
-      // Add rich meshes directly into the geometryGroup
-      while (richGroup.children.length > 0) {
-        const child = richGroup.children[0]
-        richGroup.remove(child)
-        geometryChild.add(child)
-      }
+      richGroup.position.set(0, 0, 0)
+      richGroup.quaternion.copy(visualQuat)
+      richGroup.scale.set(1, 1, 1)
+      geometryChild.add(richGroup)
     }
   }
 }

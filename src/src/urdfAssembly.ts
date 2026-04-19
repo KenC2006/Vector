@@ -132,6 +132,7 @@ export interface UrdfAssemblyApi {
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
+  refreshMountNodeTransforms(): void
   /** Snapshot the current undo/redo stacks (call before switching files). */
   getUndoState(): { undo: string[]; redo: string[] }
   /** Restore a previously saved undo/redo snapshot (call after switching files). */
@@ -3466,7 +3467,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
-      const jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+      let jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,
@@ -3857,6 +3858,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     urdfToAssemblyGraph,
     applyTopologyOps,
     rebuildMountNodes,
+    refreshMountNodeTransforms: () => refreshNodeWorldTransforms(),
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),
     restoreUndoState: (state: { undo: string[]; redo: string[] }) => {
       urdfUndo = [...state.undo]
