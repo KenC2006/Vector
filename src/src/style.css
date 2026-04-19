@@ -1299,22 +1299,6 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 #vc-send:hover { background: #0098ff; }
 #vc-send:disabled { background: #333; color: #666; cursor: default; }
 
-#vc-model-select {
-  background: var(--bg-1);
-  border: 1px solid #3c3c3c;
-  border-radius: 6px;
-  color: #ccc;
-  font-size: 11px;
-  font-family: inherit;
-  padding: 4px 6px;
-  height: 28px;
-  cursor: pointer;
-  outline: none;
-  flex-shrink: 0;
-}
-#vc-model-select:hover { border-color: #569cd6; }
-#vc-model-select:focus { border-color: #569cd6; }
-
 #vc-attach-btn {
   width: 28px; height: 28px;
   border-radius: 6px;

@@ -62,9 +62,6 @@ export interface ImageAttachment {
 const MAX_IMAGES_PER_PROMPT = 3
 const MAX_IMAGE_EDGE_PX = 1568 // Anthropic's recommended ceiling; they downscale past this
 const IMAGE_JPEG_QUALITY = 0.85
-const MODEL_STORAGE_KEY = 'vector_ai_model'
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
-const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-7'] as const
 
 async function compressImageFile(file: File): Promise<ImageAttachment | null> {
   if (!file.type.startsWith('image/')) return null
@@ -270,32 +267,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   const vcMessages = document.getElementById('vc-messages')!
   const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement
   const vcSend = document.getElementById('vc-send') as HTMLButtonElement
-  const vcModelSelect = document.getElementById('vc-model-select') as HTMLSelectElement | null
   const vcAttachBtn = document.getElementById('vc-attach-btn') as HTMLButtonElement | null
   const vcAttachInput = document.getElementById('vc-attach-input') as HTMLInputElement | null
   const vcAttachThumbs = document.getElementById('vc-attach-thumbs') as HTMLDivElement | null
   const viewportTabs = document.querySelectorAll('.vp-tab')
 
   let activeViewportView: '3d' | 'chat' = '3d'
-
-  // ── Model selection (persisted via localStorage) ──────────────────────────
-  let currentModel: string = (() => {
-    const stored = localStorage.getItem(MODEL_STORAGE_KEY)
-    return stored && (ALLOWED_MODELS as readonly string[]).includes(stored)
-      ? stored
-      : DEFAULT_MODEL
-  })()
-  if (vcModelSelect) {
-    vcModelSelect.value = currentModel
-    vcModelSelect.addEventListener('change', () => {
-      const v = vcModelSelect.value
-      if ((ALLOWED_MODELS as readonly string[]).includes(v)) {
-        currentModel = v
-        localStorage.setItem(MODEL_STORAGE_KEY, v)
-        console.log(`[VC] AI model switched to ${v}`)
-      }
-    })
-  }
 
   // ── Image attachments (ephemeral — cleared on send, not persisted) ────────
   let attachedImages: ImageAttachment[] = []
@@ -694,7 +671,6 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         urdfContent: currentUrdf,
         kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
-        model: currentModel,
         images: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
