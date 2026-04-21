@@ -312,12 +312,15 @@ const fixtures: Fixture[] = [
     },
   },
   {
-    // Sibling negative: Case 2 (mount_face parent, shaft child) intentionally
-    // does NOT set the mate-connector fields — multiple auto-couplers could
-    // land on the same parent face and the connector path bypasses the
-    // legacy multi-child distribution logic that would spread them. See the
-    // comment at the insertion site in topologyValidation.ts.
-    name: 'PORT_MISMATCH: Case 2 (mount_face parent) bracket stays on legacy path',
+    // C4 (docs/ENGINE_EXECUTION_PLAN.md): Case 2 (mount_face parent, shaft
+    // child) now also routes the bracket through the connector resolver,
+    // using default face connectors with a fastened mate. Bit-identical to
+    // the legacy bbox path on presets that still rely on default face
+    // connectors, but flips the repair onto the connector engine so it
+    // picks up authored parent face connectors as Phase 2 lands them.
+    // Multi-child distribution is preserved via computeMatePlacement's
+    // multiChild branch so N auto-couplers still spread across one face.
+    name: 'PORT_MISMATCH: Case 2 (mount_face parent) bracket carries fastened mate fields',
     kind: 'auto_repair',
     expected_pass: true,
     expected_pass_after_repair: true,
@@ -333,9 +336,9 @@ const fixtures: Fixture[] = [
       structural_bracket_auto_1: {
         component_id: 'structural_servo_coupler_disc',
         attach_to: 'plate',
-        attach_connector: undefined,
-        mate_connector: undefined,
-        mate_type: undefined,
+        attach_connector: 'bottom',
+        mate_connector: 'top',
+        mate_type: 'fastened',
       },
     },
   },

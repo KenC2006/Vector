@@ -1729,11 +1729,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const parentConn = findConnector(parentConnectors, parentConnectorId)
     const childConn  = findConnector(childConnectors,  childConnectorId)
     if (!parentConn || !childConn) {
-      // Fail loudly per the migration doc: never silently fall back to a
-      // guessed connector. Return null so the caller can log + skip/error.
+      const details = `${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
+        `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'})`
+      // C1 (docs/ENGINE_EXECUTION_PLAN.md): dev builds hard-error on a
+      // connector miss. A silent fall-through is how structural_baseplate_
+      // large shipped without authored connectors — the legacy path accepted
+      // it and nothing flagged the coverage hole until the 21mm reconcile
+      // shifts showed up in smoke. Prod keeps the fall-through so end users
+      // aren't stranded, but the warning is tagged [ENGINE-REGRESSION] so
+      // bug reports surface the class without having to parse the message.
+      if (import.meta.env?.DEV) {
+        throw new Error(`[ENGINE-REGRESSION] Connector miss: ${details}`)
+      }
       console.warn(
-        `[mate] connector lookup failed for ${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
-        `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'}). Falling through to legacy bbox path.`,
+        `[ENGINE-REGRESSION][mate] connector lookup failed for ${details}. Falling through to legacy bbox path.`,
       )
       return null
     }
@@ -4169,11 +4178,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
       }
       const parsed = ctx.getParsedRobot()
-      return reconcileNodePlacement({
+      const res = reconcileNodePlacement({
         graph: _lastAssemblyGraph,
         linkGroups: parsed.linkGroups,
         joints: parsed.joints,
       })
+      // I1-bis: mirror the first-pass persistence so the debounced
+      // onMeshLoaded path (main.ts) doesn't leave shifts only in the live
+      // scene — without this the next reparse rebuilds from the un-baked
+      // URDF and replays identical shifts on every mesh-settle cycle.
+      // Must also rebuildMountNodes to match the first-pass pair at line
+      // ~3940: mount nodes were placed against the pre-reconcile pivots,
+      // and persisting without rebuilding leaves attachment rings on the
+      // old pose while the URDF and scene have moved on.
+      if (res.adjustedCount > 0) {
+        persistReconcileShiftsToUrdf(parsed.linkGroups)
+        rebuildMountNodes()
+      }
+      return res
     },
     getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
     urdfToAssemblyGraph,

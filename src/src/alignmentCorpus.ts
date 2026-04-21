@@ -19,6 +19,7 @@
 
 import * as THREE from 'three'
 import { reconcileNodePlacement } from './reconcileAlignment.ts'
+import { resolveMate, type MateConnector } from './mateConnectors.ts'
 import type { AssemblyGraph } from './urdfGraphEquivalence.ts'
 
 // ── Scene builders ─────────────────────────────────────────────────────────
@@ -213,6 +214,64 @@ const fixtures: Fixture[] = [
     tolerance: 1e-9,
   },
 ]
+
+// ── Bug 1 probe: connector-placed servo+coupler through reconcile ─────────
+// Mimics actuator_servo_standard (shaft_out at [0,0,18.5] mm) + structural_
+// servo_coupler_disc (shaft_hole at [0,0,-4] mm), the canonical auto-repair
+// Case 1 pair. computeMatePlacement puts the coupler via concentric mate
+// (resolveMate closed-form). The child retains attach_face="top" — the
+// auto-repair emission pattern — so reconcile enters the attach_face branch.
+// If delta > ~0.5 mm, Bug 1 is real (connector placement + reconcile disagree)
+// and the `placed_via_connector` skip flag has to land. Delta ≈ 0 means the
+// authored connector origins happen to sit on the bbox faces that reconcile
+// measures, so the flag is dead code — ENGINE_EXECUTION_PLAN Bug 1 outcome.
+
+function deriveConcentricPivotMeters(
+  parentConn: MateConnector,
+  childConn: MateConnector,
+): [number, number, number] {
+  const m = resolveMate(new THREE.Matrix4(), parentConn, childConn, 'concentric', {})
+  const pos = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const s = new THREE.Vector3()
+  m.decompose(pos, q, s)
+  return [pos.x, pos.y, pos.z]
+}
+
+const bug1_servoShaftOut: MateConnector = {
+  id: 'shaft_out',
+  origin_xyz_mm: [0, 0, 18.5],
+  axis_xyz: [0, 0, 1],
+  type: 'cylindrical',
+  diameter_mm: 5.9,
+}
+const bug1_couplerShaftHole: MateConnector = {
+  id: 'shaft_hole',
+  origin_xyz_mm: [0, 0, -4],
+  axis_xyz: [0, 0, -1],
+  type: 'cylindrical',
+  diameter_mm: 8,
+}
+const bug1_pivotXyz = deriveConcentricPivotMeters(bug1_servoShaftOut, bug1_couplerShaftHole)
+
+fixtures.push({
+  // Canonical servo+coupler via mate connectors. Parent servo mesh matches the
+  // bbox [40,20,37] exactly (shaft_out sits flush with bbox +Z top). Coupler
+  // mesh matches bbox [32,32,8] exactly (shaft_hole sits flush with bbox -Z
+  // bottom). With attach_face="top" set on the child (auto-repair emission),
+  // reconcile measures parent_top ↔ child_bottom and — if connectors and bbox
+  // faces coincide — finds zero delta. Expectation: pivot stays where the
+  // connector resolver placed it (ex/ey/ez = the resolveMate output).
+  name: 'Bug 1 probe: connector-placed servo→coupler, attach_face="top" set, reconcile leaves pivot alone',
+  pair: {
+    parent: { linkName: 'servo', size: [0.040, 0.020, 0.037] },
+    child:  { linkName: 'coupler', size: [0.032, 0.032, 0.008] },
+    assumedPivotXyz: bug1_pivotXyz,
+    attachFace: 'top',
+  },
+  expectedPivotXyz: bug1_pivotXyz,
+  tolerance: 0.0005, // 0.5 mm — Bug 1 real if reconcile shifts more than this.
+})
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
