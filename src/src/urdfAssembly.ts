@@ -128,6 +128,13 @@ export interface TopologyOp {
   orientation?: string
   elevation_angle?: number
   attach_rpy?: number[]
+  // Phase 4 of docs/MATE_CONNECTOR_MIGRATION.md — optional named-connector
+  // overrides that mirror the AssemblyComponent fields. Forwarded verbatim
+  // so Claude's modify_topology add/modify ops can target shaft_out /
+  // shaft_hole / plate_top etc. instead of falling back to attach_face.
+  attach_connector?: string
+  mate_connector?: string
+  mate_type?: string
 }
 
 export interface UrdfAssemblyApi {
@@ -4110,6 +4117,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           orientation: op.orientation,
           elevation_angle: op.elevation_angle,
           attach_rpy: op.attach_rpy,
+          attach_connector: op.attach_connector,
+          mate_connector: op.mate_connector,
+          mate_type: op.mate_type,
         })
         console.log(`[topology] Added ${op.link_name} (${op.component_id}) → ${op.attach_to}:${op.attach_face}`)
 
@@ -4129,6 +4139,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (op.orientation !== undefined) existing.orientation = op.orientation
         if (op.elevation_angle !== undefined) existing.elevation_angle = op.elevation_angle
         if (op.attach_rpy !== undefined) existing.attach_rpy = op.attach_rpy
+        if (op.attach_connector !== undefined) existing.attach_connector = op.attach_connector
+        if (op.mate_connector !== undefined) existing.mate_connector = op.mate_connector
+        if (op.mate_type !== undefined) existing.mate_type = op.mate_type
         console.log(`[topology] Modified ${op.link_name}: ${JSON.stringify(op)}`)
       }
     }

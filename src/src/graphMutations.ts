@@ -45,6 +45,12 @@ export interface AddLinkArgs {
   orientation?: string
   elevation_angle?: number
   attach_rpy?: number[]
+  // Phase 4 of docs/MATE_CONNECTOR_MIGRATION.md — optional named-connector
+  // overrides (see AssemblyComponent for semantics). Forwarded verbatim to
+  // the new child component.
+  attach_connector?: string
+  mate_connector?: string
+  mate_type?: string
 }
 
 export interface AttachSensorArgs {
@@ -244,6 +250,9 @@ export function addLink(
     orientation: args.orientation,
     elevation_angle: args.elevation_angle,
     attach_rpy: args.attach_rpy,
+    attach_connector: args.attach_connector,
+    mate_connector: args.mate_connector,
+    mate_type: args.mate_type,
   }
 
   const portErr = _checkPortCompatibility(ctx, parent, child)

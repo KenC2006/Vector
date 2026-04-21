@@ -293,6 +293,9 @@ function toolCallToMutation(call: ClaudeToolCall): GraphMutation | { error: stri
         joint_type: s('joint_type'), joint_axis: s('joint_axis'),
         length_mm: n('length_mm'), orientation: s('orientation'),
         elevation_angle: n('elevation_angle'), attach_rpy: a('attach_rpy'),
+        attach_connector: s('attach_connector'),
+        mate_connector: s('mate_connector'),
+        mate_type: s('mate_type'),
       } }
     }
     case 'attach_sensor': {
