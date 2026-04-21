@@ -41,6 +41,12 @@ export interface AssemblyComponent {
    *  when a connector is named but the type is omitted (matches attach_face
    *  semantics — treat as a weld unless told otherwise). */
   mate_type?: string
+  /** Set by the assembly engine when this child's placement was resolved via
+   *  the authored mate-connector path (computeMatePlacement OR the Layer-2
+   *  parentConnectors override in computeFacePlacement). reconcile uses this
+   *  to skip bbox-based correction — connector positions are authoritative,
+   *  bbox-derived deltas would stomp them. Runtime state, not authored. */
+  placed_via_connector?: boolean
 }
 
 export interface AssemblyGraph {

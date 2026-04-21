@@ -3568,6 +3568,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     editor.setValue(baseUrdf)
     ctx.reparseUrdf()
 
+    // Layer 3 — track which children were placed via the authored connector
+    // path so reconcile can skip them. Key = comp.link_name (Claude's name,
+    // pre-remap). Set when computeMatePlacement fires OR Layer-2's
+    // computeFacePlacement override engages. Threaded into _lastAssemblyGraph
+    // below so reconcileAlignment.ts sees the flag without a separate channel.
+    // Hoisted above the try block so the post-try remappedComponents map can
+    // read it.
+    const viaConnectorMap = new Map<string, boolean>()
+
     // try/finally is load-bearing: if the loop throws we MUST clear _bulkMode,
     // else every future commitUrdf in the session writes to an orphaned buffer.
     setBulkAssemblyMode(true)
@@ -3778,11 +3787,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       if (matePlacement) {
         placement = matePlacement
+        viaConnectorMap.set(comp.link_name, true)
         console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
       } else {
         const placeFlags = { viaConnector: false }
         placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags)
         if (placeFlags.viaConnector) {
+          viaConnectorMap.set(comp.link_name, true)
           console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=(bbox-fallback), type=face-distribute → ${JSON.stringify(placement)}`)
         }
       }
@@ -3952,6 +3963,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ...c,
       link_name: nameMap.get(c.link_name) || c.link_name,
       attach_to: c.attach_to ? (nameMap.get(c.attach_to) || c.attach_to) : null,
+      placed_via_connector: viaConnectorMap.get(c.link_name) || c.placed_via_connector,
     }))
     const remappedBase = nameMap.get(graph.base_link) || graph.base_link
     _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }

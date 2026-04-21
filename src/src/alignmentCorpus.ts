@@ -41,6 +41,9 @@ interface SyntheticPair {
   assumedPivotXyz: [number, number, number]
   attachFace: 'top' | 'bottom' | 'front' | 'back' | 'left' | 'right'
   pivotQuat?: THREE.Quaternion
+  /** When true, the child carries `placed_via_connector` — reconcile must
+   *  leave its pivot alone regardless of any bbox-vs-mesh disagreement. */
+  childPlacedViaConnector?: boolean
 }
 
 function buildLinkGroup(link: SyntheticLink): THREE.Group {
@@ -88,7 +91,15 @@ function buildScene(pair: SyntheticPair): BuiltScene {
     base_link: pair.parent.linkName,
     components: [
       { link_name: pair.parent.linkName, component_id: pair.parent.linkName, attach_to: null, attach_face: null, joint_type: 'fixed', joint_axis: 'z' },
-      { link_name: pair.child.linkName, component_id: pair.child.linkName, attach_to: pair.parent.linkName, attach_face: pair.attachFace, joint_type: 'fixed', joint_axis: 'z' },
+      {
+        link_name: pair.child.linkName,
+        component_id: pair.child.linkName,
+        attach_to: pair.parent.linkName,
+        attach_face: pair.attachFace,
+        joint_type: 'fixed',
+        joint_axis: 'z',
+        ...(pair.childPlacedViaConnector ? { placed_via_connector: true } : {}),
+      },
     ],
   }
   parentLg.updateMatrixWorld(true)
@@ -271,6 +282,32 @@ fixtures.push({
   },
   expectedPivotXyz: bug1_pivotXyz,
   tolerance: 0.0005, // 0.5 mm — Bug 1 real if reconcile shifts more than this.
+})
+
+// ── Layer 3 probe: placed_via_connector flag stops reconcile stomping ──────
+// Mirror the smoke-test failure mode: a parent whose bbox-derived face center
+// disagrees with where the child actually sits (here, an authored connector
+// recessed 10 mm below the bbox top — common in compound housings, sensor
+// recesses, baseplates with mounting standoffs). Without the flag, reconcile
+// would measure the bbox top and shove the IMU 10 mm upward, exactly the
+// stomp pattern the 2026-04-21 quadruped trace showed on the coupler discs
+// (-10 mm reconcile delta on top of a +0 connector placement). With the flag,
+// reconcile must leave the pivot at the connector's chosen Z.
+fixtures.push({
+  name: 'Layer 3 probe: placed_via_connector flag prevents reconcile from stomping a connector-recessed child',
+  pair: {
+    parent: { linkName: 'baseplate', size: [0.350, 0.250, 0.030] },
+    child:  { linkName: 'imu',       size: [0.016, 0.016, 0.004] },
+    // Connector "top" authored recessed at z=+5mm (parent bbox top is at +15mm).
+    // Connector path placed IMU at pivot.z = 5mm + 4mm/2 = 7mm. Without the
+    // flag, reconcile would target bbox top + child half = 15 + 2 = 17mm and
+    // shift the pivot by +10mm. With the flag, pivot stays at 7mm.
+    assumedPivotXyz: [0, 0, 0.007],
+    attachFace: 'top',
+    childPlacedViaConnector: true,
+  },
+  expectedPivotXyz: [0, 0, 0.007],
+  tolerance: 1e-9,
 })
 
 // ── Runner ─────────────────────────────────────────────────────────────────

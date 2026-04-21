@@ -153,6 +153,16 @@ export function reconcileNodePlacement(inputs: ReconcileInputs): ReconcileResult
       const pivot = childGroup.parent as THREE.Group | null
       if (!pivot || !pivotGroups.has(pivot)) continue
 
+      // Layer 3 — skip children whose placement was resolved via the authored
+      // mate-connector path. Authored connector positions are the source of
+      // truth; reconcile's bbox-derived target would stomp them whenever the
+      // connector intentionally diverges from the bbox face center (recessed
+      // shaft holes, off-center mounts, compound housings). The 21mm baseplate
+      // smoke-test shifts came from this exact divergence — even after Layer 1
+      // makes bbox match the rendered mesh on the parametric plates, future
+      // GLB-based presets and asymmetric meshes will keep needing this guard.
+      if (child.placed_via_connector) continue
+
       const face = child.attach_face
       if (!face || !FACE_AXIS_MAP[face]) continue
       const oppositeFace = OPPOSITE_FACE[face]
