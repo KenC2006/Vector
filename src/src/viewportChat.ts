@@ -1131,6 +1131,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               sessionId: deps.getCurrentChatId(),
               screenshotBase64: screenshots[0],
               screenshots,
+              referenceImages: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
             }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
 
             console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
@@ -1138,7 +1139,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             if (!valResult.ok) {
               console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
-              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string }[] | undefined
+              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string; classifier_drop?: boolean; classifier_reason?: string }[] | undefined
               const needsRedesign = (valResult as any).needs_redesign
               const allFailures = checklist ? checklist.filter(c => !c.pass) : []
               const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
@@ -1153,32 +1154,15 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               // needs_redesign:false when only placement failures remain; this
               // heuristic now aligns with that judgment instead of overriding it.
               //
-              // Additional guard: when the topology failures are purely aesthetic
-              // dimension critiques on structural components (e.g. "baseplate
-              // should be 60-100mm thick" — no preset offers that), the redesign
-              // can't satisfy them. Claude tends to respond by stacking parts
-              // (extrusions as standoffs etc.) which Gemini then flags as ALSO
-              // wrong, so the second pass produces a visually worse result than
-              // the first. Detect and skip those cases.
-              const isAestheticDimensionCritique = (f: { check: string; detail: string }) => {
-                const detail = (f.detail || '').toLowerCase()
-                const aestheticChecks = new Set(['proportions', 'shape_match'])
-                if (!aestheticChecks.has(f.check)) return false
-                // Mentions visual style / dimension / anatomical-style language without
-                // naming a missing/wrong component or connection. Conservative — only
-                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", and a
-                // class of mammal-like/leg-mirror critiques that Gemini emits against
-                // Spot-style quadrupeds. Spot's actual design uses same-sign rpy on
-                // all 4 legs (per system prompt); a "legs should be mirrored" critique
-                // is anatomically mammal-correct but breaks the Spot look the user asked
-                // for, AND Claude's best attempt at it produces a horse-pose regression
-                // (front thighs angle backward, shins forward) — so treat it as aesthetic.
-                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund)\b|\bknees?\s+(?:point|bend|face|angle)\w*|mirror(?:ed)?\s+\w*\s*(?:pitch|leg|knee|hip|limb|orient|front|rear)|(?:leg|knee|hip|limb)s?\s+\w*\s*mirror(?:ed)?/
-                const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
-                return aestheticHints.test(detail) && !actionableHints.test(detail)
-              }
-              const actionableTopoFailures = topoFailures.filter(f => !isAestheticDimensionCritique(f))
-              const aestheticTopoFailures = topoFailures.filter(isAestheticDimensionCritique)
+              // Additional guard: the server-side critique classifier
+              // (core/ai/critique_classifier.py) tags infeasible critiques —
+              // e.g. "add a rocker-bogie", "widen feet to 100mm", "baseplate
+              // should be 60-100mm thick" — with classifier_drop=true. Those
+              // are partitioned off the redesign list; Claude can't satisfy
+              // asks outside the catalog and previous attempts produced
+              // visibly worse second passes.
+              const actionableTopoFailures = topoFailures.filter(f => !f.classifier_drop)
+              const aestheticTopoFailures = topoFailures.filter(f => f.classifier_drop)
               const allTopoFailuresAreAesthetic = topoFailures.length > 0 && actionableTopoFailures.length === 0
               const shouldRedesign = actionableTopoFailures.length > 0
 
@@ -1196,7 +1180,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                   .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
                   .join('\n')
                 const aestheticLines = aestheticTopoFailures
-                  .map(c => `- [ignored — no preset fits] ${c.check}: ${c.detail}`)
+                  .map(c => `- [ignored — ${c.classifier_reason || 'no preset fits'}] ${c.check}: ${c.detail}`)
                   .join('\n')
                 const failuresBlock = [actionableLines, placementLines].filter(Boolean).join('\n')
                 const reason = needsRedesign
@@ -1238,9 +1222,9 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
               }
               if (allTopoFailuresAreAesthetic) {
-                const lines = topoFailures.map(c => `  • ${c.check}: ${c.detail}`).join('\n')
-                console.log(`[AI][redesign] Skipping redesign — all topology failures are aesthetic dimension critiques no preset can satisfy:\n${lines}`)
-                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged aesthetic concerns the available presets can't satisfy (e.g. "needs boxier chassis"). Keeping current build — request a different style or part if you want to iterate.</span>`)
+                const lines = topoFailures.map(c => `  • [${c.classifier_reason || 'infeasible'}] ${c.check}: ${c.detail}`).join('\n')
+                console.log(`[AI][redesign] Skipping redesign — all topology failures dropped by critique classifier:\n${lines}`)
+                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged critiques the available presets can't satisfy (e.g. "add a rocker-bogie", "100mm feet"). Keeping current build — request a different style or part if you want to iterate.</span>`)
               }
             }
           } catch (valErr) {

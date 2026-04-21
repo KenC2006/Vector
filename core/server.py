@@ -797,10 +797,14 @@ class JSONRPCServer:
         session_id = params.get("session_id", "default")
         screenshot_base64 = params.get("screenshot_base64")
         screenshots = params.get("screenshots")  # array of 3 base64 PNGs
+        # User-uploaded reference images — [{media_type, data}, ...]. Threaded
+        # through so Gemini compares the rendered output against the reference
+        # the user originally gave Claude (G3 fix).
+        reference_images = params.get("reference_images") or []
 
         try:
             self._emit_progress("validating", "Checking assembly with visual feedback...")
-            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots)
+            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots, reference_images)
             self._emit_progress("done", "Validation complete")
             return result
         except Exception as e:
