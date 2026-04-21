@@ -12,6 +12,12 @@ import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { quatToRpy } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset } from './topologyValidation.ts'
+import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
+import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
+// Re-export so existing importers (topologyValidation.ts, topologyCorpus.ts,
+// viewportChat.ts, main.ts) keep working from their usual location.
+export { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
+export type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -78,28 +84,9 @@ interface PresetData {
   categories: Record<string, PresetCategory>
 }
 
-export interface AssemblyComponent {
-  link_name: string
-  component_id: string
-  attach_to: string | null
-  attach_face: string | null
-  joint_type: string
-  joint_axis: string
-  length_mm?: number
-  /** 'horizontal' | 'vertical' | 'auto' or a numeric string in degrees (e.g. '45') for yaw rotation around face normal */
-  orientation?: string
-  /** Degrees of upward/downward tilt for side-face (front/back/left/right) attachments. Positive = upward. */
-  elevation_angle?: number
-  /** Explicit rest-pose [roll, pitch, yaw] in radians. When any component is non-zero, overrides
-   *  the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
-  attach_rpy?: number[]
-}
-
-export interface AssemblyGraph {
-  base_link: string
-  ground_offset?: boolean
-  components: AssemblyComponent[]
-}
+// AssemblyComponent / AssemblyGraph are defined in ./urdfGraphEquivalence.ts
+// and re-exported at the top of this file (keeps the pure-from-Node test harness
+// free of THREE/DOM imports).
 
 export interface TopologyOp {
   op: 'add' | 'remove' | 'modify'
@@ -124,10 +111,14 @@ export interface UrdfAssemblyApi {
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
-  /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
+  /** Get a deep-cloned snapshot of the last successfully resolved AssemblyGraph. Cloned so
+   *  callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
   urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null
+  /** Structural + parametric equality for two AssemblyGraphs. Use to detect drift when a
+   *  reverse-parse is unavoidable (import-URDF path). */
+  graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult
   /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
@@ -3853,9 +3844,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     onInteractionModeChanged,
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
-    getLastAssemblyGraph: () => _lastAssemblyGraph,
+    getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
     urdfToAssemblyGraph,
     applyTopologyOps,
+    graphsEquivalent,
     rebuildMountNodes,
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),
     restoreUndoState: (state: { undo: string[]; redo: string[] }) => {

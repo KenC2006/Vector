@@ -666,12 +666,29 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
       const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx + graphSummaryCtx)
 
+      // Workstream #1 (AssemblyGraph Preservation): pass the canonical graph as a
+      // first-class field so the backend can hand Claude the lossless source of
+      // truth on edit-retry, not a reconstructed URDF. URDF is a renderer/export
+      // serialization — feeding it to Claude wastes tokens and reintroduces the
+      // urdfToAssemblyGraph round-trip losses this workstream exists to solve.
+      //
+      // Non-redesign: send the stored graph when the editor's URDF still matches
+      // it (same guard as the text summary — prevents ghosting a stale design).
+      // Redesign: send the latest resolved graph — that's the canonical form of
+      // the attempt Gemini just rejected, and the thing Claude needs to reason
+      // "what did I try, what to change" against. (On first-ever turn with no
+      // stored graph, the backend falls back to URDF — see claude_client.py.)
+      const canonicalGraphForAi: AssemblyGraph | null = isRedesign
+        ? (deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() ?? null)
+        : (storedGraphForContext && storedMatchesEditor ? storedGraphForContext : null)
+
       const result = await invoke('ai_edit', {
         prompt,
         urdfContent: currentUrdf,
         kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
         images: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
+        assemblyGraph: canonicalGraphForAi ?? undefined,
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       thinking.remove()
@@ -681,11 +698,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       // ── modify_topology path: parse current URDF → apply ops → re-resolve ──
       if (result.topology_ops && result.topology_ops.length > 0 && urdfAssemblyApi) {
         console.log(`[AI] Received ${result.topology_ops.length} topology operations — applying to current assembly`)
-        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback)
+        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback).
+        // This is the detect-and-log half of WS1's divergence guard: when we're forced to
+        // reverse-parse (no canonical stashed), warn which fields are known to drop so the
+        // symptom is obvious if a later turn shows lost orientation / elevation_angle etc.
         const storedGraph = urdfAssemblyApi.getLastAssemblyGraph()
         const currentGraph = storedGraph || urdfAssemblyApi.urdfToAssemblyGraph(fullUrdf)
         if (currentGraph && !storedGraph) {
-          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available')
+          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available. URDF round-trip drops: orientation, elevation_angle, length_mm, attach_rpy; forces ground_offset=true.')
         }
         if (!currentGraph) {
           addVCMessage('assistant', `<span style="color:#f85149;">Could not parse current URDF for topology editing. Try "start over" to redesign from scratch.</span>`)
@@ -927,7 +947,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 // careful: this is still a full design_robot call (not an
                 // incremental edit), so we say "produce a NEW full topology"
                 // but encourage reusing whatever the validator did not flag.
-                const previousGraph = result.assembly_graph as AssemblyGraph | undefined
+                //
+                // Prefer the resolved canonical graph (via getLastAssemblyGraph)
+                // over Claude's raw return — the resolved one has link-name
+                // remap + any auto-repairs applied, so it matches the URDF
+                // Gemini actually critiqued. This is also what the next
+                // sendVCMessage call picks up as the `assemblyGraph` IPC param.
+                const resolvedPrevious = urdfAssemblyApi?.getLastAssemblyGraph() ?? null
+                const previousGraph = resolvedPrevious ?? (result.assembly_graph as AssemblyGraph | undefined)
                 const previousTopologyBlock = previousGraph
                   ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
                   : ''

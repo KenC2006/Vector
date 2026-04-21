@@ -1427,38 +1427,38 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
         }
 
 
-def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
-                   kinematic_context: str = None, session_id: str = "default",
-                   model: str = "claude-sonnet-4-6",
-                   images: list | None = None) -> dict:
+def _build_edit_user_message(prompt: str, current_urdf: str, kinematic_graph_json: dict,
+                              kinematic_context: str | None,
+                              assembly_graph: dict | None) -> str:
+    """Assemble the user turn for a Claude edit call.
+
+    When `assembly_graph` is present (Workstream #1 canonical-graph preservation),
+    it becomes the authoritative source of truth: Claude is told to reason and
+    edit against this JSON, and the URDF is dropped. URDF is a lossy renderer
+    serialization — including it when the graph is available wastes tokens and
+    reintroduces the round-trip losses the workstream exists to fix (orientation,
+    elevation_angle, length_mm, attach_rpy).
+
+    On first-ever-turn / import-URDF / backward-compat paths, the graph is
+    absent; we fall back to URDF + kinematic_graph_json as before.
     """
-    Call Claude API to generate a robot edit based on natural language.
-    Maintains conversation history per session for multi-turn context.
-
-    Args:
-        prompt: User's natural language edit request
-        current_urdf: Current URDF XML as string
-        kinematic_graph_json: Kinematic graph as dict (from kg.to_json())
-        kinematic_context: Optional structured text summary of robot structure from frontend
-        session_id: Session identifier for conversation history tracking
-
-    Returns:
-        Dict with keys:
-        - "explanation": str
-        - "new_urdf": str
-        - "stats": str
-
-    Raises:
-        ImportError: If anthropic package is not installed
-        ValueError: If ANTHROPIC_API_KEY env var not set
-        Exception: On API errors or JSON parsing issues
-    """
-    client = _get_client()
-
-    # Build spatial context from kinematic graph
     spatial_context = _build_spatial_context(kinematic_graph_json) if kinematic_graph_json else ""
 
-    # Build user message with available context
+    if assembly_graph is not None:
+        # Canonical-graph path. Keep kinematic_graph_json out too — it's also
+        # derived from URDF and carries no fields the assembly graph doesn't.
+        user_message = f"""Canonical AssemblyGraph (authoritative — reason and edit against this, not URDF):
+```json
+{json.dumps(assembly_graph, indent=2)}
+```"""
+        if spatial_context:
+            user_message += f"\n\n{spatial_context}"
+        if kinematic_context:
+            user_message += f"\n\nRobot Structure Summary:\n{kinematic_context}"
+        user_message += f"\n\nUser Request: {prompt}"
+        return user_message
+
+    # Legacy / fallback path: no canonical graph available.
     user_message = f"""Current URDF:
 ```xml
 {current_urdf}
@@ -1481,6 +1481,44 @@ Robot Structure Summary:
     user_message += f"""
 
 User Request: {prompt}"""
+
+    return user_message
+
+
+def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
+                   kinematic_context: str = None, session_id: str = "default",
+                   model: str = "claude-sonnet-4-6",
+                   images: list | None = None,
+                   assembly_graph: dict | None = None) -> dict:
+    """
+    Call Claude API to generate a robot edit based on natural language.
+    Maintains conversation history per session for multi-turn context.
+
+    Args:
+        prompt: User's natural language edit request
+        current_urdf: Current URDF XML as string
+        kinematic_graph_json: Kinematic graph as dict (from kg.to_json())
+        kinematic_context: Optional structured text summary of robot structure from frontend
+        session_id: Session identifier for conversation history tracking
+        assembly_graph: Optional canonical AssemblyGraph dict (Workstream #1). When present,
+            used as the authoritative source of truth; URDF is omitted from the prompt.
+
+    Returns:
+        Dict with keys:
+        - "explanation": str
+        - "new_urdf": str
+        - "stats": str
+
+    Raises:
+        ImportError: If anthropic package is not installed
+        ValueError: If ANTHROPIC_API_KEY env var not set
+        Exception: On API errors or JSON parsing issues
+    """
+    client = _get_client()
+
+    user_message = _build_edit_user_message(
+        prompt, current_urdf, kinematic_graph_json, kinematic_context, assembly_graph,
+    )
 
     # Build messages array with conversation history
     history = _conversation_history[session_id]
@@ -1522,38 +1560,19 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
                              kinematic_context: str = None, session_id: str = "default",
                              on_progress=None,
                              model: str = "claude-sonnet-4-6",
-                             images: list | None = None) -> dict:
+                             images: list | None = None,
+                             assembly_graph: dict | None = None) -> dict:
     """
     Streaming version of generate_edit. Calls on_progress(stage, text) as tokens arrive.
     Stages: "thinking", "generating", "applying"
+
+    `assembly_graph`: see generate_edit docstring — Workstream #1 canonical graph.
     """
     client = _get_client()
 
-    # Build spatial context
-    spatial_context = _build_spatial_context(kinematic_graph_json) if kinematic_graph_json else ""
-
-    user_message = f"""Current URDF:
-```xml
-{current_urdf}
-```
-
-Kinematic Graph:
-```json
-{json.dumps(kinematic_graph_json, indent=2)}
-```"""
-
-    if spatial_context:
-        user_message += f"\n\n{spatial_context}"
-
-    if kinematic_context:
-        user_message += f"""
-
-Robot Structure Summary:
-{kinematic_context}"""
-
-    user_message += f"""
-
-User Request: {prompt}"""
+    user_message = _build_edit_user_message(
+        prompt, current_urdf, kinematic_graph_json, kinematic_context, assembly_graph,
+    )
 
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]

@@ -552,6 +552,14 @@ class JSONRPCServer:
         urdf_content = params["urdf_content"]
         kinematic_context = params.get("kinematic_context", None)
         session_id = params.get("session_id", "default")
+        # Workstream #1: canonical AssemblyGraph from the frontend. When provided,
+        # claude_client prefers it over URDF as the edit-retry source of truth.
+        # Kept as a dict (not stringified) so generate_edit can json.dumps with its
+        # own formatting and the roundtrip shape stays inspectable in logs.
+        assembly_graph = params.get("assembly_graph", None)
+        if assembly_graph is not None and not isinstance(assembly_graph, dict):
+            print(f"[ai_edit] Ignoring non-dict assembly_graph: {type(assembly_graph).__name__}", file=sys.stderr)
+            assembly_graph = None
 
         if not isinstance(prompt, str):
             raise ValueError("Parameter 'prompt' must be a string")
@@ -616,6 +624,7 @@ class JSONRPCServer:
                     on_progress=self._emit_progress,
                     model=model,
                     images=images,
+                    assembly_graph=assembly_graph,
                 )
             else:
                 self._emit_progress("thinking", "Processing request...")
@@ -623,6 +632,7 @@ class JSONRPCServer:
                     prompt, urdf_content, kg_json, kinematic_context, session_id,
                     model=model,
                     images=images,
+                    assembly_graph=assembly_graph,
                 )
 
             self._emit_progress("done", "Complete")

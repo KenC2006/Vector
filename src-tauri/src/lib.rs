@@ -433,6 +433,7 @@ async fn ai_edit(
     session_id: Option<String>,
     model: Option<String>,
     images: Option<Vec<serde_json::Value>>,
+    assembly_graph: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
@@ -445,6 +446,11 @@ async fn ai_edit(
         "session_id": session_id.unwrap_or_else(|| "default".to_string()),
         "model": model,
         "images": images.unwrap_or_default(),
+        // Workstream #1: canonical AssemblyGraph preserved across edits.
+        // When present, the Python side hands this to Claude as the lossless
+        // source of truth instead of the URDF (which drops orientation /
+        // elevation_angle / length_mm / attach_rpy on round-trip).
+        "assembly_graph": assembly_graph,
     }), 1, &app)
 }
 
