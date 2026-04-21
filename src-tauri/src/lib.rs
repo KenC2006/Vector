@@ -463,7 +463,7 @@ async fn ai_set_history(state: State<'_, AppState>, session_id: String, history:
 
 /// Second-pass AI validation of assembled URDF — checks spatial correctness
 #[tauri::command]
-async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>, reference_images: Option<Vec<serde_json::Value>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -473,7 +473,8 @@ async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_c
         "original_prompt": original_prompt,
         "session_id": session_id.unwrap_or_else(|| "default".to_string()),
         "screenshot_base64": screenshot_base64,
-        "screenshots": screenshots
+        "screenshots": screenshots,
+        "reference_images": reference_images.unwrap_or_default(),
     }), 1, &app)
 }
 

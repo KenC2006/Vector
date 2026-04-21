@@ -2076,13 +2076,18 @@ REMINDER: Return ONLY JSON. Start with { end with }.
 def validate_assembly(urdf_content: str, original_prompt: str,
                       session_id: str = "default",
                       screenshot_base64: str = None,
-                      screenshots: list = None) -> dict:
+                      screenshots: list = None,
+                      reference_images: list = None) -> dict:
     """
     Second-pass validation: send assembled URDF + 3 viewport screenshots to Gemini.
     Uses Gemini 3 Flash for visual validation (cheap, fast, good vision, separate rate limits).
     Falls back to Claude Sonnet if Gemini is unavailable.
     Returns dict with 'ok' bool, 'notes' str, 'checklist', and 'needs_redesign'.
     Cost: ~$0.0003 per call (Gemini 3 Flash with 3 images).
+
+    reference_images: optional list of user-uploaded reference images in the
+    shape [{"media_type": "image/png", "data": "<base64>"}], forwarded so
+    Gemini can compare rendered output against the reference.
     """
     # Gemini required — no Claude fallback to avoid burning Anthropic tokens/rate limit
     if _genai is None:
@@ -2095,7 +2100,8 @@ def validate_assembly(urdf_content: str, original_prompt: str,
     # Retry once on transient errors (503 overload, network timeouts)
     for attempt in range(2):
         try:
-            return _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots)
+            raw = _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots, reference_images)
+            return _classify_and_enrich(raw, original_prompt)
         except Exception as e:
             err_str = str(e)
             is_transient = '503' in err_str or 'UNAVAILABLE' in err_str or 'timeout' in err_str.lower()
@@ -2107,15 +2113,56 @@ def validate_assembly(urdf_content: str, original_prompt: str,
             return {"ok": True, "notes": f"Validation skipped: Gemini error — {e}"}
 
 
+def _classify_and_enrich(valresult: dict, original_prompt: str) -> dict:
+    """
+    Run the critique classifier over Gemini's checklist and attach drop flags
+    per-item. Infeasible critiques (components not in the catalog) get
+    classifier_drop=True + classifier_reason; the TS side uses these to skip
+    redesigns that can't be satisfied.
+    """
+    checklist = valresult.get("checklist")
+    if not checklist:
+        return valresult
+    try:
+        from core.ai.critique_classifier import classify_checklist
+        enriched = classify_checklist(checklist, original_prompt)
+        valresult = {**valresult, "checklist": enriched}
+    except Exception as e:
+        print(f"[ai_validate] critique classifier failed, passing raw checklist: {e}", file=sys.stderr)
+    return valresult
+
+
 def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
                                screenshot_base64: str = None,
-                               screenshots: list = None) -> dict:
+                               screenshots: list = None,
+                               reference_images: list = None) -> dict:
     """Gemini 3 Flash visual validation. ~$0.0003 per call."""
     client = _get_gemini_client()
 
     # Build multimodal content parts
     parts = []
     parts.append(_genai_types.Part.from_text(text=VALIDATION_SYSTEM_PROMPT))
+
+    # Reference images from the user's original Claude turn come first so the
+    # reference establishes context before Gemini sees the rendered output
+    # (G3 fix). Shape: [{"media_type": "image/png", "data": "<base64>"}].
+    ref_count = 0
+    if reference_images:
+        for ref in reference_images:
+            if not isinstance(ref, dict):
+                continue
+            data = ref.get("data")
+            media_type = ref.get("media_type") or "image/png"
+            if not data:
+                continue
+            parts.append(_genai_types.Part.from_text(text="**User reference image (target to match):**"))
+            parts.append(_genai_types.Part.from_bytes(
+                data=base64.b64decode(data),
+                mime_type=media_type,
+            ))
+            ref_count += 1
+        if ref_count:
+            print(f"[ai_validate] [Gemini] Including {ref_count} reference image(s) from user", file=sys.stderr)
 
     view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
     has_images = False
@@ -2139,6 +2186,17 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
         has_images = True
         print(f"[ai_validate] [Gemini] Including 1 viewport screenshot ({len(screenshot_base64) // 1024}KB)", file=sys.stderr)
 
+    if has_images and ref_count:
+        view_instruction = (
+            "COMPARE THE RENDERED ROBOT AGAINST THE USER REFERENCE IMAGE ABOVE. "
+            "Flag gaps between the reference and the output (missing parts, wrong counts, wrong proportions, missing features). "
+            "Then examine all 3 rendered views for physical correctness. Be critical."
+        )
+    elif has_images:
+        view_instruction = "EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems."
+    else:
+        view_instruction = "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."
+
     prompt_text = f"""Original user request: "{original_prompt}"
 
 Assembled URDF:
@@ -2146,7 +2204,7 @@ Assembled URDF:
 {urdf_content}
 ```
 
-{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}"""
+{view_instruction}"""
     parts.append(_genai_types.Part.from_text(text=prompt_text))
 
     t0 = time.time()
