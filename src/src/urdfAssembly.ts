@@ -16,6 +16,13 @@ import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
 import { applyMutation as runApplyMutation } from './graphMutations.ts'
 import type { GraphMutation, MutationResult } from './graphMutations.ts'
+// Render-time alignment pass (Option C — see docs/ENGINE_ARCHITECTURE.md).
+// Kept in its own module so the test harness can import it without pulling in
+// this file's DOM/tauri dependencies. Re-exported below for external callers.
+import { reconcileNodePlacement } from './reconcileAlignment.ts'
+import type { ReconcileResult } from './reconcileAlignment.ts'
+export { reconcileNodePlacement } from './reconcileAlignment.ts'
+export type { ReconcileInputs, ReconcileResult, ReconcileShift } from './reconcileAlignment.ts'
 // Re-export so existing importers (topologyValidation.ts, topologyCorpus.ts,
 // viewportChat.ts, main.ts) keep working from their usual location.
 export { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
@@ -113,6 +120,10 @@ export interface UrdfAssemblyApi {
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
+  /** Render-time alignment: measure real AABBs of rendered meshes and shift pivots
+   *  so child contact surfaces meet their parent's attach face. No-op if no graph
+   *  has been resolved yet. Safe to call multiple times (EPS-guarded, idempotent). */
+  reconcileNodePlacement(): ReconcileResult
   /** Get a deep-cloned snapshot of the last successfully resolved AssemblyGraph. Cloned so
    *  callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
   getLastAssemblyGraph(): AssemblyGraph | null
@@ -3620,12 +3631,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.reparseUrdf()
     }
 
-    // Ground the robot so it sits on the floor plane (Y=0 in Three.js)
-    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
-
-    ctx.showToast(`Assembled ${placedCount} components`, 'success')
-    // Store the resolved graph with URDF link names (remapped via nameMap)
-    // so modify_topology ops can reference the same names Claude sees in the URDF
+    // Store the resolved graph with URDF link names (remapped via nameMap) so the
+    // reconcile pass below + later modify_topology ops reference the same names
+    // Claude sees in the URDF.
     const remappedComponents = graph.components.map(c => ({
       ...c,
       link_name: nameMap.get(c.link_name) || c.link_name,
@@ -3635,6 +3643,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
+
+    // Render-time alignment: shift pivots so visible mesh faces meet. Must run
+    // BEFORE groundAssembly because groundRobot measures post-reconcile world
+    // extents. Safe when meshes haven't loaded yet — the EPS guard no-ops any
+    // link whose parent/child AABB is unavailable or already aligned, and the
+    // debounced onMeshLoaded path re-fires reconcile once GLBs settle.
+    try {
+      ctx.getParsedRobot().group.updateMatrixWorld(true)
+      const reconcileRes = reconcileNodePlacement({
+        graph: _lastAssemblyGraph,
+        linkGroups: ctx.getParsedRobot().linkGroups,
+        joints: ctx.getParsedRobot().joints,
+      })
+      if (reconcileRes.adjustedCount > 0) {
+        // Mount nodes were placed against the pre-reconcile pivot positions;
+        // rebuild so the attachment rings follow the real rendered geometry.
+        rebuildMountNodes()
+      }
+    } catch (e) {
+      console.warn('[assembly] reconcileNodePlacement failed:', e)
+    }
+
+    // Ground the robot so it sits on the floor plane (Y=0 in Three.js)
+    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
+
+    ctx.showToast(`Assembled ${placedCount} components`, 'success')
 
     return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
   }
@@ -3852,6 +3886,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     onInteractionModeChanged,
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
+    reconcileNodePlacement: (): ReconcileResult => {
+      if (!_lastAssemblyGraph) {
+        return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
+      }
+      const parsed = ctx.getParsedRobot()
+      return reconcileNodePlacement({
+        graph: _lastAssemblyGraph,
+        linkGroups: parsed.linkGroups,
+        joints: parsed.joints,
+      })
+    },
     getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
     urdfToAssemblyGraph,
     applyTopologyOps,
