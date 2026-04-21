@@ -1025,6 +1025,10 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       _rebuildNodesTimer = null
       if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
       if (simApi.isSimActive()) return          // don't disturb sim joint state
+      // Re-fire alignment BEFORE groundRobot so the ground-level calc sees
+      // post-reconcile world extents. Idempotent — already-aligned links no-op.
+      try { urdfAssemblyApi?.reconcileNodePlacement() }
+      catch (e) { console.warn('[reconcile] post-mesh-load pass failed:', e) }
       groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
       // STEP/GLB meshes load async — re-run edges so late arrivals get the
