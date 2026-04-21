@@ -26,6 +26,21 @@ export interface AssemblyComponent {
   /** Explicit rest-pose [roll, pitch, yaw] in radians. When any component is non-zero, overrides
    *  the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
   attach_rpy?: number[]
+  // ── Phase 1/2 mate-connector fields (docs/MATE_CONNECTOR_MIGRATION.md) ──
+  // Optional; when any are set, the engine routes through the connector
+  // resolver (mateConnectors.ts) instead of the bbox half-extent path.
+  // Omitted fields fall back to the legacy attach_face path — bit-identical
+  // to the WS5 output so USE_MATE_CONNECTORS=on is safe to ship by default.
+  /** Parent-side connector id. Defaults to the same face name as `attach_face`
+   *  when omitted (parent "top" face == parent "top" default connector). */
+  attach_connector?: string
+  /** Child-side connector id. When omitted but `attach_face` is set, the
+   *  opposite-face default is inferred (top ↔ bottom, etc.). */
+  mate_connector?: string
+  /** Mate type: 'fastened' / 'planar' / 'concentric'. Defaults to 'fastened'
+   *  when a connector is named but the type is omitted (matches attach_face
+   *  semantics — treat as a weld unless told otherwise). */
+  mate_type?: string
 }
 
 export interface AssemblyGraph {
@@ -127,6 +142,9 @@ export function graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquiv
       const fmtRpy = (r?: number[]) => r ? `[${r.map(v => v.toFixed(3)).join(',')}]` : 'undefined'
       fieldDiffs.push(`attach_rpy ${fmtRpy(ac.attach_rpy)}≠${fmtRpy(bc.attach_rpy)}`)
     }
+    if ((ac.attach_connector ?? null) !== (bc.attach_connector ?? null)) fieldDiffs.push(`attach_connector ${ac.attach_connector}≠${bc.attach_connector}`)
+    if ((ac.mate_connector ?? null)   !== (bc.mate_connector ?? null))   fieldDiffs.push(`mate_connector ${ac.mate_connector}≠${bc.mate_connector}`)
+    if ((ac.mate_type ?? null)        !== (bc.mate_type ?? null))        fieldDiffs.push(`mate_type ${ac.mate_type}≠${bc.mate_type}`)
     if (fieldDiffs.length > 0) diffs.push(`${name}: ${fieldDiffs.join('; ')}`)
   }
 

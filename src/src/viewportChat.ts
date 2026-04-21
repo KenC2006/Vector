@@ -1164,7 +1164,18 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               const actionableTopoFailures = topoFailures.filter(f => !f.classifier_drop)
               const aestheticTopoFailures = topoFailures.filter(f => f.classifier_drop)
               const allTopoFailuresAreAesthetic = topoFailures.length > 0 && actionableTopoFailures.length === 0
-              const shouldRedesign = actionableTopoFailures.length > 0
+              // Redesign fires when either (a) there's an actionable topology
+              // failure, OR (b) there are placement failures we haven't
+              // attempted to fix yet. Placement failures often ARE resolvable
+              // by a different component choice / attach_face / orientation
+              // (e.g. swap the 137mm battery for a shorter preset when it
+              // overhangs the baseplate, add a bracket instead of floating a
+              // camera). Without branch (b), the "all topo aesthetic +
+              // placement failures" case silently leaves a broken build on
+              // screen with no redesign attempt. The retryCount<1 cap still
+              // limits the loop to one extra pass.
+              const placementOnlyRedesign = actionableTopoFailures.length === 0 && placementFailures.length > 0 && retryCount < 1
+              const shouldRedesign = actionableTopoFailures.length > 0 || placementOnlyRedesign
 
               if (shouldRedesign && retryCount < 1) {
                 // Only include actionable topology failures in the "fix these" list.
@@ -1185,7 +1196,9 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const failuresBlock = [actionableLines, placementLines].filter(Boolean).join('\n')
                 const reason = needsRedesign
                   ? 'Visual validation found topology issues. Redesigning...'
-                  : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
+                  : placementOnlyRedesign
+                    ? `Visual validation flagged ${placementFailures.length} placement issue(s) — redesigning with different component choices.`
+                    : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
                 addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
                 const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
                 const placementGuidance = placementFailures.length > 0
@@ -1218,13 +1231,25 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
               }
-              if (placementFailures.length > 0 && topoFailures.length === 0) {
-                console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
-              }
-              if (allTopoFailuresAreAesthetic) {
-                const lines = topoFailures.map(c => `  • [${c.classifier_reason || 'infeasible'}] ${c.check}: ${c.detail}`).join('\n')
-                console.log(`[AI][redesign] Skipping redesign — all topology failures dropped by critique classifier:\n${lines}`)
-                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged critiques the available presets can't satisfy (e.g. "add a rocker-bogie", "100mm feet"). Keeping current build — request a different style or part if you want to iterate.</span>`)
+              // Skip-paths: we only reach here when shouldRedesign was false
+              // OR retryCount already hit the cap. Log + surface remaining
+              // failures so the user isn't left staring at a broken build
+              // with no feedback.
+              if (!shouldRedesign || retryCount >= 1) {
+                if (placementFailures.length > 0 && topoFailures.length === 0) {
+                  console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable and retry cap reached.`)
+                }
+                if (allTopoFailuresAreAesthetic) {
+                  const lines = topoFailures.map(c => `  • [${c.classifier_reason || 'infeasible'}] ${c.check}: ${c.detail}`).join('\n')
+                  console.log(`[AI][redesign] Skipping redesign — all topology failures dropped by critique classifier:\n${lines}`)
+                  // Include placement failures in the user-facing note when
+                  // present — previously the aesthetic-skip branch swallowed
+                  // them, leaving the user with no actionable feedback.
+                  const placementNote = placementFailures.length > 0
+                    ? ` Placement issues remain: ${placementFailures.map(p => p.detail).join('; ')}.`
+                    : ''
+                  addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged critiques the available presets can't satisfy (e.g. "add a rocker-bogie", "100mm feet"). Keeping current build — request a different style or part if you want to iterate.${placementNote}</span>`)
+                }
               }
             }
           } catch (valErr) {

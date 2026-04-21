@@ -14,6 +14,19 @@ import { validateTopology as runValidateTopology, autoRepairTopology as runAutoR
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
+// Mate-connector resolver (Phase 1/2, docs/MATE_CONNECTOR_MIGRATION.md). Pure
+// module, bit-identical to the bbox math when mating default face connectors
+// with `fastened` — see mateCorpus.ts for the parity proof. Feature-flagged
+// so the legacy path can still be exercised for A/B comparison.
+import {
+  generateDefaultConnectors,
+  mergeConnectors,
+  resolveMate,
+  findConnector,
+  childConnectorIdForAttachFace,
+  type MateConnector,
+  type MateType,
+} from './mateConnectors.ts'
 import { applyMutation as runApplyMutation } from './graphMutations.ts'
 import type { GraphMutation, MutationResult } from './graphMutations.ts'
 // Render-time alignment pass (Option C — see docs/ENGINE_ARCHITECTURE.md).
@@ -82,6 +95,11 @@ interface PresetComponent {
   mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
   sim_metadata: Record<string, unknown>
+  /** Phase 3 mate-connector authorship (docs/MATE_CONNECTOR_MIGRATION.md).
+   *  Optional; merged OVER the 6 auto-generated defaults by id so a preset
+   *  can add new connectors (shaft_out, plate_top) or override a default
+   *  whose bbox-derived pose doesn't match the rendered mesh. */
+  connectors?: MateConnector[]
 }
 
 interface PresetCategory {
@@ -579,6 +597,71 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     walk(linkGroup)
 
     return hasGeom ? box : null
+  }
+
+  /**
+   * Sync reconcile's in-scene pivot shifts back into the URDF text so the next
+   * reparse doesn't undo them. Called by resolveAssemblyGraph after the
+   * initial reconcile pass — see the adjacent comment there for the timing
+   * problem this solves (editor-change debounce → reparse → wiped shifts →
+   * duplicate reconcile replay).
+   *
+   * For each joint in the URDF, read the live pivot.position (which reconcile
+   * has already updated) and write it back as the joint's origin xyz. We also
+   * rewrite rpy from pivot.quaternion — reconcile today only shifts position,
+   * but keeping both fields in sync avoids a divergence hazard if a future
+   * pass learns to rotate pivots.
+   */
+  function persistReconcileShiftsToUrdf(linkGroups: Map<string, THREE.Group>): void {
+    const raw = ctx.getUrdfText()
+    const doc = new DOMParser().parseFromString(raw, 'application/xml')
+    if (doc.querySelector('parsererror')) return
+
+    let changed = false
+    const jointEls = Array.from(doc.querySelectorAll('joint'))
+    for (const jointEl of jointEls) {
+      const childEl = jointEl.querySelector('child')
+      const childName = childEl?.getAttribute('link')
+      if (!childName) continue
+      const childGroup = linkGroups.get(childName)
+      const pivot = childGroup?.parent as THREE.Group | null
+      if (!pivot) continue
+      const origin = jointEl.querySelector('origin')
+      if (!origin) continue
+
+      const x = pivot.position.x
+      const y = pivot.position.y
+      const z = pivot.position.z
+      const newXyz = `${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}`
+      if (origin.getAttribute('xyz') !== newXyz) {
+        origin.setAttribute('xyz', newXyz)
+        changed = true
+      }
+    }
+    if (!changed) return
+
+    // Pretty-print using the same rule resolveAssemblyGraph uses for its own
+    // post-placement formatting pass, so the editor diff stays small.
+    const serialized = new XMLSerializer().serializeToString(doc)
+    const lines = serialized.replace(/></g, '>\n<').split('\n')
+    let indent = 0
+    const prettyUrdf = lines.map(line => {
+      const trimmed = line.trim()
+      if (!trimmed) return ''
+      if (trimmed.startsWith('</')) indent = Math.max(0, indent - 1)
+      const result = '  '.repeat(indent) + trimmed
+      if (trimmed.startsWith('<') && !trimmed.startsWith('</') && !trimmed.startsWith('<?') && !trimmed.endsWith('/>')) {
+        indent++
+      }
+      return result
+    }).filter(l => l.length > 0).join('\n')
+
+    // setUrdfText without reparse — the live scene is already in the aligned
+    // state, so a reparse right now would just rebuild redundantly. The
+    // debounced editor-change reparse (main.ts) will fire ~500ms later and
+    // rebuild from the aligned text; that rebuild then triggers a meshLoaded
+    // debounce → reconcile → zero deltas (genuine no-op, which is the point).
+    ctx.setUrdfText(prettyUrdf)
   }
 
   function rebuildMountNodes() {
@@ -1569,6 +1652,94 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return childZ
   }
 
+  // ── Phase 2 connector branch (docs/MATE_CONNECTOR_MIGRATION.md) ───────────
+  // Feature flag. Defaults on: when no preset has authored connectors, the new
+  // path only fires for components that explicitly opt in via
+  // attach_connector/mate_connector/mate_type. For every other component,
+  // computeFacePlacement runs unchanged — bit-identical to WS5 output. Toggle
+  // via globalThis.VECTOR_USE_MATE_CONNECTORS for A/B or rollback.
+  function useMateConnectors(): boolean {
+    const g = (globalThis as unknown as { VECTOR_USE_MATE_CONNECTORS?: boolean })
+      .VECTOR_USE_MATE_CONNECTORS
+    return g !== false
+  }
+  function hasMateConnectorFields(c: AssemblyComponent): boolean {
+    return !!(c.attach_connector || c.mate_connector || c.mate_type)
+  }
+
+  /**
+   * Resolve a child's joint origin via the mate-connector closed-form
+   * composition. Returns null to signal "fall through to legacy path" — the
+   * caller uses that to preserve bit-identical bbox math whenever the new
+   * fields aren't authored or the feature flag is off.
+   *
+   * Phase 2 scope: default face connectors only (attach_face → connector id
+   * via the opposite-face convention). Authored per-preset connectors land
+   * in Phase 3 alongside the problem-child presets (L-bracket, servo shaft).
+   * Multi-child distribution / splay / elevation / orientation keywords stay
+   * on the legacy path — the migration doc calls these out explicitly as
+   * orthogonal post-passes, not resolver concerns.
+   */
+  function computeMatePlacement(
+    comp: AssemblyComponent,
+    parentPresetBboxMm: { hxMm: number; hyMm: number; hzMm: number },
+    childPresetBboxMm:  { hxMm: number; hyMm: number; hzMm: number },
+    parentAuthored?: MateConnector[],
+    childAuthored?:  MateConnector[],
+  ): { xyz: string; rpy: string } | null {
+    if (!useMateConnectors()) return null
+    // Phase 3: fire the connector path when EITHER the component authored
+    // mate fields OR either preset authored connectors that need to resolve.
+    // Without the latter, an authored shaft_out on a servo would never be
+    // reached unless Claude happened to emit mate_connector on the child.
+    const presetsHaveAuthored = !!(parentAuthored?.length || childAuthored?.length)
+    if (!hasMateConnectorFields(comp) && !presetsHaveAuthored) return null
+
+    // Defaults first, authored-on-preset overrides by id (mergeConnectors contract).
+    const parentDefaults = generateDefaultConnectors(parentPresetBboxMm)
+    const childDefaults  = generateDefaultConnectors(childPresetBboxMm)
+    const parentConnectors = mergeConnectors(parentDefaults, parentAuthored)
+    const childConnectors  = mergeConnectors(childDefaults,  childAuthored)
+
+    // Infer connector ids from attach_face when the new fields are partial.
+    // "top" on the parent implies "bottom" on the child, matching the default-
+    // connector naming. An explicitly authored attach_connector/mate_connector
+    // wins; the legacy attach_face is only consulted as a fallback.
+    const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
+    const inferredChildId   = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
+    const childConnectorId  = comp.mate_connector ?? inferredChildId ?? 'bottom'
+
+    const parentConn = findConnector(parentConnectors, parentConnectorId)
+    const childConn  = findConnector(childConnectors,  childConnectorId)
+    if (!parentConn || !childConn) {
+      // Fail loudly per the migration doc: never silently fall back to a
+      // guessed connector. Return null so the caller can log + skip/error.
+      console.warn(
+        `[mate] connector lookup failed for ${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
+        `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'}). Falling through to legacy bbox path.`,
+      )
+      return null
+    }
+
+    const mateType: MateType = ((comp.mate_type as MateType) ?? 'fastened')
+    if (mateType !== 'fastened' && mateType !== 'planar' && mateType !== 'concentric') {
+      console.warn(`[mate] unknown mate_type="${mateType}" for ${comp.link_name}; falling through to legacy`)
+      return null
+    }
+
+    const childLocal = resolveMate(new THREE.Matrix4(), parentConn, childConn, mateType, {})
+    const pos = new THREE.Vector3()
+    const quat = new THREE.Quaternion()
+    const scl = new THREE.Vector3()
+    childLocal.decompose(pos, quat, scl)
+    const [r, p, y] = quatToRpy(quat)
+
+    return {
+      xyz: `${pos.x.toFixed(4)} ${pos.y.toFixed(4)} ${pos.z.toFixed(4)}`,
+      rpy: `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`,
+    }
+  }
+
   function computeFacePlacement(
     doc: Document, parentLinkName: string,
     childX: number, childY: number, childZ: number,
@@ -2557,6 +2728,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then((data: PresetData) => {
       presetData = data
+      // Phase 2: log the default-connector generation per preset (smoke-test
+      // signal from docs/MATE_CONNECTOR_MIGRATION.md). Six face-center
+      // connectors per preset, bbox-derived, mathematically equivalent to
+      // the legacy attach_face path — see mateCorpus.ts.
+      if (useMateConnectors()) {
+        for (const cat of Object.values(data.categories)) {
+          for (const comp of cat.components) {
+            console.log(`[mate] default connectors: 6 (${comp.id})`)
+          }
+        }
+      }
       renderComponents('')
     })
     .catch(() => {
@@ -3471,7 +3653,30 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
+      // Phase 2/3: if this component has authored mate-connector fields OR
+      // either preset carries authored connectors, AND the feature flag is on,
+      // resolve via closed-form frame composition instead of the bbox half-
+      // extent math. Returns null to fall through to legacy whenever neither
+      // side opts in.
+      let placement: { xyz: string; rpy: string }
+      const parentPhys = parentPreset?.physical
+      const parentBb = parentPhys?.bounding_box_mm ?? parentPhys?.cross_section_mm ?? [40, 40, 40]
+      const matePlacement = (parentPreset && childPreset)
+        ? computeMatePlacement(
+            comp,
+            { hxMm: (parentBb[0] ?? 40) / 2, hyMm: (parentBb[1] ?? 40) / 2, hzMm: (parentBb[2] ?? 40) / 2 },
+            { hxMm: cxm * 500,                hyMm: cym * 500,                hzMm: czm * 500 },
+            parentPreset.connectors,
+            childPreset.connectors,
+          )
+        : null
+
+      if (matePlacement) {
+        placement = matePlacement
+        console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
+      } else {
+        placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
+      }
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
@@ -3657,6 +3862,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         joints: ctx.getParsedRobot().joints,
       })
       if (reconcileRes.adjustedCount > 0) {
+        // Persist the shifted pivot positions into the URDF text. Without this,
+        // the debounced 500ms editor-change reparse (main.ts:743) rebuilds the
+        // scene from the original (unshifted) URDF xyz values, wiping every
+        // shift — and then the debounced onMeshLoaded callback re-fires reconcile
+        // and replays the identical 37 shifts. Baking shifts into the text makes
+        // the reparsed scene come up already-aligned, so the second reconcile
+        // pass finds zero deltas (genuine no-op).
+        persistReconcileShiftsToUrdf(ctx.getParsedRobot().linkGroups)
         // Mount nodes were placed against the pre-reconcile pivot positions;
         // rebuild so the attachment rings follow the real rendered geometry.
         rebuildMountNodes()
