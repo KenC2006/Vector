@@ -24,6 +24,7 @@ import {
   findConnector,
   buildInPlaneBasis,
   childConnectorIdForAttachFace,
+  faceUVToWorldOffset,
   type MateConnector,
   type MateType,
   type MateParams,
@@ -671,8 +672,53 @@ function runFixture(f: Fixture): Outcome {
   return { name: f.name, ok: true }
 }
 
+// ── faceUVToWorldOffset checks (separate from resolveMate fixtures) ────────
+// Tangential multi-child distribution in the connector path (see
+// urdfAssembly.computeMatePlacement's multiChild branch) uses this helper
+// to convert legacy (u, v) offsets into world-frame (dx, dy, dz) so 4 legs
+// mating via mate_connector="bottom" spread across the baseplate instead
+// of collapsing to one world point. Table matches the face→XYZ mapping
+// that computeFacePlacement emits in urdfAssembly.ts lines ~1826-1892.
+
+interface FaceMapCheck {
+  name: string
+  face: string
+  u: number
+  v: number
+  expected: { dx: number; dy: number; dz: number }
+}
+
+const faceMapChecks: FaceMapCheck[] = [
+  // top/bottom: face normal ±Z, tangent plane is XY — u→X, v→Y
+  { name: 'faceUV: top (+Z normal) → u→X, v→Y',       face: 'top',    u: 0.010, v: 0.020, expected: { dx: 0.010, dy: 0.020, dz: 0 } },
+  { name: 'faceUV: bottom (-Z normal) → u→X, v→Y',    face: 'bottom', u: -0.010, v: -0.020, expected: { dx: -0.010, dy: -0.020, dz: 0 } },
+  // front/back: face normal ±X, tangent plane is YZ — u→Y, v→Z
+  { name: 'faceUV: front (+X normal) → u→Y, v→Z',     face: 'front',  u: 0.015, v: 0.005, expected: { dx: 0, dy: 0.015, dz: 0.005 } },
+  { name: 'faceUV: back (-X normal) → u→Y, v→Z',      face: 'back',   u: -0.015, v: 0.005, expected: { dx: 0, dy: -0.015, dz: 0.005 } },
+  // left/right: face normal ±Y, tangent plane is XZ — u→X, v→Z
+  { name: 'faceUV: right (+Y normal) → u→X, v→Z',     face: 'right',  u: 0.010, v: 0.020, expected: { dx: 0.010, dy: 0, dz: 0.020 } },
+  { name: 'faceUV: left (-Y normal) → u→X, v→Z',      face: 'left',   u: 0.010, v: 0.020, expected: { dx: 0.010, dy: 0, dz: 0.020 } },
+  // Fallback: unknown face name hits the default branch (same as top/bottom)
+  { name: 'faceUV: unknown face falls back to XY mapping', face: 'plate_top', u: 0.010, v: 0.020, expected: { dx: 0.010, dy: 0.020, dz: 0 } },
+]
+
+function runFaceMapCheck(c: FaceMapCheck): Outcome {
+  const got = faceUVToWorldOffset(c.face, c.u, c.v)
+  const dx = got.dx - c.expected.dx
+  const dy = got.dy - c.expected.dy
+  const dz = got.dz - c.expected.dz
+  const tol = 1e-9
+  if (Math.abs(dx) > tol || Math.abs(dy) > tol || Math.abs(dz) > tol) {
+    return { name: c.name, ok: false, reason: `expected (${c.expected.dx}, ${c.expected.dy}, ${c.expected.dz}), got (${got.dx}, ${got.dy}, ${got.dz})` }
+  }
+  return { name: c.name, ok: true }
+}
+
 function main(): void {
-  const outcomes = fixtures.map(runFixture)
+  const outcomes: Outcome[] = [
+    ...fixtures.map(runFixture),
+    ...faceMapChecks.map(runFaceMapCheck),
+  ]
   let passed = 0, failed = 0
   for (const o of outcomes) {
     if (o.ok) { console.log(`  ✓ ${o.name}`); passed++ }

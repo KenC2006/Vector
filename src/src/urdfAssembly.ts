@@ -24,6 +24,7 @@ import {
   resolveMate,
   findConnector,
   childConnectorIdForAttachFace,
+  faceUVToWorldOffset,
   type MateConnector,
   type MateType,
 } from './mateConnectors.ts'
@@ -1686,6 +1687,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     childPresetBboxMm:  { hxMm: number; hyMm: number; hzMm: number },
     parentAuthored?: MateConnector[],
     childAuthored?:  MateConnector[],
+    multiChild?: {
+      total: number
+      index: number
+      face: string
+      childSizes?: Array<{ hu: number; hv: number }>
+      insetOverride?: number
+    },
   ): { xyz: string; rpy: string } | null {
     if (!useMateConnectors()) return null
     // Only fire when the COMPONENT opts in (attach_connector/mate_connector/
@@ -1734,8 +1742,35 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const quat = new THREE.Quaternion()
     const scl = new THREE.Vector3()
     childLocal.decompose(pos, quat, scl)
-    const [r, p, y] = quatToRpy(quat)
 
+    // Multi-child tangential distribution (task #8/#9 — addresses the risk
+    // flagged in docs/MATE_CONNECTOR_MIGRATION.md "Multi-child distribution").
+    // Without this, N children all mating via the same connector id collapse
+    // to the same world point — four legs on baseplate.bottom would stack.
+    // Skipped for concentric mates because SHAFT_FANOUT validator enforces
+    // single-child-per-shaft, so the case doesn't arise there; spreading
+    // would also be wrong (a shaft-in-hole mate is supposed to be concentric).
+    if (multiChild && multiChild.total > 1 && mateType !== 'concentric') {
+      const parentMeters = {
+        hx: parentPresetBboxMm.hxMm / 1000,
+        hy: parentPresetBboxMm.hyMm / 1000,
+        hz: parentPresetBboxMm.hzMm / 1000,
+      }
+      const offsets = _computeMultiChildOffsets(
+        multiChild.total,
+        multiChild.index,
+        parentMeters,
+        multiChild.face,
+        multiChild.insetOverride,
+        multiChild.childSizes,
+      )
+      const { dx, dy, dz } = faceUVToWorldOffset(multiChild.face, offsets.u, offsets.v)
+      pos.x += dx
+      pos.y += dy
+      pos.z += dz
+    }
+
+    const [r, p, y] = quatToRpy(quat)
     return {
       xyz: `${pos.x.toFixed(4)} ${pos.y.toFixed(4)} ${pos.z.toFixed(4)}`,
       rpy: `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`,
@@ -3677,6 +3712,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             { hxMm: cxm * 500,                hyMm: cym * 500,                hzMm: czm * 500 },
             parentPreset.connectors,
             childPreset.connectors,
+            totalOnFace > 1
+              ? {
+                  total: totalOnFace,
+                  index: childIdx,
+                  face: comp.attach_face || 'top',
+                  childSizes: faceChildSizes.get(faceKey),
+                }
+              : undefined,
           )
         : null
 

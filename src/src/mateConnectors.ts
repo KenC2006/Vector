@@ -232,6 +232,46 @@ export function childConnectorIdForAttachFace(attachFace: string): string | null
   return DEFAULT_OPPOSITE_FACE[attachFace] ?? null
 }
 
+/**
+ * Convert a legacy face-local tangential (u, v) displacement (in metres) into
+ * a world-frame (dx, dy, dz) offset, using the same face→UV mapping that
+ * `computeFacePlacement`/`faceUVHalfExtents` in urdfAssembly.ts uses:
+ *
+ *   top/bottom:  u → X, v → Y   (face normal ±Z)
+ *   front/back:  u → Y, v → Z   (face normal ±X)
+ *   left/right:  u → X, v → Z   (face normal ±Y)
+ *
+ * Used by the connector-path multi-child distribution branch in
+ * `computeMatePlacement`, which composes _computeMultiChildOffsets's tu/tv
+ * output with the connector resolver's base pose. Extracted to this module
+ * so the mapping is testable in isolation (see mateCorpus.ts) — without that,
+ * the multi-child path lives behind a closure and can only be tested via
+ * full graph resolve.
+ *
+ * Unrecognized face names fall through to the top/bottom mapping (matching
+ * `faceUVHalfExtents`'s default branch), so the behaviour is consistent with
+ * the legacy path for any new face label that hasn't been added yet.
+ */
+export function faceUVToWorldOffset(
+  face: string,
+  u: number,
+  v: number,
+): { dx: number; dy: number; dz: number } {
+  switch (face) {
+    case 'top':
+    case 'bottom':
+      return { dx: u, dy: v, dz: 0 }
+    case 'front':
+    case 'back':
+      return { dx: 0, dy: u, dz: v }
+    case 'left':
+    case 'right':
+      return { dx: u, dy: 0, dz: v }
+    default:
+      return { dx: u, dy: v, dz: 0 }
+  }
+}
+
 /** Find a connector by id in a flat list. Returns null if missing — callers
  *  MUST fail loudly (the migration doc explicitly rejects silent fallbacks). */
 export function findConnector(
