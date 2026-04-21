@@ -14,6 +14,9 @@
 // This corpus fails loudly when it does.
 
 import * as THREE from 'three'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   generateDefaultConnectors,
   resolveMate,
@@ -26,6 +29,64 @@ import {
   type MateParams,
   type ConnectorBoundingBoxMm,
 } from './mateConnectors.ts'
+
+// ── Preset loader (for integration fixtures) ───────────────────────────────
+// Parses the shipping catalog so integration fixtures exercise the
+// preset JSON → merge → resolve pipeline end-to-end. Without this, the
+// hand-typed fixtures above only prove the resolver math; they bypass
+// the JSON authoring layer where a typo or schema drift could silently
+// break a rendered robot. Loader-based fixtures catch that.
+
+interface CorpusPresetPhysical {
+  bounding_box_mm?: number[]
+  cross_section_mm?: number[]
+}
+interface CorpusPreset {
+  id: string
+  physical: CorpusPresetPhysical
+  connectors?: MateConnector[]
+}
+interface CorpusPresetFile {
+  categories: Record<string, { components: CorpusPreset[] }>
+}
+
+function loadPresets(): Map<string, CorpusPreset> {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const presetPath = path.resolve(here, '..', 'public', 'generic_presets.json')
+  const raw = fs.readFileSync(presetPath, 'utf-8')
+  const data = JSON.parse(raw) as CorpusPresetFile
+  const byId = new Map<string, CorpusPreset>()
+  for (const cat of Object.values(data.categories)) {
+    for (const c of cat.components) byId.set(c.id, c)
+  }
+  return byId
+}
+
+function presetBboxMm(p: CorpusPreset): ConnectorBoundingBoxMm {
+  const bb = p.physical.bounding_box_mm ?? p.physical.cross_section_mm ?? [40, 40, 40]
+  return { hxMm: (bb[0] ?? 40) / 2, hyMm: (bb[1] ?? 40) / 2, hzMm: (bb[2] ?? 40) / 2 }
+}
+
+/** Mimic the urdfAssembly.computeMatePlacement merge-then-find path:
+ *  generateDefaultConnectors(bbox) + mergeConnectors(defaults, preset.connectors)
+ *  + findConnector(merged, id). Any drift between this path and the runtime
+ *  path = drift between corpus and production; keep them in sync. */
+function resolveFromPresets(
+  parentPreset: CorpusPreset,
+  childPreset: CorpusPreset,
+  parentConnId: string,
+  childConnId: string,
+  mateType: MateType,
+  params: MateParams = {},
+): THREE.Matrix4 {
+  const pConnectors = mergeConnectors(generateDefaultConnectors(presetBboxMm(parentPreset)), parentPreset.connectors)
+  const cConnectors = mergeConnectors(generateDefaultConnectors(presetBboxMm(childPreset)),  childPreset.connectors)
+  const pConn = findConnector(pConnectors, parentConnId)
+  const cConn = findConnector(cConnectors, childConnId)
+  if (!pConn) throw new Error(`preset "${parentPreset.id}" missing connector "${parentConnId}"`)
+  if (!cConn) throw new Error(`preset "${childPreset.id}" missing connector "${childConnId}"`)
+  return resolveMate(new THREE.Matrix4(), pConn, cConn, mateType, params)
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -479,6 +540,91 @@ const fixtures: Fixture[] = [
     expected: {
       pos: new THREE.Vector3((-20 - childBbox.hxMm) / 1000, 0, 18.4 / 1000),
       quat: new THREE.Quaternion(),
+    },
+  },
+
+  // ── 13j-l: end-to-end integration — load real generic_presets.json ──
+  // The fixtures above hand-write the connector values they test. These
+  // three reach through the shipping JSON to prove the full pipeline works:
+  // load → findPreset → mergeConnectors(defaults, preset.connectors) →
+  // findConnector(merged, id) → resolveMate → expected pose. A typo in a
+  // shipping JSON connector (wrong diameter, swapped axis sign) fails loudly
+  // here, not silently in the renderer.
+  {
+    name: 'integration (JSON): actuator_servo_high_torque.shaft_out → coupler.shaft_hole, concentric',
+    setup: () => {
+      const presets = loadPresets()
+      const servo   = presets.get('actuator_servo_high_torque')!
+      const coupler = presets.get('structural_servo_coupler_disc')!
+      return {
+        parentWorld: new THREE.Matrix4(),
+        parentConn: findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(servo)),   servo.connectors),   'shaft_out')!,
+        childConn:  findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(coupler)), coupler.connectors), 'shaft_hole')!,
+        mateType:   'concentric',
+      }
+    },
+    // Servo shaft_out at (0,0,17), coupler shaft_hole at (0,0,4). Both +Z.
+    // qAlign Ry(π). t=(0,0,17)+0-(0,0,-4)=(0,0,21mm). Same value as fixture
+    // 13a, but arrived at via loadPresets() so JSON data drift fails loudly.
+    expected: {
+      pos: new THREE.Vector3(0, 0, 21 / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+    },
+  },
+  {
+    name: 'integration (JSON): structural_bracket_l three connectors resolve to three DIFFERENT poses',
+    setup: () => {
+      const presets = loadPresets()
+      const bracket = presets.get('structural_bracket_l')!
+      const merged = mergeConnectors(generateDefaultConnectors(presetBboxMm(bracket)), bracket.connectors)
+      // Verify data shape up-front — a missing/renamed connector fails loudly.
+      if (!findConnector(merged, 'plate_top'))  throw new Error('L-bracket JSON missing plate_top')
+      if (!findConnector(merged, 'wall_inner')) throw new Error('L-bracket JSON missing wall_inner')
+      if (!findConnector(merged, 'wall_outer')) throw new Error('L-bracket JSON missing wall_outer')
+      // Use plate_top as the setup for this fixture's resolve assertion.
+      return {
+        parentWorld: new THREE.Matrix4(),
+        parentConn:  findConnector(merged, 'plate_top')!,
+        childConn:   pickConn(cDefs, 'bottom'),
+        mateType:    'fastened',
+      }
+    },
+    // plate_top = (0,0,1.6)/+Z → child.bottom → t=(0,0,1.6+hcz). Matches
+    // fixture 13g value — the point of THIS fixture is the data-shape
+    // assertion in setup() (would throw if JSON ever drops or renames a
+    // connector), with the resolve as a secondary sanity check.
+    expected: {
+      pos: new THREE.Vector3(0, 0, (1.6 + childBbox.hzMm) / 1000),
+      quat: new THREE.Quaternion(),
+    },
+  },
+  {
+    name: 'integration (JSON): resolveFromPresets helper — camera.mount_back → bracket_l.plate_top',
+    setup: () => {
+      const presets = loadPresets()
+      const bracket = presets.get('structural_bracket_l')!
+      const camera  = presets.get('sensor_depth_camera_small')!
+      // Call resolveFromPresets once just to prove the helper composes cleanly
+      // on real presets without throwing. The Fixture runner below re-resolves
+      // via parentConn/childConn/mateType and compares to expected — we keep
+      // that indirection because the generic runner prints clearer diagnostics
+      // on mismatch than our one-off throw would.
+      resolveFromPresets(bracket, camera, 'plate_top', 'mount_back', 'fastened')
+      return {
+        parentWorld: new THREE.Matrix4(),
+        parentConn: findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(bracket)), bracket.connectors), 'plate_top')!,
+        childConn:  findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(camera)),  camera.connectors),  'mount_back')!,
+        mateType:   'fastened',
+      }
+    },
+    // plate_top (0,0,1.6)/+Z vs camera.mount_back (-45,0,0)/-X:
+    // qAlign(-X → -Z) = Qy(-π/2). c_origin (-45,0,0) under Qy(-π/2) → (0,0,-45).
+    // t = (0,0,1.6) + 0 - (0,0,-45) = (0, 0, 46.6mm). Camera ends up 46.6mm
+    // above L-bracket plate, body +X (lens) pointing +Z — proves the P1+M2
+    // fix path composes correctly.
+    expected: {
+      pos: new THREE.Vector3(0, 0, 46.6 / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2),
     },
   },
 

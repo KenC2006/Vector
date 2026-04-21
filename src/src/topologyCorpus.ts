@@ -62,6 +62,12 @@ interface Fixture {
   expected_repair_kinds?: string[]
   /** After auto-repair + re-validate, this must hold. */
   expected_pass_after_repair?: boolean
+  /** After auto-repair, assert specific fields on specific components by
+   *  link_name. Added for task #7 (WS6 Phase 3) so the auto-bracket path's
+   *  mate-connector propagation is actually checked — previously the only
+   *  assertion was that the repair kind fired, not that the inserted
+   *  component got the correct attach_connector/mate_connector/mate_type. */
+  expected_component_fields?: Record<string, Partial<AssemblyComponent>>
 }
 
 function completeComponent(c: AssemblyComponentInput): AssemblyComponent {
@@ -271,6 +277,69 @@ const fixtures: Fixture[] = [
     },
   },
   {
+    // Task #7 (WS6 Phase 3) integration check. Previously the PORT_MISMATCH
+    // repair was only asserted on repair-kind firing; this fixture asserts
+    // the inserted bracket actually carries the mate-connector fields
+    // (attach_connector="shaft_out", mate_connector="shaft_hole",
+    // mate_type="concentric") that route the servo↔coupler mate through
+    // the closed-form resolver rather than legacy bbox-stack math.
+    name: 'PORT_MISMATCH: Case 1 (shaft parent) bracket carries concentric mate fields',
+    kind: 'auto_repair',
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    expected_repair_kinds: ['port_mismatch_bracket'],
+    // Case 1 requires the CHILD to pass isRepairableChild (actuator_* or
+    // motor_*). The setup is a second servo mounted with its bottom
+    // (mount_face) against the parent servo's top (shaft output), which
+    // gives pClass=shaft, cClass=mount_face — the narrow code path that
+    // opts into the connector resolver.
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',        attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque',  attach_to: 'plate',  attach_face: 'top' },
+        { link_name: 'servo2', component_id: 'actuator_servo_standard',     attach_to: 'servo1', attach_face: 'top' },
+      ],
+    },
+    expected_component_fields: {
+      structural_bracket_auto_1: {
+        component_id: 'structural_servo_coupler_disc',
+        attach_to: 'servo1',
+        attach_connector: 'shaft_out',
+        mate_connector: 'shaft_hole',
+        mate_type: 'concentric',
+      },
+    },
+  },
+  {
+    // Sibling negative: Case 2 (mount_face parent, shaft child) intentionally
+    // does NOT set the mate-connector fields — multiple auto-couplers could
+    // land on the same parent face and the connector path bypasses the
+    // legacy multi-child distribution logic that would spread them. See the
+    // comment at the insertion site in topologyValidation.ts.
+    name: 'PORT_MISMATCH: Case 2 (mount_face parent) bracket stays on legacy path',
+    kind: 'auto_repair',
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    expected_repair_kinds: ['port_mismatch_bracket'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate', attach_face: 'bottom' },
+      ],
+    },
+    expected_component_fields: {
+      structural_bracket_auto_1: {
+        component_id: 'structural_servo_coupler_disc',
+        attach_to: 'plate',
+        attach_connector: undefined,
+        mate_connector: undefined,
+        mate_type: undefined,
+      },
+    },
+  },
+  {
     name: 'PORT_MISMATCH: repair is idempotent (no bracket on pre-bracketed servo)',
     kind: 'auto_repair',
     expected_pass: true,
@@ -460,6 +529,18 @@ function runFixture(f: Fixture, ctx: ValidationContext): CaseResult {
     const afterPassed = after.errors.length === 0
     if (afterPassed !== f.expected_pass_after_repair) {
       return { name: f.name, passed: false, reason: `post-repair expected_pass=${f.expected_pass_after_repair} but got errors=${JSON.stringify(after.errors)}` }
+    }
+  }
+  for (const [linkName, expected] of Object.entries(f.expected_component_fields ?? {})) {
+    const comp = graph.components.find(c => c.link_name === linkName)
+    if (!comp) {
+      return { name: f.name, passed: false, reason: `expected_component_fields references "${linkName}" but no such component exists post-repair. Graph: ${graph.components.map(c => c.link_name).join(', ')}` }
+    }
+    for (const [field, expectedValue] of Object.entries(expected) as [keyof AssemblyComponent, unknown][]) {
+      const actualValue = comp[field]
+      if (actualValue !== expectedValue) {
+        return { name: f.name, passed: false, reason: `post-repair "${linkName}".${String(field)}: expected ${JSON.stringify(expectedValue)}, got ${JSON.stringify(actualValue)}` }
+      }
     }
   }
   return { name: f.name, passed: true }
