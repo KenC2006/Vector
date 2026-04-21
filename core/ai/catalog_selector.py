@@ -287,6 +287,40 @@ def _score_preset(
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 
+def render_connector_hint(comp: dict[str, Any]) -> str:
+    """Compact summary of a preset's AUTHORED mate connectors for the catalog.
+
+    Returns an empty string when no connectors are authored. Defaults
+    (top/bottom/front/back/left/right) are intentionally omitted — they
+    exist on every preset and are described once in the system prompt
+    rather than repeated per-line.
+
+    Shape: ` conn=[shaft_out(cyl 8mm), top_face(plan)]`. Cylindrical
+    entries include their diameter because it's the port-mismatch signal
+    Claude needs to decide between `concentric` and `fastened` — planar
+    and point entries are name-only (type alone disambiguates).
+    """
+    conns = comp.get("connectors") or []
+    if not conns:
+        return ""
+    parts: list[str] = []
+    for c in conns:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id")
+        if not isinstance(cid, str) or not cid:
+            continue
+        ctype = c.get("type", "")
+        short = {"cylindrical": "cyl", "planar": "plan", "point": "pt"}.get(ctype, ctype[:4])
+        if ctype == "cylindrical" and c.get("diameter_mm") is not None:
+            parts.append(f"{cid}({short} {c['diameter_mm']}mm)")
+        else:
+            parts.append(f"{cid}({short})")
+    if not parts:
+        return ""
+    return f" conn=[{', '.join(parts)}]"
+
+
 def _render_preset_line(comp: dict[str, Any]) -> str:
     """Render one preset in the compact format used by _build_component_catalog.
 
@@ -314,7 +348,8 @@ def _render_preset_line(comp: dict[str, Any]) -> str:
     elif "capacity_mah" in me: spec = f"{me['capacity_mah']}mAh"
     elif "fov_h_deg" in me: spec = f"{me['fov_h_deg']}°FOV"
     elif "range_m" in me: spec = f"{me['range_m']}m"
-    return f"  - {comp['id']}: {comp['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}"
+    conn_hint = render_connector_hint(comp)
+    return f"  - {comp['id']}: {comp['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}{conn_hint}"
 
 
 def _render_catalog(selected_ids: set[str], index: list[dict[str, Any]]) -> str:

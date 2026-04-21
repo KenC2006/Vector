@@ -169,6 +169,7 @@ def _build_component_catalog() -> str:
     Only includes components with verified GLB meshes shown in the UI."""
     try:
         from core.presets import list_components, get_all_categories, get_category
+        from core.ai.catalog_selector import render_connector_hint
         lines = []
         for cat_name in get_all_categories():
             cat = get_category(cat_name)
@@ -194,7 +195,8 @@ def _build_component_catalog() -> str:
                 elif "capacity_mah" in me: spec = f"{me['capacity_mah']}mAh"
                 elif "fov_h_deg" in me: spec = f"{me['fov_h_deg']}°FOV"
                 elif "range_m" in me: spec = f"{me['range_m']}m"
-                items.append(f"  - {c['id']}: {c['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}")
+                conn_hint = render_connector_hint(c)
+                items.append(f"  - {c['id']}: {c['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}{conn_hint}")
             lines.append(f"\n{label} ({len(comps)}):")
             lines.extend(items)
         return "\n".join(lines)
@@ -407,6 +409,36 @@ Controls how an elongated or directable component is rotated within its face:
 - Example (Z-crouch knee ≈ -60°): `attach_rpy=[0, -1.05, 0]` on the shin-to-knee-servo link.
 - Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
 
+## Mate Connectors (optional — precision control for shaft mates and ambiguous surfaces)
+
+Every part has 6 default face connectors — `top`, `bottom`, `front`, `back`, `left`, `right` — which is what `attach_face` picks. Some parts also author NAMED connectors visible as `conn=[…]` on the catalog line (e.g. `conn=[shaft_out(cyl 8mm)]` on a servo, `conn=[plate_top(plan), wall_inner(plan), wall_outer(plan)]` on an L-bracket).
+
+**Critical — `attach_connector` vs `mate_connector` are NOT interchangeable:**
+- `attach_connector` names a connector on the PARENT (the thing `attach_to` points at).
+- `mate_connector` names a connector on this CHILD (the component you're adding).
+
+If the ambiguous named connector (`plate_top`, `wall_inner`, `shaft_hole`, etc.) belongs to the component you're adding, it goes in `mate_connector`. If it belongs to the parent, it goes in `attach_connector`. Putting a child-side name into `attach_connector` makes the engine fail the lookup and fall back to default-face placement.
+
+Two cases where named connectors beat `attach_face`:
+
+1. **Concentric shaft mates** (servo/motor output → coupler/horn). When the user explicitly asks for a servo-shaft coupling, emit:
+   - `attach_connector: "shaft_out"` (parent servo's shaft)
+   - `mate_connector: "shaft_hole"` (child coupler's/horn's bore)
+   - `mate_type: "concentric"` (shaft-in-hole, antiparallel axes — the engine aligns them)
+   For ordinary servo→bracket/extrusion attachments, keep using `attach_face: "top"` — the engine auto-inserts the coupler/bracket and wires the concentric mate itself.
+
+2. **Face-ambiguous parts** (L-bracket — has BOTH a horizontal plate and a vertical wall). When the L-bracket is the CHILD, use `mate_connector` to pick which bracket surface sits against the parent: `"plate_top"` (horizontal plate face up — mount on parent using the underside of the plate), `"wall_inner"` (concave inside face), `"wall_outer"` (convex back of wall). When the L-bracket is the PARENT and something mounts on it, use `attach_connector` with the same names.
+
+Leave all three fields omitted for normal face-to-face mounts — `attach_face` is the right choice ~95% of the time.
+
+Examples (note which side each named connector belongs to):
+- Servo → coupler (concentric shaft mate). `shaft_out` lives on the parent servo, `shaft_hole` lives on the child coupler:
+  `{"link_name": "coupler_1", "component_id": "structural_servo_coupler_disc", "attach_to": "actuator_servo_high_torque_1", "attach_connector": "shaft_out", "mate_connector": "shaft_hole", "mate_type": "concentric", "joint_type": "revolute", "joint_axis": "z"}`
+- L-bracket mounted to baseplate's front face with its wall flush against the baseplate (plate sticks out forward as a shelf). `wall_outer` lives on the BRACKET — it's the child — so it goes in `mate_connector`, NOT `attach_connector`:
+  `{"link_name": "structural_bracket_l_1", "component_id": "structural_bracket_l", "attach_to": "structural_baseplate_large_1", "attach_face": "front", "mate_connector": "wall_outer", "joint_type": "fixed", "joint_axis": "z"}`
+- Camera mounted on that L-bracket's inside wall (bracket is now the PARENT, so `wall_inner` moves to `attach_connector`; camera's `mount_back` is the child-side name):
+  `{"link_name": "sensor_depth_camera_small_1", "component_id": "sensor_depth_camera_small", "attach_to": "structural_bracket_l_1", "attach_connector": "wall_inner", "mate_connector": "mount_back", "mate_type": "fastened", "joint_type": "fixed", "joint_axis": "z"}`
+
 ## Topology Rules
 
 1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**
@@ -530,6 +562,19 @@ DESIGN_ROBOT_TOOL = {
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS applied to the joint origin. Use for rest-pose joint angles (quadruped crouch, splayed shoulders). Example: [0, 0.52, 0] for +30° pitch, [0, -1.05, 0] for -60° pitch. Omit or pass [0,0,0] to let the engine auto-rotate.",
                         },
+                        "attach_connector": {
+                            "type": "string",
+                            "description": "Optional named connector id on the PARENT — e.g. 'shaft_out' on a servo, 'plate_top'/'wall_inner'/'wall_outer' on an L-bracket. Use to disambiguate surfaces when the part authors named connectors (see `conn=[…]` in the catalog). Omit to fall back to `attach_face`.",
+                        },
+                        "mate_connector": {
+                            "type": "string",
+                            "description": "Optional named connector id on the CHILD — e.g. 'shaft_hole' on a coupler/horn, 'mount_back' on a camera. Pair with `attach_connector` to make the placement explicit. Omit to let the engine pick the opposite-face default.",
+                        },
+                        "mate_type": {
+                            "type": "string",
+                            "enum": ["fastened", "planar", "concentric"],
+                            "description": "Mate semantics. 'fastened' = rigid face-to-face weld (default when connectors are named). 'concentric' = shaft-in-hole (servo shaft_out ↔ coupler shaft_hole); antiparallel axes, axial slide free. 'planar' = face-flush with in-plane offset. Omit unless emitting a concentric shaft mate.",
+                        },
                     },
                     "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
                 },
@@ -608,6 +653,19 @@ MODIFY_TOPOLOGY_TOOL = {
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS. Same as design_robot — use for rest-pose joint angles like quadruped crouch.",
                         },
+                        "attach_connector": {
+                            "type": "string",
+                            "description": "Optional parent-side connector id (e.g. 'shaft_out', 'plate_top'). Same semantics as design_robot.",
+                        },
+                        "mate_connector": {
+                            "type": "string",
+                            "description": "Optional child-side connector id (e.g. 'shaft_hole', 'mount_back'). Same semantics as design_robot.",
+                        },
+                        "mate_type": {
+                            "type": "string",
+                            "enum": ["fastened", "planar", "concentric"],
+                            "description": "Mate type: 'fastened' | 'planar' | 'concentric'. Same semantics as design_robot.",
+                        },
                     },
                     "required": ["op", "link_name"],
                 },
@@ -667,6 +725,19 @@ ADD_LINK_TOOL = {
             "attach_rpy": {
                 "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
                 "description": "Rest-pose [roll, pitch, yaw] in radians (e.g. quadruped crouch [0, 0.52, 0]). Omit for auto.",
+            },
+            "attach_connector": {
+                "type": "string",
+                "description": "Optional parent-side named connector (e.g. 'shaft_out', 'plate_top'). See the 'Mate Connectors' section of the main system prompt — pair with mate_connector + mate_type='concentric' for shaft mounts.",
+            },
+            "mate_connector": {
+                "type": "string",
+                "description": "Optional child-side named connector (e.g. 'shaft_hole', 'mount_back'). Omit to let the engine pick the default opposite face.",
+            },
+            "mate_type": {
+                "type": "string",
+                "enum": ["fastened", "planar", "concentric"],
+                "description": "Mate type. Use 'concentric' for shaft-in-hole mates. Omit for ordinary face-to-face mounts.",
             },
         },
         "required": ["link_name", "parent_link", "preset_id", "attach_face"],

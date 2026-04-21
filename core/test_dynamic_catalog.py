@@ -25,6 +25,7 @@ from core.ai.catalog_selector import (
     CORE_FLOOR_IDS,
     build_scoped_catalog,
     dynamic_catalog_enabled,
+    render_connector_hint,
     reset_index_for_tests,
 )
 from core.ai.claude_client import _ALLOWED_COMPONENT_IDS, _build_component_catalog
@@ -196,7 +197,7 @@ def test_no_signal_fallback() -> None:
     etc.) produce no category hints. On no-signal, fall back to the full
     catalog rather than guessing at a baseline — we can't see the image
     or infer intent, so hiding categories (mobility/effectors/power/etc.)
-    risks the "build this + rover image → no wheels" failure mode."""
+    risks the "build this + rover image -> no wheels" failure mode."""
     print("\n[9] No-signal fallback returns full catalog")
     reset_index_for_tests()
     full_cat = _build_component_catalog()
@@ -231,6 +232,70 @@ def test_feature_flag_gate() -> None:
             os.environ["VECTOR_DYNAMIC_CATALOG"] = old
 
 
+def test_connector_hint_renders_authored_only() -> None:
+    """render_connector_hint exposes authored connectors to Claude in a
+    compact shape. Defaults (top/bottom/front/back/left/right) stay implicit —
+    they exist on every preset and are described once in the system prompt."""
+    print("\n[10] render_connector_hint: authored connectors surface, defaults don't")
+    # No connectors -> empty string (every default-connector preset goes this path).
+    expect(render_connector_hint({}) == "", "absent `connectors` -> empty hint")
+    expect(render_connector_hint({"connectors": []}) == "", "empty `connectors` -> empty hint")
+
+    # Cylindrical: must include diameter (port-mismatch signal).
+    servo = {"connectors": [
+        {"id": "shaft_out", "type": "cylindrical", "axis_xyz": [0, 0, 1], "diameter_mm": 8}
+    ]}
+    hint = render_connector_hint(servo)
+    expect("shaft_out" in hint, "cylindrical id surfaces", hint)
+    expect("cyl" in hint, "cylindrical short-type surfaces", hint)
+    expect("8mm" in hint, "cylindrical diameter surfaces", hint)
+
+    # Planar + point: no diameter, short-type only.
+    camera = {"connectors": [
+        {"id": "mount_back",    "type": "planar", "axis_xyz": [-1, 0, 0]},
+        {"id": "optical_front", "type": "point",  "axis_xyz": [ 1, 0, 0]},
+    ]}
+    hint_c = render_connector_hint(camera)
+    expect("mount_back(plan)" in hint_c, "planar short-type surfaces", hint_c)
+    expect("optical_front(pt)" in hint_c, "point short-type surfaces", hint_c)
+    expect("mm" not in hint_c, "no diameter on planar/point entries", hint_c)
+
+
+def test_catalog_includes_authored_connectors() -> None:
+    """The full catalog dump that lands in Claude's system prompt carries
+    the authored-connector hint on every preset that opts in. Presets
+    without authored connectors stay byte-identical to the pre-Phase-4
+    shape."""
+    print("\n[11] _build_component_catalog: connector hint on authored presets only")
+    cat = _build_component_catalog()
+    # Authored connectors on the allowed-id presets (Phase 3 landed these):
+    # three servo variants + camera + L-bracket. The coupler disc and heavy-
+    # duty servo aren't in _ALLOWED_COMPONENT_IDS, so the catalog won't
+    # render them at all — the test only checks presets Claude can see.
+    must_have_hints = [
+        ("actuator_servo_micro",      "shaft_out(cyl"),
+        ("actuator_servo_standard",   "shaft_out(cyl"),
+        ("actuator_servo_high_torque","shaft_out(cyl 8mm)"),
+        ("sensor_depth_camera_small", "mount_back(plan), optical_front(pt)"),
+        ("structural_bracket_l",      "plate_top(plan), wall_inner(plan), wall_outer(plan)"),
+    ]
+    for pid, needle in must_have_hints:
+        line = next((l for l in cat.splitlines() if l.strip().startswith(f"- {pid}:")), None)
+        expect(line is not None, f"{pid} present in catalog", "")
+        if line is not None:
+            expect(needle in line, f"{pid} line carries '{needle}'", line)
+
+    # Presets WITHOUT authored connectors must NOT carry a `conn=` suffix
+    # (byte-identical to the pre-Phase-4 layout on those lines).
+    baseplate_line = next(
+        (l for l in cat.splitlines() if l.strip().startswith("- structural_baseplate:")),
+        None,
+    )
+    expect(baseplate_line is not None, "baseplate line present")
+    if baseplate_line is not None:
+        expect(" conn=" not in baseplate_line, "baseplate has no conn= suffix", baseplate_line)
+
+
 def main() -> int:
     test_core_floor_always_present()
     test_structural_only_prompt_no_actuators()
@@ -242,6 +307,8 @@ def main() -> int:
     test_explicit_preset_id_mention_wins()
     test_no_signal_fallback()
     test_feature_flag_gate()
+    test_connector_hint_renders_authored_only()
+    test_catalog_includes_authored_connectors()
 
     print()
     if failures:
