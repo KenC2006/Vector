@@ -203,11 +203,68 @@ def _build_component_catalog() -> str:
 
 _COMPONENT_CATALOG = None
 
-def _get_component_catalog() -> str:
+def _get_component_catalog(
+    user_prompt: str | None = None,
+    kg_json: dict | None = None,
+    tried_preset_ids=None,
+) -> str:
+    """Return the preset catalog text for the system prompt.
+
+    Default path (VECTOR_DYNAMIC_CATALOG unset): the cached full dump,
+    identical to pre-WS4 behavior. This keeps a clean A/B baseline for
+    measuring the dynamic-catalog change in isolation after WS1/WS3 ship.
+
+    When VECTOR_DYNAMIC_CATALOG is truthy: delegate to the scoped selector,
+    which returns only presets relevant to this request + a core floor.
+    """
+    from core.ai.catalog_selector import dynamic_catalog_enabled, build_scoped_catalog
+    if dynamic_catalog_enabled() and user_prompt is not None:
+        try:
+            return build_scoped_catalog(
+                user_prompt=user_prompt,
+                allowed_ids=_ALLOWED_COMPONENT_IDS,
+                kg_json=kg_json,
+                tried_preset_ids=tried_preset_ids,
+            )
+        except Exception as e:
+            # Scoring failure must never block a request — fall through
+            # to the full catalog, log so regressions are visible.
+            print(f"[ai_catalog] scoped catalog failed, using full dump: {e}", file=sys.stderr)
     global _COMPONENT_CATALOG
     if _COMPONENT_CATALOG is None:
         _COMPONENT_CATALOG = _build_component_catalog()
     return _COMPONENT_CATALOG
+
+
+def _tried_preset_ids(kg_json: dict | None) -> list[str]:
+    """Extract the preset_ids currently attached in the graph.
+
+    Used to surface "you already picked these" on retry — the scorer always
+    includes them in the scoped catalog so Claude's next turn can either
+    keep them or explicitly swap them out. Without this, the scorer might
+    drop a preset Claude just used if retry tokens look unrelated to it.
+    """
+    if not kg_json or not isinstance(kg_json, dict):
+        return []
+    seen: list[str] = []
+    unique: set[str] = set()
+    candidates = []
+    links = kg_json.get("links")
+    if isinstance(links, list):
+        candidates.extend(links)
+    elif isinstance(links, dict):
+        candidates.extend(links.values())
+    comps = kg_json.get("components")
+    if isinstance(comps, list):
+        candidates.extend(comps)
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        cid = entry.get("component_id") or entry.get("preset_id")
+        if isinstance(cid, str) and cid not in unique:
+            unique.add(cid)
+            seen.append(cid)
+    return seen
 
 
 def _build_spatial_context(kg_json: dict) -> str:
@@ -1386,7 +1443,10 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
     """
     client = _get_client()
 
-    system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(user_prompt=prompt),
+    )
 
     first_user_content = _build_user_content(f"Build this robot: {prompt}", images)
     messages = [{"role": "user", "content": first_user_content}]
@@ -1677,7 +1737,14 @@ def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(
+            user_prompt=prompt,
+            kg_json=kinematic_graph_json,
+            tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
+        ),
+    )
 
     response = client.messages.create(
         model=model,
@@ -1730,7 +1797,14 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(
+            user_prompt=prompt,
+            kg_json=kinematic_graph_json,
+            tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
+        ),
+    )
 
     if on_progress:
         on_progress("thinking", "Analyzing model...")
