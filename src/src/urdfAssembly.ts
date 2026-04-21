@@ -11,9 +11,11 @@ import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { quatToRpy } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
-import type { ValidationPreset } from './topologyValidation.ts'
+import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
+import { applyMutation as runApplyMutation } from './graphMutations.ts'
+import type { GraphMutation, MutationResult } from './graphMutations.ts'
 // Re-export so existing importers (topologyValidation.ts, topologyCorpus.ts,
 // viewportChat.ts, main.ts) keep working from their usual location.
 export { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
@@ -121,6 +123,12 @@ export interface UrdfAssemblyApi {
   graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult
   /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
+  /** WS2 tool-call edit surface: apply a single typed mutation with per-call
+   *  validation. Runs against a deep clone of `graph`; on success the new graph
+   *  is returned and the caller commits via resolveAssemblyGraph. On failure,
+   *  a structured error returns to the Claude tool loop for same-turn self-
+   *  correction — no full-graph redesign fired. */
+  applyGraphMutation(graph: AssemblyGraph, mutation: GraphMutation): MutationResult
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
   /** Snapshot the current undo/redo stacks (call before switching files). */
@@ -3847,6 +3855,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
     urdfToAssemblyGraph,
     applyTopologyOps,
+    applyGraphMutation: (graph: AssemblyGraph, mutation: GraphMutation): MutationResult => {
+      // Build a ValidationContext from the live preset catalog so graphMutations
+      // enforces the same rules the placement engine does. findPreset returns
+      // null when presets haven't loaded yet — the mutation dispatch itself
+      // surfaces that as UNKNOWN_COMPONENT so the tool loop sees a real error.
+      const validationCtx: ValidationContext = {
+        findPreset: (id: string): ValidationPreset | null => {
+          if (!presetData) return null
+          for (const cat of Object.values(presetData.categories)) {
+            const p = cat.components.find(c => c.id === id)
+            if (p) return p as ValidationPreset
+          }
+          return null
+        },
+      }
+      return runApplyMutation(graph, mutation, validationCtx)
+    },
     graphsEquivalent,
     rebuildMountNodes,
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),

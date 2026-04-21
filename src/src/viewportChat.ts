@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { escapeHtml } from './chatHistory'
 import type { UrdfAssemblyApi, TopologyOp, AssemblyGraph } from './urdfAssembly'
+import { cloneAssemblyGraph } from './urdfGraphEquivalence'
+import type { GraphMutation, MutationResult } from './graphMutations'
 
 export interface ViewportChatDeps {
   // Editor
@@ -243,6 +245,114 @@ function formatWarningsHtml(warnings: string[] | undefined): string {
 function formatWarningsForPrompt(warnings: string[] | undefined): string {
   if (!warnings || warnings.length === 0) return ''
   return `\n\nTopology warnings (non-blocking, but worth addressing in a redesign):\n${warnings.map(w => `- ${w}`).join('\n')}`
+}
+
+// ── Workstream #2 tool-call edit surface ─────────────────────────────────────
+// The Python side sends Anthropic tool_use blocks; this table resolves each
+// back into a typed GraphMutation the TS dispatcher can apply. Keeping the
+// (tool_name → mutation.kind) mapping in one place avoids drift between the
+// JSON schema declared in claude_client.py and the TS mutator names.
+
+interface ClaudeToolCall { id: string; name: string; input: Record<string, unknown> }
+
+interface ToolResultBlock {
+  tool_use_id: string
+  ok: boolean
+  summary?: string
+  warnings?: string[]
+  code?: string
+  message?: string
+  suggested_repair?: string
+}
+
+interface EditTurnResponse {
+  stop_reason: string
+  text: string
+  tool_calls: ClaudeToolCall[]
+  done: boolean
+}
+
+function toolCallToMutation(call: ClaudeToolCall): GraphMutation | { error: string } {
+  const input = call.input || {}
+  const s = (k: string) => typeof input[k] === 'string' ? input[k] as string : undefined
+  const n = (k: string) => typeof input[k] === 'number' ? input[k] as number : undefined
+  const b = (k: string) => typeof input[k] === 'boolean' ? input[k] as boolean : undefined
+  const a = (k: string): number[] | undefined => {
+    const v = input[k]
+    return Array.isArray(v) && v.every(x => typeof x === 'number') ? v as number[] : undefined
+  }
+  switch (call.name) {
+    case 'add_link': {
+      const link_name = s('link_name'), parent_link = s('parent_link'),
+            preset_id = s('preset_id'), attach_face = s('attach_face')
+      if (!link_name || !parent_link || !preset_id || !attach_face) {
+        return { error: 'add_link missing required field(s): link_name, parent_link, preset_id, attach_face' }
+      }
+      return { kind: 'add_link', args: {
+        link_name, parent_link, component_id: preset_id, attach_face,
+        joint_type: s('joint_type'), joint_axis: s('joint_axis'),
+        length_mm: n('length_mm'), orientation: s('orientation'),
+        elevation_angle: n('elevation_angle'), attach_rpy: a('attach_rpy'),
+      } }
+    }
+    case 'attach_sensor': {
+      const link_name = s('link_name'), parent_link = s('parent_link'),
+            preset_id = s('preset_id'), mount_face = s('mount_face')
+      if (!link_name || !parent_link || !preset_id || !mount_face) {
+        return { error: 'attach_sensor missing required field(s): link_name, parent_link, preset_id, mount_face' }
+      }
+      return { kind: 'attach_sensor', args: {
+        link_name, parent_link, component_id: preset_id, mount_face,
+        elevation_angle: n('elevation_angle'),
+      } }
+    }
+    case 'replace_component': {
+      const link_name = s('link_name'), new_preset_id = s('new_preset_id')
+      if (!link_name || !new_preset_id) {
+        return { error: 'replace_component missing required field(s): link_name, new_preset_id' }
+      }
+      // Tool schema uses new_preset_id (user-facing); TS dispatcher uses
+      // new_component_id (internal naming consistent with component_id).
+      return { kind: 'replace_component', args: { link_name, new_component_id: new_preset_id } }
+    }
+    case 'set_joint': {
+      const link_name = s('link_name'), joint_type = s('joint_type')
+      if (!link_name || !joint_type) {
+        return { error: 'set_joint missing required field(s): link_name, joint_type' }
+      }
+      return { kind: 'set_joint', args: {
+        link_name, joint_type, joint_axis: s('joint_axis'), attach_rpy: a('attach_rpy'),
+      } }
+    }
+    case 'remove_link': {
+      const link_name = s('link_name')
+      if (!link_name) return { error: 'remove_link missing required field: link_name' }
+      return { kind: 'remove_link', args: { link_name, reparent_children: b('reparent_children') } }
+    }
+    default:
+      return { error: `unknown tool: ${call.name}` }
+  }
+}
+
+function mutationResultToToolResult(
+  toolUseId: string,
+  result: MutationResult,
+): ToolResultBlock {
+  if (result.ok) {
+    return {
+      tool_use_id: toolUseId,
+      ok: true,
+      summary: result.summary,
+      warnings: result.warnings,
+    }
+  }
+  return {
+    tool_use_id: toolUseId,
+    ok: false,
+    code: result.code,
+    message: result.message,
+    suggested_repair: result.suggested_repair,
+  }
 }
 
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
@@ -563,6 +673,130 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
   // ── AI send ───────────────────────────────────────────────────────────────
 
+  /** Run the Workstream #2 tool-call edit loop. Returns true if the loop
+   *  handled the turn (UI update owned by the loop); false if it stopped
+   *  with no mutations so the caller should fall through to `ai_edit`. */
+  async function runToolCallEditLoop(args: {
+    prompt: string
+    initialGraph: AssemblyGraph
+    kinematicContext: string
+    images: ImageAttachment[]
+    sessionId: string
+    fullUrdf: string
+    thinking: HTMLElement & { updateStage: (stage: string, text: string) => void }
+    urdfAssemblyApi: UrdfAssemblyApi
+  }): Promise<boolean> {
+    const { prompt, initialGraph, kinematicContext, images, sessionId, fullUrdf, thinking, urdfAssemblyApi } = args
+
+    // Working copy — each successful tool dispatch replaces this; a failed
+    // call feeds the error back without touching the working graph. Final
+    // commit via resolveAssemblyGraph happens only after the loop ends.
+    let workingGraph: AssemblyGraph = cloneAssemblyGraph(initialGraph)
+    const mutationSummaries: string[] = []
+    let explanationText = ''
+    let turnCount = 0
+    // Independent cap on the frontend side — the Python side has its own cap;
+    // this is a belt-and-braces guard against a server bug looping forever.
+    const MAX_TURNS = 12
+
+    // ── Turn 1: send prompt + graph ───────────────────────────────────────
+    args.thinking.updateStage('generating', 'Planning edits...')
+    let turn: EditTurnResponse
+    try {
+      turn = await invoke('ai_edit_turn', {
+        sessionId,
+        prompt,
+        assemblyGraph: workingGraph,
+        kinematicContext,
+        images: images.map(({ media_type, data }) => ({ media_type, data })),
+      }) as EditTurnResponse
+    } catch (err) {
+      console.warn('[AI][tool-loop] First turn failed, falling back to ai_edit:', err)
+      return false
+    }
+
+    // ── Loop: dispatch → feed tool_results back → next turn ────────────────
+    while (!turn.done && turnCount < MAX_TURNS) {
+      turnCount++
+      if (turn.text) {
+        // Claude sometimes narrates before a tool call ("I'll add a camera
+        // to the extrusion. Let me call add_link..."). Stash the latest,
+        // we'll show the final text block after the loop.
+        explanationText = turn.text
+      }
+      if (turn.tool_calls.length === 0) break
+
+      const toolResults: ToolResultBlock[] = []
+      for (const call of turn.tool_calls) {
+        const mapped = toolCallToMutation(call)
+        if ('error' in mapped) {
+          toolResults.push({
+            tool_use_id: call.id, ok: false, code: 'BAD_TOOL_INPUT', message: mapped.error,
+          })
+          continue
+        }
+        const result = urdfAssemblyApi.applyGraphMutation(workingGraph, mapped)
+        if (result.ok) {
+          workingGraph = result.graph
+          mutationSummaries.push(result.summary)
+          console.log(`[AI][tool-loop] ${call.name} OK: ${result.summary}`)
+        } else {
+          console.log(`[AI][tool-loop] ${call.name} REJECTED [${result.code}]: ${result.message}`)
+        }
+        toolResults.push(mutationResultToToolResult(call.id, result))
+      }
+
+      thinking.updateStage('generating', `Tool round ${turnCount + 1}...`)
+      try {
+        turn = await invoke('ai_edit_turn', {
+          sessionId,
+          toolResults,
+        }) as EditTurnResponse
+      } catch (err) {
+        console.warn('[AI][tool-loop] Continuation failed:', err)
+        break
+      }
+    }
+
+    if (turn.text) explanationText = turn.text
+
+    thinking.remove()
+
+    if (mutationSummaries.length === 0) {
+      // Claude ended without applying any mutations (e.g., answered as plain text
+      // or asked a clarifying question). Return false so the caller falls through
+      // to the legacy ai_edit path; if Claude truly wanted to answer in text,
+      // it'll show up there.
+      console.log('[AI][tool-loop] Claude stopped without mutations — falling back to ai_edit')
+      return false
+    }
+
+    // Commit the final graph via the normal placement pipeline, which also
+    // runs the full TS validator as a sanity gate (auto-repairs + warnings).
+    const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(workingGraph)
+    if (!assemblyOut.urdf) {
+      const errText = assemblyOut.topologyErrors?.join(', ') || 'unknown placement error'
+      addVCMessage('assistant',
+        `<span style="color:#f85149;">Edit applied ${mutationSummaries.length} mutation(s) but final placement failed: ${escapeHtml(errText)}</span>`)
+      return true
+    }
+    await new Promise(r => setTimeout(r, 300))
+    deps.groundRobot()
+    deps.autoFrameRobot()
+
+    const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
+    const mutationBlock = mutationSummaries.length > 0
+      ? `<div style="font-size:11px;color:#888;margin-bottom:4px;">${mutationSummaries.length} tool call(s): ${escapeHtml(mutationSummaries.join(' · '))}</div>`
+      : ''
+    const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+    const explainHtml = explanationText ? escapeHtml(explanationText) : 'Edit applied.'
+    addVCMessage('assistant', `${mutationBlock}${explainHtml}${warnBlock}`, {
+      diff, newUrdf: assemblyOut.urdf,
+    })
+    deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+    return true
+  }
+
   async function sendVCMessage(prompt: string, retryCount = 0, imagesOverride?: ImageAttachment[]) {
     if (!prompt.trim()) return
 
@@ -682,6 +916,42 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         ? (deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() ?? null)
         : (storedGraphForContext && storedMatchesEditor ? storedGraphForContext : null)
 
+      const urdfAssemblyApiEarly = deps.getUrdfAssemblyApi()
+
+      // ── Workstream #2: Tool-Call Edit Surface ────────────────────────────
+      // When we have a real in-hand graph (not a redesign, graph actually
+      // matches editor, with ≥1 attached child — i.e. something beyond a
+      // lone baseplate root), route through the tool-use loop. Each tool
+      // call gets per-call validation and can self-correct in the same turn
+      // instead of regenerating the whole graph. Design generation (no
+      // graph yet, or only a root) + redesigns stay on the old path.
+      const hasAttachedChild = (g: AssemblyGraph | null): boolean =>
+        !!g && g.components.some(c => c.attach_to !== null)
+      const canRunToolLoop =
+        !isRedesign &&
+        urdfAssemblyApiEarly !== null &&
+        hasAttachedChild(canonicalGraphForAi)
+
+      if (canRunToolLoop && urdfAssemblyApiEarly) {
+        const handled = await runToolCallEditLoop({
+          prompt,
+          initialGraph: canonicalGraphForAi!,
+          kinematicContext: augmentedContext,
+          images: imagesForThisSend,
+          sessionId: deps.getCurrentChatId(),
+          fullUrdf,
+          thinking,
+          urdfAssemblyApi: urdfAssemblyApiEarly,
+        })
+        if (handled) {
+          // Loop owned the UI update (diff + assistant message). Nothing else
+          // to do for this send; exit cleanly.
+          return
+        }
+        // Loop declined (e.g. Claude stopped with no mutations) — fall through
+        // to the existing `ai_edit` single-shot path for backwards compat.
+      }
+
       const result = await invoke('ai_edit', {
         prompt,
         urdfContent: currentUrdf,
@@ -693,7 +963,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
       thinking.remove()
 
-      const urdfAssemblyApi = deps.getUrdfAssemblyApi()
+      const urdfAssemblyApi = urdfAssemblyApiEarly
 
       // ── modify_topology path: parse current URDF → apply ops → re-resolve ──
       if (result.topology_ops && result.topology_ops.length > 0 && urdfAssemblyApi) {

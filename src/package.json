@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:validator": "node --experimental-strip-types src/topologyCorpus.ts",
-    "test:graph-preservation": "node --experimental-strip-types src/graphPreservationCorpus.ts"
+    "test:graph-preservation": "node --experimental-strip-types src/graphPreservationCorpus.ts",
+    "test:tool-dispatch": "node --experimental-strip-types src/toolDispatchCorpus.ts"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

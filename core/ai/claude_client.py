@@ -566,6 +566,159 @@ MODIFY_TOPOLOGY_TOOL = {
 
 ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
 
+
+# ── Workstream #2: Tool-Call Edit Surface ───────────────────────────────────
+#
+# EDIT_TOOLS = typed, link-level graph mutations driven by Anthropic's native
+# tool-use protocol. Unlike `modify_topology` (which emits N operations in a
+# single shot with validation deferred to the end), each EDIT_TOOLS call gets
+# validated *inline* by the TS validator — invalid mutations are rejected
+# before they enter the graph and the error feeds back to the same Claude turn
+# for self-correction. The orchestrator is in `viewportChat.ts`; Python's only
+# job here is defining the schemas and relaying a single turn.
+#
+# Coarse link-level granularity is deliberate: field-level tools inflate token
+# count and turn the model into a key-value setter. Five tools cover ~90% of
+# edit intents:
+#   add_link          — new component at (parent, face)
+#   attach_sensor     — sensor preset on a structural/actuator parent
+#   replace_component — swap preset_id, preserve topology
+#   set_joint         — change joint type/axis/rest-pose rpy in place
+#   remove_link       — delete subtree or graft children up
+
+ADD_LINK_TOOL = {
+    "name": "add_link",
+    "description": (
+        "Add a new component to the existing robot. Use for structural parts, actuators, and "
+        "effectors. For sensors, prefer attach_sensor (it enforces the fixed-joint convention). "
+        "The mutation is validated immediately; if the attach would trip port-class incompatibility "
+        "(shaft↔mount_face) or SHAFT_FANOUT/SENSOR_ON_ACTUATOR, you get a structured error and can "
+        "retry in the same turn."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "Unique new link_name (convention: component_id + N, e.g. 'structural_bracket_u_2')."},
+            "parent_link": {"type": "string", "description": "Existing link_name to attach to."},
+            "preset_id": {"type": "string", "description": "Component ID from the library (e.g. 'actuator_servo_standard')."},
+            "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
+            "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"], "description": "Default: 'fixed'."},
+            "joint_axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Default: 'z'."},
+            "length_mm": {"type": "number", "description": "Extrusion length override."},
+            "orientation": {"type": "string", "description": "'vertical' (default) | 'horizontal' | 'auto' | numeric degrees for yaw."},
+            "elevation_angle": {"type": "number", "description": "Side-face tilt in degrees (positive=up). Ignored on top/bottom."},
+            "attach_rpy": {
+                "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
+                "description": "Rest-pose [roll, pitch, yaw] in radians (e.g. quadruped crouch [0, 0.52, 0]). Omit for auto.",
+            },
+        },
+        "required": ["link_name", "parent_link", "preset_id", "attach_face"],
+    },
+}
+
+ATTACH_SENSOR_TOOL = {
+    "name": "attach_sensor",
+    "description": (
+        "Attach a sensor_* preset to a structural/actuator parent. Joint is forced to 'fixed' so "
+        "the sensor frame stays stable as the robot articulates. Attaching a sensor directly to an "
+        "actuator's shaft face returns SENSOR_ON_ACTUATOR — mount on a nearby structural extrusion."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "Unique new link_name (convention: sensor_<kind>_N)."},
+            "parent_link": {"type": "string"},
+            "preset_id": {"type": "string", "description": "Must start with 'sensor_' (e.g. 'sensor_depth_camera_small')."},
+            "mount_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
+            "elevation_angle": {"type": "number"},
+        },
+        "required": ["link_name", "parent_link", "preset_id", "mount_face"],
+    },
+}
+
+REPLACE_COMPONENT_TOOL = {
+    "name": "replace_component",
+    "description": (
+        "Swap the preset on an existing link while preserving its attach_to / attach_face / children. "
+        "Use for 'change the gripper to a suction cup' or 'make this servo the high-torque variant'. "
+        "If the new preset's port class doesn't mate with the parent face, returns PORT_MISMATCH."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "The existing link to modify."},
+            "new_preset_id": {"type": "string", "description": "Replacement component_id from the library."},
+        },
+        "required": ["link_name", "new_preset_id"],
+    },
+}
+
+SET_JOINT_TOOL = {
+    "name": "set_joint",
+    "description": (
+        "Change an existing link's joint type, axis, or rest-pose rpy without touching topology. "
+        "Use for 'make the elbow revolute around y', 'angle the hip joint 30° forward at rest'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string"},
+            "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"]},
+            "joint_axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Omit to keep current."},
+            "attach_rpy": {
+                "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
+                "description": "Omit to keep current. Use for rest-pose joint angles in radians.",
+            },
+        },
+        "required": ["link_name", "joint_type"],
+    },
+}
+
+REMOVE_LINK_TOOL = {
+    "name": "remove_link",
+    "description": (
+        "Remove a link. By default the whole subtree goes with it (same as modify_topology's "
+        "remove). Pass reparent_children=true to graft direct children onto the removed link's "
+        "parent — useful when yanking a redundant structural intermediate."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string"},
+            "reparent_children": {
+                "type": "boolean",
+                "description": "Default: false (cascade delete). True: graft direct children onto the removed link's parent.",
+            },
+        },
+        "required": ["link_name"],
+    },
+}
+
+EDIT_TOOLS = [
+    ADD_LINK_TOOL,
+    ATTACH_SENSOR_TOOL,
+    REPLACE_COMPONENT_TOOL,
+    SET_JOINT_TOOL,
+    REMOVE_LINK_TOOL,
+]
+
+# Canonical tool names — kept in one place so the frontend dispatcher and the
+# Python turn-loop both agree on what counts as an "edit tool" vs. the
+# legacy design_robot / modify_topology paths.
+EDIT_TOOL_NAMES = {t["name"] for t in EDIT_TOOLS}
+
+# Per-session buffer for the multi-turn tool-use message history. Separate from
+# `_conversation_history` (which is the summarized long-term chat) because the
+# tool loop needs the raw tool_use / tool_result blocks intact between turns —
+# once the loop ends, a summary entry is pushed to _conversation_history so
+# subsequent non-edit calls see "[Used add_link] …" instead of the raw blocks.
+_edit_tool_sessions: dict[str, dict] = defaultdict(dict)
+
+# Safety cap on tool-loop rounds. Ten covers realistic self-correction chains
+# (bad attach → retry with bracket → validator warn → done) without letting a
+# confused model run up a bill. viewportChat also caps this independently.
+_MAX_EDIT_TOOL_ROUNDS = 10
+
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
 
 You receive:
@@ -1626,6 +1779,224 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
         history.pop(0)
 
     return result
+
+
+def generate_edit_turn(
+    session_id: str,
+    prompt: str | None = None,
+    assembly_graph: dict | None = None,
+    kinematic_context: str | None = None,
+    tool_results: list | None = None,
+    model: str = "claude-sonnet-4-6",
+    images: list | None = None,
+) -> dict:
+    """Run ONE turn of the Workstream #2 tool-use edit loop.
+
+    The frontend (`viewportChat.ts`) drives the loop — each call hits Claude
+    once, dispatches any tool_use blocks locally with per-call validation, then
+    comes back here with the tool_results to let Claude see the outcomes and
+    either call another tool or stop with a final text response.
+
+    First-turn shape:
+        generate_edit_turn(session_id, prompt="add a depth camera to the head",
+                           assembly_graph={...}, ...)
+    Subsequent turns:
+        generate_edit_turn(session_id, tool_results=[
+            {"tool_use_id": "toolu_…", "ok": true,  "summary": "added …"},
+            {"tool_use_id": "toolu_…", "ok": false, "code": "PORT_MISMATCH", ...},
+        ])
+
+    The per-session raw message buffer lives in `_edit_tool_sessions[session_id]` —
+    distinct from `_conversation_history`, which only gets the summary once the
+    loop ends (so later non-edit turns don't have to digest raw tool_use blocks).
+
+    Returns: {
+        "stop_reason": "tool_use" | "end_turn" | "max_tokens" | ...,
+        "text": "…",                              # empty if no text blocks
+        "tool_calls": [                           # empty when stop_reason != tool_use
+          { "id": "toolu_…", "name": "add_link", "input": {…} }, ...
+        ],
+        "done": bool,                             # True when the caller should stop looping
+    }
+    """
+    client = _get_client()
+
+    session = _edit_tool_sessions[session_id]
+    # Reset session on a new user prompt (first turn of a fresh edit request).
+    # Re-using the old buffer across distinct edit requests would confuse Claude
+    # (stale tool_use pairs in history) and inflate token count.
+    if prompt is not None:
+        # Seed with the long-term conversation history so the model keeps
+        # multi-edit context ("now move it to the chest" after a prior add).
+        # list() copies so downstream mutations on session["messages"] don't
+        # touch the shared history deque.
+        session["messages"] = list(_conversation_history[session_id])
+        session["rounds"] = 0
+        # Stash the user's prompt so the final-turn history summary can cite
+        # what they actually asked ("add a depth camera") instead of recording
+        # "(tool-loop continuation)" — which would happen otherwise because
+        # `prompt` is None on continuation turns.
+        session["initial_prompt"] = prompt
+        # Track whether at least one tool call has fired so the `done` branch
+        # can skip history noise when Claude responded without any mutation
+        # (the caller then falls through to ai_edit, which records its own turn).
+        session["any_tool_used"] = False
+        # Snapshot the starting graph for summary/diagnostics. Only read, never
+        # mutated here — the frontend owns the canonical graph.
+        session["initial_graph"] = assembly_graph
+
+    session["rounds"] = session.get("rounds", 0) + 1
+    if session["rounds"] > _MAX_EDIT_TOOL_ROUNDS:
+        _edit_tool_sessions.pop(session_id, None)
+        return {
+            "stop_reason": "max_rounds",
+            "text": f"Hit the {_MAX_EDIT_TOOL_ROUNDS}-round safety limit. Stopping the edit loop.",
+            "tool_calls": [],
+            "done": True,
+        }
+
+    messages: list = session.get("messages", [])
+
+    # Turn 1: build the initial user message from prompt + graph + context.
+    # Turn N: caller passes tool_results, we marshal them into a user turn.
+    if prompt is not None:
+        # Keep the same graph-as-source-of-truth framing as _build_edit_user_message
+        # — URDF is not passed because tool-call edits operate strictly on the graph.
+        parts = []
+        if assembly_graph is not None:
+            parts.append(
+                "Current AssemblyGraph (authoritative — reason and edit against this):\n"
+                f"```json\n{json.dumps(assembly_graph, indent=2)}\n```"
+            )
+        if kinematic_context:
+            parts.append(f"Robot Structure Summary:\n{kinematic_context}")
+        parts.append(f"User Request: {prompt}")
+        parts.append(
+            "Use the add_link / attach_sensor / replace_component / set_joint / "
+            "remove_link tools to mutate the graph. Each call is validated immediately — "
+            "if you see a structured error (PORT_MISMATCH, SENSOR_ON_ACTUATOR, etc.), "
+            "adjust and try again in the same turn. When the edit is complete, respond "
+            "with a short plain-text confirmation and stop (no further tool calls)."
+        )
+        user_text = "\n\n".join(parts)
+        messages.append({"role": "user", "content": _build_user_content(user_text, images)})
+    elif tool_results is not None:
+        # Stale-resend guard: a continuation can only be processed if the
+        # session's last assistant message contains tool_use blocks with IDs
+        # the frontend is replying to. When the loop already ended (session
+        # cleared or empty), Anthropic rejects orphan tool_result messages
+        # with a 400. Surface a structured error instead so the frontend can
+        # restart the loop with a fresh prompt.
+        if not messages:
+            _edit_tool_sessions.pop(session_id, None)
+            return {
+                "stop_reason": "session_expired",
+                "text": "Edit session expired — resend the request to start a new tool-use loop.",
+                "tool_calls": [],
+                "done": True,
+            }
+        # Marshal the frontend-side dispatch results into Anthropic tool_result blocks.
+        # The "ok": true branch surfaces the mutation summary + any warnings; the
+        # error branch surfaces the rule code + message + suggested_repair so Claude
+        # can pattern-match on the code and self-correct.
+        blocks = []
+        for tr in tool_results:
+            tool_use_id = tr.get("tool_use_id")
+            if not tool_use_id:
+                continue
+            if tr.get("ok"):
+                payload = {
+                    "ok": True,
+                    "summary": tr.get("summary", ""),
+                    "warnings": tr.get("warnings", []),
+                }
+            else:
+                payload = {
+                    "ok": False,
+                    "code": tr.get("code", "UNKNOWN"),
+                    "message": tr.get("message", ""),
+                    "suggested_repair": tr.get("suggested_repair", ""),
+                }
+            blocks.append({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": json.dumps(payload),
+                "is_error": not tr.get("ok"),
+            })
+        if blocks:
+            messages.append({"role": "user", "content": blocks})
+    else:
+        raise ValueError("generate_edit_turn requires either prompt (first turn) or tool_results (subsequent turns)")
+
+    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=8192,  # per-turn cap — the full loop is the budget-heavy axis
+        system=[{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=messages,
+        tools=EDIT_TOOLS,
+        # "auto" instead of "any": after the mutation succeeds, Claude should be
+        # able to stop naturally with a text block instead of being forced to
+        # keep calling tools. "any" forces tool use every turn — infinite loop.
+        tool_choice={"type": "auto"},
+        timeout=120.0,
+    )
+    _log_cache_usage("generate_edit_turn", response)
+
+    # Persist the assistant response verbatim — Anthropic requires the raw blocks
+    # (not a summary) to remain in history so subsequent tool_result messages
+    # reference valid tool_use_ids.
+    assistant_content = response.content
+    messages.append({"role": "assistant", "content": assistant_content})
+    session["messages"] = messages
+
+    text_parts: list[str] = []
+    tool_calls: list[dict] = []
+    for block in assistant_content:
+        if block.type == "text":
+            text_parts.append(block.text)
+        elif block.type == "tool_use":
+            tool_calls.append({
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+
+    if tool_calls:
+        session["any_tool_used"] = True
+
+    stop_reason = getattr(response, "stop_reason", "end_turn") or "end_turn"
+    done = stop_reason != "tool_use" or not tool_calls
+
+    if done:
+        # Loop finished — push a summary to the long-term history for context on
+        # future turns, but ONLY when at least one tool actually fired. If Claude
+        # answered with pure text (no mutation), the frontend falls through to
+        # ai_edit, which records its own history entry; double-recording here
+        # would fabricate a "[Used edit tools]" line that didn't correspond to
+        # any real mutation.
+        any_tool_used = bool(session.get("any_tool_used"))
+        initial_prompt = session.get("initial_prompt") or prompt
+        if any_tool_used:
+            history = _conversation_history[session_id]
+            summary_text = " ".join(t for t in text_parts if t).strip() or "Edit complete"
+            history.append({"role": "user", "content": f"[Edit request] {initial_prompt or '(tool-loop continuation)'}"})
+            history.append({"role": "assistant", "content": f"[Used edit tools] {summary_text}"})
+            while len(history) > _MAX_HISTORY_MESSAGES:
+                history.pop(0)
+        _edit_tool_sessions.pop(session_id, None)
+
+    return {
+        "stop_reason": stop_reason,
+        "text": " ".join(text_parts).strip(),
+        "tool_calls": tool_calls,
+        "done": done,
+    }
 
 
 def _build_history_summary(result: dict) -> str:

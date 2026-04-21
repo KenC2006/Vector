@@ -454,6 +454,34 @@ async fn ai_edit(
     }), 1, &app)
 }
 
+/// WS2 tool-call edit surface: one turn of the multi-round tool-use loop.
+/// Frontend drives the loop — first call with `prompt`, then each round with
+/// `tool_results` until the response's `done` field is true.
+#[tauri::command]
+async fn ai_edit_turn(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    prompt: Option<String>,
+    assembly_graph: Option<serde_json::Value>,
+    kinematic_context: Option<String>,
+    tool_results: Option<serde_json::Value>,
+    model: Option<String>,
+    images: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("ai_edit_turn", json!({
+        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+        "prompt": prompt,
+        "assembly_graph": assembly_graph,
+        "kinematic_context": kinematic_context,
+        "tool_results": tool_results,
+        "model": model,
+        "images": images.unwrap_or_default(),
+    }), 1)
+}
+
 /// Restore conversation history for an AI session from frontend localStorage
 #[tauri::command]
 async fn ai_set_history(state: State<'_, AppState>, session_id: String, history: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -962,6 +990,7 @@ pub fn run() {
             sim_set_script,
             sim_render,
             ai_edit,
+            ai_edit_turn,
             ai_set_history,
             ai_validate_assembly,
             ai_complete,
