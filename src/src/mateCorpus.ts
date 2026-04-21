@@ -429,6 +429,59 @@ const fixtures: Fixture[] = [
     },
   },
 
+  // ── 13g-i: structural_bracket_l — plate_top / wall_inner / wall_outer real-preset values ──
+  // The P1 disambiguation: the three authored connectors land a child at
+  // three distinct positions and orientations. This is the central proof of
+  // the L-bracket problem — with only the default bbox "top" at (0,0,+20)/+Z,
+  // there was no way to say "mount on the horizontal plate surface" vs
+  // "mount on the concave inside of the wall" vs "mount on the back of the
+  // wall"; all three intentions collapsed to the same ambiguous face.
+  {
+    name: 'L-bracket real: plate_top (0,0,1.6)/+Z → child.bottom default, fastened → child at (0,0,1.6+hcz)',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'plate_top',  origin_xyz_mm: [0, 0, 1.6], axis_xyz: [0, 0, 1], type: 'planar' } as MateConnector,
+      childConn:  pickConn(cDefs, 'bottom'),
+      mateType:   'fastened',
+    }),
+    // Axes +Z/-Z antiparallel → identity rotation. c_origin (0,0,-hcz) stays.
+    // t = (0,0,1.6) + 0 - (0,0,-hcz) = (0, 0, 1.6+hcz).
+    expected: {
+      pos: new THREE.Vector3(0, 0, (1.6 + childBbox.hzMm) / 1000),
+      quat: new THREE.Quaternion(),
+    },
+  },
+  {
+    name: 'L-bracket real: wall_inner (-16.8,0,18.4)/+X → child.back default, fastened — child on L concave side',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'wall_inner', origin_xyz_mm: [-16.8, 0, 18.4], axis_xyz: [1, 0, 0], type: 'planar' } as MateConnector,
+      childConn:  pickConn(cDefs, 'back'),
+      mateType:   'fastened',
+    }),
+    // Parent axis +X, child axis -X — antiparallel already → identity rotation.
+    // c_origin (-hcx, 0, 0) stays. t = (-16.8, 0, 18.4) - (-hcx, 0, 0) = (-16.8+hcx, 0, 18.4).
+    expected: {
+      pos: new THREE.Vector3((-16.8 + childBbox.hxMm) / 1000, 0, 18.4 / 1000),
+      quat: new THREE.Quaternion(),
+    },
+  },
+  {
+    name: 'L-bracket real: wall_outer (-20,0,18.4)/-X → child.front default, fastened — child on back of wall',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'wall_outer', origin_xyz_mm: [-20, 0, 18.4], axis_xyz: [-1, 0, 0], type: 'planar' } as MateConnector,
+      childConn:  pickConn(cDefs, 'front'),
+      mateType:   'fastened',
+    }),
+    // Parent axis -X, child axis +X — antiparallel already → identity rotation.
+    // c_origin (+hcx, 0, 0) stays. t = (-20, 0, 18.4) - (hcx, 0, 0) = (-20-hcx, 0, 18.4).
+    expected: {
+      pos: new THREE.Vector3((-20 - childBbox.hxMm) / 1000, 0, 18.4 / 1000),
+      quat: new THREE.Quaternion(),
+    },
+  },
+
   // ── 14: authored connectors override defaults of the same name ──
   {
     name: 'mergeConnectors: authored "top" overrides default "top"',

@@ -2395,7 +2395,7 @@
         {
           "id": "structural_bracket_l",
           "name": "L-Bracket (90-degree)",
-          "description": "Generic aluminum L-bracket for right-angle structural joints. 3mm thick.",
+          "description": "Generic aluminum L-bracket for right-angle structural joints. 3.2mm thick plate (8% of bracket size). Geometry: plate in XY plane with top face at Z=+1.6mm, wall on the -X side rising to Z=+38.4mm. Authors three planar connectors that disambiguate the two distinct mounting surfaces — the legacy default top at +Z/Z=+20 is geometrically invalid (no plate face lives there; bbox corner is empty air), so attach_face:\"top\" routed via the bbox path historically caused P1 rotation errors (camera / component mounted via 'top' landed with its normal along wrong axis). The authored plate_top / wall_inner / wall_outer give exact pose targets: plate_top for components sitting on the horizontal plate, wall_inner for components facing into the L concave side, wall_outer for components facing out from the back of the wall.",
           "physical": {
             "mass_kg": 0.035,
             "bounding_box_mm": [40, 40, 40],
@@ -2414,7 +2414,12 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            { "id": "plate_top",   "origin_xyz_mm": [0,     0, 1.6],  "axis_xyz": [0, 0, 1], "type": "planar" },
+            { "id": "wall_inner",  "origin_xyz_mm": [-16.8, 0, 18.4], "axis_xyz": [1, 0, 0], "type": "planar" },
+            { "id": "wall_outer",  "origin_xyz_mm": [-20,   0, 18.4], "axis_xyz": [-1, 0, 0], "type": "planar" }
+          ]
         },
 
         {
