@@ -3046,7 +3046,7 @@
         {
           "id": "structural_gusset_plate",
           "name": "Gusset Plate (Triangular Reinforcement)",
-          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs.",
+          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs. Authors top/bottom overrides — generateGusset in richVisuals/generators/structural.ts uses max(bbox.z, min(x,y)*0.08) for thickness (4mm for the 50x50x3 default), so the bbox-default `top` at z=+1.5 falls inside the rendered mesh. Triangle front/back/left/right defaults are skipped intentionally — those bbox-face centers don't land on real mesh surfaces (the plate is a triangle, not a rectangle), so callers should target top/bottom only.",
           "physical": {
             "mass_kg": 0.020,
             "bounding_box_mm": [50, 50, 3],
@@ -3067,7 +3067,11 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            { "id": "top",    "origin_xyz_mm": [0, 0,  2], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -2], "axis_xyz": [0, 0, -1], "type": "planar" }
+          ]
         },
 
         {
@@ -3123,7 +3127,7 @@
         {
           "id": "structural_cross_plate",
           "name": "Cross Plate Connector",
-          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum.",
+          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum. Authors top/bottom overrides — generateCrossPlate uses max(bbox.z, min(x,y)*0.08) for arm thickness (4.8mm for the 60x60x3 default), so the bbox-default `top` at z=+1.5 falls inside the rendered mesh. Front/back/left/right defaults are left intact: the cross is built from two overlapping rectangular arms so the ±X and ±Y face centers DO land on real arm end faces, and callers mating extrusions to the arm ends will still get the legacy defaults.",
           "physical": {
             "mass_kg": 0.040,
             "bounding_box_mm": [60, 60, 3],
@@ -3142,7 +3146,11 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            { "id": "top",    "origin_xyz_mm": [0, 0,  2.4], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -2.4], "axis_xyz": [0, 0, -1], "type": "planar" }
+          ]
         },
 
         {
