@@ -438,6 +438,21 @@ export function autoRepairTopology(
       // instead of landing in the fallback branch via an unrecognized literal.
       joint_axis: 'z',
     }
+    // Phase 3 task #7: when the PARENT is a shaft output (Case 1), route
+    // the bracket→parent mate through the mate-connector resolver using
+    // the shaft_out↔shaft_hole concentric pairing. This is the auto-
+    // repair path's opt-in to the connector engine — without it, the
+    // coupler sits on the shaft via bbox math, which keeps a small
+    // visual seam and encodes a shaft-in-hole as a flat-stack in URDF.
+    // Case 2 (mount_face parent with shaft child) stays on the legacy
+    // bbox path because multiple auto-couplers may land on the same
+    // parent face, and the connector path bypasses the legacy multi-
+    // child distribution logic that spreads them out.
+    if (pClass === 'shaft' && cClass === 'mount_face') {
+      bracket.attach_connector = 'shaft_out'
+      bracket.mate_connector = 'shaft_hole'
+      bracket.mate_type = 'concentric'
+    }
     insertions.push({ bracket, beforeLinkName: comp.link_name })
     comp.attach_to = bracketName
     repairs.push({
