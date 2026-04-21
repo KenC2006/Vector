@@ -338,6 +338,49 @@ const fixtures: Fixture[] = [
     },
   },
 
+  // ── 13c: servo.shaft_out → coupler.shaft_hole with axial offset ──
+  // Proves offset_mm is honored in the concentric path with realistic
+  // coupler.shaft_hole dims. Simulates the coupler pushed 2mm further
+  // along the servo shaft axis (occasionally needed when a user wants
+  // clearance between the servo can and the coupler face).
+  {
+    name: 'concentric: servo_high_torque.shaft_out → coupler.shaft_hole with offset_mm=2',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      mateType:   'concentric',
+      params:     { offset_mm: 2 },
+    }),
+    // t_local = (0,0,17) + (0,0,2) - (0,0,-4) = (0,0,23mm)
+    expected: {
+      pos: new THREE.Vector3(0, 0, 23 / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+    },
+  },
+
+  // ── 13d: coupler.bottom_face as a parent connector ──
+  // Coupler hosts a child bracket/plate on its bolt-ring side. bottom_face is
+  // a semantic alias for the default bottom at the same pose; this fixture
+  // confirms the authored connector lookup resolves it to the identical pose
+  // so readable mate code stays bit-identical to legacy attach_face: "bottom".
+  {
+    name: 'fastened: coupler.bottom_face (authored) → child.top default resolves to (0, 0, -(4+hcz))',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'bottom_face', origin_xyz_mm: [0, 0, -4], axis_xyz: [0, 0, -1], type: 'planar' } as MateConnector,
+      childConn:  pickConn(cDefs, 'top'),
+      mateType:   'fastened',
+    }),
+    // Parent axis -Z, child axis +Z — antiparallel already, qAlign=identity.
+    // c_origin (0,0,hcz) under identity: unchanged.
+    // t_local = (0,0,-4) + 0 - (0,0,hcz) = (0, 0, -(4+hcz))
+    expected: {
+      pos: new THREE.Vector3(0, 0, -(4 + childBbox.hzMm) / 1000),
+      quat: new THREE.Quaternion(),
+    },
+  },
+
   // ── 14: authored connectors override defaults of the same name ──
   {
     name: 'mergeConnectors: authored "top" overrides default "top"',
