@@ -2506,7 +2506,7 @@
         {
           "id": "structural_joint_plate",
           "name": "Joint Mounting Plate",
-          "description": "Flat machined plate for stacking actuators at joint intersections. Configurable hole patterns. Authors top/bottom overrides — the parametric generator renders the plate at max(bbox.z, min(bbox.x, bbox.y)*0.08) thick (~4.8mm for the 60x60x4 default), so a default-bbox `top` at Z=+2mm would fall inside the mesh and any stacked actuator would sink by ~0.8mm per plate.",
+          "description": "Flat machined plate for stacking actuators at joint intersections. Configurable hole patterns.",
           "physical": {
             "mass_kg": 0.080,
             "bounding_box_mm": [60, 60, 4],
@@ -2527,15 +2527,15 @@
             "mjcf_geom_type": "box"
           },
           "connectors": [
-            { "id": "top",    "origin_xyz_mm": [0, 0,  2.4], "axis_xyz": [0, 0,  1], "type": "planar" },
-            { "id": "bottom", "origin_xyz_mm": [0, 0, -2.4], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "top",    "origin_xyz_mm": [0, 0,  2], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -2], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
 
         {
           "id": "structural_baseplate",
           "name": "Robot Baseplate",
-          "description": "Heavy aluminum baseplate for mobile or fixed-base robots. Parametric sizing. Authors top/bottom overrides — the parametric generator renders the plate at max(bbox.z, min(bbox.x, bbox.y)*0.12) thick (~18mm for the 200x150x5 default, not 5mm), so a default-bbox `top` at Z=+2.5mm would fall ~6.5mm inside the rendered mesh and every component stacked above would sink by the same amount. This is the same class of error as Bug 2b on structural_baseplate_large; fix ships here for consistency.",
+          "description": "Heavy aluminum baseplate for mobile or fixed-base robots. Parametric sizing.",
           "physical": {
             "mass_kg": 0.450,
             "bounding_box_mm": [200, 150, 5],
@@ -2556,15 +2556,15 @@
             "mjcf_geom_type": "box"
           },
           "connectors": [
-            { "id": "top",    "origin_xyz_mm": [0, 0,  9], "axis_xyz": [0, 0,  1], "type": "planar" },
-            { "id": "bottom", "origin_xyz_mm": [0, 0, -9], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "top",    "origin_xyz_mm": [0, 0,  2.5], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -2.5], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
 
         {
           "id": "structural_baseplate_large",
           "name": "Robot Baseplate (Large)",
-          "description": "Larger aluminum baseplate sized for quadrupeds, humanoid torsos, and other robots whose hip/shoulder span exceeds ~250mm. Use as root in place of structural_baseplate when leg length, payload mass, or component count outgrows the 200x150mm default. Authors top/bottom overrides — the parametric baseplate generator (richVisuals/generators/structural.generateBaseplate) uses max(bbox.z, min(bbox.x, bbox.y)*0.12) for thickness, rendering the plate at 30mm tall for the 350x250x8 bbox, not 8mm. This is the Bug 2b root cause documented in docs/NEW_ISSUES_DURING_CONNECTOR_MIGRATION.md — every quadruped saw a uniform 21mm shift on top-face children because default `top` fell 11mm inside the rendered mesh. Authoring `top` at +15mm (half the rendered 30mm) and `bottom` at -15mm closes the gap. Does NOT change bounding_box_mm — the 8mm value is load-bearing for MJCF collision export; that's a separate bbox-audit fix.",
+          "description": "Larger aluminum baseplate sized for quadrupeds, humanoid torsos, and other robots whose hip/shoulder span exceeds ~250mm. Use as root in place of structural_baseplate when leg length, payload mass, or component count outgrows the 200x150mm default.",
           "physical": {
             "mass_kg": 2.100,
             "bounding_box_mm": [350, 250, 8],
@@ -2585,8 +2585,8 @@
             "mjcf_geom_type": "box"
           },
           "connectors": [
-            { "id": "top",    "origin_xyz_mm": [0, 0,  15], "axis_xyz": [0, 0,  1], "type": "planar" },
-            { "id": "bottom", "origin_xyz_mm": [0, 0, -15], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "top",    "origin_xyz_mm": [0, 0,  4], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -4], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
 
@@ -3046,7 +3046,7 @@
         {
           "id": "structural_gusset_plate",
           "name": "Gusset Plate (Triangular Reinforcement)",
-          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs. Authors top/bottom overrides — generateGusset in richVisuals/generators/structural.ts uses max(bbox.z, min(x,y)*0.08) for thickness (4mm for the 50x50x3 default), so the bbox-default `top` at z=+1.5 falls inside the rendered mesh. Triangle front/back/left/right defaults are skipped intentionally — those bbox-face centers don't land on real mesh surfaces (the plate is a triangle, not a rectangle), so callers should target top/bottom only.",
+          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs. Triangle front/back/left/right defaults are skipped intentionally — those bbox-face centers don't land on real mesh surfaces (the plate is a triangle, not a rectangle), so callers should target top/bottom only.",
           "physical": {
             "mass_kg": 0.020,
             "bounding_box_mm": [50, 50, 3],
@@ -3069,8 +3069,8 @@
             "mjcf_geom_type": "box"
           },
           "connectors": [
-            { "id": "top",    "origin_xyz_mm": [0, 0,  2], "axis_xyz": [0, 0,  1], "type": "planar" },
-            { "id": "bottom", "origin_xyz_mm": [0, 0, -2], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "top",    "origin_xyz_mm": [0, 0,  1.5], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -1.5], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
 
@@ -3127,7 +3127,7 @@
         {
           "id": "structural_cross_plate",
           "name": "Cross Plate Connector",
-          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum. Authors top/bottom overrides — generateCrossPlate uses max(bbox.z, min(x,y)*0.08) for arm thickness (4.8mm for the 60x60x3 default), so the bbox-default `top` at z=+1.5 falls inside the rendered mesh. Front/back/left/right defaults are left intact: the cross is built from two overlapping rectangular arms so the ±X and ±Y face centers DO land on real arm end faces, and callers mating extrusions to the arm ends will still get the legacy defaults.",
+          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum. Front/back/left/right defaults are left intact: the cross is built from two overlapping rectangular arms so the ±X and ±Y face centers DO land on real arm end faces, and callers mating extrusions to the arm ends will still get the legacy defaults.",
           "physical": {
             "mass_kg": 0.040,
             "bounding_box_mm": [60, 60, 3],
@@ -3148,8 +3148,8 @@
             "mjcf_geom_type": "box"
           },
           "connectors": [
-            { "id": "top",    "origin_xyz_mm": [0, 0,  2.4], "axis_xyz": [0, 0,  1], "type": "planar" },
-            { "id": "bottom", "origin_xyz_mm": [0, 0, -2.4], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "top",    "origin_xyz_mm": [0, 0,  1.5], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "bottom", "origin_xyz_mm": [0, 0, -1.5], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
 
