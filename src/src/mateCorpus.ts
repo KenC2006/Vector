@@ -299,7 +299,46 @@ const fixtures: Fixture[] = [
     }
   }),
 
-  // ── 13: authored connectors override defaults of the same name ──
+  // ── 13a: servo shaft_out (real preset dims) → coupler shaft_hole, concentric ──
+  // Mirrors the connector dims authored on actuator_servo_high_torque
+  // (origin_xyz_mm=[0,0,17], d=8) mated to a shaft_hole connector at z=4
+  // (coupler bbox hz=4). Protects against silent drift between preset data
+  // and the resolver's output as the catalog grows.
+  {
+    name: 'concentric: actuator_servo_high_torque.shaft_out (z=17, d=8) → coupler shaft_hole (z=4, d=8)',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      mateType:   'concentric',
+      params:     {},
+    }),
+    // Both axes +Z → antiparallel mating picks Ry(π). Child origin (0,0,4)
+    // under Ry(π) lands at (0,0,-4). t_local = (0,0,17) + 0 - (0,0,-4) = (0,0,21).
+    expected: {
+      pos: new THREE.Vector3(0, 0, 21 / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+    },
+  },
+
+  // ── 13b: servo shaft_out (micro) → coupler shaft_hole, smaller scale ──
+  {
+    name: 'concentric: actuator_servo_micro.shaft_out (z=14.5, d=4.6) → coupler shaft_hole (z=4, d=4.6)',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 14.5], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4],   axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
+      mateType:   'concentric',
+      params:     {},
+    }),
+    // t_local = (0,0,14.5) + 0 - (0,0,-4) = (0,0,18.5)
+    expected: {
+      pos: new THREE.Vector3(0, 0, 18.5 / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+    },
+  },
+
+  // ── 14: authored connectors override defaults of the same name ──
   {
     name: 'mergeConnectors: authored "top" overrides default "top"',
     setup: () => {

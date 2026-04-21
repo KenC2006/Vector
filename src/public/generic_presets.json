@@ -38,7 +38,7 @@
         {
           "id": "actuator_servo_micro",
           "name": "Micro Servo",
-          "description": "Small hobby-class PWM servo for lightweight pan/tilt and finger joints. ~9g class.",
+          "description": "Small hobby-class PWM servo for lightweight pan/tilt and finger joints. ~9g class. Authors shaft_out (cylindrical, +Z) so concentric mates to coupler/horn shaft_hole resolve as true shaft-in-hole. Default top/bottom face connectors stay as legacy-parity fallback.",
           "physical": {
             "mass_kg": 0.009,
             "bounding_box_mm": [23, 12.2, 29],
@@ -64,13 +64,16 @@
             "damping": 0.01,
             "friction": 0.005,
             "armature": 0.001
-          }
+          },
+          "connectors": [
+            { "id": "shaft_out", "origin_xyz_mm": [0, 0, 14.5], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 4.6 }
+          ]
         },
 
         {
           "id": "actuator_servo_standard",
           "name": "Standard Digital Servo",
-          "description": "Mid-size digital servo with metal gears. Common for small arm joints and steering. ~55g class.",
+          "description": "Mid-size digital servo with metal gears. Common for small arm joints and steering. ~55g class. Authors shaft_out (cylindrical, +Z) for concentric coupler/horn mates. Default top/bottom remain as legacy-parity fallback.",
           "physical": {
             "mass_kg": 0.055,
             "bounding_box_mm": [40, 20, 37],
@@ -96,13 +99,16 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            { "id": "shaft_out", "origin_xyz_mm": [0, 0, 18.5], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 5.9 }
+          ]
         },
 
         {
           "id": "actuator_servo_high_torque",
           "name": "High-Torque Smart Servo",
-          "description": "Bus-protocol smart servo with magnetic encoder feedback, metal gears, and daisy-chain comms. Comparable to Dynamixel XM-class. ~165g.",
+          "description": "Bus-protocol smart servo with magnetic encoder feedback, metal gears, and daisy-chain comms. Comparable to Dynamixel XM-class. ~165g. Authors shaft_out (cylindrical, +Z, 8mm bore) for concentric coupler mates — the most-used servo in quadruped leg chains, so this connector sees the heaviest traffic.",
           "physical": {
             "mass_kg": 0.165,
             "bounding_box_mm": [46.5, 36, 34],
@@ -129,13 +135,16 @@
             "damping": 0.2,
             "friction": 0.05,
             "armature": 0.01
-          }
+          },
+          "connectors": [
+            { "id": "shaft_out", "origin_xyz_mm": [0, 0, 17], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 8 }
+          ]
         },
 
         {
           "id": "actuator_servo_heavy_duty",
           "name": "Heavy-Duty Smart Servo",
-          "description": "Large-frame bus servo for shoulder/hip joints on humanoids and heavy arms. ~350g, high gear reduction.",
+          "description": "Large-frame bus servo for shoulder/hip joints on humanoids and heavy arms. ~350g, high gear reduction. Authors shaft_out (cylindrical, +Z, 12mm bore) for concentric coupler mates. Default top/bottom remain as legacy-parity fallback.",
           "physical": {
             "mass_kg": 0.350,
             "bounding_box_mm": [54, 42, 54],
@@ -162,7 +171,10 @@
             "damping": 0.5,
             "friction": 0.1,
             "armature": 0.02
-          }
+          },
+          "connectors": [
+            { "id": "shaft_out", "origin_xyz_mm": [0, 0, 27], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 12 }
+          ]
         },
 
         {

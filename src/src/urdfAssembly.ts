@@ -1688,12 +1688,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     childAuthored?:  MateConnector[],
   ): { xyz: string; rpy: string } | null {
     if (!useMateConnectors()) return null
-    // Phase 3: fire the connector path when EITHER the component authored
-    // mate fields OR either preset authored connectors that need to resolve.
-    // Without the latter, an authored shaft_out on a servo would never be
-    // reached unless Claude happened to emit mate_connector on the child.
-    const presetsHaveAuthored = !!(parentAuthored?.length || childAuthored?.length)
-    if (!hasMateConnectorFields(comp) && !presetsHaveAuthored) return null
+    // Only fire when the COMPONENT opts in (attach_connector/mate_connector/
+    // mate_type). Authored preset connectors are vocabulary, not behavior —
+    // they sit available for Claude/auto-repair to reference by name via
+    // mate_connector. Auto-firing whenever a preset ships authored connectors
+    // would bypass legacy splay/multi-child distribution/orientation for every
+    // child of the parent, which is exactly the risk flagged by the migration
+    // doc "Multi-child distribution" note.
+    if (!hasMateConnectorFields(comp)) return null
 
     // Defaults first, authored-on-preset overrides by id (mergeConnectors contract).
     const parentDefaults = generateDefaultConnectors(parentPresetBboxMm)
