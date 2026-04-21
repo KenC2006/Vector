@@ -1022,7 +1022,7 @@
         {
           "id": "sensor_depth_camera_small",
           "name": "Compact Depth Camera",
-          "description": "Small structured-light or active-stereo depth camera. Comparable to RealSense D435 class. ~72g.",
+          "description": "Small structured-light or active-stereo depth camera. Comparable to RealSense D435 class. ~72g. Authors mount_back (planar, -X) as the bolt-ring side and optical_front (point, +X) as the lens aim direction. Resolves the M2 lens-orientation ambiguity — a fastened mate from a bracket face to camera.mount_back puts the +X lens axis pointing out from the bracket, so the camera faces its mount direction instead of sideways.",
           "physical": {
             "mass_kg": 0.072,
             "bounding_box_mm": [90, 25, 25],
@@ -1051,7 +1051,11 @@
             "resolution": [1280, 720],
             "near_clip": 0.2,
             "far_clip": 10.0
-          }
+          },
+          "connectors": [
+            { "id": "mount_back",    "origin_xyz_mm": [-45, 0, 0], "axis_xyz": [-1, 0, 0], "type": "planar" },
+            { "id": "optical_front", "origin_xyz_mm": [ 45, 0, 0], "axis_xyz": [ 1, 0, 0], "type": "point" }
+          ]
         },
 
         {

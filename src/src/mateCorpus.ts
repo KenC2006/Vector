@@ -381,6 +381,54 @@ const fixtures: Fixture[] = [
     },
   },
 
+  // ── 13e: camera mount_back → bracket.top (fastened) — M2 fix case ──
+  // Validates that authoring mount_back at (-45,0,0)/-X on the camera,
+  // then fastening to a bracket top face, places the camera so its body
+  // +X axis (lens / optical_front) points along world +Z — outward from
+  // the bracket face. This is the M2-known-issues fix: previously the
+  // camera's lens faced sideways (+Y) due to rpy preset rotation baked
+  // into visuals; with a mount_back connector carrying the right axis,
+  // resolveMate derives the correct 90° rotation (Qy(-π/2)) instead.
+  {
+    name: 'fastened: camera.mount_back (authored, -X) → bracket.top default (+Z) — lens points +Z',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: pickConn(pDefs, 'top'),
+      childConn:  { id: 'mount_back', origin_xyz_mm: [-45, 0, 0], axis_xyz: [-1, 0, 0], type: 'planar' } as MateConnector,
+      mateType:   'fastened',
+    }),
+    // qAlign(-X → -Z) = Qy(-π/2). Under that, c_origin (-45,0,0) → (0,0,-45).
+    // t_local = (0,0,hpz) + 0 - (0,0,-45) = (0, 0, hpz + 45).
+    // parentBbox.hzMm = 20 → t=(0,0,65mm).
+    expected: {
+      pos: new THREE.Vector3(0, 0, (parentBbox.hzMm + 45) / 1000),
+      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2),
+    },
+  },
+
+  // ── 13f: camera mount_back → bracket.front (fastened) — no rotation path ──
+  // Parent axis +X and child axis -X already antiparallel → identity
+  // rotation. Validates the authored connector works in the face-aligned
+  // case without accidentally inducing a spin. Lens ends up pointing +X
+  // world (out from bracket's front face).
+  {
+    name: 'fastened: camera.mount_back → bracket.front default (+X) — identity rotation',
+    setup: () => ({
+      parentWorld: new THREE.Matrix4(),
+      parentConn: pickConn(pDefs, 'front'),
+      childConn:  { id: 'mount_back', origin_xyz_mm: [-45, 0, 0], axis_xyz: [-1, 0, 0], type: 'planar' } as MateConnector,
+      mateType:   'fastened',
+    }),
+    // Axes -X and +X already antiparallel → qAlign = identity.
+    // c_origin unchanged: (-45, 0, 0).
+    // t_local = (hpx, 0, 0) + 0 - (-45, 0, 0) = (hpx + 45, 0, 0).
+    // parentBbox.hxMm = 100 → t=(145mm, 0, 0).
+    expected: {
+      pos: new THREE.Vector3((parentBbox.hxMm + 45) / 1000, 0, 0),
+      quat: new THREE.Quaternion(),
+    },
+  },
+
   // ── 14: authored connectors override defaults of the same name ──
   {
     name: 'mergeConnectors: authored "top" overrides default "top"',
