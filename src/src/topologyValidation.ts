@@ -438,20 +438,31 @@ export function autoRepairTopology(
       // instead of landing in the fallback branch via an unrecognized literal.
       joint_axis: 'z',
     }
-    // Phase 3 task #7: when the PARENT is a shaft output (Case 1), route
-    // the bracket→parent mate through the mate-connector resolver using
-    // the shaft_out↔shaft_hole concentric pairing. This is the auto-
-    // repair path's opt-in to the connector engine — without it, the
-    // coupler sits on the shaft via bbox math, which keeps a small
-    // visual seam and encodes a shaft-in-hole as a flat-stack in URDF.
-    // Case 2 (mount_face parent with shaft child) stays on the legacy
-    // bbox path because multiple auto-couplers may land on the same
-    // parent face, and the connector path bypasses the legacy multi-
-    // child distribution logic that spreads them out.
+    // Phase 3 task #7 / C4 (docs/ENGINE_EXECUTION_PLAN.md): route both
+    // mismatch cases through the mate-connector resolver.
+    //
+    // Case 1 (shaft parent, mount_face child): coupler's shaft_hole
+    // mates concentrically onto the parent's shaft_out. Without this,
+    // a shaft-in-hole would be encoded as a flat stack in URDF and the
+    // visual seam at the shaft tip wouldn't close.
+    //
+    // Case 2 (mount_face parent, shaft child): coupler mounts flat on
+    // the parent face via default face connectors (fastened). Bit-
+    // identical to the legacy bbox path while every parent still carries
+    // default connectors, but flips the auto-repair path onto the
+    // connector engine so it picks up authored parent connectors
+    // automatically as Phase 2 lands them. Multi-child distribution is
+    // preserved — computeMatePlacement threads totalOnFace/childIdx
+    // through the connector resolver so N coupler discs still spread
+    // across one face.
     if (pClass === 'shaft' && cClass === 'mount_face') {
       bracket.attach_connector = 'shaft_out'
       bracket.mate_connector = 'shaft_hole'
       bracket.mate_type = 'concentric'
+    } else if (pClass === 'mount_face' && cClass === 'shaft') {
+      bracket.attach_connector = parentFace
+      bracket.mate_connector = childFace
+      bracket.mate_type = 'fastened'
     }
     insertions.push({ bracket, beforeLinkName: comp.link_name })
     comp.attach_to = bracketName
