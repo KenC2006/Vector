@@ -2450,7 +2450,7 @@
         {
           "id": "structural_servo_coupler_disc",
           "name": "Servo Coupler Disc (25T)",
-          "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub. Authors shaft_hole (cylindrical, +Z, 8mm nominal bore) for concentric mates against servo shaft_out, and bottom_face (planar, -Z) so a child bracket/plate can mount to the hub's bolt ring side. Default top/bottom remain as legacy-parity fallback (bottom_face is a semantic alias for default bottom — identical pose, named for mate readability).",
+          "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub. Authors shaft_hole (cylindrical, on -Z face with axis -Z, 8mm nominal bore) so a concentric mate against a servo's +Z shaft_out is already-antiparallel — coupler stays upright, bolt-ring side (+Z) faces upward so a child bracket mounts correctly. Also authors top_face (planar, +Z) as a named handle for that bolt-ring side.",
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [32, 32, 8],
@@ -2471,8 +2471,8 @@
             "mjcf_geom_type": "cylinder"
           },
           "connectors": [
-            { "id": "shaft_hole",  "origin_xyz_mm": [0, 0,  4], "axis_xyz": [0, 0,  1], "type": "cylindrical", "diameter_mm": 8 },
-            { "id": "bottom_face", "origin_xyz_mm": [0, 0, -4], "axis_xyz": [0, 0, -1], "type": "planar" }
+            { "id": "shaft_hole", "origin_xyz_mm": [0, 0, -4], "axis_xyz": [0, 0, -1], "type": "cylindrical", "diameter_mm": 8 },
+            { "id": "top_face",   "origin_xyz_mm": [0, 0,  4], "axis_xyz": [0, 0,  1], "type": "planar" }
           ]
         },
 

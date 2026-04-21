@@ -363,82 +363,91 @@ const fixtures: Fixture[] = [
 
   // ── 13a: servo shaft_out (real preset dims) → coupler shaft_hole, concentric ──
   // Mirrors the connector dims authored on actuator_servo_high_torque
-  // (origin_xyz_mm=[0,0,17], d=8) mated to a shaft_hole connector at z=4
-  // (coupler bbox hz=4). Protects against silent drift between preset data
-  // and the resolver's output as the catalog grows.
+  // (origin_xyz_mm=[0,0,17], axis +Z, d=8) mated to the coupler's shaft_hole
+  // at (0,0,-4)/-Z (bore opens on the coupler's BOTTOM face — receives the
+  // servo shaft from below). Antiparallel axes → no flip — coupler stays
+  // upright with its bolt-ring side (+Z face) facing up for a child bracket
+  // to mount correctly.
+  //
+  // History: initial authoring put shaft_hole at (0,0,+4)/+Z following the
+  // "axis outward from each face" convention literally, which forced a 180°
+  // flip under concentric mating. Smoke test caught this — the auto-coupler
+  // rendered upside-down and downstream servo clipped into its parent.
   {
-    name: 'concentric: actuator_servo_high_torque.shaft_out (z=17, d=8) → coupler shaft_hole (z=4, d=8)',
+    name: 'concentric: actuator_servo_high_torque.shaft_out (z=17, +Z) → coupler shaft_hole (z=-4, -Z)',
     setup: () => ({
       parentWorld: new THREE.Matrix4(),
-      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
-      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0,  1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0, -4], axis_xyz: [0, 0, -1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
       mateType:   'concentric',
       params:     {},
     }),
-    // Both axes +Z → antiparallel mating picks Ry(π). Child origin (0,0,4)
-    // under Ry(π) lands at (0,0,-4). t_local = (0,0,17) + 0 - (0,0,-4) = (0,0,21).
+    // Axes +Z and -Z already antiparallel → qAlign = identity. c_origin (0,0,-4)
+    // stays. t_local = (0,0,17) + 0 - (0,0,-4) = (0,0,21). Coupler sits
+    // upright — no rotation applied.
     expected: {
       pos: new THREE.Vector3(0, 0, 21 / 1000),
-      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+      quat: new THREE.Quaternion(),
     },
   },
 
   // ── 13b: servo shaft_out (micro) → coupler shaft_hole, smaller scale ──
   {
-    name: 'concentric: actuator_servo_micro.shaft_out (z=14.5, d=4.6) → coupler shaft_hole (z=4, d=4.6)',
+    name: 'concentric: actuator_servo_micro.shaft_out (z=14.5, +Z) → coupler shaft_hole (z=-4, -Z)',
     setup: () => ({
       parentWorld: new THREE.Matrix4(),
-      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 14.5], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
-      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4],   axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 14.5], axis_xyz: [0, 0,  1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0, -4],   axis_xyz: [0, 0, -1], type: 'cylindrical', diameter_mm: 4.6 } as MateConnector,
       mateType:   'concentric',
       params:     {},
     }),
-    // t_local = (0,0,14.5) + 0 - (0,0,-4) = (0,0,18.5)
+    // t_local = (0,0,14.5) + 0 - (0,0,-4) = (0,0,18.5), identity rotation.
     expected: {
       pos: new THREE.Vector3(0, 0, 18.5 / 1000),
-      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+      quat: new THREE.Quaternion(),
     },
   },
 
   // ── 13c: servo.shaft_out → coupler.shaft_hole with axial offset ──
   // Proves offset_mm is honored in the concentric path with realistic
-  // coupler.shaft_hole dims. Simulates the coupler pushed 2mm further
-  // along the servo shaft axis (occasionally needed when a user wants
-  // clearance between the servo can and the coupler face).
+  // coupler.shaft_hole dims. offset_mm is in parent-axis direction (+Z),
+  // so positive offset pushes the child FURTHER along +Z (away from the
+  // servo body). Useful for clearance between the servo can and the
+  // coupler face.
   {
     name: 'concentric: servo_high_torque.shaft_out → coupler.shaft_hole with offset_mm=2',
     setup: () => ({
       parentWorld: new THREE.Matrix4(),
-      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
-      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0,  4], axis_xyz: [0, 0, 1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      parentConn: { id: 'shaft_out',  origin_xyz_mm: [0, 0, 17], axis_xyz: [0, 0,  1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
+      childConn:  { id: 'shaft_hole', origin_xyz_mm: [0, 0, -4], axis_xyz: [0, 0, -1], type: 'cylindrical', diameter_mm: 8 } as MateConnector,
       mateType:   'concentric',
       params:     { offset_mm: 2 },
     }),
-    // t_local = (0,0,17) + (0,0,2) - (0,0,-4) = (0,0,23mm)
+    // t_local = (0,0,17) + (0,0,2) - (0,0,-4) = (0,0,23mm). Identity rotation
+    // (axes already antiparallel).
     expected: {
       pos: new THREE.Vector3(0, 0, 23 / 1000),
-      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+      quat: new THREE.Quaternion(),
     },
   },
 
-  // ── 13d: coupler.bottom_face as a parent connector ──
-  // Coupler hosts a child bracket/plate on its bolt-ring side. bottom_face is
-  // a semantic alias for the default bottom at the same pose; this fixture
-  // confirms the authored connector lookup resolves it to the identical pose
-  // so readable mate code stays bit-identical to legacy attach_face: "bottom".
+  // ── 13d: coupler.top_face as a parent connector ──
+  // Coupler hosts a child bracket/plate on its bolt-ring side (+Z face).
+  // top_face is a semantic alias for the default top at the same pose; this
+  // fixture confirms the authored connector lookup resolves it to the same
+  // output so readable mate code stays bit-identical to legacy attach_face.
   {
-    name: 'fastened: coupler.bottom_face (authored) → child.top default resolves to (0, 0, -(4+hcz))',
+    name: 'fastened: coupler.top_face (authored) → child.bottom default resolves to (0, 0, 4+hcz)',
     setup: () => ({
       parentWorld: new THREE.Matrix4(),
-      parentConn: { id: 'bottom_face', origin_xyz_mm: [0, 0, -4], axis_xyz: [0, 0, -1], type: 'planar' } as MateConnector,
-      childConn:  pickConn(cDefs, 'top'),
+      parentConn: { id: 'top_face', origin_xyz_mm: [0, 0, 4], axis_xyz: [0, 0, 1], type: 'planar' } as MateConnector,
+      childConn:  pickConn(cDefs, 'bottom'),
       mateType:   'fastened',
     }),
-    // Parent axis -Z, child axis +Z — antiparallel already, qAlign=identity.
-    // c_origin (0,0,hcz) under identity: unchanged.
-    // t_local = (0,0,-4) + 0 - (0,0,hcz) = (0, 0, -(4+hcz))
+    // Parent axis +Z, child axis -Z — antiparallel already, qAlign=identity.
+    // c_origin (0,0,-hcz) under identity stays. t = (0,0,4) - (0,0,-hcz) = (0,0,4+hcz).
     expected: {
-      pos: new THREE.Vector3(0, 0, -(4 + childBbox.hzMm) / 1000),
+      pos: new THREE.Vector3(0, 0, (4 + childBbox.hzMm) / 1000),
       quat: new THREE.Quaternion(),
     },
   },
@@ -564,12 +573,14 @@ const fixtures: Fixture[] = [
         mateType:   'concentric',
       }
     },
-    // Servo shaft_out at (0,0,17), coupler shaft_hole at (0,0,4). Both +Z.
-    // qAlign Ry(π). t=(0,0,17)+0-(0,0,-4)=(0,0,21mm). Same value as fixture
-    // 13a, but arrived at via loadPresets() so JSON data drift fails loudly.
+    // Servo shaft_out at (0,0,17)/+Z, coupler shaft_hole at (0,0,-4)/-Z.
+    // Antiparallel already → identity rotation. t_local = (0,0,17) - (0,0,-4)
+    // = (0,0,21mm). Same math as fixture 13a, but via loadPresets() so JSON
+    // data drift (e.g. someone accidentally reverts shaft_hole to +Z) fails
+    // loudly here before it causes a runtime upside-down coupler.
     expected: {
       pos: new THREE.Vector3(0, 0, 21 / 1000),
-      quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI),
+      quat: new THREE.Quaternion(),
     },
   },
   {
