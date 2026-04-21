@@ -2730,14 +2730,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then((data: PresetData) => {
       presetData = data
-      // Phase 2: log the default-connector generation per preset (smoke-test
-      // signal from docs/MATE_CONNECTOR_MIGRATION.md). Six face-center
-      // connectors per preset, bbox-derived, mathematically equivalent to
-      // the legacy attach_face path — see mateCorpus.ts.
+      // Log the connector setup per preset — 6 default face connectors plus
+      // any Phase 3 authored connectors (shaft_out, plate_top, wall_inner,
+      // mount_back, etc.). This is the load-time signal that JSON authoring
+      // took effect; presets with authored connectors stand out in the log
+      // so "did my preset edit reach the runtime?" is obvious at startup.
       if (useMateConnectors()) {
         for (const cat of Object.values(data.categories)) {
           for (const comp of cat.components) {
-            console.log(`[mate] default connectors: 6 (${comp.id})`)
+            const authored = comp.connectors?.length ?? 0
+            if (authored > 0) {
+              const ids = comp.connectors!.map(c => c.id).join(', ')
+              console.log(`[mate] connectors: 6 defaults + ${authored} authored = ${6 + authored} (${comp.id}) — authored: [${ids}]`)
+            } else {
+              console.log(`[mate] connectors: 6 defaults (${comp.id})`)
+            }
           }
         }
       }
