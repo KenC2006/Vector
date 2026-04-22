@@ -379,14 +379,20 @@ function applyMeshToLink(
 
     // Cache the actual rendered size (full extents in meters) as the authoritative
     // dimension source for ghost bounds and node placement. For shaft-overlay
-    // components, report the full bbox (body + procedural shaft together) so
-    // downstream placement and mount-node code see the intended physical envelope.
+    // components, measure the BODY mesh only (the procedural shaft cylinder is
+    // added to `geometryChild` below, AFTER this measurement; it doesn't appear
+    // in `finalBox`). Previously we overwrote `finalSize.z = dims.z` here to
+    // report the full body+shaft envelope, but that meant getParentBounds →
+    // getRenderedMeshDims returned 34mm for high_torque when the actual mating
+    // face sits at ±14.5mm; placement stacked children 2.5-4mm beyond the real
+    // body surface, and the post-reconcile ICP saw a `p90 ≈ 4mm` gap that
+    // exceeded the 3mm cap (clamp → visible under-engage). Reporting body-only
+    // dims lets placement math land the child against the real body extent
+    // instead of the cosmetic envelope. Ghost bounds lose a few mm of "shaft"
+    // visualization but gain correctness — acceptable tradeoff.
     const finalBox = new THREE.Box3().setFromObject(meshGroup)
     const finalSize = new THREE.Vector3()
     finalBox.getSize(finalSize)
-    if (shaftOverlay) {
-      finalSize.z = dims.z
-    }
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
       setRenderedMeshDims(compId, finalSize)
     }
