@@ -1726,8 +1726,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const childPreset = _findPresetForCleanup(comp.component_id)
       if (!parentPreset || !childPreset) continue
 
-      const parentBbMm = getOrComputeBbox(parentPreset.id, parentPreset)
-      const childBbMm = getOrComputeBbox(childPreset.id, childPreset)
+      // Parametric components (extrusions) carry their Z-length on the
+      // COMPONENT instance via `length_mm`, not on the preset. The preset
+      // only authors `cross_section_mm`. Splice the instance length in so
+      // the default-top connector lands at (0, 0, +length/2) — matches the
+      // splice computeMatePlacement already does for parent bbox upstream.
+      // Without this, the default child.top for a 100mm extrusion mates at
+      // (0, 0, +20mm) (hardcoded-40 fallback / 2), 30mm off from where the
+      // placement engine actually sits the extrusion, producing bogus
+      // per-sample gap values in the 10-30mm range on extrusion mates.
+      const parentPhys = parentPreset.physical
+      const parentBbRaw = getOrComputeBbox(parentPreset.id, parentPreset)
+      const parentBbMm = (parentPhys.cross_section_mm && parentComp.length_mm !== undefined)
+        ? [parentBbRaw[0] ?? 40, parentBbRaw[1] ?? 40, parentComp.length_mm]
+        : parentBbRaw
+      const childPhys = childPreset.physical
+      const childBbRaw = getOrComputeBbox(childPreset.id, childPreset)
+      const childBbMm = (childPhys.cross_section_mm && comp.length_mm !== undefined)
+        ? [childBbRaw[0] ?? 40, childBbRaw[1] ?? 40, comp.length_mm]
+        : childBbRaw
       const parentDefaults = generateDefaultConnectors({
         hxMm: (parentBbMm[0] ?? 40) / 2,
         hyMm: (parentBbMm[1] ?? 40) / 2,

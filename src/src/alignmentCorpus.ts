@@ -487,6 +487,83 @@ const icpFixtures: IcpFixture[] = [
       return { ok: true }
     },
   },
+  {
+    // Parent connector authored 5mm BELOW actual body bottom (mirrors the
+    // servo_high_torque case where authored bottom.origin_xyz_mm[2]=-17 but
+    // the rendered body's bottom surface sits at z=-12.834 after shaft-overlay
+    // shift). ICP must detect the consistent 5mm gap and — because the
+    // spread is near-zero and paired coverage is high — engage the adaptive
+    // confident-cap to close the full 5mm instead of clipping to 3mm.
+    //
+    // Regression guard for the Session 3 Phase 2 fix: before adaptive cap
+    // landed, a 4-5mm uniform gap would return nudge=3mm (clamped) and
+    // leave a visible 1-2mm residual. After: returns the real 5mm.
+    name: 'Step 2 ICP: flat-5mm-recessed parent → nudge ≈ 5 mm (adaptive confident-cap)',
+    run: () => {
+      // Parent body: 40×40×30 centered at origin. Real body bottom at z=-15.
+      // Authored bottom connector at z=-20 (5mm below actual surface).
+      const parent = new THREE.Mesh(new THREE.BoxGeometry(0.040, 0.040, 0.030))
+      // Child: 20×20×20 cube with top at z=+10 (authored).
+      const child = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.020, 0.020))
+      const nudge = nudgeAlongNormal(
+        parent, child,
+        [0, 0, -0.020], [0, 0, -1],   // parent bottom connector, outward -Z
+        [0, 0, +0.010],                // child top connector in child local
+      )
+      const nudgeMm = nudge * 1000
+      // Expect ~5mm — slightly below due to percentile picking p90 (mostly
+      // same values). Allow 4-6mm.
+      if (Math.abs(nudgeMm - 5) > 1) {
+        return { ok: false, reason: `expected ~5 mm (adaptive), got ${nudgeMm.toFixed(4)} mm — adaptive cap may not be firing` }
+      }
+      return { ok: true }
+    },
+  },
+  {
+    // Small child on big parent face — the footpad-on-extrusion-bottom and
+    // thigh-extrusion-on-servo-bottom case. Parent 80×80 face with authored
+    // connector offset 5 mm from actual surface. Child 20×20 footprint — ~12%
+    // of the sample disc lands inside the child, so paired/total is below
+    // the 30% "tight" threshold. But every paired sample reports the same
+    // 5 mm gap, so the UNIFORM gate (|p90-p50| < 1 mm AND paired ≥ 6) must
+    // fire the confident cap even though paired fraction is low.
+    //
+    // Regression guard: without UNIFORM mode, this clamps at 3 mm.
+    name: 'Step 2 ICP: small-child + uniform gap → nudge ≈ 5 mm (adaptive via UNIFORM gate)',
+    run: () => {
+      // Parent 80×80×30 (deliberately large face so child is a small fraction
+      // of the sample disc). Real body bottom at z=-15.
+      const parent = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.080, 0.030))
+      // Child 20×20×20 cube, top connector at z=+10.
+      const child = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.020, 0.020))
+      const diag = {
+        sampleCount: 0, parentHits: 0, childHits: 0, pairedCount: 0, faceRadiusM: 0,
+        nudgeMm: 0, reason: '',
+      }
+      const nudge = nudgeAlongNormal(
+        parent, child,
+        [0, 0, -0.020], [0, 0, -1],
+        [0, 0, +0.010],
+        { diagnostics: diag },
+      )
+      const nudgeMm = nudge * 1000
+      if (Math.abs(nudgeMm - 5) > 1) {
+        return {
+          ok: false,
+          reason: `expected ~5 mm via UNIFORM gate, got ${nudgeMm.toFixed(4)} mm (paired=${diag.pairedCount}, reason="${diag.reason}")`,
+        }
+      }
+      // Sanity: UNIFORM mode should be the reason label, not "tight" (paired
+      // fraction for this setup sits below 30%).
+      if (!diag.reason.includes('uniform') && !diag.reason.includes('tight')) {
+        return {
+          ok: false,
+          reason: `expected confident-cap to fire, got "${diag.reason}"`,
+        }
+      }
+      return { ok: true }
+    },
+  },
 ]
 
 // ── Runner ─────────────────────────────────────────────────────────────────

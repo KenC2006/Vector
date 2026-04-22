@@ -18,11 +18,18 @@
 //      -parent_axis to find the parent surface axial height p. Then
 //      raycast the CHILD from outside along -child_axis (child outward,
 //      = -parent_axis under the antiparallel-mate convention) to find
-//      the child surface axial height c, using tangent (-uFrac, -vFrac)
-//      so the WORLD point sampled on the child matches the parent sample.
-//   4. Per-pair signed axial gap g = -p - c (derivation in the header
-//      comment: see prior Step 1 / Step 2 notes). Positive = visible
-//      gap at this sample; zero = touching; negative = interpenetrating.
+//      the child surface axial height c. BOTH raycasts use the SAME
+//      (uFrac, vFrac) against the SAME tangent basis (uP, vP), which
+//      lands them at the same WORLD point on the mate face — the plane
+//      perpendicular to parent.axis is the same plane as the one perp
+//      to child.axis, so one world-space basis serves both samplings.
+//      (A previous version built a separate child basis and negated
+//      uFrac/vFrac; that compensation was asymmetric — u flipped, v did
+//      not — and put child samples at DIFFERENT world points than the
+//      parent samples for asymmetric meshes. That was the 10-14mm drift
+//      the user hit on servo-bottom / extrusion-top mates in Session 3.)
+//   4. Per-pair signed axial gap g = -p - c. Positive = visible gap at
+//      this sample; zero = touching; negative = interpenetrating.
 //   5. Take the NUDGE_PERCENTILE-th percentile of g. This picks the
 //      nudge that closes the gap for most of the face while letting
 //      the small interpenetrating minority (shaft tip protruding, etc.)
@@ -53,9 +60,46 @@ export const SAMPLE_RADIUS_FACTOR = 0.4
  *  matches the "hide 10% of parent surface behind child" heuristic. */
 export const NUDGE_PERCENTILE = 0.9
 
-/** Hard cap on the returned nudge (meters). Bounds damage from bad
- *  inputs — 3mm is well below any structural clearance we care about. */
+/** Conservative default cap on the returned nudge (meters). Bounds damage
+ *  from bad inputs on low-confidence measurements — 3mm is well below any
+ *  structural clearance we care about. */
 export const NUDGE_CAP_MM = 3
+
+/** Raised cap used when the per-sample gap distribution is both (a) tight
+ *  (spread between p10 and p90 below CONFIDENT_SPREAD_MAX_MM) and (b) at
+ *  least CONFIDENT_PAIRED_MIN_FRAC of the sample count landed as paired
+ *  hits. Those conditions imply a FLAT, REAL offset between the two faces
+ *  (not noise, not a bimodal mix of features), so the algorithm is allowed
+ *  to close it even if the magnitude exceeds the conservative cap. Targets
+ *  the extrusion-on-servo-bottom case where the servo body sits 4-7mm above
+ *  its authored bottom connector, producing a real 4-7mm gap that would
+ *  otherwise get clipped. */
+export const NUDGE_CAP_CONFIDENT_MM = 15
+
+/** Max allowed (p90 - p10) gap spread (in mm) for the "confident" adaptive
+ *  cap to fire. Below this, per-sample gaps agree closely enough to treat
+ *  the measurement as a real flat offset. */
+export const CONFIDENT_SPREAD_MAX_MM = 3
+
+/** Min allowed paired-sample fraction (paired / sample_count) for the
+ *  confident cap. Low fractions often reflect a small child face where
+ *  most rays miss — statistic may still be valid but we don't bump the
+ *  cap until we have enough samples to trust it. 0.3 = need at least ~24
+ *  of the ~80 default samples paired. */
+export const CONFIDENT_PAIRED_MIN_FRAC = 0.3
+
+/** Secondary gate for small-but-uniform distributions. When `|p90 − p50|`
+ *  is below this and we have at least `UNIFORM_PAIRED_MIN` paired samples,
+ *  the signal is unambiguous even if pair coverage is low — fires the
+ *  same confident cap. Targets the thigh/shin-extrusion-on-servo and
+ *  footpad-on-extrusion cases where the child footprint (20×20 / 25×25)
+ *  is much smaller than the sample disc (radius ~14.4 / 8 mm on the
+ *  parent), so paired coverage sits at 10-25% even though every paired
+ *  sample reports the same gap depth. Without this, those mates stay
+ *  clamped at the default 3mm cap even when the real gap is 4-5 mm and
+ *  uniformly measured. */
+export const UNIFORM_MEDIAN_SPREAD_MAX_MM = 1
+export const UNIFORM_PAIRED_MIN = 6
 
 /** Minimum raw nudge (mm) below which we return 0. Filters out sub-
  *  millimetre noise from raycast quantization / sample aliasing so
@@ -223,7 +267,13 @@ export function nudgeAlongNormal(
   opts: NudgeOptions = {},
 ): number {
   const percentileOpt = opts.percentile ?? NUDGE_PERCENTILE
-  const maxNudgeM = opts.maxNudgeM ?? NUDGE_CAP_MM / 1000
+  // If caller passes `maxNudgeM` explicitly, that's the absolute cap — no
+  // adaptive upgrade. If omitted, cap is chosen AFTER measurement based on
+  // the spread / paired-fraction confidence gate. Default path lets clear
+  // wide-gap cases like extrusion-on-servo-bottom close fully without
+  // sacrificing the 3mm guard on noisy measurements.
+  const callerOverrodeCap = opts.maxNudgeM !== undefined
+  const callerMaxNudgeM = opts.maxNudgeM ?? NUDGE_CAP_MM / 1000
   const sampleCount = opts.sampleCount ?? SAMPLE_COUNT
   const diag: NudgeDiagnostics = opts.diagnostics ?? {
     sampleCount: 0, parentHits: 0, childHits: 0, pairedCount: 0, faceRadiusM: 0,
@@ -238,8 +288,13 @@ export function nudgeAlongNormal(
   // table and for every authored connector pair in generic_presets.json).
   const childAxis = parentAxis.clone().negate()
 
-  const { u: uP, v: vP } = tangentBasis(parentAxis)
-  const { u: uC, v: vC } = tangentBasis(childAxis)
+  // Single tangent basis shared between parent and child sampling — the
+  // plane perpendicular to parent.axis = the plane perpendicular to
+  // child.axis (since they're antiparallel), so the same (u, v) vectors
+  // span both. Sharing the basis guarantees parent-and-child samples
+  // land at the SAME world point, which is what the "matched pair" gap
+  // derivation in the header assumes.
+  const { u, v } = tangentBasis(parentAxis)
 
   // Build mesh lists with pivot-subtree exclusion applied.
   const parentMeshes = collectMeshes(parentMesh, opts.excludeParent)
@@ -250,16 +305,16 @@ export function nudgeAlongNormal(
     return 0
   }
 
-  // Parent mesh is given in parent-local frame (root); its AABB there is
-  // what we want for sizing. Same for child. When the caller passes the
-  // scene link group, vertices live under non-identity transforms — pass
-  // the inverse matrix so meshListAABB reprojects them back to link-local.
+  // AABB must be in the SAME FRAME as `parentAxis` / `childAxis` so
+  // defaultFaceRadius's perp-extent logic picks the right pair of sizes.
+  // Callers from the scene-level pass pass axes in WORLD, so we measure
+  // AABB in WORLD too (pass null to meshListAABB so it uses each mesh's
+  // own matrixWorld without reprojection). Fixture callers at identity
+  // transform get the same values either way.
   parentMesh.updateMatrixWorld(true)
   childMesh.updateMatrixWorld(true)
-  const parentInv = new THREE.Matrix4().copy(parentMesh.matrixWorld).invert()
-  const childInv = new THREE.Matrix4().copy(childMesh.matrixWorld).invert()
-  const parentAabb = meshListAABB(parentMeshes, parentInv)
-  const childAabb = meshListAABB(childMeshes, childInv)
+  const parentAabb = meshListAABB(parentMeshes, null)
+  const childAabb = meshListAABB(childMeshes, null)
   if (!parentAabb || !childAabb) {
     diag.reason = 'empty AABB'
     diag.nudgeMm = 0
@@ -292,13 +347,19 @@ export function nudgeAlongNormal(
     const vOff = vFrac * faceRadius
     const axialP = sampleAxialAt(
       parentMeshes, parentOrig, parentAxis,
-      uP, vP, uOff, vOff,
+      u, v, uOff, vOff,
       parentRayOffset, raycaster,
     )
     if (axialP !== null) parentHits++
+    // Child uses the SAME tangent basis + SAME (uOff, vOff) as parent —
+    // see header note on world-correspondence. The child raycast starts
+    // from the OPPOSITE side of the mate plane from the parent raycast
+    // (rayStartOffset is applied along childAxis, which is −parentAxis),
+    // so both rays converge on the same world point on the mate face
+    // from their respective sides.
     const axialC = sampleAxialAt(
       childMeshes, childOrig, childAxis,
-      uC, vC, -uOff, -vOff,
+      u, v, uOff, vOff,
       childRayOffset, raycaster,
     )
     if (axialC !== null) childHits++
@@ -329,11 +390,43 @@ export function nudgeAlongNormal(
     diag.nudgeMm = 0
     return 0
   }
-  const clamped = Math.min(raw, maxNudgeM)
+  // Adaptive cap: the measurement is "confident" under either of two
+  // conditions:
+  //   (A) p10-p90 spread is tight AND paired coverage is high enough —
+  //       classic case where many samples all agree.
+  //   (B) p50-p90 spread is very tight AND we have ≥ UNIFORM_PAIRED_MIN
+  //       paired samples — handles the small-child case (extrusion on
+  //       servo bottom, footpad on extrusion bottom) where pair coverage
+  //       sits at 10-25% because the child is smaller than the sample
+  //       disc, but every paired sample reports the same gap depth.
+  // Either fires the raised NUDGE_CAP_CONFIDENT_MM cap. If the caller
+  // explicitly passed maxNudgeM, honor it — callers can force the
+  // conservative cap for a specific mate if they want.
+  const spreadMm = ((diag.gapP90Mm ?? 0) - (diag.gapP10Mm ?? 0))
+  const medianSpreadMm = ((diag.gapP90Mm ?? 0) - (diag.gapP50Mm ?? 0))
+  const pairedFrac = gapsM.length / Math.max(1, samples.length)
+  const isTight =
+    spreadMm < CONFIDENT_SPREAD_MAX_MM &&
+    pairedFrac >= CONFIDENT_PAIRED_MIN_FRAC
+  const isUniform =
+    Math.abs(medianSpreadMm) < UNIFORM_MEDIAN_SPREAD_MAX_MM &&
+    gapsM.length >= UNIFORM_PAIRED_MIN
+  const isConfident = isTight || isUniform
+  const effectiveCapM = callerOverrodeCap
+    ? callerMaxNudgeM
+    : (isConfident ? NUDGE_CAP_CONFIDENT_MM / 1000 : NUDGE_CAP_MM / 1000)
+  const clamped = Math.min(raw, effectiveCapM)
   diag.nudgeMm = clamped * 1000
+  const capLabel = callerOverrodeCap
+    ? `caller-cap=${(callerMaxNudgeM * 1000).toFixed(1)}mm`
+    : isTight
+      ? `confident-cap=${NUDGE_CAP_CONFIDENT_MM}mm (tight: spread=${spreadMm.toFixed(2)}mm paired=${Math.round(pairedFrac * 100)}%)`
+      : isUniform
+        ? `confident-cap=${NUDGE_CAP_CONFIDENT_MM}mm (uniform: p90-p50=${medianSpreadMm.toFixed(2)}mm paired=${gapsM.length})`
+        : `default-cap=${NUDGE_CAP_MM}mm`
   diag.reason = clamped < raw
-    ? `p${Math.round(percentileOpt * 100)}=${(raw * 1000).toFixed(2)}mm clamped to ${(maxNudgeM * 1000).toFixed(1)}mm`
-    : `p${Math.round(percentileOpt * 100)}=${(raw * 1000).toFixed(2)}mm`
+    ? `p${Math.round(percentileOpt * 100)}=${(raw * 1000).toFixed(2)}mm clamped to ${(effectiveCapM * 1000).toFixed(1)}mm [${capLabel}]`
+    : `p${Math.round(percentileOpt * 100)}=${(raw * 1000).toFixed(2)}mm [${capLabel}]`
   return clamped
 }
 
