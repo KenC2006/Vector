@@ -20,6 +20,7 @@
 import * as THREE from 'three'
 import { reconcileNodePlacement } from './reconcileAlignment.ts'
 import { resolveMate, type MateConnector } from './mateConnectors.ts'
+import { nudgeAlongNormal, shouldApplyRuntimeNudge } from './contactCleanup.ts'
 import type { AssemblyGraph } from './urdfGraphEquivalence.ts'
 
 // ── Scene builders ─────────────────────────────────────────────────────────
@@ -383,6 +384,111 @@ fixtures.push({
   tolerance: 1e-9,
 })
 
+// ── Step 2 ICP fixtures: runtime nudge-along-normal ───────────────────────
+// Hand-built THREE meshes exercise the pure `nudgeAlongNormal` from
+// contactCleanup.ts. These fixtures don't share the reconcileNodePlacement
+// runner above because ICP is measured at placement time (before reconcile),
+// not scene-level. A separate runner asserts the returned nudge magnitude.
+
+interface IcpFixture {
+  name: string
+  run: () => { ok: boolean; reason?: string }
+}
+
+/** Flat-top parent cube, parent connector at +Z face center. */
+function buildFlatTopParent(sideM = 0.04): THREE.Mesh {
+  const geom = new THREE.BoxGeometry(sideM, sideM, sideM)
+  return new THREE.Mesh(geom)
+}
+
+/** Parent whose top face has a 2 mm "chamfered" ring — modeled as a raised
+ *  central plateau (20 mm wide) sitting on a shorter base (40 mm wide).
+ *  Rays inside |u|,|v| < 10 mm hit the plateau top at z=+20 (axial 0); rays
+ *  outside hit the base top at z=+18 (axial −2 mm). With the default disc
+ *  sample radius of 0.4×40 mm = 16 mm, ≈60% of samples land in the
+ *  "chamfered" ring, so the 90th-percentile gap lands at 2 mm. */
+function buildChamferedTopParent(): THREE.Group {
+  const g = new THREE.Group()
+  // Base: 40×40×38, top face at z=+18.
+  const baseGeom = new THREE.BoxGeometry(0.040, 0.040, 0.038)
+  const base = new THREE.Mesh(baseGeom)
+  base.position.set(0, 0, -0.001)
+  g.add(base)
+  // Plateau: 20×20×2, top face at z=+20.
+  const plateauGeom = new THREE.BoxGeometry(0.020, 0.020, 0.002)
+  const plateau = new THREE.Mesh(plateauGeom)
+  plateau.position.set(0, 0, 0.019)
+  g.add(plateau)
+  return g
+}
+
+function buildFlatBottomChild(sideM = 0.03): THREE.Mesh {
+  const geom = new THREE.BoxGeometry(sideM, sideM, sideM)
+  return new THREE.Mesh(geom)
+}
+
+const icpFixtures: IcpFixture[] = [
+  {
+    name: 'Step 2 ICP: flat-on-flat → nudge ≈ 0 (no-op)',
+    run: () => {
+      const parent = buildFlatTopParent(0.040)
+      const child = buildFlatBottomChild(0.030)
+      const nudge = nudgeAlongNormal(
+        parent, child,
+        [0, 0, 0.020],  [0, 0, 1],
+        [0, 0, -0.015],
+      )
+      if (nudge > 0.0001) {
+        return { ok: false, reason: `expected ~0, got ${(nudge * 1000).toFixed(4)} mm` }
+      }
+      return { ok: true }
+    },
+  },
+  {
+    name: 'Step 2 ICP: flat-on-chamfered → nudge ≈ 2 mm chamfer height',
+    run: () => {
+      const parent = buildChamferedTopParent()
+      const child = buildFlatBottomChild(0.030)
+      const nudge = nudgeAlongNormal(
+        parent, child,
+        [0, 0, 0.020],  [0, 0, 1],
+        [0, 0, -0.015],
+      )
+      const nudgeMm = nudge * 1000
+      // Allow 0.5 mm tolerance — the exact value depends on how disc samples
+      // tile the plateau-vs-ring split; 1.5-2.5 mm is well within spec.
+      if (Math.abs(nudgeMm - 2) > 0.5) {
+        return { ok: false, reason: `expected ~2 mm, got ${nudgeMm.toFixed(4)} mm` }
+      }
+      return { ok: true }
+    },
+  },
+  {
+    name: 'Step 2 ICP: engagement_depth_mm authored → runtime nudge skipped',
+    run: () => {
+      // The caller (urdfAssembly.ts) consults shouldApplyRuntimeNudge before
+      // invoking the expensive raycast pass. When the parent connector has
+      // engagement_depth_mm authored (Step 1 path), the runtime nudge must
+      // be skipped so we don't stack two gap-closing translations on top of
+      // each other. Verify the gate rule directly — skipping isolates the
+      // decision from scene mocking.
+      if (shouldApplyRuntimeNudge(undefined) !== true) {
+        return { ok: false, reason: 'expected skip=false for undefined engagement' }
+      }
+      if (shouldApplyRuntimeNudge(0) !== true) {
+        return { ok: false, reason: 'expected skip=false for engagement=0 (author-disabled)' }
+      }
+      if (shouldApplyRuntimeNudge(1.5) !== false) {
+        return { ok: false, reason: 'expected skip=true for engagement=1.5 (authored)' }
+      }
+      if (shouldApplyRuntimeNudge(NaN) !== true) {
+        return { ok: false, reason: 'expected skip=false for NaN (malformed)' }
+      }
+      return { ok: true }
+    },
+  },
+]
+
 // ── Runner ─────────────────────────────────────────────────────────────────
 
 interface Outcome {
@@ -419,9 +525,16 @@ function runFixture(f: Fixture): Outcome {
 
 function main(): void {
   const outcomes = fixtures.map(runFixture)
+  // ICP fixtures run their own THREE scenes — merge into the same pass/fail
+  // accounting so a single harness exit status covers the whole corpus.
+  const icpOutcomes: Outcome[] = icpFixtures.map(f => {
+    const r = f.run()
+    return { name: f.name, ok: r.ok, reason: r.reason }
+  })
+  const all = [...outcomes, ...icpOutcomes]
   let passed = 0
   let failed = 0
-  for (const o of outcomes) {
+  for (const o of all) {
     if (o.ok) {
       console.log(`  ✓ ${o.name}`)
       passed++
@@ -431,7 +544,7 @@ function main(): void {
       failed++
     }
   }
-  console.log(`\n[alignment-corpus] ${passed}/${outcomes.length} passed`)
+  console.log(`\n[alignment-corpus] ${passed}/${all.length} passed`)
   if (failed > 0) process.exit(1)
 }
 

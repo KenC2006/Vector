@@ -10,6 +10,7 @@ import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNod
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { getOrComputeBbox } from './componentDims'
+import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
 import { quatToRpy } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
@@ -1674,6 +1675,129 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
   function hasMateConnectorFields(c: AssemblyComponent): boolean {
     return !!(c.attach_connector || c.mate_connector || c.mate_type)
+  }
+
+  // ── Scene-level ICP contact cleanup (Step 2 — docs/ENGINE_NEXT_STEPS.md) ──
+  // Runs AFTER reparse + rich-visuals + reconcileNodePlacement so it can
+  // raycast against the REAL rendered meshes (per-axis-scaled GLBs with
+  // shaft overlays baked in). The in-loop hook was a dead-end: bulk
+  // assembly commits URDF text then reparses ONCE at the end, so nothing
+  // but the root is in the scene during the placement loop. See
+  // scripts/contact-analysis-output.txt for the Phase 1 diagnosis.
+
+  /** Standalone preset lookup that doesn't depend on the `findPreset`
+   *  closure inside `resolveAssemblyGraph`. Reads the outer `presetData`. */
+  function _findPresetForCleanup(componentId: string): PresetComponent | null {
+    if (!presetData) return null
+    for (const cat of Object.values(presetData.categories)) {
+      for (const comp of cat.components) {
+        if (comp.id === componentId) return comp
+      }
+    }
+    return null
+  }
+
+  function runContactCleanupPass(): { adjustedCount: number; shifts: Array<{ linkName: string; dMm: number }> } {
+    const graphSnap = _lastAssemblyGraph
+    const shifts: Array<{ linkName: string; dMm: number }> = []
+    if (!graphSnap) return { adjustedCount: 0, shifts }
+
+    const parsed = ctx.getParsedRobot()
+    const pivotGroups = new Set<THREE.Object3D>()
+    for (const [, j] of parsed.joints) pivotGroups.add(j.group)
+
+    for (const comp of graphSnap.components) {
+      if (!comp.attach_to) continue
+      const parentLg = parsed.linkGroups.get(comp.attach_to)
+      const childLg = parsed.linkGroups.get(comp.link_name)
+      if (!parentLg || !childLg) continue
+      const pivot = childLg.parent as THREE.Group | null
+      if (!pivot) continue
+
+      const parentComp = graphSnap.components.find(c => c.link_name === comp.attach_to)
+      if (!parentComp) continue
+      const parentPreset = _findPresetForCleanup(parentComp.component_id)
+      const childPreset = _findPresetForCleanup(comp.component_id)
+      if (!parentPreset || !childPreset) continue
+
+      const parentBbMm = getOrComputeBbox(parentPreset.id, parentPreset)
+      const childBbMm = getOrComputeBbox(childPreset.id, childPreset)
+      const parentDefaults = generateDefaultConnectors({
+        hxMm: (parentBbMm[0] ?? 40) / 2,
+        hyMm: (parentBbMm[1] ?? 40) / 2,
+        hzMm: (parentBbMm[2] ?? 40) / 2,
+      })
+      const childDefaults = generateDefaultConnectors({
+        hxMm: (childBbMm[0] ?? 40) / 2,
+        hyMm: (childBbMm[1] ?? 40) / 2,
+        hzMm: (childBbMm[2] ?? 40) / 2,
+      })
+      const pAll = mergeConnectors(parentDefaults, parentPreset.connectors)
+      const cAll = mergeConnectors(childDefaults, childPreset.connectors)
+      const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
+      const inferredChildId = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
+      const childConnectorId = comp.mate_connector ?? inferredChildId ?? 'bottom'
+      const parentConn = findConnector(pAll, parentConnectorId)
+      const childConn = findConnector(cAll, childConnectorId)
+      if (!parentConn || !childConn) continue
+
+      if (!shouldApplyRuntimeNudge(parentConn.engagement_depth_mm)) {
+        console.log(`[icp][trace] ${comp.link_name}: skip — ${parentPreset.id}.${parentConnectorId}.engagement_depth_mm=${parentConn.engagement_depth_mm}mm authored (Step 1 path)`)
+        continue
+      }
+
+      // THREE.Raycaster operates in WORLD coordinates; transform the
+      // authored LOCAL-frame connector data (mm) up into world before
+      // passing it to nudgeAlongNormal. Axes transform as DIRECTIONS
+      // (rotation only); origins transform as POINTS (rotation + translation).
+      parentLg.updateMatrixWorld(true)
+      childLg.updateMatrixWorld(true)
+      const pOriginWorld = new THREE.Vector3(
+        parentConn.origin_xyz_mm[0] / 1000,
+        parentConn.origin_xyz_mm[1] / 1000,
+        parentConn.origin_xyz_mm[2] / 1000,
+      ).applyMatrix4(parentLg.matrixWorld)
+      const pAxisWorld = new THREE.Vector3(
+        parentConn.axis_xyz[0], parentConn.axis_xyz[1], parentConn.axis_xyz[2],
+      ).transformDirection(parentLg.matrixWorld).normalize()
+      const cOriginWorld = new THREE.Vector3(
+        childConn.origin_xyz_mm[0] / 1000,
+        childConn.origin_xyz_mm[1] / 1000,
+        childConn.origin_xyz_mm[2] / 1000,
+      ).applyMatrix4(childLg.matrixWorld)
+
+      const diagnostics: NudgeDiagnostics = {
+        sampleCount: 0, parentHits: 0, childHits: 0, pairedCount: 0, faceRadiusM: 0,
+        nudgeMm: 0, reason: '',
+      }
+      const nudgeM = nudgeAlongNormal(
+        parentLg,
+        childLg,
+        [pOriginWorld.x, pOriginWorld.y, pOriginWorld.z],
+        [pAxisWorld.x, pAxisWorld.y, pAxisWorld.z],
+        [cOriginWorld.x, cOriginWorld.y, cOriginWorld.z],
+        { excludeParent: pivotGroups, excludeChild: pivotGroups, diagnostics },
+      )
+
+      const gapSummary = diagnostics.pairedCount > 0
+        ? `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits} | gap(mm) min=${(diagnostics.gapMinMm ?? NaN).toFixed(2)} p50=${(diagnostics.gapP50Mm ?? NaN).toFixed(2)} p90=${(diagnostics.gapP90Mm ?? NaN).toFixed(2)} max=${(diagnostics.gapMaxMm ?? NaN).toFixed(2)}`
+        : `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits}`
+      console.log(`[icp][trace] ${comp.link_name} ${parentPreset.id}.${parentConnectorId}→${childPreset.id}.${childConnectorId} r=${(diagnostics.faceRadiusM * 1000).toFixed(1)}mm ${gapSummary} → nudge=${diagnostics.nudgeMm.toFixed(2)}mm (${diagnostics.reason})`)
+
+      if (!(nudgeM > 0)) continue
+
+      // Apply to pivot in parent-local: pivot.position -= nudgeM * parent_axis_unit.
+      const ax = parentConn.axis_xyz
+      const axLen = Math.hypot(ax[0], ax[1], ax[2]) || 1
+      pivot.position.x -= (nudgeM * ax[0]) / axLen
+      pivot.position.y -= (nudgeM * ax[1]) / axLen
+      pivot.position.z -= (nudgeM * ax[2]) / axLen
+      pivot.updateMatrixWorld(true)
+      shifts.push({ linkName: comp.link_name, dMm: nudgeM * 1000 })
+    }
+
+    if (shifts.length > 0) parsed.group.updateMatrixWorld(true)
+    return { adjustedCount: shifts.length, shifts }
   }
 
   /**
@@ -3858,6 +3982,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=${childPreset?.id ?? '?'}.${childFaceLog}, type=face-distribute → ${JSON.stringify(placement)}`)
         }
       }
+
+      // Step 2's runtime ICP pass now runs post-reparse as a scene-level
+      // pass (see runContactCleanupPass below). The in-loop hook here was
+      // a dead-end — bulk assembly's single-reparse-at-end timing meant
+      // every mate saw an empty scene. Leave this block intentionally
+      // empty; placement xyz is what `computeMatePlacement` /
+      // `computeFacePlacement` produced, with any nudges layered on
+      // after reconcile.
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
@@ -4055,6 +4187,26 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // Mount nodes were placed against the pre-reconcile pivot positions;
         // rebuild so the attachment rings follow the real rendered geometry.
         rebuildMountNodes()
+      }
+
+      // Step 2 — runtime ICP contact cleanup (docs/ENGINE_NEXT_STEPS.md).
+      // Runs AFTER reconcile so the scene is already flush where it can be
+      // via pure placement math. Then we raycast each mated pair's face and
+      // sink the child slightly into the parent to hide chamfers / beveled
+      // edges that flat placement can't close. Persist the same way reconcile
+      // does so the debounced reparse doesn't wipe the adjustments.
+      try {
+        const cleanupRes = runContactCleanupPass()
+        if (cleanupRes.adjustedCount > 0) {
+          persistReconcileShiftsToUrdf(ctx.getParsedRobot().linkGroups)
+          rebuildMountNodes()
+          const totalMm = cleanupRes.shifts.reduce((a, s) => a + s.dMm, 0)
+          console.log(`[icp] Done: ${cleanupRes.adjustedCount} link(s) nudged, total nudge = ${totalMm.toFixed(2)}mm`)
+        } else {
+          console.log(`[icp] Done: 0 link(s) nudged (all mates flush within ${NUDGE_MIN_MM}mm tolerance)`)
+        }
+      } catch (e) {
+        console.warn('[assembly] runContactCleanupPass failed:', e)
       }
     } catch (e) {
       console.warn('[assembly] reconcileNodePlacement failed:', e)

@@ -102,6 +102,18 @@ const loadingInProgress = new Set<string>()  // prevent duplicate loads
 // directory-import dependency tree. Re-exported here for source-compat with
 // existing urdfAssembly imports.
 export const getRenderedMeshDims = _getRenderedMeshDims
+
+/** Return the raw parsed GLB/STEP mesh group for a component, or null if
+ *  the cache hasn't been populated yet. Caller should treat the returned
+ *  group as READ-ONLY (shared across every instance of that component).
+ *  Used by the runtime ICP nudge in urdfAssembly.ts to raycast against the
+ *  child's actual mesh surface when the child isn't yet in the scene
+ *  (new-component adds). The group is in its raw authored units (GLBs from
+ *  our STEP converter are mm; scale before raycasting against meter-space
+ *  origins). */
+export function getCachedMeshGroup(compId: string): THREE.Group | null {
+  return meshCache.get(compId) ?? null
+}
 // Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
 // Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
 export const SLOW_MESH_BLACKLIST = new Set([
