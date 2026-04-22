@@ -27,6 +27,7 @@ import {
   findConnector,
   childConnectorIdForAttachFace,
   faceUVToWorldOffset,
+  tangentBasisFromAxis,
   type MateConnector,
   type MateType,
 } from './mateConnectors.ts'
@@ -1920,6 +1921,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         hy: parentPresetBboxMm.hyMm / 1000,
         hz: parentPresetBboxMm.hzMm / 1000,
       }
+      // Pass the resolved face connector so multi-child distribution projects
+      // the parent AABB onto the connector's tangent axes rather than the
+      // face-name lookup. parentConn was resolved above by id (usually equal
+      // to multiChild.face); reuse it directly when so, otherwise re-search.
+      const faceConnector = parentConn.id === multiChild.face
+        ? parentConn
+        : (findConnector(parentConnectors, multiChild.face) ?? null)
       const offsets = _computeMultiChildOffsets(
         multiChild.total,
         multiChild.index,
@@ -1927,6 +1935,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         multiChild.face,
         multiChild.insetOverride,
         multiChild.childSizes,
+        faceConnector,
       )
       const { dx, dy, dz } = faceUVToWorldOffset(multiChild.face, offsets.u, offsets.v)
       pos.x += dx
@@ -2039,9 +2048,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     // ── Multi-child tangential offsets (uses splay-corrected inset on bottom face) ──
+    // When the parent has an authored connector for this face, project the
+    // AABB onto the connector's tangent (u,v) axes for the face extent.
+    // authoredConn was already resolved above for engagement_depth_mm.
     let tu = 0, tv = 0
     if (totalOnFace > 1) {
-      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes)
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes, authoredConn)
       tu = offsets.u
       tv = offsets.v
     }
@@ -2189,6 +2201,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
   }
 
+  /** Project parent AABB half-extents onto the tangent plane of a connector's
+   *  axis. For axis-aligned connectors the result equals `faceUVHalfExtents`;
+   *  tilted-axis connectors get the AABB extent along their actual (u,v)
+   *  tangent basis. Support along unit w: hx*|wx|+hy*|wy|+hz*|wz|. */
+  function faceUVHalfExtentsFromConnector(
+    b: { hx: number; hy: number; hz: number },
+    connector: MateConnector,
+  ): { hu: number; hv: number } {
+    const axis = new THREE.Vector3(
+      connector.axis_xyz[0],
+      connector.axis_xyz[1],
+      connector.axis_xyz[2],
+    )
+    const { u, v } = tangentBasisFromAxis(axis)
+    const hu = b.hx * Math.abs(u.x) + b.hy * Math.abs(u.y) + b.hz * Math.abs(u.z)
+    const hv = b.hx * Math.abs(v.x) + b.hy * Math.abs(v.y) + b.hz * Math.abs(v.z)
+    return { hu, hv }
+  }
+
   /** Build a preset with length_mm override applied to bounding_box_mm (for extrusions). */
   function buildVisPreset(preset: PresetComponent, comp: { length_mm?: number }): PresetComponent {
     const phys = preset.physical
@@ -2211,13 +2242,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     face: string,
     inset: number,
     childSizes?: Array<{ hu: number; hv: number }>,
+    parentConnector?: MateConnector | null,
   ): Array<{ u: number; v: number }> {
-    // Cache key: deterministic for same inputs
-    const cacheKey = `${total}:${face}:${parent.hx},${parent.hy},${parent.hz}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
+    // When a parent connector is supplied, project the AABB onto its tangent
+    // axes; otherwise fall back to the face-name bbox-component lookup.
+    const { hu: extU, hv: extV } = parentConnector
+      ? faceUVHalfExtentsFromConnector(parent, parentConnector)
+      : faceUVHalfExtents(parent, face)
+    // Cache key keys off the resolved (extU,extV) so the connector-derived
+    // and face-name paths don't collide when they would diverge (tilted axes).
+    const cacheKey = `${total}:${face}:${extU.toFixed(6)},${extV.toFixed(6)}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
     const cached = _multiChildPositionsCache.get(cacheKey)
     if (cached) return cached
-
-    const { hu: extU, hv: extV } = faceUVHalfExtents(parent, face)
     let positions: Array<{ u: number; v: number }>
 
     if (total === 2) {
@@ -2301,10 +2337,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     face: string,
     insetOverride?: number,
     childSizes?: Array<{ hu: number; hv: number }>,
+    parentConnector?: MateConnector | null,
   ): { u: number; v: number } {
     const inset = insetOverride ?? 0.7
     const safeIndex = Math.min(index, Math.max(total - 1, 0))
-    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes)
+    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes, parentConnector)
     return positions[safeIndex] || { u: 0, v: 0 }
   }
 

@@ -25,6 +25,7 @@ import {
   buildInPlaneBasis,
   childConnectorIdForAttachFace,
   faceUVToWorldOffset,
+  tangentBasisFromAxis,
   type MateConnector,
   type MateType,
   type MateParams,
@@ -728,10 +729,71 @@ function runFaceMapCheck(c: FaceMapCheck): Outcome {
   return { name: c.name, ok: true }
 }
 
+// ── tangentBasisFromAxis checks ────────────────────────────────────────────
+// The multi-child distribution path projects parent AABB extents onto the
+// (u,v) tangent basis derived from the parent connector's axis. For canonical
+// ±X/±Y/±Z axes the basis must match the face-name UV convention so results
+// map cleanly through faceUVToWorldOffset and produce IDENTICAL placements to
+// the legacy faceUVHalfExtents lookup. The tilted-axis branch is locked in
+// against the generic orthonormality contract (u⊥n, v⊥n, u⊥v) so a future
+// change can't silently break the path that no shipped preset exercises today.
+
+interface BasisCheck {
+  name: string
+  axis: [number, number, number]
+  // Either an exact basis (canonical-axis cases) or 'fallback' (perpendicularity
+  // contract only — buildInPlaneBasis chooses one of two valid orientations).
+  expected: { u: [number, number, number]; v: [number, number, number] } | 'fallback'
+}
+
+const basisChecks: BasisCheck[] = [
+  { name: 'tangentBasis: +Z (top)    → u=X, v=Y',     axis: [0, 0, 1],  expected: { u: [1, 0, 0], v: [0, 1, 0] } },
+  { name: 'tangentBasis: -Z (bottom) → u=X, v=Y',     axis: [0, 0, -1], expected: { u: [1, 0, 0], v: [0, 1, 0] } },
+  { name: 'tangentBasis: +X (front)  → u=Y, v=Z',     axis: [1, 0, 0],  expected: { u: [0, 1, 0], v: [0, 0, 1] } },
+  { name: 'tangentBasis: -X (back)   → u=Y, v=Z',     axis: [-1, 0, 0], expected: { u: [0, 1, 0], v: [0, 0, 1] } },
+  { name: 'tangentBasis: +Y (right)  → u=X, v=Z',     axis: [0, 1, 0],  expected: { u: [1, 0, 0], v: [0, 0, 1] } },
+  { name: 'tangentBasis: -Y (left)   → u=X, v=Z',     axis: [0, -1, 0], expected: { u: [1, 0, 0], v: [0, 0, 1] } },
+  // Tilted axis (3-4-5 triangle in YZ plane): canonical branch must NOT match;
+  // generic basis must satisfy the orthonormality contract.
+  { name: 'tangentBasis: tilted [0, 0.6, 0.8] → buildInPlaneBasis fallback (orthonormal to axis)', axis: [0, 0.6, 0.8], expected: 'fallback' },
+  // Slightly off-canonical axis (within ALIGN_EPS=0.999) still picks the
+  // canonical branch — locks the threshold in.
+  { name: 'tangentBasis: near-Z [0.01, 0, 0.9999] → still canonical XY basis', axis: [0.01, 0, 0.9999], expected: { u: [1, 0, 0], v: [0, 1, 0] } },
+]
+
+function approxVec3(a: THREE.Vector3, b: [number, number, number], tol = 1e-9): boolean {
+  return Math.abs(a.x - b[0]) <= tol && Math.abs(a.y - b[1]) <= tol && Math.abs(a.z - b[2]) <= tol
+}
+
+function runBasisCheck(c: BasisCheck): Outcome {
+  const { u, v } = tangentBasisFromAxis(new THREE.Vector3(c.axis[0], c.axis[1], c.axis[2]))
+  if (c.expected === 'fallback') {
+    const n = new THREE.Vector3(c.axis[0], c.axis[1], c.axis[2]).normalize()
+    const tol = 1e-6
+    const uLen = u.length(), vLen = v.length()
+    if (Math.abs(uLen - 1) > tol || Math.abs(vLen - 1) > tol) {
+      return { name: c.name, ok: false, reason: `non-unit basis: |u|=${uLen.toFixed(6)} |v|=${vLen.toFixed(6)}` }
+    }
+    if (Math.abs(u.dot(n)) > tol) return { name: c.name, ok: false, reason: `u not perpendicular to axis: u·n=${u.dot(n).toFixed(6)}` }
+    if (Math.abs(v.dot(n)) > tol) return { name: c.name, ok: false, reason: `v not perpendicular to axis: v·n=${v.dot(n).toFixed(6)}` }
+    if (Math.abs(u.dot(v)) > tol) return { name: c.name, ok: false, reason: `u not perpendicular to v: u·v=${u.dot(v).toFixed(6)}` }
+    return { name: c.name, ok: true }
+  }
+  if (!approxVec3(u, c.expected.u) || !approxVec3(v, c.expected.v)) {
+    return {
+      name: c.name,
+      ok: false,
+      reason: `expected u=(${c.expected.u.join(',')}) v=(${c.expected.v.join(',')}), got u=(${u.x},${u.y},${u.z}) v=(${v.x},${v.y},${v.z})`,
+    }
+  }
+  return { name: c.name, ok: true }
+}
+
 function main(): void {
   const outcomes: Outcome[] = [
     ...fixtures.map(runFixture),
     ...faceMapChecks.map(runFaceMapCheck),
+    ...basisChecks.map(runBasisCheck),
   ]
   let passed = 0, failed = 0
   for (const o of outcomes) {

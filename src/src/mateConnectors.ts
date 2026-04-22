@@ -137,6 +137,30 @@ function quatFromTo(a: THREE.Vector3, b: THREE.Vector3): THREE.Quaternion {
 }
 
 /**
+ * Tangent basis (u, v) spanning the plane perpendicular to `axis`, picked to
+ * match the legacy face-name → world-axis convention used in
+ * `faceUVToWorldOffset` whenever `axis` lines up with one of the canonical
+ * world axes:
+ *   - axis ≈ ±Z (top/bottom)  → u = X, v = Y
+ *   - axis ≈ ±X (front/back)  → u = Y, v = Z
+ *   - axis ≈ ±Y (left/right)  → u = X, v = Z
+ *
+ * For non-canonical (tilted) axes, falls through to `buildInPlaneBasis` so the
+ * caller still gets a deterministic perpendicular basis. The canonical-axis
+ * branch is what makes connector-derived `(u,v)` extents bit-for-bit match
+ * the face-name `faceUVHalfExtents` table for axis-aligned connectors.
+ */
+export function tangentBasisFromAxis(axis: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
+  const n = new THREE.Vector3().copy(axis).normalize()
+  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z)
+  const ALIGN_EPS = 0.999
+  if (az > ALIGN_EPS) return { u: new THREE.Vector3(1, 0, 0), v: new THREE.Vector3(0, 1, 0) }
+  if (ax > ALIGN_EPS) return { u: new THREE.Vector3(0, 1, 0), v: new THREE.Vector3(0, 0, 1) }
+  if (ay > ALIGN_EPS) return { u: new THREE.Vector3(1, 0, 0), v: new THREE.Vector3(0, 0, 1) }
+  return buildInPlaneBasis(n)
+}
+
+/**
  * Canonical orthonormal basis (u, v) spanning the plane perpendicular to
  * `normal`. Deterministic choice — important for fixtures and cache keys:
  *   - picks the world axis LEAST parallel to `normal` as the helper;
