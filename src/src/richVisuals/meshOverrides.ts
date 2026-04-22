@@ -185,6 +185,12 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // preset [100,100,48] vs GLB [100,50,110]
   'mobility_mecanum_wheel': [Math.PI / 2, 0, 0],
 
+  // Driven wheel GLB has hub face at +Z but wheels are placed along drivetrain
+  // local +Z (outboard), so the hub ends up facing outboard instead of inboard.
+  // Rx(π) flips the hub from +Z to −Z so it faces the motor correctly.
+  // Axle symmetry is preserved; collision geometry (cylinder) is unaffected.
+  'mobility_wheel_driven': [Math.PI, 0, 0],
+
   // LiPo GLB (detailed pack with XT60 + balance lead) has length on Z (~103mm)
   // and a near-square ~24×23mm cross-section. All three lipo presets put length
   // on X with a rectangular 34×24 / 42×30 / 65×42 cross-section. Rotation

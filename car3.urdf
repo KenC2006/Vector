@@ -1,0 +1,857 @@
+<?xml version="1.0"?>
+<robot name="assembled_robot">
+  <link name="structural_baseplate_1">
+    <inertial>
+      <mass value="0.4500"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.000845" iyy="0.001501" izz="0.002344" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.200000 0.150000 0.005000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.816 0.816 0.816 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.070000 -0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.070000 -0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.070000 0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.070000 0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.200000 0.150000 0.005000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.070000 -0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.070000 -0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.070000 0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.070000 0.052500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006000" length="0.005050"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="drivetrain_hub_motor_80_2">
+    <inertial>
+      <mass value="0.3500"/>
+      <inertia ixx="0.000199" iyy="0.000199" izz="0.000280" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.530 0.570 0.600 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_drivetrain_hub_motor_80_2" type="revolute">
+    <parent link="structural_baseplate_1"/>
+    <child link="drivetrain_hub_motor_80_2"/>
+    <origin xyz="0.0700 0.0525 -0.0425" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="3.14"/>
+  </joint>
+  <link name="mobility_wheel_driven_3">
+    <inertial>
+      <mass value="0.1200"/>
+      <inertia ixx="0.000086" iyy="0.000086" izz="0.000150" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.076 0.076 0.076 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.100 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_wheel_driven_3" type="fixed">
+    <parent link="drivetrain_hub_motor_80_2"/>
+    <child link="mobility_wheel_driven_3"/>
+    <origin xyz="0.0000 0.0000 0.0000" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="drivetrain_hub_motor_80_4">
+    <inertial>
+      <mass value="0.3500"/>
+      <inertia ixx="0.000199" iyy="0.000199" izz="0.000280" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.530 0.570 0.600 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_drivetrain_hub_motor_80_4" type="revolute">
+    <parent link="structural_baseplate_1"/>
+    <child link="drivetrain_hub_motor_80_4"/>
+    <origin xyz="-0.0700 0.0525 -0.0425" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="3.14"/>
+  </joint>
+  <link name="mobility_wheel_driven_5">
+    <inertial>
+      <mass value="0.1200"/>
+      <inertia ixx="0.000086" iyy="0.000086" izz="0.000150" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.076 0.076 0.076 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.100 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_wheel_driven_5" type="fixed">
+    <parent link="drivetrain_hub_motor_80_4"/>
+    <child link="mobility_wheel_driven_5"/>
+    <origin xyz="0.0000 0.0000 0.0000" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="drivetrain_hub_motor_80_6">
+    <inertial>
+      <mass value="0.3500"/>
+      <inertia ixx="0.000199" iyy="0.000199" izz="0.000280" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.530 0.570 0.600 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_drivetrain_hub_motor_80_6" type="revolute">
+    <parent link="structural_baseplate_1"/>
+    <child link="drivetrain_hub_motor_80_6"/>
+    <origin xyz="0.0700 -0.0525 -0.0425" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="3.14"/>
+  </joint>
+  <link name="mobility_wheel_driven_7">
+    <inertial>
+      <mass value="0.1200"/>
+      <inertia ixx="0.000086" iyy="0.000086" izz="0.000150" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.076 0.076 0.076 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.100 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_wheel_driven_7" type="fixed">
+    <parent link="drivetrain_hub_motor_80_6"/>
+    <child link="mobility_wheel_driven_7"/>
+    <origin xyz="0.0000 0.0000 0.0000" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="drivetrain_hub_motor_80_8">
+    <inertial>
+      <mass value="0.3500"/>
+      <inertia ixx="0.000199" iyy="0.000199" izz="0.000280" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.530 0.570 0.600 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.040000" length="0.045000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_drivetrain_hub_motor_80_8" type="revolute">
+    <parent link="structural_baseplate_1"/>
+    <child link="drivetrain_hub_motor_80_8"/>
+    <origin xyz="-0.0700 -0.0525 -0.0425" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="3.14"/>
+  </joint>
+  <link name="mobility_wheel_driven_9">
+    <inertial>
+      <mass value="0.1200"/>
+      <inertia ixx="0.000086" iyy="0.000086" izz="0.000150" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.076 0.076 0.076 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.100 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.050000" length="0.030000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.017500" length="0.031500"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004000" length="0.033000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_wheel_driven_9" type="fixed">
+    <parent link="drivetrain_hub_motor_80_8"/>
+    <child link="mobility_wheel_driven_9"/>
+    <origin xyz="0.0000 0.0000 0.0000" rpy="-1.5708 0.0000 0.0000"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="power_lipo_3s_2200_10">
+    <inertial>
+      <mass value="0.1850"/>
+      <inertia ixx="0.000027" iyy="0.000180" izz="0.000188" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.105000 0.034000 0.024000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.251 0.502 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.084000 0.020400 0.000480"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.076 0.188 0.376 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.036750 -0.011900 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.021000 0.005100 0.001920"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.800 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.026250 -0.011900 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012600 0.002720 0.001440"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="1.000 1.000 1.000 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.105000 0.034000 0.024000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.084000 0.020400 0.000480"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.036750 -0.011900 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.021000 0.005100 0.001920"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.026250 -0.011900 0.012000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012600 0.002720 0.001440"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_power_lipo_3s_2200_10" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="power_lipo_3s_2200_10"/>
+    <origin xyz="-0.0700 -0.0264 0.0145" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="compute_motor_driver_dual_11">
+    <inertial>
+      <mass value="0.0280"/>
+      <inertia ixx="0.000005" iyy="0.000005" izz="0.000009" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.043000 0.043000 0.015000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.100 0.350 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.017200 0.017200 0.006000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.208 0.051 0.051 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.012900 -0.015050 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.010750 0.006450 0.007500"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.416 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.043000 0.043000 0.015000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.017200 0.017200 0.006000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.012900 -0.015050 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.010750 0.006450 0.007500"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_compute_motor_driver_dual_11" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="compute_motor_driver_dual_11"/>
+    <origin xyz="-0.0489 0.0213 0.0100" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="compute_mcu_small_12">
+    <inertial>
+      <mass value="0.0100"/>
+      <inertia ixx="0.000000" iyy="0.000002" izz="0.000003" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.051000 0.021000 0.001500"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.100 0.350 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.023460 -0.005250 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.002520 0.001750"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.000 0.200 0.300 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.023460 -0.001050 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.002520 0.001750"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.000 0.200 0.300 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.023460 0.004200 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.003150 0.002000"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.000 0.200 0.300 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.008400 0.000750" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.033150 0.000840 0.001250"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.000 0.400 0.600 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.051000 0.021000 0.001500"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.023460 -0.005250 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.002520 0.001750"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.023460 -0.001050 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.002520 0.001750"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.023460 0.004200 0.000250" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004080 0.003150 0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.008400 0.000750" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.033150 0.000840 0.001250"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_compute_mcu_small_12" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="compute_mcu_small_12"/>
+    <origin xyz="-0.0011 0.0051 0.0033" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="sensor_imu_6dof_13">
+    <inertial>
+      <mass value="0.0030"/>
+      <inertia ixx="0.000000" iyy="0.000000" izz="0.000000" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016000 0.016000 0.003000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.100 0.350 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.002100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006400 0.006400 0.001200"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.220 0.094 0.314 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.004800 -0.005600 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.002400 0.001500"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.439 0.188 0.627 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016000 0.016000 0.003000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.002100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006400 0.006400 0.001200"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.004800 -0.005600 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.002400 0.001500"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_sensor_imu_6dof_13" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="sensor_imu_6dof_13"/>
+    <origin xyz="0.0347 0.0000 0.0040" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="sensor_depth_camera_small_14">
+    <inertial>
+      <mass value="0.0720"/>
+      <inertia ixx="0.000010" iyy="0.000053" izz="0.000054" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.090000 0.025000 0.025000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.376 0.439 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003125" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.015000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.013500 0.007500 0.007500"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.282 0.329 0.424 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.090000 0.025000 0.025000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003125" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.015000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.013500 0.007500 0.007500"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_sensor_depth_camera_small_14" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="sensor_depth_camera_small_14"/>
+    <origin xyz="0.1450 0.0000 -0.0259" rpy="0 0.2618 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="sensor_lidar_2d_15">
+    <inertial>
+      <mass value="0.1800"/>
+      <inertia ixx="0.000088" iyy="0.000088" izz="0.000133" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.035000" length="0.028700"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.125 0.314 0.251 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014350" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.032200" length="0.012300"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.094 0.235 0.188 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.004100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.036050" length="0.006150"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.150 0.150 0.150 0.600"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 -0.015580" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.038500" length="0.002460"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.063 0.157 0.125 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.035000" length="0.028700"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014350" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.032200" length="0.012300"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.004100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.036050" length="0.006150"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.015580" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.038500" length="0.002460"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_sensor_lidar_2d_15" type="fixed">
+    <parent link="structural_baseplate_1"/>
+    <child link="sensor_lidar_2d_15"/>
+    <origin xyz="0.0853 0.0000 0.0193" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+</robot>

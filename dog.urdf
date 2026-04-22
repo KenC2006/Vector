@@ -1,0 +1,2754 @@
+<?xml version="1.0"?>
+<robot name="assembled_robot">
+  <link name="structural_baseplate_large_1">
+    <inertial>
+      <mass value="2.1000"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.010949" iyy="0.021449" izz="0.032375" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.350000 0.250000 0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.816 0.816 0.816 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.122500 -0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.122500 -0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.122500 0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.122500 0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.408 0.408 0.408 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.350000 0.250000 0.008000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.122500 -0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.122500 -0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.122500 0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.122500 0.087500 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.008080"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="power_lipo_4s_5000_2">
+    <inertial>
+      <mass value="0.4200"/>
+      <inertia ixx="0.000093" iyy="0.000688" izz="0.000719" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.137000 0.042000 0.030000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.784 0.659 0.188 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.109600 0.025200 0.000600"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.588 0.494 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.047950 -0.014700 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.027400 0.006300 0.002400"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.800 0.100 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.034250 -0.014700 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016440 0.003360 0.001800"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="1.000 1.000 1.000 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.137000 0.042000 0.030000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.109600 0.025200 0.000600"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.047950 -0.014700 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.027400 0.006300 0.002400"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.034250 -0.014700 0.015000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016440 0.003360 0.001800"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_power_lipo_4s_5000_2" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="power_lipo_4s_5000_2"/>
+    <origin xyz="0.1225 0.0875 0.0190" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="power_distribution_unit_3">
+    <inertial>
+      <mass value="0.0600"/>
+      <inertia ixx="0.000011" iyy="0.000022" izz="0.000031" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.065000 0.045000 0.015000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.102 0.102 0.102 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.065000 0.045000 0.015000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_power_distribution_unit_3" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="power_distribution_unit_3"/>
+    <origin xyz="-0.1225 0.0875 0.0115" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="compute_sbc_small_4">
+    <inertial>
+      <mass value="0.0460"/>
+      <inertia ixx="0.000013" iyy="0.000029" izz="0.000040" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.085000 0.056000 0.005100"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.100 0.350 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.039100 -0.014000 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.006720 0.005950"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.000 0.267 0.133 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.039100 -0.002800 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.006720 0.005950"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.000 0.267 0.133 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.039100 0.011200 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.008400 0.006800"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.000 0.267 0.133 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.022400 0.002550" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.055250 0.002240 0.004250"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.000 0.533 0.267 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.085000 0.056000 0.005100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.039100 -0.014000 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.006720 0.005950"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.039100 -0.002800 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.006720 0.005950"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.039100 0.011200 0.000850" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006800 0.008400 0.006800"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.022400 0.002550" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.055250 0.002240 0.004250"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_compute_sbc_small_4" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="compute_sbc_small_4"/>
+    <origin xyz="0.1225 -0.0875 0.0125" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="sensor_imu_6dof_5">
+    <inertial>
+      <mass value="0.0030"/>
+      <inertia ixx="0.000000" iyy="0.000000" izz="0.000000" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016000 0.016000 0.003000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.100 0.350 0.100 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.002100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006400 0.006400 0.001200"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.220 0.094 0.314 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.004800 -0.005600 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.002400 0.001500"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.439 0.188 0.627 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.016000 0.016000 0.003000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.002100" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006400 0.006400 0.001200"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.004800 -0.005600 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.002400 0.001500"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_sensor_imu_6dof_5" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="sensor_imu_6dof_5"/>
+    <origin xyz="-0.1225 -0.0875 0.0055" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_standard_6">
+    <inertial>
+      <mass value="0.0550"/>
+      <inertia ixx="0.000008" iyy="0.000014" izz="0.000009" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.020000 0.028120"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.165 0.208 0.314 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.011840" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046000 0.020000 0.004440"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.124 0.156 0.235 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.016280" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.007000" length="0.004440"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.082 0.104 0.157 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.019240" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.001750" length="0.003552"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.124 0.156 0.235 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.020000 0.028120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.011840" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046000 0.020000 0.004440"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.016280" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.007000" length="0.004440"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.019240" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.001750" length="0.003552"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_standard_6" type="revolute">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="actuator_servo_standard_6"/>
+    <origin xyz="0.1950 0.0000 0.0000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="1.5" velocity="3.14"/>
+  </joint>
+  <link name="structural_bracket_l_7">
+    <inertial>
+      <mass value="0.0350"/>
+      <inertia ixx="0.000009" iyy="0.000009" izz="0.000009" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.003200 0.040000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.690 0.690 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.018400 0.018400 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.003200 0.040000 0.040000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.518 0.518 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.003200 0.040000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.018400 0.018400 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.003200 0.040000 0.040000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_bracket_l_7" type="fixed">
+    <parent link="actuator_servo_standard_6"/>
+    <child link="structural_bracket_l_7"/>
+    <origin xyz="0.0000 0.0000 0.0385" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="sensor_depth_camera_small_8">
+    <inertial>
+      <mass value="0.0720"/>
+      <inertia ixx="0.000008" iyy="0.000052" izz="0.000052" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.090000 0.025000 0.025000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.376 0.439 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003125" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.015000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.013500 0.007500 0.007500"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.282 0.329 0.424 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.090000 0.025000 0.025000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.025200 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.006250" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.012500" rpy="1.570796 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003125" length="0.002000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.015000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.013500 0.007500 0.007500"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_sensor_depth_camera_small_8" type="fixed">
+    <parent link="structural_bracket_l_7"/>
+    <child link="sensor_depth_camera_small_8"/>
+    <origin xyz="0.0650 0.0000 -0.0035" rpy="0 0.1745 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_micro_9">
+    <inertial>
+      <mass value="0.0090"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.023000 0.012200 0.022040"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.118 0.435 0.729 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.009280" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.026450 0.012200 0.003480"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.088 0.326 0.547 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.012760" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004270" length="0.003480"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.059 0.218 0.365 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.015080" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.001067" length="0.002784"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.088 0.326 0.547 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.023000 0.012200 0.022040"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.009280" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.026450 0.012200 0.003480"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.012760" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.004270" length="0.003480"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.015080" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.001067" length="0.002784"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_micro_9" type="revolute">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="actuator_servo_micro_9"/>
+    <origin xyz="-0.1882 0.0000 0.0000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0.18" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_2020_10">
+    <inertial>
+      <mass value="0.0540"/>
+      <inertia ixx="0.000047" iyy="0.000047" izz="0.000004" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.020000 0.020000 0.100000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.010000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006000 0.004000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.010000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006000 0.004000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.010000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.006000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.010000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.006000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.020000 0.020000 0.100000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.010000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006000 0.004000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.010000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.006000 0.004000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.010000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.006000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.010000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.004000 0.006000 0.100100"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_2020_10" type="fixed">
+    <parent link="actuator_servo_micro_9"/>
+    <child link="structural_extrusion_2020_10"/>
+    <origin xyz="-0.0232 0.0000 0.0000" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_11">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_11" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="structural_servo_coupler_disc_11"/>
+    <origin xyz="0.1225 0.0875 -0.0080" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_12">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_12" type="revolute">
+    <parent link="structural_servo_coupler_disc_11"/>
+    <child link="actuator_servo_high_torque_12"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_13">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_13" type="fixed">
+    <parent link="actuator_servo_high_torque_12"/>
+    <child link="structural_servo_coupler_disc_13"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_14">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_14" type="revolute">
+    <parent link="structural_servo_coupler_disc_13"/>
+    <child link="actuator_servo_high_torque_14"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.5200 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_15">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000160" iyy="0.000160" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_15" type="fixed">
+    <parent link="actuator_servo_high_torque_14"/>
+    <child link="structural_extrusion_4040_15"/>
+    <origin xyz="0.0000 0.0000 -0.0670" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_16">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_16" type="fixed">
+    <parent link="structural_extrusion_4040_15"/>
+    <child link="structural_servo_coupler_disc_16"/>
+    <origin xyz="0.0000 0.0000 -0.0541" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_17">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_17" type="revolute">
+    <parent link="structural_servo_coupler_disc_16"/>
+    <child link="actuator_servo_high_torque_17"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 -1.0500 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_18">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000217" iyy="0.000217" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_18" type="fixed">
+    <parent link="actuator_servo_high_torque_17"/>
+    <child link="structural_extrusion_4040_18"/>
+    <origin xyz="0.0000 0.0000 -0.0770" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="mobility_rubber_foot_pad_19">
+    <inertial>
+      <mass value="0.0200"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.200 0.200 0.200 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.050 0.050 0.050 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_rubber_foot_pad_19" type="fixed">
+    <parent link="structural_extrusion_4040_18"/>
+    <child link="mobility_rubber_foot_pad_19"/>
+    <origin xyz="0.0000 0.0000 -0.0676" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_20">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_20" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="structural_servo_coupler_disc_20"/>
+    <origin xyz="-0.1225 0.0875 -0.0080" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_21">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_21" type="revolute">
+    <parent link="structural_servo_coupler_disc_20"/>
+    <child link="actuator_servo_high_torque_21"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_22">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_22" type="fixed">
+    <parent link="actuator_servo_high_torque_21"/>
+    <child link="structural_servo_coupler_disc_22"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_23">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_23" type="revolute">
+    <parent link="structural_servo_coupler_disc_22"/>
+    <child link="actuator_servo_high_torque_23"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.5200 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_24">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000160" iyy="0.000160" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_24" type="fixed">
+    <parent link="actuator_servo_high_torque_23"/>
+    <child link="structural_extrusion_4040_24"/>
+    <origin xyz="0.0000 0.0000 -0.0670" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_25">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_25" type="fixed">
+    <parent link="structural_extrusion_4040_24"/>
+    <child link="structural_servo_coupler_disc_25"/>
+    <origin xyz="0.0000 0.0000 -0.0541" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_26">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_26" type="revolute">
+    <parent link="structural_servo_coupler_disc_25"/>
+    <child link="actuator_servo_high_torque_26"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 -1.0500 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_27">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000217" iyy="0.000217" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_27" type="fixed">
+    <parent link="actuator_servo_high_torque_26"/>
+    <child link="structural_extrusion_4040_27"/>
+    <origin xyz="0.0000 0.0000 -0.0770" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="mobility_rubber_foot_pad_28">
+    <inertial>
+      <mass value="0.0200"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.200 0.200 0.200 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.050 0.050 0.050 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_rubber_foot_pad_28" type="fixed">
+    <parent link="structural_extrusion_4040_27"/>
+    <child link="mobility_rubber_foot_pad_28"/>
+    <origin xyz="0.0000 0.0000 -0.0676" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_29">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_29" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="structural_servo_coupler_disc_29"/>
+    <origin xyz="0.1225 -0.0875 -0.0080" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_30">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_30" type="revolute">
+    <parent link="structural_servo_coupler_disc_29"/>
+    <child link="actuator_servo_high_torque_30"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_31">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_31" type="fixed">
+    <parent link="actuator_servo_high_torque_30"/>
+    <child link="structural_servo_coupler_disc_31"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_32">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_32" type="revolute">
+    <parent link="structural_servo_coupler_disc_31"/>
+    <child link="actuator_servo_high_torque_32"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.5200 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_33">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000160" iyy="0.000160" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_33" type="fixed">
+    <parent link="actuator_servo_high_torque_32"/>
+    <child link="structural_extrusion_4040_33"/>
+    <origin xyz="0.0000 0.0000 -0.0670" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_34">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_34" type="fixed">
+    <parent link="structural_extrusion_4040_33"/>
+    <child link="structural_servo_coupler_disc_34"/>
+    <origin xyz="0.0000 0.0000 -0.0541" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_35">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_35" type="revolute">
+    <parent link="structural_servo_coupler_disc_34"/>
+    <child link="actuator_servo_high_torque_35"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 -1.0500 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_36">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000217" iyy="0.000217" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_36" type="fixed">
+    <parent link="actuator_servo_high_torque_35"/>
+    <child link="structural_extrusion_4040_36"/>
+    <origin xyz="0.0000 0.0000 -0.0770" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="mobility_rubber_foot_pad_37">
+    <inertial>
+      <mass value="0.0200"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.200 0.200 0.200 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.050 0.050 0.050 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_rubber_foot_pad_37" type="fixed">
+    <parent link="structural_extrusion_4040_36"/>
+    <child link="mobility_rubber_foot_pad_37"/>
+    <origin xyz="0.0000 0.0000 -0.0676" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_38">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_38" type="fixed">
+    <parent link="structural_baseplate_large_1"/>
+    <child link="structural_servo_coupler_disc_38"/>
+    <origin xyz="-0.1225 -0.0875 -0.0080" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_39">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_39" type="revolute">
+    <parent link="structural_servo_coupler_disc_38"/>
+    <child link="actuator_servo_high_torque_39"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_40">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_40" type="fixed">
+    <parent link="actuator_servo_high_torque_39"/>
+    <child link="structural_servo_coupler_disc_40"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_41">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_41" type="revolute">
+    <parent link="structural_servo_coupler_disc_40"/>
+    <child link="actuator_servo_high_torque_41"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 0.5200 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_42">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000160" iyy="0.000160" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.100000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.100100"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_42" type="fixed">
+    <parent link="actuator_servo_high_torque_41"/>
+    <child link="structural_extrusion_4040_42"/>
+    <origin xyz="0.0000 0.0000 -0.0670" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="structural_servo_coupler_disc_43">
+    <inertial>
+      <mass value="0.0150"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.753 0.753 0.753 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.016000" length="0.008000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_servo_coupler_disc_43" type="fixed">
+    <parent link="structural_extrusion_4040_42"/>
+    <child link="structural_servo_coupler_disc_43"/>
+    <origin xyz="0.0000 0.0000 -0.0541" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="actuator_servo_high_torque_44">
+    <inertial>
+      <mass value="0.1650"/>
+      <inertia ixx="0.000034" iyy="0.000046" izz="0.000048" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.188 0.220 0.282 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.094 0.110 0.141 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.141 0.165 0.212 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.046500 0.036000 0.025840"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.010880" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.053475 0.036000 0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.014960" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012600" length="0.004080"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.017680" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.003150" length="0.003264"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_actuator_servo_high_torque_44" type="revolute">
+    <parent link="structural_servo_coupler_disc_43"/>
+    <child link="actuator_servo_high_torque_44"/>
+    <origin xyz="0.0000 0.0000 -0.0210" rpy="0.0000 -1.0500 0.0000"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10.6" velocity="3.14"/>
+  </joint>
+  <link name="structural_extrusion_4040_45">
+    <inertial>
+      <mass value="0.1560"/>
+      <inertia ixx="0.000217" iyy="0.000217" izz="0.000060" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.690 0.722 0.753 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_2">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_3">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+      <material name="comp_mat_4">
+        <color rgba="0.518 0.541 0.565 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.040000 0.040000 0.120000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 -0.020000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.012000 0.008000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.020000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <box size="0.008000 0.012000 0.120120"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_structural_extrusion_4040_45" type="fixed">
+    <parent link="actuator_servo_high_torque_44"/>
+    <child link="structural_extrusion_4040_45"/>
+    <origin xyz="0.0000 0.0000 -0.0770" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <link name="mobility_rubber_foot_pad_46">
+    <inertial>
+      <mass value="0.0200"/>
+      <inertia ixx="0.000001" iyy="0.000001" izz="0.000002" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+      <material name="comp_mat_0">
+        <color rgba="0.200 0.200 0.200 1.000"/>
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+      <material name="comp_mat_1">
+        <color rgba="0.050 0.050 0.050 1.000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.010000" length="0.005000"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.002500" rpy="0.000000 0.000000 0.000000"/>
+      <geometry>
+        <cylinder radius="0.012000" length="0.002000"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_mobility_rubber_foot_pad_46" type="fixed">
+    <parent link="structural_extrusion_4040_45"/>
+    <child link="mobility_rubber_foot_pad_46"/>
+    <origin xyz="0.0000 0.0000 -0.0676" rpy="0.0000 0.0000 0.0000"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+</robot>

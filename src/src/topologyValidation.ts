@@ -194,6 +194,27 @@ export function validateTopology(
     }
   }
 
+  // Rule 13 — BARE_TIRE: tire preset attached directly to a non-drivetrain parent.
+  // A tire without a drivetrain axle/motor has no defined contact patch or spin
+  // axis, causing it to fall off or clip in simulation.
+  const isTireId = (id: string) =>
+    id.startsWith('mobility_wheel_') ||
+    id.startsWith('mobility_mecanum_') ||
+    id.startsWith('mobility_omni_') ||
+    id.startsWith('mobility_caster_')
+  const isDrivetrainId = (id: string) => id.startsWith('drivetrain_')
+  for (const comp of components) {
+    if (!isTireId(comp.component_id)) continue
+    if (!comp.attach_to) continue
+    const parentComp = components.find(c => c.link_name === comp.attach_to)
+    if (!parentComp) continue
+    if (!isDrivetrainId(parentComp.component_id)) {
+      warnings.push(
+        `[BARE_TIRE] ${comp.link_name} (${comp.component_id}) is attached directly to ${parentComp.link_name} (${parentComp.component_id}). Tires must attach to a drivetrain parent (e.g. drivetrain_hub_motor_80). Fix: insert a drivetrain between the chassis and the tire.`,
+      )
+    }
+  }
+
   // Rule 6: exactly one root.
   const roots = components.filter(c => !c.attach_to)
   if (roots.length > 1) {

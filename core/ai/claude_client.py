@@ -132,14 +132,17 @@ def _build_user_content(text: str, images: list | None):
     return [{"type": "text", "text": text}, *image_blocks]
 
 
-# Component IDs that have verified GLB meshes available in the UI.
-# Must match meshOverrides.ts minus SLOW_MESH_BLACKLIST in richVisuals/index.ts.
+# Component IDs the AI may use. Most have verified GLB meshes; drivetrain presets
+# use parametric fallback rendering (box/cylinder from bounding_box_mm) — no GLB needed.
 _ALLOWED_COMPONENT_IDS = {
     # Actuators — core servo range + continuous rotation + linear
     'actuator_servo_micro', 'actuator_servo_standard', 'actuator_servo_high_torque',
     'actuator_continuous_rotation_servo', 'actuator_linear_small',
-    # Motors — one DC, one geared
-    'motor_dc_small_130', 'motor_gear_medium_37mm',
+    # Motors — small DC only (geared motor replaced by drivetrain presets for wheels)
+    'motor_dc_small_130',
+    # Drivetrain assemblies — hub motor, caster, passive axle, steering knuckle
+    'drivetrain_hub_motor_80', 'drivetrain_caster_swivel',
+    'drivetrain_stub_axle_passive', 'drivetrain_steering_knuckle',
     # Sensors — camera, lidar, IMU, range, force, encoder
     'sensor_depth_camera_small', 'sensor_lidar_2d',
     'sensor_imu_6dof', 'sensor_ultrasonic',
@@ -353,13 +356,13 @@ Controls how an elongated or directable component is rotated within its face:
 ## Topology Rules
 
 1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**
-2. Actuators/motors use joint_type="revolute". Everything else uses "fixed".
+2. Drivetrain motors (drivetrain_hub_motor_80, drivetrain_geared_dc_with_coupler) use joint_type="continuous" — unbounded spin, torque-controlled in sim. Servo actuators (actuator_servo_*, actuator_bldc_*, actuator_stepper_*) use joint_type="revolute" — bounded angle, PD-controlled. Everything else uses "fixed".
 3. joint_axis: "z" for yaw/spin, "y" for pitch (up/down), "x" for roll.
 4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
 5. Include ALL components the user mentions. Do not skip or simplify.
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
-8. For wheels: attach wheels DIRECTLY to the baseplate bottom face (revolute y). Do NOT put servos between baseplate and wheels — wheel components have built-in motor semantics.
+8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
 9. length_mm overrides the length of extrusion components (default 100mm). Use 150–300mm for arm links, 80–120mm for leg segments, 50–80mm for short connectors.
 10. **Servos/motors have a shaft output on the TOP face — attach exactly ONE child to a servo's top face.** Never fan out multiple children from the same servo top (e.g. sensor + extrusion, or two extrusions). The shaft drives exactly one thing. If you need multiple items near the same joint, mount them on a shared structural extrusion *after* the servo, not on the servo itself.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
@@ -375,12 +378,18 @@ Arms: baseplate -> base_servo(top, revolute z) -> shoulder_servo(top, revolute y
 Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.
 Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_servo or gripper.
 
-Wheeled base: baseplate -> 4x wheel(bottom, revolute y) -- wheels mount DIRECTLY on the baseplate bottom face with revolute y joints. Do NOT add servos between baseplate and wheels. The backend distributes 4 wheels to corners and keeps them level (no splay).
+Wheeled base (differential drive / rover): baseplate -> 4x drivetrain_hub_motor_80(bottom, continuous y) -> 4x mobility_wheel_driven(coaxial, fixed). The drivetrain mounts on the baseplate bottom face; the tire attaches coaxially. The placement engine handles the axial offset (so the tire sits beside the motor, not inside it) and auto-flips drivetrains on one side of the baseplate so wheels land outboard on both sides — do not try to encode per-corner positions or rotations. Do NOT attach tires directly to the baseplate. Tires ALWAYS use attach_face="coaxial" when their parent is a drivetrain.
 
-Vehicle vocabulary (all map to the wheeled base above — DEFAULT 4 wheels):
-- "car", "truck", "vehicle", "rover", "buggy", "cart" → 4 wheels. NEVER emit a 2-wheel car; real cars have 4 wheels at corners. Only drop below 4 if the user explicitly says "two-wheeled" or "bike/motorcycle/unicycle".
+Caster: baseplate -> drivetrain_caster_swivel(bottom, fixed) -> mobility_wheel_driven(coaxial, fixed). Use for passive support points.
+
+Steered car (Ackermann): front pair uses baseplate -> drivetrain_steering_knuckle(bottom, revolute z) -> drivetrain_hub_motor_80(top, continuous y) -> mobility_wheel_driven(coaxial, fixed). Rear pair uses plain hub motors as above.
+
+Mecanum base: baseplate -> 4x drivetrain_hub_motor_80(bottom, continuous y) -> 4x mobility_mecanum_wheel(coaxial, fixed), alternating handedness (FL/RR left-handed, FR/RL right-handed).
+
+Vehicle vocabulary (all map to wheeled base above — DEFAULT 4 wheels):
+- "car", "truck", "vehicle", "rover", "buggy", "cart" → 4 drivetrain_hub_motor_80 + 4 mobility_wheel_driven. NEVER emit a 2-wheel car; real cars have 4 wheels at corners. Only drop below 4 if the user explicitly says "two-wheeled" or "bike/motorcycle/unicycle".
 - "6-wheeled rover" / "hexapod rover" / "Mars rover" → 6 wheels (backend distributes 2 rows × 3).
-- "tank" / "tracked" → still use 4 wheels (closest palette match); no track preset exists.
+- "tank" / "tracked" → still use 4 hub motors + wheels (closest palette match); no track preset exists.
 - Always add at least 1 sensor (camera on front face) and electronics (battery + SBC on top) for any vehicle request — a bare chassis with wheels is not a recognizable car.
 
 Quadruped (canonical 12-DOF, Unitree Go1 / Boston Dynamics Spot style).
@@ -461,7 +470,7 @@ DESIGN_ROBOT_TOOL = {
                         "component_id": {"type": "string", "description": "Exact ID from the component library"},
                         "attach_to": {"type": ["string", "null"], "description": "Parent's link_name, or null for root"},
                         "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
-                        "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic"]},
+                        "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"]},
                         "joint_axis": {"type": "string", "enum": ["x", "y", "z"]},
                         "length_mm": {"type": "number", "description": "Override length for extrusions (default 100mm). Use 150-300 for arm links, 80-120 for leg segments."},
                         "orientation": {"type": "string", "description": "Rotation within the face. Keywords: 'vertical' (default, extend +Z), 'horizontal' (extend +X), 'auto'. Or a numeric string in degrees for yaw around the face normal (e.g. '45', '-30'). Combine keyword+degrees as 'horizontal+45'."},
@@ -682,6 +691,27 @@ def _assemble_from_graph(assembly: dict) -> str:
         p_bbox = _get_bbox_m(parent_preset)
         c_bbox = _get_bbox_m(child_preset)
 
+        # Hub-motor -> tire: axial mount along drivetrain-local +Z.
+        # After the drivetrain's -pi/2 X-roll on the baseplate bottom,
+        # drivetrain-local +Z maps to world +Y (outboard). Offsetting the tire
+        # by (motor_hz + tire_half_axle) along +Z seats the tire's inboard bore
+        # face flush against the motor's outboard end. Do NOT use p_bbox[1]/2
+        # (the motor radius / local-Y half-extent) — that direction is world -Z
+        # (downward) after the roll, which places the tire below the motor
+        # rather than beside it. Outboard direction for 4-wheel vehicles is
+        # handled by yawing drivetrains on the -Y half 180 deg (bottom-face branch).
+        child_id = (child_preset or {}).get("id", "")
+        parent_id = (parent_preset or {}).get("id", "")
+        _tire_prefixes = ("mobility_wheel_", "mobility_mecanum_", "mobility_omni_", "mobility_caster_")
+        _is_tire_child = any(child_id.startswith(p) for p in _tire_prefixes)
+        _is_drivetrain_parent = parent_id.startswith("drivetrain_")
+        if _is_tire_child and _is_drivetrain_parent:
+            motor_hz = p_bbox[2] / 2  # axle half-length along drivetrain local Z
+            tire_half_axle = c_bbox[2] / 2  # tire half-width along axle
+            dz = motor_hz + tire_half_axle
+            print(f"[assembly] Axial hub mount: {child_id} on {parent_id}, dz={dz:.4f}", file=sys.stderr)
+            return [0, 0, dz], [0, 0, 0]
+
         # Use explicit rpy if provided and non-zero
         if explicit_rpy and any(abs(v) > 0.001 for v in explicit_rpy):
             rpy = explicit_rpy
@@ -691,14 +721,17 @@ def _assemble_from_graph(assembly: dict) -> str:
             if attach_face in ("top", "coaxial") and _is_elongated(c_bbox):
                 rpy = [0, math.pi/2, 0]  # pitch 90°
                 print(f"[assembly] Auto-rotating elongated child to horizontal (pitch 90°)", file=sys.stderr)
-            # Auto-roll: wheels and casters on the "bottom" face need -90° roll so
-            # the axle lies along Y (standard ROS convention for wheeled bases).
-            # Applied deterministically so the URDF is correct even when the model
-            # didn't emit attach_rpy. Mirrors the isWheel branch in urdfAssembly.ts.
+            # Auto-roll: drivetrain assemblies on the "bottom" face need -90° roll
+            # so their output shaft lies along Y (standard ROS convention).
+            # Tires (mobility_wheel_*) attach fixed to the drivetrain and inherit
+            # the orientation; they do not need their own roll correction.
+            # Legacy: also fires for bare wheels/casters for backwards compat.
             child_id = (child_preset or {}).get("id", "")
-            if ("wheel" in child_id or "caster" in child_id) and attach_face == "bottom":
+            _is_drivetrain = child_id.startswith("drivetrain_")
+            _is_legacy_wheel = ("wheel" in child_id or "caster" in child_id) and not _is_drivetrain
+            if (_is_drivetrain or _is_legacy_wheel) and attach_face == "bottom":
                 rpy = [-math.pi / 2, 0, 0]
-                print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face wheel mount", file=sys.stderr)
+                print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face drivetrain mount", file=sys.stderr)
 
         # Half-extents (geometry is always centered at link frame origin)
         px, py, pz = p_bbox[0]/2, p_bbox[1]/2, p_bbox[2]/2
@@ -722,6 +755,12 @@ def _assemble_from_graph(assembly: dict) -> str:
             cx_eff, cz_eff = cz, cx  # ±90° pitch: old Z → X, old X → Z
         elif is_roll_rotated:
             cx_eff, cz_eff = cx, cy  # ±90° roll: old Y → Z (X unchanged)
+            # Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
+            if child_id.startswith("drivetrain_") and child_preset:
+                ml = child_preset.get("mounting_logic", {})
+                aor = ml.get("assembled_outer_radius_mm")
+                if aor:
+                    cz_eff = aor / 1000.0
         else:
             cx_eff, cz_eff = cx, cz
 
@@ -742,7 +781,7 @@ def _assemble_from_graph(assembly: dict) -> str:
             "back":    [-(p_front), 0, 0],
             "right":   [0, py + cy, 0],
             "left":    [0, -(py + cy), 0],
-            "coaxial": [0, 0, pz + cz_eff],
+            "coaxial": [0, 0, 0],
         }
         xyz = face_offsets.get(attach_face, [0, 0, pz + cz_eff])
         return xyz, rpy
@@ -847,6 +886,11 @@ def _assemble_from_graph(assembly: dict) -> str:
                 joint_axis = raw_axis
             else:
                 joint_axis = [0, 0, 1]
+            # Drivetrain motors on bottom face get Rx(-90°); after that rotation,
+            # local Z = world Y (the rolling axis). Remap "y" → [0,0,1].
+            child_cid = child_preset.get("id", "") if child_preset else ""
+            if child_cid.startswith("drivetrain_") and attach_face == "bottom" and raw_axis == "y":
+                joint_axis = [0, 0, 1]
 
             joint_name = f"j_{link_name}"
 
@@ -861,6 +905,14 @@ def _assemble_from_graph(assembly: dict) -> str:
                 effort = me.get("max_torque_nm", 10.0)
                 ET.SubElement(joint_el, "limit", lower="-3.14159", upper="3.14159",
                              effort=f"{effort}", velocity="1.0")
+            elif joint_type == "continuous":
+                # No angle limits, but carry effort so urdf_to_mjcf gets correct ctrlrange.
+                me = preset.get("mechanical_electrical", {})
+                sim = preset.get("sim_metadata", {})
+                effort = sim.get("peak_torque_nm",
+                         me.get("stall_torque_nm",
+                         me.get("peak_torque_nm", 10.0)))
+                ET.SubElement(joint_el, "limit", effort=f"{effort}", velocity="50.0")
 
     # Apply ground offset: shift root link's visual up so bottom face is at Z=0
     if assembly.get("ground_offset", False) and base_link in comp_lookup:
@@ -966,11 +1018,16 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 ## Design Rules
 
 - ALWAYS start with structural_baseplate as the first component (parent_link=null)
-- Actuators/motors use joint_type="revolute". Structural/sensors use "fixed".
+- Drivetrain motors (drivetrain_hub_motor_80, drivetrain_geared_dc_with_coupler) use joint_type="continuous" — unbounded spin, torque-controlled. Servo actuators use joint_type="revolute". Structural/sensors use "fixed".
 - joint_axis: "z" for yaw/spin, "y" for pitch, "x" for roll
 - For arms: servo(revolute z) -> extrusion(horizontal) -> servo(revolute y) -> extrusion(horizontal) -> gripper
 - For legs: servo(revolute y) on bottom -> extrusion(vertical) -> servo(revolute y) -> extrusion(vertical)
-- For wheels: wheel on bottom face with revolute y
+- For wheels: NEVER attach a tire directly to the baseplate. Use a drivetrain assembly:
+  baseplate -> drivetrain_hub_motor_80 (attach_face="bottom", continuous y) -> mobility_wheel_driven (attach_face="coaxial", fixed).
+  The drivetrain IS the motor; the tire mounts coaxially on the hub (attach_face="coaxial"). The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner.
+  Casters: baseplate -> drivetrain_caster_swivel (bottom, fixed) -> mobility_wheel_driven (coaxial, fixed).
+  Mecanum: baseplate -> drivetrain_hub_motor_80 (bottom, continuous y) -> mobility_mecanum_wheel (coaxial, fixed).
+  Default 4 wheels for any "car/truck/vehicle/rover/buggy/cart" request.
 - Use length_mm=150-250 for arm/leg extrusions
 
 ## Important
@@ -1091,6 +1148,26 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
         "left":   [tu, -(py + cy + gap), tv],
     }
     origin_xyz = face_offsets.get(attach_face, [0, 0, pz + cz_eff + gap])
+
+    # Coaxial hub-motor mount: tire offsets along drivetrain-local +Z (the axle
+    # direction) so its inboard bore face seats against the motor's outboard end.
+    # After the drivetrain's -pi/2 X-roll, local +Z = world +Y (outboard).
+    # Do NOT offset in local +Y — that is world -Z (downward) after the roll and
+    # places the tire below the motor rather than beside it. Outboard direction
+    # is handled by the 180° yaw flip on the -Y baseplate half (below).
+    _tire_prefixes = ("mobility_wheel_", "mobility_mecanum_", "mobility_omni_", "mobility_caster_")
+    _is_tire = any(comp_id.startswith(p) for p in _tire_prefixes)
+    parent_comp_id = links.get(parent_link, {}).get("component_id", "") if parent_link else ""
+    _is_drivetrain_parent = parent_comp_id.startswith("drivetrain_")
+    if attach_face == "coaxial" and _is_tire and _is_drivetrain_parent:
+        # pz = motor axle half-length (local Z), cz = tire half-width along axle.
+        origin_xyz = [0, 0, pz + cz]
+        origin_rpy = [0, 0, 0]
+
+    # Drivetrain side-flip: yaw 180° when on baseplate -Y half so the coaxial
+    # wheel-offset ends up outboard on both sides of the chassis.
+    if comp_id.startswith("drivetrain_") and attach_face == "bottom" and tv < 0:
+        origin_rpy = [origin_rpy[0], origin_rpy[1], origin_rpy[2] + math.pi]
 
     # Compute world position
     world_xyz = [

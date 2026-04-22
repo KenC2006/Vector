@@ -825,9 +825,13 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
           const basePos = original ? original.position : jointInfo.group.position
           jointInfo.group.position.copy(basePos).addScaledVector(jointInfo.axis, position)
         } else {
-          const quat = new THREE.Quaternion()
-          quat.setFromAxisAngle(jointInfo.axis, position)
-          jointInfo.group.quaternion.copy(quat)
+          const original = originalJointPoses.get(jointName)
+          const delta = new THREE.Quaternion().setFromAxisAngle(jointInfo.axis, position)
+          if (original) {
+            jointInfo.group.quaternion.copy(original.quaternion).multiply(delta)
+          } else {
+            jointInfo.group.quaternion.copy(delta)
+          }
         }
       }
 

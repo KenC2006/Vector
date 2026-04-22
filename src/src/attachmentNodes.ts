@@ -72,6 +72,25 @@ export function componentPortsForPreset(
   hx: number, hy: number, hz: number,
   _mountingLogic?: { primary?: string; output?: string; shaft_diameter_mm?: number },
 ): AttachmentNodeDef[] {
+  // Tires: single hub_bore node at the wheel center. The cylinder axis is local Z
+  // (set by wheelShape's π/2 X-rotation), so a shaft coming in along Z mates.
+  // Rim/face nodes are physically meaningless on a spinning tire.
+  if (
+    componentId.startsWith('mobility_wheel_') ||
+    componentId.startsWith('mobility_mecanum_') ||
+    componentId.startsWith('mobility_omni_') ||
+    componentId.startsWith('mobility_caster_')
+  ) {
+    return [{
+      nodeId: 'hub_bore',
+      label: 'Hub Bore',
+      cls: 'bore',
+      origin_xyz: [0, 0, 0],
+      origin_rpy: [0, 0, 0],
+      single: true,
+    }]
+  }
+
   const nodes = defaultFaceNodesForBoxDims(hx, hy, hz)
 
   // Servos: mark top as shaft output, bottom as bracket mount

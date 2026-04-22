@@ -238,10 +238,19 @@ def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
 
 # Link-name keywords that identify contact surface categories.
 _FOOT_KEYWORDS    = frozenset(("foot", "toe", "pad", "paw", "tip", "sole"))
-_WHEEL_KEYWORDS   = frozenset(("wheel", "roller", "caster", "tire", "tyre"))
 _GRIPPER_KEYWORDS = frozenset(("gripper", "finger", "claw", "thumb", "palm", "grasp"))
 _IMU_KEYWORDS     = frozenset(("imu",))
 _EE_KEYWORDS_MJCF = frozenset(("ee", "end_effector", "end-effector", "tool", "tcp"))
+
+# Preset ID prefixes for tire links (contact surface = wheel).
+# Drivetrain presets (drivetrain_*) own the revolute joint but are not
+# the contact surface — tires are.
+_TIRE_PREFIXES = (
+    "mobility_wheel_",
+    "mobility_mecanum_",
+    "mobility_omni_",
+    "mobility_caster_",
+)
 
 import re as _re
 _TOKEN_SPLIT = _re.compile(r"[_\-\s]+")
@@ -267,9 +276,10 @@ def _is_foot_link(link_name: str) -> bool:
 
 
 def _is_wheel_link(link_name: str) -> bool:
-    """Heuristic: does this link name suggest a wheel / roller?"""
+    """True when this link is a tire (contact surface), not a drivetrain motor.
+    Uses preset-ID prefixes embedded in the link name rather than keyword sniffing."""
     lower = link_name.lower()
-    return any(kw in lower for kw in _WHEEL_KEYWORDS)
+    return any(lower.startswith(p) for p in _TIRE_PREFIXES)
 
 
 def _is_gripper_link(link_name: str) -> bool:
@@ -834,14 +844,11 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 incoming_joint = joint
                 break
 
-        # Classify contact role: foot > wheel (continuous joint + cylinder) > gripper > default.
-        # Wheel detection: a continuous joint whose child has cylinder collision geometry
-        # is almost certainly a driven wheel — apply rolling-friction class.
-        is_continuous_joint = incoming_joint is not None and incoming_joint["type"] == "continuous"
-        is_wheel = (
-            _is_wheel_link(link_name)
-            or (is_continuous_joint and _link_has_cylinder_collision(link_data))
-        )
+        # Classify contact role: foot > wheel > gripper > default.
+        # Wheel (tire) detection uses preset-ID prefixes, not joint type or name keywords.
+        # Drivetrain motor links (drivetrain_*) own the revolute/continuous joint but
+        # are NOT the contact surface — their tire child is.
+        is_wheel = _is_wheel_link(link_name)
         is_gripper = _is_gripper_link(link_name)
         is_imu = _is_imu_link(link_name)
 

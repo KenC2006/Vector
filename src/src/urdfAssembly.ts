@@ -28,7 +28,7 @@ export interface UrdfAssemblyContext {
   switchPanel: (name: string) => void
   getUrdfText: () => string
   setUrdfText: (content: string) => void
-  reparseUrdf: (xmlOverride?: string) => void
+  reparseUrdf: (xmlOverride?: string, opts?: { skipGround?: boolean }) => void
   getParsedRobot: () => ParsedRobotLike
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
@@ -267,6 +267,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   let selectedLink: string | null = null
   let gizmoBasePivotWorld = new THREE.Matrix4()
+  // Lowest world-Y of the selected link's subtree at drag start. The floor
+  // constraint uses this as its floor threshold instead of y=0 so a component
+  // that was already resting on (or a hair below) the floor at drag start
+  // doesn't get bumped upward on the first drag frame — only real
+  // drag-through-floor motion triggers a lift.
+  let gizmoDragStartMinY = 0
   let pointerDown = new THREE.Vector2()
   let urdfUndo: string[] = []
   let urdfRedo: string[] = []
@@ -624,7 +630,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const linkWorldQuat = new THREE.Quaternion()
       lg.matrixWorld.decompose(new THREE.Vector3(), linkWorldQuat, new THREE.Vector3())
 
-      const faceDefs = defaultFaceNodesForBoxDims(half.x, half.y, half.z)
+      // Tires only have one meaningful mount: the axial hub bore at the wheel
+      // center. Default face nodes on the bounding box produce rim-surface
+      // markers (physically meaningless) and two competing axial nodes, only
+      // one of which aligns with the driving shaft.
+      const isTire = (
+        linkName.startsWith('mobility_wheel_') ||
+        linkName.startsWith('mobility_mecanum_') ||
+        linkName.startsWith('mobility_omni_') ||
+        linkName.startsWith('mobility_caster_')
+      )
+      const faceDefs = isTire
+        ? [{ nodeId: 'hub_bore', label: 'Hub Bore', cls: 'bore' as const, origin_xyz: [-center.x, -center.y, -center.z] as [number, number, number], origin_rpy: [0, 0, 0] as [number, number, number], single: true }]
+        : defaultFaceNodesForBoxDims(half.x, half.y, half.z)
 
       for (const f of faceDefs) {
         const localPos = new THREE.Vector3(
@@ -778,7 +796,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return new XMLSerializer().serializeToString(doc)
   }
 
-  function commitUrdf(mutator: (doc: Document) => boolean, opts?: { defer?: boolean }): boolean {
+  function commitUrdf(mutator: (doc: Document) => boolean, opts?: { defer?: boolean; skipGround?: boolean }): boolean {
     const parser = new DOMParser()
     const doc = parser.parseFromString(getCurrentUrdfText(), 'application/xml')
     if (doc.documentElement.nodeName === 'parsererror') {
@@ -803,10 +821,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     ctx.setUrdfText(xml)
     // Defer to next animation frame when called from pointer-up handlers to avoid
     // blocking the frame that clears the drag (full scene rebuild can take 100+ ms).
+    const reparseOpts = opts?.skipGround ? { skipGround: true } : undefined
     if (opts?.defer) {
-      requestAnimationFrame(() => ctx.reparseUrdf(xml))
+      requestAnimationFrame(() => ctx.reparseUrdf(xml, reparseOpts))
     } else {
-      ctx.reparseUrdf(xml)
+      ctx.reparseUrdf(xml, reparseOpts)
     }
     return true
   }
@@ -1592,9 +1611,41 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const face = attachFace || 'top'
 
+    // ── Hub-motor → tire: axial mount along drivetrain-local +Z ──
+    // After the drivetrain's Rx(-π/2) on the baseplate bottom, drivetrain-local
+    // +Z maps to world +Y (outboard for the +Y chassis half; the -Y half gets a
+    // 180° yaw flip so its +Z also points outboard). Offsetting the tire by
+    // (motorHalfZ + tireHalfAxle) along +Z seats the tire's inboard face flush
+    // against the motor's outboard end. Do NOT use parent.hy (the motor radius)
+    // here — that direction is world -Z (downward) after the drivetrain roll and
+    // would place the tire below the motor instead of beside it.
+    const parentIsDrivetrain = parentLinkName.startsWith('drivetrain_')
+    const childIsTire = (
+      childComponentId.startsWith('mobility_wheel_') ||
+      childComponentId.startsWith('mobility_mecanum_') ||
+      childComponentId.startsWith('mobility_omni_') ||
+      childComponentId.startsWith('mobility_caster_')
+    )
+    if (parentIsDrivetrain && childIsTire) {
+      const motorHalfZ = parent.hz   // axle half-length along drivetrain local Z
+      const tireHalfAxle = childZ / 2
+      const dz = motorHalfZ + tireHalfAxle
+      return { xyz: `0.0000 0.0000 ${dz.toFixed(4)}`, rpy: '0 0 0' }
+    }
+
     // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
     // Hoist isWheel so it's visible inside the switch below.
-    const isWheel = childComponentId.includes('wheel') || childComponentId.includes('caster')
+    // Use preset-ID prefixes rather than substring matching so drivetrain
+    // assemblies (drivetrain_*) and their tire children are both treated as
+    // no-splay bottom-face components.
+    const isWheel = (
+      childComponentId.startsWith('drivetrain_') ||
+      childComponentId.startsWith('mobility_wheel_') ||
+      childComponentId.startsWith('mobility_mecanum_') ||
+      childComponentId.startsWith('mobility_omni_') ||
+      childComponentId.startsWith('mobility_caster_') ||
+      childComponentId.startsWith('mobility_swerve_')
+    )
     let splayAngle = 0
     let insetOverride: number | undefined
     if (face === 'bottom' && !isWheel && !noSplay && totalOnFace >= 2) {
@@ -1677,7 +1728,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
         // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
         // hip toward its corner now lands instead of being silently dropped.
-        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        let yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        // Drivetrain side-flip: the coaxial tire-on-drivetrain branch offsets the
+        // tire in drivetrain-local +Y (the bore-facing direction). Without a flip,
+        // every drivetrain's tire ends up on the same world side. Yaw drivetrains
+        // on the baseplate's -Y half by 180° so their bore points the opposite
+        // world direction — both sides of the chassis then get outboard wheels.
+        const isDrivetrain = childComponentId.startsWith('drivetrain_')
+        if (isDrivetrain && tv < 0) {
+          yawRad += Math.PI
+        }
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         // Rotation-aware vertical extent uses body half-extents so a rolled wheel
         // or pitched bracket snaps to the body, not to a shaft/horn tip.
@@ -1709,6 +1769,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${(-(parentBodyHY + childBodyHY + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
+      case 'coaxial':
+        // Explicit coaxial: child is concentric with parent (same center), rotated to align axis.
+        // For tire-on-drivetrain this is handled by the pre-check above; this branch
+        // handles any other explicit coaxial annotation the AI may emit.
+        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} 0.0000`, rpy: '-1.5708 0.0000 0.0000' }
       default:
         return { xyz: `0 0 ${(parentBodyHZ + childBodyHZ + gap).toFixed(4)}`, rpy: '0 0 0' }
     }
@@ -1884,6 +1949,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (g.type === 'box') { ex = g.size[0] / 2; ey = g.size[1] / 2; ez = g.size[2] / 2; allCylinders = false }
       else if (g.type === 'cylinder') { ex = g.radius; ey = g.radius; ez = g.length / 2 }
       else if (g.type === 'sphere') { ex = g.radius; ey = g.radius; ez = g.radius; allCylinders = false }
+      // Any primitive with a non-zero origin_rpy (wheels, mecanum rollers, caster
+      // cylinders) breaks the single-axis-cylinder assumption — fall back to a
+      // box ghost so the fallback path matches the post-cache path (which always
+      // returns shape='box'). Without this, first-time wheel ghosts render as
+      // CylinderGeometry along Y, producing a hockey-puck-on-floor silhouette,
+      // while second-time ghosts use BoxGeometry and look correct.
+      if (vis.origin_rpy[0] !== 0 || vis.origin_rpy[1] !== 0 || vis.origin_rpy[2] !== 0) {
+        allCylinders = false
+      }
       minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
       minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
       minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
@@ -2666,6 +2740,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (pivot) {
         pivot.updateMatrixWorld(true)
         gizmoBasePivotWorld.copy(pivot.matrixWorld)
+        const startAabb = new THREE.Box3().setFromObject(pivot)
+        gizmoDragStartMinY = isFinite(startAabb.min.y) ? startAabb.min.y : 0
         rebuildMountNodes()
         nodesGroup.visible = true
         lastSnapCheckMs = 0  // ensure first drag frame runs a snap check immediately
@@ -2763,7 +2839,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           reconcileJointAxis(jointEl, documentXml, oldPivotWorldQuat, parentWorldQuat, newLocalQuat)
 
           return true
-        }, { defer: true })
+        }, { defer: true, skipGround: true })
         bestMountCandidate = null
         ghostGroup.visible = false
         clearBestCandidateHighlight()
@@ -2838,7 +2914,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           origin.setAttribute('rpy', `${fmt(nlr)} ${fmt(nlp)} ${fmt(nly)}`)
           reconcileJointAxis(jointEl, documentXml, oldJointWorldQ, parentWorldQ, newLocalQuat)
           return true
-        }, { defer: true })
+        }, { defer: true, skipGround: true })
         if (ok) ctx.showToast(`Rotated ${selectedLink} (joint origin updated)`, 'success')
         selectLink(selectedLink)
         return
@@ -2858,7 +2934,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const origin = ensureOrigin(jointEl, documentXml)
         origin.setAttribute('xyz', `${fmt(newLocalPos.x)} ${fmt(newLocalPos.y)} ${fmt(newLocalPos.z)}`)
         return true
-      }, { defer: true })
+      }, { defer: true, skipGround: true })
       if (ok) ctx.showToast(`Moved ${selectedLink} (joint origin updated)`, 'success')
       selectLink(selectedLink)
     }
@@ -2871,15 +2947,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!pivot) return
 
     // Floor constraint: keep the lowest vertex of the component's geometry at world Y ≥ 0.
-    // We use Box3.setFromObject to find the true AABB minimum Y (accounts for geometry
-    // offset from pivot origin). Parent rotation means world Y ≠ local Y, so the
-    // correction is converted via the parent's inverse world quaternion.
-    if (gizmo.mode === 'translate' && pivot.parent) {
+    // Only enforce while the user is actively dragging the gizmo. The gizmo also
+    // fires 'change' on attach/detach; applying the lift there would bump any link
+    // whose AABB dips a hair below y=0 (float rounding after groundRobot, or a
+    // wheel resting on the floor) upward the moment the user clicked it.
+    const gizmoDragging = (gizmo as unknown as { dragging?: boolean }).dragging === true
+    if (gizmoDragging && gizmo.mode === 'translate' && pivot.parent) {
       pivot.updateMatrixWorld(true)
       const aabb = new THREE.Box3().setFromObject(pivot)
       const minY = aabb.min.y
-      if (minY < 0) {
-        const correctionWorld = new THREE.Vector3(0, -minY, 0)
+      // Threshold = min(0, drag-start min.y). Components resting on the floor
+      // (wheels) have start min.y ≈ 0 with float-level negative noise; without
+      // this, the first drag frame triggered a spurious lift by that noise.
+      const floorThreshold = Math.min(0, gizmoDragStartMinY)
+      if (minY < floorThreshold) {
+        const correctionWorld = new THREE.Vector3(0, floorThreshold - minY, 0)
         const parentWorldQuat = new THREE.Quaternion()
         const parentWorldScale = new THREE.Vector3()
         pivot.parent.updateMatrixWorld(true)
@@ -3462,12 +3544,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
+      // Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
+      // so the tire clears the baseplate instead of clipping through it.
+      let effectiveCym = cym
+      if (comp.component_id?.startsWith('drivetrain_') && comp.attach_face === 'bottom') {
+        const ml = (preset as Record<string, unknown>).mounting_logic as Record<string, unknown> | undefined
+        const aor = ml?.assembled_outer_radius_mm as number | undefined
+        if (aor) effectiveCym = aor / 1000
+      }
+
+      const placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
       const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
       let jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+      // After Rx(-90°) on bottom face, local Z = world Y (rolling axis). Remap "y" → "0 0 1".
+      if (comp.component_id?.startsWith('drivetrain_') && comp.attach_face === 'bottom' && comp.joint_axis?.toLowerCase() === 'y') {
+        jointAxis = '0 0 1'
+      }
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,

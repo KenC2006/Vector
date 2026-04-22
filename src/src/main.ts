@@ -1619,7 +1619,7 @@ function rebuildJointAxisVisuals() {
 // reparse (user typed again while xacro was processing) is silently discarded.
 let xacroGeneration = 0
 
-function reparseURDF(xmlOverride?: string) {
+function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
   try {
     let urdfContent: string
     if (xmlOverride !== undefined) {
@@ -1672,7 +1672,7 @@ function reparseURDF(xmlOverride?: string) {
           if (!skipHeavy) rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
-          groundRobot(robot)
+          if (!opts?.skipGround) groundRobot(robot)
           robot.updateMatrixWorld(true)
           urdfAssemblyApi?.refreshMountNodeTransforms()
           // Wireframes must rebuild AFTER groundRobot so world-space capture
@@ -1726,7 +1726,7 @@ function reparseURDF(xmlOverride?: string) {
 
     urdfAssemblyApi?.onModelUpdated()
 
-    groundRobot(robot)
+    if (!opts?.skipGround) groundRobot(robot)
     robot.updateMatrixWorld(true)
     urdfAssemblyApi?.refreshMountNodeTransforms()
 
@@ -2635,7 +2635,7 @@ urdfAssemblyApi = initUrdfAssembly({
       }
     }
   },
-  reparseUrdf: (xml?: string) => reparseURDF(xml),
+  reparseUrdf: (xml?: string, opts?: { skipGround?: boolean }) => reparseURDF(xml, opts),
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,

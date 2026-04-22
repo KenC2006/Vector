@@ -4150,6 +4150,7 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder",
+            "contact_class": "wheel",
             "contact_friction": [0.7, 0.005, 0.0001],
             "contact_solref": [0.02, 1]
           }
@@ -4176,6 +4177,7 @@
           },
           "sim_metadata": {
             "mjcf_joint_type": "free_spin",
+            "contact_class": "wheel",
             "contact_friction": [0.3, 0.005, 0.0001]
           }
         },
@@ -4204,6 +4206,7 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder",
+            "contact_class": "wheel",
             "contact_friction": [0.5, 0.3, 0.0001],
             "anisotropic_friction": true
           }
@@ -4235,6 +4238,7 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder",
+            "contact_class": "wheel",
             "contact_friction": [0.6, 0.1, 0.0001],
             "anisotropic_friction": true
           }
@@ -4355,6 +4359,148 @@
             "mjcf_geom_type": "cylinder",
             "contact_friction": [0.9, 0.005, 0.0001],
             "contact_solref": [0.05, 1]
+          }
+        }
+      ]
+    },
+
+    "drivetrain": {
+      "description": "Drivetrain assemblies — motor, axle, hub, and mounting hardware that sit between the chassis and a tire. Tires (mobility_wheel_*) attach as children of these.",
+      "components": [
+
+        {
+          "id": "drivetrain_hub_motor_80",
+          "name": "Hub Motor 80mm",
+          "description": "Self-contained BLDC hub motor; tire bolts directly to rotor. 80mm stator diameter. ~350g. Mount on baseplate bottom (revolute y); attach a mobility_wheel_driven as its child.",
+          "physical": {
+            "mass_kg": 0.350,
+            "bounding_box_mm": [80, 80, 45],
+            "inertia_primitive": "cylinder"
+          },
+          "mechanical_electrical": {
+            "stator_diameter_mm": 80,
+            "kv_rpm_per_v": 170,
+            "peak_torque_nm": 3.5,
+            "peak_power_w": 250,
+            "shaft_output": "axial_shaft_8mm"
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "bolt_pattern_mm": "M4_4hole_60mm",
+            "output": "axial_shaft",
+            "assembled_outer_radius_mm": 50
+          },
+          "sim_metadata": {
+            "mjcf_joint_type": "continuous",
+            "mjcf_actuator_type": "motor",
+            "contact_class": "drivetrain"
+          }
+        },
+
+        {
+          "id": "drivetrain_geared_dc_with_coupler",
+          "name": "Geared DC Motor + Shaft Coupler",
+          "description": "External DC gearmotor with shaft coupler for through-axle wheels. 25:1 gearbox. ~280g. Pairs with mobility_wheel_driven as child.",
+          "physical": {
+            "mass_kg": 0.280,
+            "bounding_box_mm": [60, 60, 90],
+            "inertia_primitive": "box"
+          },
+          "mechanical_electrical": {
+            "gear_ratio": 25,
+            "no_load_rpm": 200,
+            "stall_torque_nm": 4.0,
+            "peak_power_w": 120,
+            "shaft_diameter_mm": 8
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "bolt_pattern_mm": "M4_4hole_40mm",
+            "output": "axial_shaft"
+          },
+          "sim_metadata": {
+            "mjcf_joint_type": "continuous",
+            "mjcf_actuator_type": "motor",
+            "contact_class": "drivetrain"
+          }
+        },
+
+        {
+          "id": "drivetrain_stub_axle_passive",
+          "name": "Stub Axle (Passive)",
+          "description": "Dead axle; tire spins freely on sealed ball bearings. No motor. For unpowered trailer or idler wheels. ~80g.",
+          "physical": {
+            "mass_kg": 0.080,
+            "bounding_box_mm": [40, 40, 30],
+            "inertia_primitive": "cylinder"
+          },
+          "mechanical_electrical": {
+            "axle_diameter_mm": 8,
+            "max_radial_load_kg": 20,
+            "bearing_type": "sealed_ball"
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "bolt_pattern_mm": "M4_4hole_30mm",
+            "output": "axial_shaft"
+          },
+          "sim_metadata": {
+            "mjcf_joint_type": "continuous",
+            "mjcf_actuator_type": null,
+            "contact_class": "drivetrain"
+          }
+        },
+
+        {
+          "id": "drivetrain_caster_swivel",
+          "name": "Caster Swivel Fork",
+          "description": "King-pin + fork assembly for passive caster. Tire swivels freely around vertical axis. No motor. ~120g. Attach mobility_wheel_driven as child.",
+          "physical": {
+            "mass_kg": 0.120,
+            "bounding_box_mm": [60, 60, 70],
+            "inertia_primitive": "box"
+          },
+          "mechanical_electrical": {
+            "swivel_axis": "vertical",
+            "offset_mm": 15,
+            "max_load_kg": 15
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "bolt_pattern_mm": "M4_4hole_40mm",
+            "output": "axial_shaft"
+          },
+          "sim_metadata": {
+            "mjcf_joint_type": "continuous",
+            "mjcf_actuator_type": null,
+            "contact_class": "drivetrain"
+          }
+        },
+
+        {
+          "id": "drivetrain_steering_knuckle",
+          "name": "Steering Knuckle (Ackermann)",
+          "description": "King-pin for Ackermann front-wheel steering. ±30° revolute z joint. Pairs with a drivetrain_hub_motor_80 child (driven) or drivetrain_stub_axle_passive (undriven). ~150g.",
+          "physical": {
+            "mass_kg": 0.150,
+            "bounding_box_mm": [60, 60, 80],
+            "inertia_primitive": "box"
+          },
+          "mechanical_electrical": {
+            "steer_range_deg": 60,
+            "king_pin_diameter_mm": 10,
+            "max_lateral_load_kg": 30
+          },
+          "mounting_logic": {
+            "primary": "face_mount",
+            "bolt_pattern_mm": "M4_4hole_40mm",
+            "output": "axial_shaft"
+          },
+          "sim_metadata": {
+            "mjcf_joint_type": "revolute",
+            "mjcf_joint_limits_deg": [-30, 30],
+            "mjcf_actuator_type": "position",
+            "contact_class": "drivetrain"
           }
         }
       ]
