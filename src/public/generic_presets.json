@@ -42,7 +42,8 @@
           "physical": {
             "mass_kg": 0.009,
             "bounding_box_mm": [23, 12.2, 29],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_small_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 0.18,
@@ -79,7 +80,8 @@
           "physical": {
             "mass_kg": 0.055,
             "bounding_box_mm": [40, 20, 37],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_standard_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 1.5,
@@ -116,7 +118,8 @@
           "physical": {
             "mass_kg": 0.165,
             "bounding_box_mm": [46.5, 36, 34],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_high_torque_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 10.6,
@@ -154,7 +157,8 @@
           "physical": {
             "mass_kg": 0.350,
             "bounding_box_mm": [54, 42, 54],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_high_torque_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 28.0,
@@ -262,7 +266,8 @@
           "physical": {
             "mass_kg": 0.280,
             "bounding_box_mm": [42.3, 42.3, 48],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "stepper_nema17_collision.obj"
           },
           "mechanical_electrical": {
             "holding_torque_nm": 0.44,
@@ -295,7 +300,8 @@
           "physical": {
             "mass_kg": 0.700,
             "bounding_box_mm": [57.15, 57.15, 56],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "stepper_nema23_collision.obj"
           },
           "mechanical_electrical": {
             "holding_torque_nm": 1.26,
@@ -328,7 +334,8 @@
           "physical": {
             "mass_kg": 0.120,
             "bounding_box_mm": [16, 16, 130],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 50.0,
@@ -359,7 +366,8 @@
           "physical": {
             "mass_kg": 0.650,
             "bounding_box_mm": [30, 30, 350],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 750.0,
@@ -390,7 +398,8 @@
           "physical": {
             "mass_kg": 0.012,
             "bounding_box_mm": [23, 12, 32],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 8.0,
@@ -421,7 +430,8 @@
           "physical": {
             "mass_kg": 0.055,
             "bounding_box_mm": [40, 20, 37],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_standard_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 1.2,
@@ -452,7 +462,8 @@
           "physical": {
             "mass_kg": 0.022,
             "bounding_box_mm": [32, 16, 30],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "servo_small_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 0.35,
@@ -490,7 +501,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [27.5, 20, 25],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_dc_small_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -525,7 +537,8 @@
           "physical": {
             "mass_kg": 0.200,
             "bounding_box_mm": [36, 36, 54],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_dc_medium_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -560,7 +573,8 @@
           "physical": {
             "mass_kg": 0.350,
             "bounding_box_mm": [42, 42, 66],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_dc_large_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -596,7 +610,8 @@
           "physical": {
             "mass_kg": 0.010,
             "bounding_box_mm": [12, 10, 25],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "motor_gear_small_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -631,7 +646,8 @@
           "physical": {
             "mass_kg": 0.180,
             "bounding_box_mm": [37, 37, 70],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_gear_medium_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -666,7 +682,8 @@
           "physical": {
             "mass_kg": 0.400,
             "bounding_box_mm": [50, 50, 95],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_gear_heavy_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -701,7 +718,8 @@
           "physical": {
             "mass_kg": 0.005,
             "bounding_box_mm": [8, 8, 16],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "motor_coreless_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_coreless",
@@ -736,7 +754,8 @@
           "physical": {
             "mass_kg": 0.250,
             "bounding_box_mm": [40, 32, 65],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "motor_worm_gear_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_wormgear",
@@ -1034,7 +1053,8 @@
           "physical": {
             "mass_kg": 0.072,
             "bounding_box_mm": [90, 25, 25],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "depth_camera_collision.obj"
           },
           "mechanical_electrical": {
             "depth_range_m": [0.2, 10.0],
@@ -1073,7 +1093,8 @@
           "physical": {
             "mass_kg": 0.100,
             "bounding_box_mm": [124, 29, 26],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "depth_camera_collision.obj"
           },
           "mechanical_electrical": {
             "depth_range_m": [0.3, 15.0],
@@ -1108,7 +1129,8 @@
           "physical": {
             "mass_kg": 0.180,
             "bounding_box_mm": [70, 70, 41],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "lidar_2d_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": 12.0,
@@ -1141,7 +1163,8 @@
           "physical": {
             "mass_kg": 0.830,
             "bounding_box_mm": [103.3, 103.3, 71.7],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "lidar_3d_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": 100.0,
@@ -1176,7 +1199,8 @@
           "physical": {
             "mass_kg": 0.003,
             "bounding_box_mm": [16, 16, 3],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "imu_board_collision.obj"
           },
           "mechanical_electrical": {
             "accel_range_g": 16,
@@ -1207,7 +1231,8 @@
           "physical": {
             "mass_kg": 0.005,
             "bounding_box_mm": [25, 18, 4],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "imu_board_collision.obj"
           },
           "mechanical_electrical": {
             "accel_range_g": 16,
@@ -1239,7 +1264,8 @@
           "physical": {
             "mass_kg": 0.008,
             "bounding_box_mm": [45, 20, 15],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "sensor_ultrasonic_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": [0.02, 4.0],
@@ -1269,7 +1295,8 @@
           "physical": {
             "mass_kg": 0.002,
             "bounding_box_mm": [13, 18, 2],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "sensor_tof_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": [0.01, 4.0],
@@ -1299,7 +1326,8 @@
           "physical": {
             "mass_kg": 0.120,
             "bounding_box_mm": [50, 50, 20],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "sensor_force_torque_collision.obj"
           },
           "mechanical_electrical": {
             "force_range_n": 200,
@@ -1330,7 +1358,8 @@
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [22, 22, 10],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "sensor_encoder_collision.obj"
           },
           "mechanical_electrical": {
             "resolution_bits": 14,
@@ -1422,7 +1451,8 @@
           "physical": {
             "mass_kg": 0.005,
             "bounding_box_mm": [20, 10, 6],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "sensor_limit_switch_collision.obj"
           },
           "mechanical_electrical": {
             "type": "normally_open_with_lever",
@@ -1479,7 +1509,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [55, 12, 12],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "sensor_load_cell_collision.obj"
           },
           "mechanical_electrical": {
             "range_kg": 5.0,
@@ -1628,7 +1659,8 @@
           "physical": {
             "mass_kg": 0.010,
             "bounding_box_mm": [51, 21, 5],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "compute_mcu_collision.obj"
           },
           "mechanical_electrical": {
             "processor": "arm_cortex_m7_600mhz",
@@ -1660,7 +1692,8 @@
           "physical": {
             "mass_kg": 0.046,
             "bounding_box_mm": [85, 56, 17],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "sbc_small_collision.obj"
           },
           "mechanical_electrical": {
             "processor": "arm_cortex_a72_quad_1.5ghz",
@@ -1725,7 +1758,8 @@
           "physical": {
             "mass_kg": 0.028,
             "bounding_box_mm": [43, 43, 15],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "compute_motor_driver_collision.obj"
           },
           "mechanical_electrical": {
             "channels": 2,
@@ -1780,7 +1814,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [50, 35, 10],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "compute_fpga_collision.obj"
           },
           "mechanical_electrical": {
             "logic_cells": 25000,
@@ -1811,7 +1846,8 @@
           "physical": {
             "mass_kg": 0.008,
             "bounding_box_mm": [25, 18, 8],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "compute_can_transceiver_collision.obj"
           },
           "mechanical_electrical": {
             "bus_speed_mbps": 1.0,
@@ -1922,7 +1958,8 @@
           "physical": {
             "mass_kg": 0.012,
             "bounding_box_mm": [25, 25, 8],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "compute_gps_collision.obj"
           },
           "mechanical_electrical": {
             "constellations": ["gps", "glonass", "galileo", "beidou"],
@@ -1958,7 +1995,8 @@
           "physical": {
             "mass_kg": 0.185,
             "bounding_box_mm": [105, 34, 24],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 3,
@@ -1988,7 +2026,8 @@
           "physical": {
             "mass_kg": 0.420,
             "bounding_box_mm": [137, 42, 30],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 4,
@@ -2018,7 +2057,8 @@
           "physical": {
             "mass_kg": 1.050,
             "bounding_box_mm": [165, 65, 42],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 6,
@@ -2047,7 +2087,8 @@
           "physical": {
             "mass_kg": 0.012,
             "bounding_box_mm": [22, 17, 8],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "power_buck_converter_collision.obj"
           },
           "mechanical_electrical": {
             "input_voltage_range_v": [7.0, 28.0],
@@ -2072,7 +2113,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [40, 22, 12],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "power_buck_converter_collision.obj"
           },
           "mechanical_electrical": {
             "input_voltage_range_v": [14.0, 50.0],
@@ -2097,7 +2139,8 @@
           "physical": {
             "mass_kg": 0.060,
             "bounding_box_mm": [65, 45, 15],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "power_pdu_collision.obj"
           },
           "mechanical_electrical": {
             "input_channels": 1,
@@ -2207,7 +2250,8 @@
           "physical": {
             "mass_kg": 0.025,
             "bounding_box_mm": [110, 60, 3],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "power_solar_panel_collision.obj"
           },
           "mechanical_electrical": {
             "open_circuit_voltage_v": 6.5,
@@ -2259,7 +2303,8 @@
           "physical": {
             "mass_kg": 0.045,
             "bounding_box_mm": [40, 40, 55],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "power_estop_collision.obj"
           },
           "mechanical_electrical": {
             "contact_type": "normally_closed",
@@ -2293,7 +2338,8 @@
             "cross_section_mm": [20, 20],
             "inertia_primitive": "box",
             "material": "aluminum_6063_t5",
-            "density_kg_per_m3": 2700
+            "density_kg_per_m3": 2700,
+            "collision_mesh": "extrusion_2020_collision.obj"
           },
           "mechanical_electrical": {
             "slot_width_mm": 6.0,
@@ -2323,7 +2369,8 @@
             "cross_section_mm": [40, 40],
             "inertia_primitive": "box",
             "material": "aluminum_6063_t5",
-            "density_kg_per_m3": 2700
+            "density_kg_per_m3": 2700,
+            "collision_mesh": "extrusion_4040_collision.obj"
           },
           "mechanical_electrical": {
             "slot_width_mm": 8.0,
@@ -2408,7 +2455,8 @@
             "mass_kg": 0.035,
             "bounding_box_mm": [40, 40, 40],
             "inertia_primitive": "box",
-            "material": "aluminum_6061_t6"
+            "material": "aluminum_6061_t6",
+            "collision_mesh": "structural_bracket_l_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 3.0,
@@ -2438,7 +2486,8 @@
             "mass_kg": 0.025,
             "bounding_box_mm": [50, 30, 40],
             "inertia_primitive": "box",
-            "material": "aluminum_6061_t6"
+            "material": "aluminum_6061_t6",
+            "collision_mesh": "structural_bracket_u_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 2.0,
@@ -2463,7 +2512,8 @@
             "mass_kg": 0.015,
             "bounding_box_mm": [32, 32, 8],
             "inertia_primitive": "cylinder",
-            "material": "aluminum_6061_t6"
+            "material": "aluminum_6061_t6",
+            "collision_mesh": "servo_coupler_disc_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 8.0,
@@ -3200,7 +3250,8 @@
             "mass_kg": 0.010,
             "bounding_box_mm": [18, 18, 9],
             "inertia_primitive": "cylinder",
-            "material": "aluminum_6061_t6"
+            "material": "aluminum_6061_t6",
+            "collision_mesh": "structural_shaft_collar_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 8,
@@ -3226,7 +3277,8 @@
             "mass_kg_per_100mm": 0.028,
             "cross_section_mm": [12, 8],
             "inertia_primitive": "box",
-            "material": "steel_hardened"
+            "material": "steel_hardened",
+            "collision_mesh": "structural_linear_rail_collision.obj"
           },
           "mechanical_electrical": {
             "rail_width_mm": 12,
@@ -3285,7 +3337,8 @@
             "mass_kg_per_100mm": 0.024,
             "cross_section_mm": [35, 7.5],
             "inertia_primitive": "box",
-            "material": "steel_galvanized"
+            "material": "steel_galvanized",
+            "collision_mesh": "structural_din_rail_collision.obj"
           },
           "mechanical_electrical": {
             "width_mm": 35,
@@ -3318,7 +3371,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [6, 200, 15],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "pulley_gt2_collision.obj"
           },
           "mechanical_electrical": {
             "pitch_mm": 2.0,
@@ -3350,7 +3404,8 @@
           "physical": {
             "mass_kg_per_100mm": 0.032,
             "diameter_mm": 8,
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "transmission_leadscrew_collision.obj"
           },
           "mechanical_electrical": {
             "lead_mm": 2.0,
@@ -3411,7 +3466,8 @@
           "physical": {
             "mass_kg": 0.012,
             "bounding_box_mm": [22, 22, 7],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "bearing_small_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 8,
@@ -3441,7 +3497,8 @@
           "physical": {
             "mass_kg": 0.098,
             "bounding_box_mm": [52, 52, 15],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "bearing_large_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 25,
@@ -3502,7 +3559,8 @@
           "physical": {
             "mass_kg": 0.200,
             "bounding_box_mm": [42.3, 42.3, 38],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "transmission_planetary_gearbox_collision.obj"
           },
           "mechanical_electrical": {
             "gear_ratio_options": ["5:1", "10:1", "20:1", "50:1", "100:1"],
@@ -3691,7 +3749,8 @@
           "physical": {
             "mass_kg": 0.025,
             "bounding_box_mm": [20, 20, 30],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "transmission_coupling_collision.obj"
           },
           "mechanical_electrical": {
             "bore_a_mm": 5,
@@ -3722,7 +3781,8 @@
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [18, 18, 25],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "transmission_rigid_coupling_collision.obj"
           },
           "mechanical_electrical": {
             "bore_a_mm": 8,
@@ -3854,7 +3914,8 @@
           "physical": {
             "mass_kg": 0.180,
             "bounding_box_mm": [65, 65, 40],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "gripper_parallel_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 20,
@@ -3887,7 +3948,8 @@
           "physical": {
             "mass_kg": 0.450,
             "bounding_box_mm": [100, 100, 55],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "gripper_parallel_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 100,
@@ -3920,7 +3982,8 @@
           "physical": {
             "mass_kg": 0.800,
             "bounding_box_mm": [120, 120, 90],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "effector_3finger_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 60,
@@ -3954,7 +4017,8 @@
           "physical": {
             "mass_kg": 0.060,
             "bounding_box_mm": [40, 40, 50],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "effector_suction_cup_collision.obj"
           },
           "mechanical_electrical": {
             "cup_diameter_mm": 30,
@@ -4126,7 +4190,8 @@
           "physical": {
             "mass_kg": 0.030,
             "bounding_box_mm": [25, 25, 60],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "effector_pen_holder_collision.obj"
           },
           "mechanical_electrical": {
             "clamp_diameter_range_mm": [8, 16],
@@ -4188,7 +4253,8 @@
           "physical": {
             "mass_kg": 0.120,
             "bounding_box_mm": [100, 100, 30],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "wheel_driven_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 100,
@@ -4217,7 +4283,8 @@
           "physical": {
             "mass_kg": 0.080,
             "bounding_box_mm": [50, 50, 65],
-            "inertia_primitive": "box"
+            "inertia_primitive": "box",
+            "collision_mesh": "wheel_caster_collision.obj"
           },
           "mechanical_electrical": {
             "wheel_diameter_mm": 50,
@@ -4242,7 +4309,8 @@
           "physical": {
             "mass_kg": 0.220,
             "bounding_box_mm": [100, 100, 48],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "wheel_mecanum_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 100,
@@ -4271,7 +4339,8 @@
           "physical": {
             "mass_kg": 0.090,
             "bounding_box_mm": [60, 60, 25],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "wheel_omni_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 60,
@@ -4391,7 +4460,8 @@
           "physical": {
             "mass_kg": 0.020,
             "bounding_box_mm": [25, 25, 15],
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "mobility_rubber_foot_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 25,

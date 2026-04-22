@@ -86,6 +86,12 @@ interface PresetPhysical {
   bounding_box_mm?: number[]
   cross_section_mm?: number[]
   inertia_primitive: string
+  /** Step 4 of docs/ENGINE_NEXT_STEPS.md — convex-hull collision OBJ
+   *  filename (under src/public/meshes/collision/). When set, URDF
+   *  emission replaces per-visual primitive <box>/<cylinder>/<sphere>
+   *  collision with a single <mesh filename="package://meshes/collision/{file}"/>.
+   *  Generated one-shot by scripts/generate-collision-meshes.mjs. */
+  collision_mesh?: string
 }
 
 interface PresetComponent {
@@ -2274,6 +2280,27 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
+  // Step 4 of docs/ENGINE_NEXT_STEPS.md: when a preset declares
+  // physical.collision_mesh, emit one <mesh> collision element instead
+  // of per-visual primitives. The OBJ lives under
+  // src/public/meshes/collision/ and is referenced via the standard
+  // ROS package:// URI. Origin matches the visual primitives' frame
+  // (link-local 0,0,0) — the convex hull is in the GLB's authoring
+  // coords, same frame the rendered visuals share.
+  function addMeshCollisionElement(doc: Document, link: Element, meshFile: string) {
+    const collision = doc.createElement('collision')
+    const co = doc.createElement('origin')
+    co.setAttribute('xyz', '0 0 0')
+    co.setAttribute('rpy', '0 0 0')
+    const geometry = doc.createElement('geometry')
+    const mesh = doc.createElement('mesh')
+    mesh.setAttribute('filename', `package://meshes/collision/${meshFile}`)
+    geometry.appendChild(mesh)
+    collision.appendChild(co)
+    collision.appendChild(geometry)
+    link.appendChild(collision)
+  }
+
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
   function addComponentCore(
     comp: PresetComponent,
@@ -2325,7 +2352,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       link.appendChild(inertialEl)
 
       visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
-      visuals.forEach(vis => addCollisionElement(doc, link, vis))
+      const collisionMesh = comp.physical.collision_mesh
+      if (collisionMesh) {
+        addMeshCollisionElement(doc, link, collisionMesh)
+      } else {
+        visuals.forEach(vis => addCollisionElement(doc, link, vis))
+      }
 
       const joint = doc.createElement('joint')
       joint.setAttribute('name', jointName)
@@ -3577,20 +3609,31 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     </visual>`
     })
 
-    // Collision geometry — one element per visual piece for accurate hitboxes
+    // Collision geometry — one mesh element when the preset has a
+    // convex-hull OBJ (Step 4 of docs/ENGINE_NEXT_STEPS.md), else one
+    // primitive element per visual piece.
     let collisionsXml = ''
-    visuals.forEach(vis => {
-      const cGeomXml = vis.geometry.type === 'box'
-        ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
-        : vis.geometry.type === 'cylinder'
-        ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
-        : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+    const rootCollisionMesh = rootPreset.physical.collision_mesh
+    if (rootCollisionMesh) {
       collisionsXml += `
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://meshes/collision/${rootCollisionMesh}"/></geometry>
+    </collision>`
+    } else {
+      visuals.forEach(vis => {
+        const cGeomXml = vis.geometry.type === 'box'
+          ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
+          : vis.geometry.type === 'cylinder'
+          ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
+          : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+        collisionsXml += `
     <collision>
       <origin xyz="${vis.origin_xyz.map(v => v.toFixed(6)).join(' ')}" rpy="${vis.origin_rpy.map(v => v.toFixed(6)).join(' ')}"/>
       <geometry>${cGeomXml}</geometry>
     </collision>`
-    })
+      })
+    }
 
     const baseUrdf = `<?xml version="1.0"?>
 <robot name="assembled_robot">
@@ -3898,7 +3941,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         link.appendChild(inertialEl)
 
         cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
-        cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
+        const cCollisionMesh = preset.physical.collision_mesh
+        if (cCollisionMesh) {
+          addMeshCollisionElement(urdfDoc, link, cCollisionMesh)
+        } else {
+          cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
+        }
 
         const joint = urdfDoc.createElement('joint')
         joint.setAttribute('name', jointName)
