@@ -43,7 +43,8 @@
               29
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_small_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 0.18,
@@ -127,7 +128,8 @@
               37
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_standard_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 1.5,
@@ -211,7 +213,8 @@
               34
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_high_torque_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 10.6,
@@ -297,7 +300,8 @@
               54
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_high_torque_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 28,
@@ -466,7 +470,8 @@
               48
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "stepper_nema17_collision.obj"
           },
           "mechanical_electrical": {
             "holding_torque_nm": 0.44,
@@ -506,7 +511,8 @@
               56
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "stepper_nema23_collision.obj"
           },
           "mechanical_electrical": {
             "holding_torque_nm": 1.26,
@@ -546,7 +552,8 @@
               130
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 50,
@@ -584,7 +591,8 @@
               350
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 750,
@@ -622,7 +630,8 @@
               32
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "linear_actuator_collision.obj"
           },
           "mechanical_electrical": {
             "max_force_n": 8,
@@ -660,7 +669,8 @@
               37
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_standard_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 1.2,
@@ -698,7 +708,8 @@
               30
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_small_collision.obj"
           },
           "mechanical_electrical": {
             "max_torque_nm": 0.35,
@@ -742,7 +753,8 @@
               25
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_dc_small_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -784,7 +796,8 @@
               54
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_dc_medium_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -826,7 +839,8 @@
               66
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_dc_large_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_brushed",
@@ -869,7 +883,8 @@
               25
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_gear_small_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -911,7 +926,8 @@
               70
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_gear_medium_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -953,7 +969,8 @@
               95
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_gear_heavy_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -995,7 +1012,8 @@
               16
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_coreless_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_coreless",
@@ -1037,7 +1055,8 @@
               65
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "motor_worm_gear_collision.obj"
           },
           "mechanical_electrical": {
             "type": "dc_wormgear",
@@ -1395,7 +1414,8 @@
               25
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "depth_camera_collision.obj"
           },
           "mechanical_electrical": {
             "depth_range_m": [
@@ -1470,7 +1490,8 @@
               26
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "depth_camera_collision.obj"
           },
           "mechanical_electrical": {
             "depth_range_m": [
@@ -1515,7 +1536,8 @@
               41
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "lidar_2d_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": 12,
@@ -1552,7 +1574,8 @@
               71.7
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "lidar_3d_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": 100,
@@ -1594,7 +1617,8 @@
               3
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "imu_board_collision.obj"
           },
           "mechanical_electrical": {
             "accel_range_g": 16,
@@ -1629,7 +1653,8 @@
               4
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "imu_board_collision.obj"
           },
           "mechanical_electrical": {
             "accel_range_g": 16,
@@ -1665,7 +1690,8 @@
               15
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_ultrasonic_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": [
@@ -1702,7 +1728,8 @@
               2
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_tof_collision.obj"
           },
           "mechanical_electrical": {
             "range_m": [
@@ -1739,7 +1766,8 @@
               20
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_force_torque_collision.obj"
           },
           "mechanical_electrical": {
             "force_range_n": 200,
@@ -1777,7 +1805,8 @@
               10
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_encoder_collision.obj"
           },
           "mechanical_electrical": {
             "resolution_bits": 14,
@@ -1885,7 +1914,8 @@
               6
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_limit_switch_collision.obj"
           },
           "mechanical_electrical": {
             "type": "normally_open_with_lever",
@@ -1949,7 +1979,8 @@
               12
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sensor_load_cell_collision.obj"
           },
           "mechanical_electrical": {
             "range_kg": 5,
@@ -2136,7 +2167,8 @@
               5
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "compute_mcu_collision.obj"
           },
           "mechanical_electrical": {
             "processor": "arm_cortex_m7_600mhz",
@@ -2178,7 +2210,8 @@
               17
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "sbc_small_collision.obj"
           },
           "mechanical_electrical": {
             "processor": "arm_cortex_a72_quad_1.5ghz",
@@ -2265,7 +2298,8 @@
               15
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "compute_motor_driver_collision.obj"
           },
           "mechanical_electrical": {
             "channels": 2,
@@ -2338,7 +2372,8 @@
               10
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "compute_fpga_collision.obj"
           },
           "mechanical_electrical": {
             "logic_cells": 25000,
@@ -2378,7 +2413,8 @@
               8
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "compute_can_transceiver_collision.obj"
           },
           "mechanical_electrical": {
             "bus_speed_mbps": 1,
@@ -2508,7 +2544,8 @@
               8
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "compute_gps_collision.obj"
           },
           "mechanical_electrical": {
             "constellations": [
@@ -2552,7 +2589,8 @@
               24
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 3,
@@ -2586,7 +2624,8 @@
               30
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 4,
@@ -2620,7 +2659,8 @@
               42
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "battery_lipo_collision.obj"
           },
           "mechanical_electrical": {
             "cell_count": 6,
@@ -2653,7 +2693,8 @@
               8
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "power_buck_converter_collision.obj"
           },
           "mechanical_electrical": {
             "input_voltage_range_v": [
@@ -2685,7 +2726,8 @@
               12
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "power_buck_converter_collision.obj"
           },
           "mechanical_electrical": {
             "input_voltage_range_v": [
@@ -2717,7 +2759,8 @@
               15
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "power_pdu_collision.obj"
           },
           "mechanical_electrical": {
             "input_channels": 1,
@@ -2840,7 +2883,8 @@
               3
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "power_solar_panel_collision.obj"
           },
           "mechanical_electrical": {
             "open_circuit_voltage_v": 6.5,
@@ -2905,7 +2949,8 @@
               55
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "power_estop_collision.obj"
           },
           "mechanical_electrical": {
             "contact_type": "normally_closed",
@@ -2940,7 +2985,8 @@
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6063_t5",
-            "density_kg_per_m3": 2700
+            "density_kg_per_m3": 2700,
+            "collision_mesh": "extrusion_2020_collision.obj"
           },
           "mechanical_electrical": {
             "slot_width_mm": 6,
@@ -2976,7 +3022,8 @@
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6063_t5",
-            "density_kg_per_m3": 2700
+            "density_kg_per_m3": 2700,
+            "collision_mesh": "extrusion_4040_collision.obj"
           },
           "mechanical_electrical": {
             "slot_width_mm": 8,
@@ -3077,7 +3124,8 @@
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "structural_bracket_l_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 3,
@@ -3153,7 +3201,8 @@
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "structural_bracket_u_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 2,
@@ -3182,7 +3231,8 @@
             ],
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "servo_coupler_disc_collision.obj"
           },
           "mechanical_electrical": {
             "thickness_mm": 8,
@@ -4269,7 +4319,8 @@
             ],
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "structural_shaft_collar_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 8,
@@ -4297,7 +4348,8 @@
               8
             ],
             "inertia_primitive": "box",
-            "material": "steel_hardened"
+            "material": "steel_hardened",
+            "collision_mesh": "structural_linear_rail_collision.obj"
           },
           "mechanical_electrical": {
             "rail_width_mm": 12,
@@ -4361,7 +4413,8 @@
               7.5
             ],
             "inertia_primitive": "box",
-            "material": "steel_galvanized"
+            "material": "steel_galvanized",
+            "collision_mesh": "structural_din_rail_collision.obj"
           },
           "mechanical_electrical": {
             "width_mm": 35,
@@ -4401,7 +4454,8 @@
               15
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "pulley_gt2_collision.obj"
           },
           "mechanical_electrical": {
             "pitch_mm": 2,
@@ -4437,7 +4491,8 @@
           "physical": {
             "mass_kg_per_100mm": 0.032,
             "diameter_mm": 8,
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "collision_mesh": "transmission_leadscrew_collision.obj"
           },
           "mechanical_electrical": {
             "lead_mm": 2,
@@ -4501,7 +4556,8 @@
               7
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "bearing_small_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 8,
@@ -4535,7 +4591,8 @@
               15
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "bearing_large_collision.obj"
           },
           "mechanical_electrical": {
             "bore_mm": 25,
@@ -4603,7 +4660,8 @@
               38
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "transmission_planetary_gearbox_collision.obj"
           },
           "mechanical_electrical": {
             "gear_ratio_options": [
@@ -4817,7 +4875,8 @@
               30
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "transmission_coupling_collision.obj"
           },
           "mechanical_electrical": {
             "bore_a_mm": 5,
@@ -4852,7 +4911,8 @@
               25
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "transmission_rigid_coupling_collision.obj"
           },
           "mechanical_electrical": {
             "bore_a_mm": 8,
@@ -4997,7 +5057,8 @@
               40
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "gripper_parallel_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 20,
@@ -5037,7 +5098,8 @@
               55
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "gripper_parallel_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 100,
@@ -5077,7 +5139,8 @@
               90
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "effector_3finger_collision.obj"
           },
           "mechanical_electrical": {
             "grip_force_n": 60,
@@ -5122,7 +5185,8 @@
               50
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "effector_suction_cup_collision.obj"
           },
           "mechanical_electrical": {
             "cup_diameter_mm": 30,
@@ -5319,7 +5383,8 @@
               60
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "effector_pen_holder_collision.obj"
           },
           "mechanical_electrical": {
             "clamp_diameter_range_mm": [
@@ -5390,7 +5455,8 @@
               30
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "wheel_driven_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 100,
@@ -5430,7 +5496,8 @@
               65
             ],
             "inertia_primitive": "box",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "wheel_caster_collision.obj"
           },
           "mechanical_electrical": {
             "wheel_diameter_mm": 50,
@@ -5463,7 +5530,8 @@
               48
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "wheel_mecanum_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 100,
@@ -5500,7 +5568,8 @@
               25
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "wheel_omni_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 60,
@@ -5659,7 +5728,8 @@
               15
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true
+            "legacy_override": true,
+            "collision_mesh": "mobility_rubber_foot_collision.obj"
           },
           "mechanical_electrical": {
             "diameter_mm": 25,
