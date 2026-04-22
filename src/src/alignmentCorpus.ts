@@ -310,6 +310,79 @@ fixtures.push({
   tolerance: 1e-9,
 })
 
+// ── Step 1 probe: engagement_depth_mm pulls child INTO parent along axis ──
+// Validates the connector schema's new engagement_depth_mm field. Two parent
+// connectors with identical origin/axis but engagement_depth_mm = 0 vs = 2:
+// the engaged pivot must be exactly 2mm closer along the parent connector's
+// axis. The placed_via_connector flag is set so reconcile cannot stomp the
+// intentional sub-flush placement (the whole point of the field is to sit
+// the child slightly INSIDE the parent surface, hiding chamfer-vs-flat gaps).
+//
+// Why a delta assertion: a fixture that just hard-codes the expected pivot
+// would pass even if engagement_depth were silently dropped (resolveMate
+// would return the unchanged pose). Comparing engaged vs non-engaged proves
+// the field is actually consumed.
+
+const step1_parentTop_noEngagement: MateConnector = {
+  id: 'top',
+  origin_xyz_mm: [0, 0, 20],
+  axis_xyz: [0, 0, 1],
+  type: 'planar',
+}
+const step1_parentTop_engaged2mm: MateConnector = {
+  id: 'top',
+  origin_xyz_mm: [0, 0, 20],
+  axis_xyz: [0, 0, 1],
+  type: 'planar',
+  engagement_depth_mm: 2,
+}
+const step1_childBottom: MateConnector = {
+  id: 'bottom',
+  origin_xyz_mm: [0, 0, -15],
+  axis_xyz: [0, 0, -1],
+  type: 'planar',
+}
+
+function deriveFastenedPivotMeters(
+  parentConn: MateConnector,
+  childConn: MateConnector,
+): [number, number, number] {
+  const m = resolveMate(new THREE.Matrix4(), parentConn, childConn, 'fastened', {})
+  const pos = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const s = new THREE.Vector3()
+  m.decompose(pos, q, s)
+  return [pos.x, pos.y, pos.z]
+}
+
+const step1_pivot_noEng = deriveFastenedPivotMeters(step1_parentTop_noEngagement, step1_childBottom)
+const step1_pivot_engaged = deriveFastenedPivotMeters(step1_parentTop_engaged2mm, step1_childBottom)
+
+// Sanity: along parent axis (+Z), engaged pivot must be 2mm LESS than non-
+// engaged. axis_xyz=[0,0,1] so the axial component is just z.
+const step1_axialDelta_mm = (step1_pivot_noEng[2] - step1_pivot_engaged[2]) * 1000
+if (Math.abs(step1_axialDelta_mm - 2) > 1e-6) {
+  console.log(`  ✗ Step 1 pre-check: engagement_depth_mm=2 should pull pivot 2mm closer along +Z — got ${step1_axialDelta_mm.toFixed(6)}mm`)
+  process.exit(1)
+}
+
+fixtures.push({
+  // Mirrors the chamfered-servo-top use case: child connector sits at the
+  // bbox top, but the parent's authored engagement_depth_mm pulls the child
+  // 2mm into the parent body so the disc edge tucks under the chamfer line.
+  // Reconcile must NOT undo the intentional 2mm overlap.
+  name: 'Step 1 probe: parent engagement_depth_mm=2 pulls child 2mm closer along axis; reconcile leaves flagged pivot alone',
+  pair: {
+    parent: { linkName: 'plate', size: [0.040, 0.040, 0.040] }, // 40mm cube — bbox top at +20mm
+    child:  { linkName: 'disc',  size: [0.030, 0.030, 0.030] }, // 30mm cube — bbox bottom at -15mm
+    assumedPivotXyz: step1_pivot_engaged, // pivot from engaged resolveMate
+    attachFace: 'top',
+    childPlacedViaConnector: true,
+  },
+  expectedPivotXyz: step1_pivot_engaged, // reconcile must leave it alone
+  tolerance: 1e-9,
+})
+
 // ── Runner ─────────────────────────────────────────────────────────────────
 
 interface Outcome {

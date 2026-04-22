@@ -142,7 +142,7 @@
           },
           "connectors": [
             { "id": "shaft_out", "origin_xyz_mm": [0, 0, 17], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 8 },
-            { "id": "top",       "origin_xyz_mm": [0, 0,  12], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "top",       "origin_xyz_mm": [0, 0,  12], "axis_xyz": [0, 0,  1], "type": "planar", "engagement_depth_mm": 1.5 },
             { "id": "bottom",    "origin_xyz_mm": [0, 0, -17], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },

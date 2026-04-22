@@ -1847,6 +1847,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           authoredConn.origin_xyz_mm[2] / 1000,
         ] as const
       : null
+    // Engagement depth: child sinks INTO parent along this connector's axis at
+    // mate time. Per-face branches below subtract this along the face normal
+    // (+axis for top/front/right, -axis for bottom/back/left), shrinking the
+    // contact gap. Closes chamfer-vs-flat visible gaps on chamfered tops
+    // without per-GLB edits. See docs/ENGINE_NEXT_STEPS.md Step 1.
+    const engagementM = (authoredConn?.engagement_depth_mm ?? 0) / 1000
     // Same idea on the child side. The child contacts the parent face with
     // its OPPOSITE face (top↔bottom etc). When the child has an authored
     // connector for that opposite face, prefer its origin over childBodyHZ —
@@ -1932,7 +1938,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // contact extent via verticalExtentForRotation against the rotated dims,
         // so a static `bottom` authored connector wouldn't be the right value.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-        const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap
+        const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap - engagementM
         const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
       }
@@ -1952,7 +1958,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // childBodyHZ. The connector z is negative (e.g. coupler.bottom = -4mm),
         // so contact distance from pivot = -childConnZ = +abs(childConnZ).
         const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
-        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap
+        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap - engagementM
         // 1c: numeric orientation → yaw (Z-rotation) on top face
         const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
@@ -1985,7 +1991,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
         const isRotated = isWheel || splayAngle > 0
         const childContact = (childConnOriginM && !isRotated) ? childConnOriginM[2] : vExtent / 2
-        const oz = (connOriginM ? connOriginM[2] : -parentBodyHZ) - childContact - gap
+        const oz = (connOriginM ? connOriginM[2] : -parentBodyHZ) - childContact - gap + engagementM
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
@@ -1993,7 +1999,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
         const childContact = childConnOriginM ? -childConnOriginM[0] : childBodyHX
-        const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap
+        const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap - engagementM
         return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'back': {
@@ -2001,7 +2007,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
         const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
         const childContact = childConnOriginM ? childConnOriginM[0] : childBodyHX
-        const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap
+        const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap + engagementM
         return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'right': {
@@ -2009,7 +2015,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // Right face: elevation is a roll about X
         const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
         const childContact = childConnOriginM ? -childConnOriginM[1] : childBodyHY
-        const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap
+        const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap - engagementM
         return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'left': {
@@ -2017,7 +2023,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // Left face: elevation is an inverted roll about X
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
         const childContact = childConnOriginM ? childConnOriginM[1] : childBodyHY
-        const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap
+        const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap + engagementM
         return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       default:

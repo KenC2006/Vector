@@ -33,6 +33,13 @@ export interface MateConnector {
   type: ConnectorType
   /** Only meaningful for cylindrical; used for port-compat diagnostics. */
   diameter_mm?: number
+  /** Signed depth (mm) the mating child should sink INTO the parent along
+   *  this connector's axis. Positive = child translates by -engagement_depth_mm
+   *  along axis_xyz at mate time, hiding chamfer-vs-flat gaps without per-GLB
+   *  edits. Default 0 (legacy behavior). Authoring-time analogue of Onshape's
+   *  baked connector-frame offsets / Unreal SkeletalMeshSocket RelativeLocation
+   *  — see docs/ENGINE_NEXT_STEPS.md Step 1. */
+  engagement_depth_mm?: number
 }
 
 /** Preset-local bbox half-extents, in mm. Matches the `bounding_box_mm` field
@@ -210,6 +217,16 @@ export function resolveMate(
     const { u, v } = buildInPlaneBasis(pAxis)
     displacement.addScaledVector(u, uMm / 1000)
     displacement.addScaledVector(v, vMm / 1000)
+  }
+
+  // Engagement depth: child sinks INTO parent along the parent connector's
+  // axis. Authored on the parent's connector. Translation = -depth along
+  // pAxis (pAxis points OUTWARD of the parent face, so negative-axis pulls
+  // the child toward the parent body). Closes the chamfered-edge / flat-disc
+  // gap on servo↔coupler joints without per-GLB edits.
+  const engagementMm = parentConnector.engagement_depth_mm ?? 0
+  if (engagementMm !== 0) {
+    displacement.addScaledVector(pAxis, -engagementMm / 1000)
   }
 
   const rChildLocal = new THREE.Matrix4().makeRotationFromQuaternion(qChildLocal)
