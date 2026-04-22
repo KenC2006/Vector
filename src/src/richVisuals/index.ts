@@ -13,6 +13,7 @@ import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
 import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
 import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
+import { getRenderedMeshDims as _getRenderedMeshDims, setRenderedMeshDims } from '../meshDimsCache'
 
 
 interface ParsedRobotLike {
@@ -96,14 +97,11 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
 // Cache loaded STEP meshes so they survive reparse cycles
 const meshCache = new Map<string, THREE.Group>()  // compId → cloneable mesh group
 const loadingInProgress = new Set<string>()  // prevent duplicate loads
-// Cache actual rendered size (full extents in meters) after scaling + centering.
-// Used by urdfAssembly to align ghost bounds with the real visual.
-const meshDimsCache = new Map<string, THREE.Vector3>()  // compId → full size (x,y,z) in meters
-
-/** Return the actual rendered mesh size (full extents, meters) for a component, or null if not yet loaded. */
-export function getRenderedMeshDims(compId: string): THREE.Vector3 | null {
-  return meshDimsCache.get(compId) ?? null
-}
+// Rendered mesh AABB cache is owned by ../meshDimsCache so pure/node-runnable
+// modules can read it through componentDims without pulling in this module's
+// directory-import dependency tree. Re-exported here for source-compat with
+// existing urdfAssembly imports.
+export const getRenderedMeshDims = _getRenderedMeshDims
 // Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
 // Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
 export const SLOW_MESH_BLACKLIST = new Set([
@@ -378,7 +376,7 @@ function applyMeshToLink(
       finalSize.z = dims.z
     }
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
-      meshDimsCache.set(compId, finalSize.clone())
+      setRenderedMeshDims(compId, finalSize)
     }
   }
 
