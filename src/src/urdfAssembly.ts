@@ -9,6 +9,7 @@ import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCo
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
+import { getOrComputeBbox } from './componentDims'
 import { quatToRpy } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
@@ -2207,8 +2208,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const shape: 'box' | 'cylinder' = allCylinders ? 'cylinder' : 'box'
     if (!isFinite(minX)) {
-      const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
-      return { hx: (bb[0] ?? 40) / 2000, hy: (bb[1] ?? 40) / 2000, hz: (bb[2] ?? 40) / 2000, cx: 0, cy: 0, cz: 0, shape }
+      const bb = getOrComputeBbox(comp.id, comp)
+      return { hx: bb[0] / 2000, hy: bb[1] / 2000, hz: bb[2] / 2000, cx: 0, cy: 0, cz: 0, shape }
     }
     return {
       hx: (maxX - minX) / 2,
@@ -2294,11 +2295,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const phys = comp.physical
     const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    const bb = getOrComputeBbox(comp.id, comp)
     const shape = phys.inertia_primitive || 'box'
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    const zm = (bb[2] ?? 40) / 1000
+    const xm = bb[0] / 1000
+    const ym = bb[1] / 1000
+    const zm = bb[2] / 1000
 
     let inertia: { ixx: number; iyy: number; izz: number }
     if (shape === 'cylinder') {
@@ -2720,11 +2721,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } else {
       const graph = ctx.getKinematicGraph()
       const parent = resolveFreePlacementParent(graph)
-      const phys = comp.physical
-      const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-      const xm = (bb[0] ?? 40) / 1000
-      const ym = (bb[1] ?? 40) / 1000
-      const zm = (bb[2] ?? 40) / 1000
+      const bb = getOrComputeBbox(comp.id, comp)
+      const xm = bb[0] / 1000
+      const ym = bb[1] / 1000
+      const zm = bb[2] / 1000
       const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
       const placement = computePlacement(doc, parent, comp, xm, ym, zm)
       addComponentCore(comp, parent, placement.xyz, placement.rpy)
@@ -2753,8 +2753,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
     const massLabel = comp.physical.mass_kg_per_100mm ? `${(comp.physical.mass_kg_per_100mm * 1000).toFixed(0)}g/100mm` :
                       mass != null ? (mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`) : '—'
-    const bb = comp.physical.bounding_box_mm
-    const dims = bb ? `${bb[0]}×${bb[1]}×${bb[2]} mm` : '—'
+    const bb = getOrComputeBbox(comp.id, comp)
+    const dims = `${Math.round(bb[0])}×${Math.round(bb[1])}×${Math.round(bb[2])} mm`
     const shape = comp.physical.inertia_primitive || 'box'
     const mounting = ((comp.mounting_logic as Record<string, unknown>).primary ?? '—') as string
 
@@ -3548,10 +3548,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     // Create a fresh minimal URDF with just a base_link
     const phys = rootPreset.physical
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    let zm = (bb[2] ?? 40) / 1000
+    const bb = getOrComputeBbox(rootPreset.id, rootPreset)
+    const xm = bb[0] / 1000
+    const ym = bb[1] / 1000
+    let zm = bb[2] / 1000
     if (root.length_mm && phys.cross_section_mm) {
       zm = root.length_mm / 1000
     }
@@ -3724,20 +3724,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       let childPort: ReturnType<typeof resolveFaceToPort> = undefined
 
       if (parentPreset) {
-        const pPhys = parentPreset.physical
-        const pBb = pPhys.bounding_box_mm ?? pPhys.cross_section_mm ?? [40, 40, 40]
+        const pBb = getOrComputeBbox(parentPreset.id, parentPreset)
         const parentPorts = componentPortsForPreset(
-          parentPreset.id, (pBb[0] ?? 40) / 2000, (pBb[1] ?? 40) / 2000, (pBb[2] ?? 40) / 2000,
+          parentPreset.id, pBb[0] / 2000, pBb[1] / 2000, pBb[2] / 2000,
           parentPreset.mounting_logic
         )
         parentPort = resolveFaceToPort(attachFace, parentPorts)
         console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
 
         if (childPreset) {
-          const cPhysP = childPreset.physical
-          const cBbP = cPhysP.bounding_box_mm ?? cPhysP.cross_section_mm ?? [40, 40, 40]
+          const cBbP = getOrComputeBbox(childPreset.id, childPreset)
           const childPorts = componentPortsForPreset(
-            childPreset.id, (cBbP[0] ?? 40) / 2000, (cBbP[1] ?? 40) / 2000, (cBbP[2] ?? 40) / 2000,
+            childPreset.id, cBbP[0] / 2000, cBbP[1] / 2000, cBbP[2] / 2000,
             childPreset.mounting_logic
           )
           childPort = resolveFaceToPort(childFace, childPorts)
@@ -3813,7 +3811,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // side opts in.
       let placement: { xyz: string; rpy: string }
       const parentPhys = parentPreset?.physical
-      const rawParentBb = parentPhys?.bounding_box_mm ?? parentPhys?.cross_section_mm ?? [40, 40, 40]
+      const rawParentBb = parentPreset
+        ? getOrComputeBbox(parentPreset.id, parentPreset)
+        : [40, 40, 40]
       // Parametric components (extrusions, bars, tubes) declare cross_section_mm
       // and carry their length on the COMPONENT instance via `length_mm`. The
       // raw preset bbox falls through to a `[w, h, undefined]` and matePlacement

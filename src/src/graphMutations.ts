@@ -29,6 +29,7 @@ import { validateTopology } from './topologyValidation.ts'
 import type { ValidationContext } from './topologyValidation.ts'
 import { componentPortsForPreset, resolveFaceToPort } from './attachmentNodes.ts'
 import type { AttachmentNodeClass } from './attachmentNodes.ts'
+import { getOrComputeBbox } from './componentDims.ts'
 import { cloneAssemblyGraph } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfGraphEquivalence.ts'
 
@@ -121,12 +122,12 @@ function _portClassAtFace(
 ): AttachmentNodeClass | undefined {
   const preset = ctx.findPreset(componentId)
   if (!preset) return undefined
-  const bb = preset.physical.bounding_box_mm ?? preset.physical.cross_section_mm ?? [40, 40, 40]
+  const bb = getOrComputeBbox(preset.id, preset)
   const ports = componentPortsForPreset(
     preset.id,
-    (bb[0] ?? 40) / 2000,
-    (bb[1] ?? 40) / 2000,
-    (bb[2] ?? 40) / 2000,
+    bb[0] / 2000,
+    bb[1] / 2000,
+    bb[2] / 2000,
     preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
   )
   return resolveFaceToPort(face, ports)?.cls

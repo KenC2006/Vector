@@ -6,6 +6,7 @@
 
 import { componentPortsForPreset, resolveFaceToPort } from './attachmentNodes.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
+import { getOrComputeBbox } from './componentDims.ts'
 
 // Minimal shape of a preset that the validator needs. The real PresetComponent
 // in urdfAssembly.ts is a superset of this; pass anything structurally compatible.
@@ -66,12 +67,12 @@ export function findStructuralAncestor(
 function portsForComponent(
   preset: ValidationPreset,
 ) {
-  const bb = preset.physical.bounding_box_mm ?? preset.physical.cross_section_mm ?? [40, 40, 40]
+  const bb = getOrComputeBbox(preset.id, preset)
   return componentPortsForPreset(
     preset.id,
-    (bb[0] ?? 40) / 2000,
-    (bb[1] ?? 40) / 2000,
-    (bb[2] ?? 40) / 2000,
+    bb[0] / 2000,
+    bb[1] / 2000,
+    bb[2] / 2000,
     preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
   )
 }
@@ -230,14 +231,14 @@ export function validateTopology(
   if (rootComp && rootComp.component_id.startsWith('structural_baseplate')) {
     const rootPreset = ctx.findPreset(rootComp.component_id)
     if (rootPreset) {
-      const rootBb = rootPreset.physical.bounding_box_mm ?? rootPreset.physical.cross_section_mm ?? [200, 200, 5]
-      const baseW = Math.min(rootBb[0] ?? 200, rootBb[1] ?? 200)
+      const rootBb = getOrComputeBbox(rootPreset.id, rootPreset)
+      const baseW = Math.min(rootBb[0], rootBb[1])
 
       const heightOf = (comp: AssemblyComponent): number => {
         const p = ctx.findPreset(comp.component_id)
         if (!p) return 0
-        const bb = p.physical.bounding_box_mm ?? p.physical.cross_section_mm ?? [40, 40, 40]
-        let h = bb[2] ?? 40
+        const bb = getOrComputeBbox(p.id, p)
+        let h = bb[2]
         if (comp.length_mm && p.physical.cross_section_mm) h = comp.length_mm
         return h
       }

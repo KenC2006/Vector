@@ -30,6 +30,7 @@ import {
   type MateParams,
   type ConnectorBoundingBoxMm,
 } from './mateConnectors.ts'
+import { getOrComputeBbox } from './componentDims.ts'
 
 // ── Preset loader (for integration fixtures) ───────────────────────────────
 // Parses the shipping catalog so integration fixtures exercise the
@@ -64,8 +65,10 @@ function loadPresets(): Map<string, CorpusPreset> {
 }
 
 function presetBboxMm(p: CorpusPreset): ConnectorBoundingBoxMm {
-  const bb = p.physical.bounding_box_mm ?? p.physical.cross_section_mm ?? [40, 40, 40]
-  return { hxMm: (bb[0] ?? 40) / 2, hyMm: (bb[1] ?? 40) / 2, hzMm: (bb[2] ?? 40) / 2 }
+  // Corpus runs in node without rendered meshes — getOrComputeBbox falls
+  // through to the authored field, matching the pre-helper behavior here.
+  const bb = getOrComputeBbox(p.id, p)
+  return { hxMm: bb[0] / 2, hyMm: bb[1] / 2, hzMm: bb[2] / 2 }
 }
 
 /** Mimic the urdfAssembly.computeMatePlacement merge-then-find path:
