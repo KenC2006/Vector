@@ -1808,6 +1808,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
     parentConnectors?: MateConnector[],
     outFlags?: { viaConnector: boolean },
+    childConnectors?: MateConnector[],
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
@@ -1846,7 +1847,30 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           authoredConn.origin_xyz_mm[2] / 1000,
         ] as const
       : null
-    if (outFlags && connOriginM) outFlags.viaConnector = true
+    // Same idea on the child side. The child contacts the parent face with
+    // its OPPOSITE face (top↔bottom etc). When the child has an authored
+    // connector for that opposite face, prefer its origin over childBodyHZ —
+    // this is what closes the servo body-vs-shaft gap. The bbox-derived
+    // childBodyHZ uses the FULL AABB half (which on a servo includes the
+    // shaft tip), so the servo body sits 4-5mm BELOW the parent's mating
+    // face. An authored `top` at body_top puts the body flush instead.
+    const oppositeFaceMap: Record<string, string> = {
+      top: 'bottom', bottom: 'top',
+      front: 'back', back: 'front',
+      left: 'right', right: 'left',
+    }
+    const childFace = oppositeFaceMap[face]
+    const childAuthoredConn = childFace
+      ? (childConnectors?.find(c => c.id === childFace) ?? null)
+      : null
+    const childConnOriginM = childAuthoredConn
+      ? [
+          childAuthoredConn.origin_xyz_mm[0] / 1000,
+          childAuthoredConn.origin_xyz_mm[1] / 1000,
+          childAuthoredConn.origin_xyz_mm[2] / 1000,
+        ] as const
+      : null
+    if (outFlags && (connOriginM || childConnOriginM)) outFlags.viaConnector = true
 
     // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
     // Hoist isWheel so it's visible inside the switch below.
@@ -1904,6 +1928,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const longestAxisIdx = dims.indexOf(longest)
       if (longestAxisIdx === 2) {
         // Pitch 90° swings X onto Z — use childX as the vertical extent.
+        // Skip child-connector override here: this branch already rebuilds the
+        // contact extent via verticalExtentForRotation against the rotated dims,
+        // so a static `bottom` authored connector wouldn't be the right value.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
         const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap
         const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
@@ -1921,7 +1948,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // protrusion's footprint is real when arranging multiple children.
     switch (face) {
       case 'top': {
-        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childBodyHZ + gap
+        // Child contact distance: an authored child `bottom` connector wins over
+        // childBodyHZ. The connector z is negative (e.g. coupler.bottom = -4mm),
+        // so contact distance from pivot = -childConnZ = +abs(childConnZ).
+        const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
+        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap
         // 1c: numeric orientation → yaw (Z-rotation) on top face
         const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
@@ -1947,36 +1978,46 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         // Rotation-aware vertical extent uses body half-extents so a rolled wheel
         // or pitched bracket snaps to the body, not to a shaft/horn tip.
+        // When the child has an authored `top` connector AND the child is not
+        // rotated (no splay/wheel/orient), prefer the connector. Authored body
+        // tops on servos (top connector at body_top, not bbox_top) close the
+        // shaft-vs-body gap that AABB-based vExtent leaves visible.
         const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
-        const oz = connOriginM ? connOriginM[2] - vExtent / 2 - gap : -(parentBodyHZ + vExtent / 2 + gap)
+        const isRotated = isWheel || splayAngle > 0
+        const childContact = (childConnOriginM && !isRotated) ? childConnOriginM[2] : vExtent / 2
+        const oz = (connOriginM ? connOriginM[2] : -parentBodyHZ) - childContact - gap
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
         // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
         const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
-        const ox = connOriginM ? connOriginM[0] + childBodyHX + gap : parentBodyHX + childBodyHX + gap
+        const childContact = childConnOriginM ? -childConnOriginM[0] : childBodyHX
+        const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap
         return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'back': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
         const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
-        const ox = connOriginM ? connOriginM[0] - childBodyHX - gap : -(parentBodyHX + childBodyHX + gap)
+        const childContact = childConnOriginM ? childConnOriginM[0] : childBodyHX
+        const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap
         return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'right': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Right face: elevation is a roll about X
         const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
-        const oy = connOriginM ? connOriginM[1] + childBodyHY + gap : parentBodyHY + childBodyHY + gap
+        const childContact = childConnOriginM ? -childConnOriginM[1] : childBodyHY
+        const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap
         return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'left': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Left face: elevation is an inverted roll about X
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
-        const oy = connOriginM ? connOriginM[1] - childBodyHY - gap : -(parentBodyHY + childBodyHY + gap)
+        const childContact = childConnOriginM ? childConnOriginM[1] : childBodyHY
+        const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap
         return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       default:
@@ -3766,7 +3807,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // side opts in.
       let placement: { xyz: string; rpy: string }
       const parentPhys = parentPreset?.physical
-      const parentBb = parentPhys?.bounding_box_mm ?? parentPhys?.cross_section_mm ?? [40, 40, 40]
+      const rawParentBb = parentPhys?.bounding_box_mm ?? parentPhys?.cross_section_mm ?? [40, 40, 40]
+      // Parametric components (extrusions, bars, tubes) declare cross_section_mm
+      // and carry their length on the COMPONENT instance via `length_mm`. The
+      // raw preset bbox falls through to a `[w, h, undefined]` and matePlacement
+      // gets `[w, h, 40]` — so a 100mm extrusion default-`bottom` connector
+      // lands at -20mm instead of -50mm, and any child mating to it floats
+      // 30mm short of the real end. Look the parent comp up by link_name and
+      // splice its length_mm into the Z slot when the preset only authored a
+      // cross-section.
+      const parentComp = components.find(c => c.link_name === parentLinkName)
+      const parentBb = (parentPhys?.cross_section_mm && parentComp?.length_mm !== undefined)
+        ? [rawParentBb[0] ?? 40, rawParentBb[1] ?? 40, parentComp.length_mm]
+        : rawParentBb
       const matePlacement = (parentPreset && childPreset)
         ? computeMatePlacement(
             comp,
@@ -3791,10 +3844,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
       } else {
         const placeFlags = { viaConnector: false }
-        placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags)
+        placement = computeFacePlacement(doc, parentLinkName, cxm, cym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags, childPreset?.connectors)
         if (placeFlags.viaConnector) {
           viaConnectorMap.set(comp.link_name, true)
-          console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=(bbox-fallback), type=face-distribute → ${JSON.stringify(placement)}`)
+          const oppositeFaceLog: Record<string, string> = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' }
+          const childFaceLog = comp.attach_face ? (oppositeFaceLog[comp.attach_face] ?? '?') : '?'
+          console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=${childPreset?.id ?? '?'}.${childFaceLog}, type=face-distribute → ${JSON.stringify(placement)}`)
         }
       }
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
