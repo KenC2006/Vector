@@ -11,8 +11,8 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getRotationOverride, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
-import { getComponentColor, getTintedMaterial } from './materials'
+import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
 
 
 interface ParsedRobotLike {
@@ -333,13 +333,21 @@ function applyMeshToLink(
     // scale cleanly along independent axes.
     const PERAXIS_BLACKLIST = ['gripper', 'effector', 'claw', 'suction']
     const skipPerAxis = PERAXIS_BLACKLIST.some(k => compId.includes(k))
+    // Shaft overlay: when this component has an entry in SHAFT_OVERLAYS, the GLB
+    // body is scaled to (bbox.z - shaft_length) and a procedural cylinder fills
+    // the remaining shaft_length region above. This lets the placement engine
+    // align the body face to a coupler bottom (Layer 4 child connector path)
+    // while keeping the shaft visible inside the coupler bore.
+    const shaftOverlay = getShaftOverlay(compId)
+    const shaftLenM = shaftOverlay ? shaftOverlay.shaft_length_mm / 1000 : 0
+    const targetZ = shaftOverlay ? Math.max(0.001, dims.z - shaftLenM) : dims.z
     if (!skipPerAxis) {
       meshBox.setFromObject(meshGroup)
       meshBox.getSize(meshSize)
       if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
         const scaleX = dims.x / meshSize.x
         const scaleY = dims.y / meshSize.y
-        const scaleZ = dims.z / meshSize.z
+        const scaleZ = targetZ / meshSize.z
         meshGroup.scale.x *= scaleX
         meshGroup.scale.y *= scaleY
         meshGroup.scale.z *= scaleZ
@@ -352,11 +360,23 @@ function applyMeshToLink(
     meshBox.getCenter(center)
     meshGroup.position.sub(center)
 
+    // Shaft overlay: shift the now-centered body DOWN by shaft_length/2 so its
+    // top face sits at z = (bbox.z/2 - shaft_length) = body_top, and the upper
+    // shaft_length region is empty for the procedural cylinder added below.
+    if (shaftOverlay) {
+      meshGroup.position.z -= shaftLenM / 2
+    }
+
     // Cache the actual rendered size (full extents in meters) as the authoritative
-    // dimension source for ghost bounds and node placement.
+    // dimension source for ghost bounds and node placement. For shaft-overlay
+    // components, report the full bbox (body + procedural shaft together) so
+    // downstream placement and mount-node code see the intended physical envelope.
     const finalBox = new THREE.Box3().setFromObject(meshGroup)
     const finalSize = new THREE.Vector3()
     finalBox.getSize(finalSize)
+    if (shaftOverlay) {
+      finalSize.z = dims.z
+    }
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
       meshDimsCache.set(compId, finalSize.clone())
     }
@@ -375,6 +395,26 @@ function applyMeshToLink(
       geometryChild.remove(geometryChild.children[0])
     }
     geometryChild.add(meshGroup)
+
+    // Shaft overlay: add a procedural shaft cylinder above the body. Sibling to
+    // meshGroup (not its child) so meshGroup's per-axis scale doesn't deform it.
+    // Cylinder is along URDF +Z, centered in the upper shaft_length region of
+    // the bbox, with brushed-steel material to match catalog shaft features
+    // (shaft_collar, hex_standoff stubs, etc.).
+    const overlay = getShaftOverlay(compId)
+    if (overlay) {
+      const shaftLength = overlay.shaft_length_mm / 1000
+      const shaftRadius = overlay.shaft_radius_mm / 1000
+      const shaftMat = getMaterial('brushed_steel')
+      const shaftGeo = new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 24)
+      const shaftMesh = new THREE.Mesh(shaftGeo, shaftMat)
+      shaftMesh.rotation.x = Math.PI / 2 // align cylinder Y axis with URDF +Z
+      shaftMesh.position.z = dims.z / 2 - shaftLength / 2
+      shaftMesh.castShadow = true
+      shaftMesh.receiveShadow = true
+      ;(shaftMesh.userData as Record<string, unknown>).urdfLinkName = linkName
+      geometryChild.add(shaftMesh)
+    }
   }
 }
 

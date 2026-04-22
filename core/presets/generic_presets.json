@@ -67,7 +67,7 @@
           },
           "connectors": [
             { "id": "shaft_out", "origin_xyz_mm": [0, 0, 14.5], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 4.6 },
-            { "id": "top",       "origin_xyz_mm": [0, 0,  9.5], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "top",       "origin_xyz_mm": [0, 0,  14.5], "axis_xyz": [0, 0,  1], "type": "planar" },
             { "id": "bottom",    "origin_xyz_mm": [0, 0, -14.5], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
@@ -104,7 +104,7 @@
           },
           "connectors": [
             { "id": "shaft_out", "origin_xyz_mm": [0, 0, 18.5], "axis_xyz": [0, 0, 1], "type": "cylindrical", "diameter_mm": 5.9 },
-            { "id": "top",       "origin_xyz_mm": [0, 0,  13.5], "axis_xyz": [0, 0,  1], "type": "planar" },
+            { "id": "top",       "origin_xyz_mm": [0, 0,  18.5], "axis_xyz": [0, 0,  1], "type": "planar" },
             { "id": "bottom",    "origin_xyz_mm": [0, 0, -18.5], "axis_xyz": [0, 0, -1], "type": "planar" }
           ]
         },
