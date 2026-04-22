@@ -1,16 +1,32 @@
 /**
- * GLB bounding-box audit (Bug 2b surface).
+ * Preset bounding-box audit.
  *
- * For every preset in core/presets/generic_presets.json that has a mesh
- * override (STEP → GLB pipeline), measure the GLB's native AABB and
- * compare it to the authored physical.bounding_box_mm on the preset.
+ * Enforces Step 3 of docs/ENGINE_NEXT_STEPS.md: on any mesh-override
+ * preset (STEP → GLB pipeline), `physical.bounding_box_mm` is demoted to
+ * a legacy backward-compat field. Runtime reads go through
+ * getOrComputeBbox(), which prefers the rendered AABB, so an authored
+ * bbox no longer drives placement — it only fills in for the pre-load
+ * placeholder phase. To keep new presets honest, the audit hard-fails
+ * whenever a mesh-override preset declares bounding_box_mm without
+ * `physical.legacy_override: true`.
  *
- * Prints MISMATCH lines when any axis differs by more than 2mm, then
- * exits non-zero so this can be wired as a CI check. Does NOT edit any
- * preset data — fixing outliers is out of scope for this worktree.
+ * Two static checks:
+ *   1. MISSING_LEGACY_OVERRIDE — mesh-override preset with bounding_box_mm
+ *      but no `legacy_override: true`. Hard fail; marks that the preset
+ *      predates the Step-3 migration and needs explicit acknowledgement.
+ *   2. MISMATCH (legacy bbox vs measured GLB > 2mm) — kept as a signal but
+ *      demoted to an informational note for legacy_override presets. For
+ *      any non-legacy preset the static check fires first, so a numerical
+ *      MISMATCH there is redundant.
  *
  * Usage:
- *   node scripts/audit-preset-bboxes.js
+ *   node scripts/audit-preset-bboxes.js            # audit only
+ *   node scripts/audit-preset-bboxes.js --mark-legacy  # one-shot: add
+ *                                                  # legacy_override: true
+ *                                                  # to every mesh-override
+ *                                                  # preset that authored
+ *                                                  # bounding_box_mm.
+ *   AUDIT_VERBOSE=1 node scripts/audit-preset-bboxes.js  # also print skipped
  *
  * Notes on scale and axis permutation:
  *   - GLBs in src/public/meshes/glb/ are authored in millimetres; preset
@@ -21,15 +37,15 @@
  *     before per-axis scaling at runtime. The audit applies that same
  *     rotation to the measured AABB before comparing, so an authored
  *     axis swap is not reported as a bbox mismatch.
- *   - Presets without a mesh override (e.g. structural_baseplate_large
- *     — rendered parametrically) are skipped: no GLB exists to measure.
- *
- * Output format:
- *   MISMATCH <preset_id>: bbox_<axis> authored=<N>mm, measured=<M>mm (delta=<D>mm)
+ *   - Parametric presets without a mesh override (baseplates, extrusions,
+ *     plates) are skipped: their bounding_box_mm is generator INPUT, not
+ *     legacy metadata, and remains authoritative.
  *
  * Exits:
- *   0 — every preset within tolerance (or skipped)
- *   1 — at least one MISMATCH emitted
+ *   0 — every mesh-override preset is marked legacy_override and any
+ *        numerical drift is tolerated
+ *   1 — at least one MISSING_LEGACY_OVERRIDE (or, on a legacy preset,
+ *        a MISMATCH — legacy drift is tolerated but still surfaced)
  *   2 — setup error (missing files, unreadable GLB, etc.)
  */
 
@@ -255,9 +271,15 @@ function loadPresets() {
   const out = []
   for (const [catName, cat] of Object.entries(json.categories || {})) {
     for (const c of cat.components || []) {
-      const bbox = c.physical && c.physical.bounding_box_mm
+      const phys = c.physical || {}
+      const bbox = phys.bounding_box_mm
       if (!Array.isArray(bbox) || bbox.length !== 3) continue
-      out.push({ id: c.id, category: catName, boundingBoxMm: bbox })
+      out.push({
+        id: c.id,
+        category: catName,
+        boundingBoxMm: bbox,
+        legacyOverride: phys.legacy_override === true,
+      })
     }
   }
   out.sort((a, b) => a.id.localeCompare(b.id))
@@ -276,19 +298,35 @@ function main() {
   if (!fs.existsSync(MESH_OVERRIDES_TS)) fail(`missing mesh overrides: ${MESH_OVERRIDES_TS}`)
   if (!fs.existsSync(GLB_DIR)) fail(`missing GLB dir: ${GLB_DIR}`)
 
+  const applyLegacy = process.argv.includes('--mark-legacy')
+  if (applyLegacy) return applyLegacyOverride()
+
   const presets = loadPresets()
   const { meshOverrides, rotationOverrides } = readMeshOverridesTs()
 
+  const missingLegacy = []
   const mismatches = []
+  const legacyMismatches = []
   const skipped = []
   const checked = []
 
   for (const preset of presets) {
     const stepName = meshOverrides[preset.id]
     if (!stepName) {
+      // No mesh override → parametric preset. Its bounding_box_mm is a
+      // generator INPUT, not legacy metadata. Skip both checks.
       skipped.push({ id: preset.id, reason: 'no mesh override (parametric)' })
       continue
     }
+
+    // Step-3 static check: mesh-override presets must acknowledge their
+    // bounding_box_mm is legacy (not authoritative). If the flag is missing,
+    // the preset predates the migration and needs to be opted in explicitly
+    // — run `node scripts/audit-preset-bboxes.js --mark-legacy` to apply.
+    if (!preset.legacyOverride) {
+      missingLegacy.push({ id: preset.id })
+    }
+
     const glbPath = glbPathForStepName(stepName)
     if (!fs.existsSync(glbPath)) {
       skipped.push({ id: preset.id, reason: `GLB not found: ${path.relative(REPO_ROOT, glbPath)}` })
@@ -331,35 +369,57 @@ function main() {
     for (let i = 0; i < 3; i++) {
       const delta = deltas[i]
       if (Math.abs(delta) > TOLERANCE_MM) {
-        mismatches.push({
+        const entry = {
           id: preset.id,
           axis: AXIS_NAMES[i],
           authored: authored[i],
           measured: measured[i],
           delta,
-        })
+        }
+        if (preset.legacyOverride) legacyMismatches.push(entry)
+        else mismatches.push(entry)
       }
     }
   }
 
+  missingLegacy.sort((a, b) => a.id.localeCompare(b.id))
+  for (const m of missingLegacy) {
+    console.log(
+      `MISSING_LEGACY_OVERRIDE ${m.id}: mesh-override preset declares bounding_box_mm ` +
+      `without \`physical.legacy_override: true\`. Run --mark-legacy or drop bounding_box_mm.`
+    )
+  }
+
   mismatches.sort((a, b) => a.id.localeCompare(b.id) || a.axis.localeCompare(b.axis))
   for (const m of mismatches) {
-    const line =
+    console.log(
       `MISMATCH ${m.id}: bbox_${m.axis} ` +
       `authored=${fmt(m.authored)}mm, measured=${fmt(m.measured)}mm ` +
       `(delta=${fmtSigned(m.delta)}mm)`
-    console.log(line)
+    )
+  }
+
+  legacyMismatches.sort((a, b) => a.id.localeCompare(b.id) || a.axis.localeCompare(b.axis))
+  if (process.env.AUDIT_VERBOSE === '1') {
+    for (const m of legacyMismatches) {
+      console.error(
+        `LEGACY_DRIFT ${m.id}: bbox_${m.axis} ` +
+        `authored=${fmt(m.authored)}mm, measured=${fmt(m.measured)}mm ` +
+        `(delta=${fmtSigned(m.delta)}mm) — tolerated because legacy_override`
+      )
+    }
   }
 
   // Summary to stderr so stdout stays machine-parseable.
   const mismatchPresets = new Set(mismatches.map(m => m.id)).size
   console.error('')
-  console.error(`presets scanned:     ${presets.length}`)
-  console.error(`checked against GLB: ${checked.length}`)
-  console.error(`skipped:             ${skipped.length}`)
-  console.error(`tolerance:           ${TOLERANCE_MM}mm per axis`)
-  console.error(`mismatched presets:  ${mismatchPresets}`)
-  console.error(`mismatched axes:     ${mismatches.length}`)
+  console.error(`presets scanned:             ${presets.length}`)
+  console.error(`checked against GLB:         ${checked.length}`)
+  console.error(`skipped:                     ${skipped.length}`)
+  console.error(`tolerance:                   ${TOLERANCE_MM}mm per axis`)
+  console.error(`missing legacy_override:     ${missingLegacy.length}`)
+  console.error(`non-legacy mismatched axes:  ${mismatches.length}  (presets: ${mismatchPresets})`)
+  console.error(`legacy-tolerated drift axes: ${legacyMismatches.length}`)
 
   if (process.env.AUDIT_VERBOSE === '1') {
     console.error('')
@@ -367,7 +427,65 @@ function main() {
     for (const s of skipped) console.error(`  ${s.id}  (${s.reason})`)
   }
 
-  process.exit(mismatches.length > 0 ? 1 : 0)
+  const hardFail = missingLegacy.length > 0 || mismatches.length > 0
+  process.exit(hardFail ? 1 : 0)
+}
+
+// ─────────────────────── --mark-legacy migration mode ─────────────────────────
+//
+// One-shot: adds `legacy_override: true` into `physical` on every
+// mesh-override preset that still has a bounding_box_mm but no marker.
+// Keeps the audit honest going forward: new presets won't inherit the flag
+// by accident. Safe to re-run; already-marked presets are skipped.
+function applyLegacyOverride() {
+  const { meshOverrides } = readMeshOverridesTs()
+
+  const originalJson = fs.readFileSync(PRESET_JSON, 'utf8')
+  const data = JSON.parse(originalJson)
+
+  const touched = []
+  const alreadyMarked = []
+  for (const cat of Object.values(data.categories || {})) {
+    for (const c of cat.components || []) {
+      if (!meshOverrides[c.id]) continue
+      const phys = c.physical
+      if (!phys || !Array.isArray(phys.bounding_box_mm)) continue
+      if (phys.legacy_override === true) {
+        alreadyMarked.push(c.id)
+        continue
+      }
+      phys.legacy_override = true
+      touched.push(c.id)
+    }
+  }
+
+  if (touched.length === 0) {
+    console.error(`no changes — ${alreadyMarked.length} preset(s) already marked`)
+    process.exit(0)
+  }
+
+  // Detect 2 vs 4 space indentation from the original file to match in-place.
+  const indent = detectIndent(originalJson)
+  const serialized = JSON.stringify(data, null, indent) + '\n'
+
+  // Write both mirrored locations (core/presets + src/public) in one go.
+  const mirrorPath = path.join(REPO_ROOT, 'src', 'public', 'generic_presets.json')
+  fs.writeFileSync(PRESET_JSON, serialized)
+  if (fs.existsSync(mirrorPath)) fs.writeFileSync(mirrorPath, serialized)
+
+  touched.sort()
+  for (const id of touched) console.log(`marked legacy_override: ${id}`)
+  console.error('')
+  console.error(`marked:          ${touched.length}`)
+  console.error(`already marked:  ${alreadyMarked.length}`)
+  console.error(`wrote:           ${path.relative(REPO_ROOT, PRESET_JSON)}`)
+  if (fs.existsSync(mirrorPath)) console.error(`wrote:           ${path.relative(REPO_ROOT, mirrorPath)}`)
+  process.exit(0)
+}
+
+function detectIndent(src) {
+  const m = src.match(/\n(\s+)"/)
+  return m ? m[1] : 2
 }
 
 function fmt(n) {
