@@ -2195,7 +2195,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
         const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap - engagementM
         // 1c: numeric orientation → yaw (Z-rotation) on top face
-        const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
+        // elevation_angle: sign-consistent with front (`0 -elevRad 0`) — negative elev
+        // pitches the sensor forward/down so a top-mounted camera can look toward +X and down.
+        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        const rpy = elevRad !== 0 || hasNumericOrient
+          ? `0 ${(-elevRad).toFixed(4)} ${yawRad.toFixed(4)}`
+          : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
       }
       case 'bottom': {
@@ -2216,6 +2221,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
         // hip toward its corner now lands instead of being silently dropped.
         const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        // elevation_angle on bottom: flips the top-face sign so negative elev still
+        // pitches the sensor forward/down from its parent's perspective.
+        if (elevRad !== 0) pitchRad += elevRad
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         // Rotation-aware vertical extent uses body half-extents so a rolled wheel
         // or pitched bracket snaps to the body, not to a shaft/horn tip.
