@@ -801,10 +801,15 @@ class JSONRPCServer:
         # through so Gemini compares the rendered output against the reference
         # the user originally gave Claude (G3 fix).
         reference_images = params.get("reference_images") or []
+        # Engine-computed ground truth (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md
+        # Layer 1). Shape: {placements: [...], icpGaps: [...]}. Forwarded to
+        # the Gemini prompt so screenshot misreads can be refuted with the
+        # actual xyz/rpy the placement engine wrote and the ICP gap it measured.
+        engine_summary = params.get("engine_summary")
 
         try:
             self._emit_progress("validating", "Checking assembly with visual feedback...")
-            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots, reference_images)
+            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots, reference_images, engine_summary)
             self._emit_progress("done", "Validation complete")
             return result
         except Exception as e:

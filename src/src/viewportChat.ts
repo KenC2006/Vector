@@ -1008,7 +1008,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.log('[AI] Received assembly_graph — resolving via frontend snap system')
         const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
         let assemblyResult = assemblyOut.urdf
-        console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+        const engineSummary = assemblyOut.engineSummary
+        console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}, engineSummary=${engineSummary ? `${engineSummary.placements.length} placements / ${engineSummary.icpGaps.length} ICP gaps` : 'null'}`)
 
         if (assemblyResult) {
           try {
@@ -1135,6 +1136,11 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               screenshotBase64: screenshots[0],
               screenshots,
               referenceImages: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
+              // Engine-computed placement + ICP ground truth (Layer 1 of
+              // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). Lets Gemini refute
+              // "camera floating 45mm" / "shin detached" misreads using the
+              // actual xyz/rpy written to URDF plus per-joint ICP gaps.
+              engineSummary,
             }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
 
             console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)

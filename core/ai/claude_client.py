@@ -2567,6 +2567,14 @@ The robot is built in two stages: (1) an AI designs the TOPOLOGY (which componen
 - **"topology"** = The AI chose wrong components, missed components, or connected things incorrectly. Examples: missing head on a dog, no gripper on an arm, using wrong component type, too few legs. THESE CAN BE FIXED by redesigning the topology.
 - **"placement"** = The components are correct but the placement engine positioned them poorly. Examples: legs too close together, body not elevated enough, components overlapping due to small splay angles, parts appearing too small on the grid. THESE CANNOT BE FIXED by the AI — the placement engine handles all coordinates.
 
+## Engine ground truth — do not contradict
+
+When the prompt contains an "Engine ground-truth measurements" section with ICP-gap and/or placement tables, treat those numbers as authoritative. The placement engine already computed the real xyz/rpy applied and the real contact gap along each mate's normal. If a screenshot makes a joint LOOK like it is floating or detached, but the ICP row for that joint reports `gap_p50 < 2mm` at `confidence=high`, the part IS touching — the apparent gap is mesh visual offset or proportions, not placement. Do NOT emit `grounded`, `overlap`, or `direction` failures with numeric magnitudes that contradict a high-confidence gap < 2mm. If two siblings share the same xyz/rpy but one looks displaced, the displacement lives on an ancestor's `attach_rpy` — name the ancestor, do not call the child detached.
+
+## Describe symptoms, do NOT prescribe geometry
+
+Your job is to DESCRIBE what looks wrong. It is NOT to prescribe specific angles, sign flips, axis mirrors, or pose changes. Do NOT write `"mirror legs in pairs"`, `"rotate shoulder by 30°"`, `"flip the rear hip_pitch sign"`, or `"set attach_rpy=[0, π, 0]"`. The downstream topology AI will choose the corrective change — prescriptive geometry suggestions from the validator have historically steered it toward worse poses (e.g. mirroring a quadruped's hip_pitch produces a crossed-leg stance; real quadrupeds keep all four the same direction). Describe the SYMPTOM ("legs collide at the centerline", "torso leans forward", "camera points sideways instead of forward") and stop.
+
 ## Check for These Problems in the IMAGE
 
 1. **shape_match**: Does it look like what was requested? (topology: wrong structure. placement: correct structure but poor positioning)
@@ -2612,7 +2620,8 @@ def validate_assembly(urdf_content: str, original_prompt: str,
                       session_id: str = "default",
                       screenshot_base64: str = None,
                       screenshots: list = None,
-                      reference_images: list = None) -> dict:
+                      reference_images: list = None,
+                      engine_summary: dict = None) -> dict:
     """
     Second-pass validation: send assembled URDF + 3 viewport screenshots to Gemini.
     Uses Gemini 3 Flash for visual validation (cheap, fast, good vision, separate rate limits).
@@ -2623,6 +2632,16 @@ def validate_assembly(urdf_content: str, original_prompt: str,
     reference_images: optional list of user-uploaded reference images in the
     shape [{"media_type": "image/png", "data": "<base64>"}], forwarded so
     Gemini can compare rendered output against the reference.
+
+    engine_summary: optional engine ground-truth payload of the shape
+    {"placements": [{linkName, parentLinkName, xyz, rpy}, ...],
+     "icpGaps": [{linkName, parentConnector, childConnector, pairedCount,
+                  sampleCount, gapP50Mm, gapP90Mm, gapMinMm, gapMaxMm,
+                  nudgeMm, reason, confidence}, ...]}. When present, rendered
+    into tables the validator is told not to contradict (Layer 1 of
+    docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). The same structure is passed to
+    the critique classifier so it can drop validator-misreads that contradict
+    a high-confidence ICP gap (Layer 2).
     """
     # Gemini required — no Claude fallback to avoid burning Anthropic tokens/rate limit
     if _genai is None:
@@ -2635,8 +2654,8 @@ def validate_assembly(urdf_content: str, original_prompt: str,
     # Retry once on transient errors (503 overload, network timeouts)
     for attempt in range(2):
         try:
-            raw = _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots, reference_images)
-            return _classify_and_enrich(raw, original_prompt)
+            raw = _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots, reference_images, engine_summary)
+            return _classify_and_enrich(raw, original_prompt, engine_summary)
         except Exception as e:
             err_str = str(e)
             is_transient = '503' in err_str or 'UNAVAILABLE' in err_str or 'timeout' in err_str.lower()
@@ -2648,29 +2667,115 @@ def validate_assembly(urdf_content: str, original_prompt: str,
             return {"ok": True, "notes": f"Validation skipped: Gemini error — {e}"}
 
 
-def _classify_and_enrich(valresult: dict, original_prompt: str) -> dict:
+def _classify_and_enrich(valresult: dict, original_prompt: str, engine_summary: dict = None) -> dict:
     """
     Run the critique classifier over Gemini's checklist and attach drop flags
     per-item. Infeasible critiques (components not in the catalog) get
     classifier_drop=True + classifier_reason; the TS side uses these to skip
     redesigns that can't be satisfied.
+
+    engine_summary (optional): Layer 2 pass-through so the classifier can drop
+    placement-fixable critiques with mm magnitudes that contradict a
+    high-confidence ICP gap entry.
     """
     checklist = valresult.get("checklist")
     if not checklist:
         return valresult
     try:
         from core.ai.critique_classifier import classify_checklist
-        enriched = classify_checklist(checklist, original_prompt)
+        enriched = classify_checklist(checklist, original_prompt, engine_summary)
         valresult = {**valresult, "checklist": enriched}
     except Exception as e:
         print(f"[ai_validate] critique classifier failed, passing raw checklist: {e}", file=sys.stderr)
     return valresult
 
 
+def _format_engine_summary_block(engine_summary: dict) -> str:
+    """
+    Render the engine ground-truth payload as two fixed-width tables for the
+    validator prompt. Empty/None input returns ''. Kept compact — long tables
+    balloon token counts and the validator only needs representative rows to
+    sanity-check screenshot claims.
+    """
+    if not engine_summary or not isinstance(engine_summary, dict):
+        return ""
+    placements = engine_summary.get("placements") or []
+    icp_gaps = engine_summary.get("icpGaps") or []
+    if not placements and not icp_gaps:
+        return ""
+
+    lines: list = []
+    lines.append("## Engine ground-truth measurements (authoritative)")
+    lines.append("")
+    lines.append(
+        "The two tables below come directly from Vector's placement engine. "
+        "Each row is what the engine ACTUALLY wrote/measured, not a screenshot "
+        "inference. Treat them as ground truth and do not contradict them "
+        "from pixel inspection alone."
+    )
+    lines.append("")
+
+    if icp_gaps:
+        lines.append("### ICP gap table (per mated pair)")
+        lines.append("")
+        lines.append(
+            "`gap_p50/p90` are the median / 90th-percentile face-to-face gaps "
+            "in mm along the contact normal. Negative = child slightly "
+            "interpenetrates the parent (flush contact). `confidence=high` "
+            "means paired-sample ratio ≥75% or the adaptive confident-cap "
+            "fired; a high-confidence gap < 2mm means the part IS in contact "
+            "regardless of what the screenshot looks like."
+        )
+        lines.append("")
+        lines.append("| link | parent→child connector | gap_p50(mm) | gap_p90(mm) | nudge(mm) | paired | confidence |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for row in icp_gaps[:200]:  # hard cap; >200 rows is a pathological graph
+            p50 = row.get("gapP50Mm")
+            p90 = row.get("gapP90Mm")
+            paired = f"{row.get('pairedCount', 0)}/{row.get('sampleCount', 0)}"
+            lines.append(
+                f"| `{row.get('linkName','?')}` | `{row.get('parentConnector','?')}` → `{row.get('childConnector','?')}` | "
+                f"{'' if p50 is None else f'{p50:.2f}'} | "
+                f"{'' if p90 is None else f'{p90:.2f}'} | "
+                f"{row.get('nudgeMm', 0):.2f} | {paired} | {row.get('confidence','?')} |"
+            )
+        lines.append("")
+
+    if placements:
+        lines.append("### Placement table (xyz/rpy as written to URDF, per child)")
+        lines.append("")
+        lines.append(
+            "If two siblings share the same xyz and rpy but the screenshot "
+            "shows one displaced, the displacement comes from rotation "
+            "accumulated up the ancestor chain (attach_rpy on a parent). "
+            "Call out the ancestor, do NOT claim the child is detached."
+        )
+        lines.append("")
+        lines.append("| link | parent | xyz (m) | rpy (rad) |")
+        lines.append("|---|---|---|---|")
+        for row in placements[:200]:
+            lines.append(
+                f"| `{row.get('linkName','?')}` | `{row.get('parentLinkName','?')}` | "
+                f"{row.get('xyz','?')} | {row.get('rpy','?')} |"
+            )
+        lines.append("")
+
+    lines.append(
+        "**Rules for using these tables:** If the engine reports an ICP gap < 2mm "
+        "at high confidence for a joint but the screenshot looks like the child "
+        "is \"floating\" by tens of mm, the screenshot is showing mesh visual "
+        "offset / proportions, not a placement error. Do NOT emit a `grounded`, "
+        "`overlap`, or `direction` failure that contradicts a high-confidence gap."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
                                screenshot_base64: str = None,
                                screenshots: list = None,
-                               reference_images: list = None) -> dict:
+                               reference_images: list = None,
+                               engine_summary: dict = None) -> dict:
     """Gemini 3 Flash visual validation. ~$0.0003 per call."""
     client = _get_gemini_client()
 
@@ -2732,6 +2837,14 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
     else:
         view_instruction = "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."
 
+    engine_block = _format_engine_summary_block(engine_summary)
+    if engine_block:
+        print(
+            f"[ai_validate] [Gemini] Including engine summary "
+            f"(placements={len(engine_summary.get('placements') or [])}, "
+            f"icpGaps={len(engine_summary.get('icpGaps') or [])})",
+            file=sys.stderr,
+        )
     prompt_text = f"""Original user request: "{original_prompt}"
 
 Assembled URDF:
@@ -2739,6 +2852,7 @@ Assembled URDF:
 {urdf_content}
 ```
 
+{engine_block}
 {view_instruction}"""
     parts.append(_genai_types.Part.from_text(text=prompt_text))
 

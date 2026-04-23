@@ -126,6 +126,78 @@ def _normalize(text: str) -> str:
     return (text or "").lower().strip()
 
 
+# Magnitude parsing — used by the Layer-2 measurement-feedback logic
+# (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). Validator details frequently include
+# numeric distance claims like "floating ~45mm", "shin shifted 38mm", "camera
+# detached by 1.5cm". We pull the LARGEST such magnitude in the text (in mm)
+# so we can compare against the engine's ICP gap for the same joint.
+_MAGNITUDE_PATTERN = re.compile(
+    r"(~\s*)?(\d+(?:\.\d+)?)\s*(mm|cm|m)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_largest_magnitude_mm(detail: str) -> Optional[float]:
+    """Return the largest dimensional magnitude in `detail` in mm, or None.
+
+    Matches mm, cm, and m. Ignores percents and unitless numbers. Used as a
+    cheap stand-in for "is the validator claiming a large placement error?"
+    """
+    if not detail:
+        return None
+    max_mm: Optional[float] = None
+    for m in _MAGNITUDE_PATTERN.finditer(detail):
+        try:
+            value = float(m.group(2))
+        except (TypeError, ValueError):
+            continue
+        unit = m.group(3).lower()
+        if unit == "cm":
+            value_mm = value * 10.0
+        elif unit == "m":
+            value_mm = value * 1000.0
+        else:
+            value_mm = value
+        if max_mm is None or value_mm > max_mm:
+            max_mm = value_mm
+    return max_mm
+
+
+def _find_icp_entry_for_critique(detail: str, icp_gaps: List[Dict]) -> Optional[Dict]:
+    """Return the first ICP entry whose `linkName` appears in `detail`.
+
+    Link names are unique per build (e.g. `sensor_depth_camera_small_5`,
+    `shin_extrusion_rl`), so substring search is safe. Matching is longest-
+    first so that `structural_baseplate_large_1` wins over `structural_baseplate_1`
+    when both exist.
+    """
+    if not detail or not icp_gaps:
+        return None
+    sorted_entries = sorted(
+        (e for e in icp_gaps if isinstance(e, dict) and e.get("linkName")),
+        key=lambda e: len(e.get("linkName", "")),
+        reverse=True,
+    )
+    for entry in sorted_entries:
+        name = entry.get("linkName")
+        if name and name in detail:
+            return entry
+    return None
+
+
+# Thresholds for the Layer-2 reclassification logic. Kept as module-level
+# constants so they're easy to tune and reference in fixtures / docs.
+#
+# - CRITIQUE_MAGNITUDE_MIN_MM: critiques below this magnitude don't trigger
+#   reclassification. 10mm is the cap docs/ICP_RESIDUALS.md calls out as the
+#   typical adaptive-confident-cap bound — real placement residuals should be
+#   below 10mm, so a >10mm complaint is suspicious.
+# - ICP_FLUSH_MAX_MM: below this gap, an ICP entry is "flush" and a large
+#   magnitude complaint on the same joint is almost certainly a visual misread.
+CRITIQUE_MAGNITUDE_MIN_MM = 10.0
+ICP_FLUSH_MAX_MM = 2.0
+
+
 def _deterministic_verdict(detail: str) -> Tuple[str, str]:
     """
     Return (verdict, reason) where verdict in {"drop", "keep", "ambig"}.
@@ -252,12 +324,92 @@ def _llm_classify(items: List[Dict]) -> Dict[int, Tuple[bool, str]]:
         return {}
 
 
-def classify_checklist(checklist: List[Dict], original_prompt: str = "") -> List[Dict]:
+def _apply_measurement_feedback(item: Dict, icp_gaps: List[Dict]) -> None:
+    """
+    In-place Layer-2 reclassification (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md).
+
+    Two transformations on placement-fixable critiques whose detail contains
+    a dimensional claim > CRITIQUE_MAGNITUDE_MIN_MM:
+
+      1. If the named joint has a high-confidence ICP gap < ICP_FLUSH_MAX_MM,
+         the part IS flush — the validator misread the screenshot. Drop the
+         critique (classifier_drop=True, reason mentions the ICP refutation).
+
+      2. If NO ICP entry names the joint, the placement engine cannot close the
+         reported gap (ICP caps out at ~3mm, adaptive-cap ~15mm). A >10mm
+         complaint with no ICP presence is a topology-consequence claim
+         (rotation up the ancestor chain, wrong component, etc.), so flip
+         `fixable_by` from placement → topology so the AI gets a redesign
+         attempt instead of hitting `Skipping redesign — placement-fixable and
+         retry cap reached`.
+
+    Non-placement critiques and magnitudes ≤ 10mm are left alone.
+    """
+    if item.get("pass", True):
+        return
+    if item.get("classifier_drop"):
+        return  # already dropped by upstream deterministic/LLM stage — respect it
+    if item.get("fixable_by") != "placement":
+        return
+    detail = item.get("detail", "")
+    magnitude = _extract_largest_magnitude_mm(detail)
+    if magnitude is None or magnitude <= CRITIQUE_MAGNITUDE_MIN_MM:
+        return
+
+    entry = _find_icp_entry_for_critique(detail, icp_gaps) if icp_gaps else None
+    if entry is not None:
+        gap = entry.get("gapP50Mm")
+        confidence = entry.get("confidence")
+        # Gap is "flush" when absolute p50 < 2mm AND the engine is confident.
+        # `abs` catches the negative (overlap) case — those are ALSO flush,
+        # not floating.
+        if (
+            confidence == "high"
+            and isinstance(gap, (int, float))
+            and abs(float(gap)) < ICP_FLUSH_MAX_MM
+        ):
+            item["classifier_drop"] = True
+            item["classifier_reason"] = (
+                f"measurement_feedback: critique claims ~{magnitude:.0f}mm offset on "
+                f"`{entry.get('linkName')}` but ICP reports gap_p50={float(gap):.2f}mm at high "
+                f"confidence (paired={entry.get('pairedCount')}/{entry.get('sampleCount')}). "
+                f"Validator misread — parts are flush."
+            )
+            return
+        # Matched an ICP entry, but either low-confidence or gap is genuinely
+        # large: leave the critique alone. The engine's own ICP telemetry
+        # confirms there's something to look at.
+        return
+
+    # No ICP entry for this joint (e.g. pair lives on the Step-1 authored
+    # connector path, or link name is absent from the detail). A >10mm
+    # placement-fixable complaint cannot be resolved by the placement engine
+    # (ICP nudge caps at ~15mm via confident-cap, 3mm default). Escalate to
+    # topology so the AI gets a redesign rather than hitting the
+    # placement-fixable retry cap.
+    item["fixable_by"] = "topology"
+    item["classifier_reason"] = (
+        f"measurement_feedback: ~{magnitude:.0f}mm placement claim exceeds ICP's "
+        f"placement-reach budget with no matching ICP entry; escalated to topology "
+        f"so the AI can attempt a structural fix."
+    )
+
+
+def classify_checklist(checklist: List[Dict], original_prompt: str = "",
+                       engine_summary: Optional[Dict] = None) -> List[Dict]:
     """
     Enrich each failed checklist item with classifier_drop + classifier_reason.
     Passing items are untouched. Items already matching the hard-drop list or
     clear catalog match bypass the LLM; ambiguous items go through Sonnet in
     a single batched call.
+
+    engine_summary (optional): Layer-2 feedback input of the shape
+    {"placements": [...], "icpGaps": [...]} as produced by
+    urdfAssembly.ts. When present, placement-fixable critiques with large mm
+    magnitudes are cross-checked against the ICP table — a critique that
+    contradicts a high-confidence flush gap is dropped; one with no matching
+    ICP entry is escalated to topology-fixable so the AI can attempt a
+    structural redesign instead of hitting the placement-retry cap.
     """
     if not checklist:
         return checklist
@@ -289,6 +441,16 @@ def classify_checklist(checklist: List[Dict], original_prompt: str = "") -> List
             if 0 <= idx < len(enriched):
                 enriched[idx]["classifier_drop"] = not actionable
                 enriched[idx]["classifier_reason"] = f"llm: {reason}" if reason else "llm"
+
+    # Layer-2 measurement feedback — applied AFTER the deterministic/LLM stage
+    # so catalog-infeasible drops still win over measurement reclassification.
+    icp_gaps: List[Dict] = []
+    if engine_summary and isinstance(engine_summary, dict):
+        raw_gaps = engine_summary.get("icpGaps")
+        if isinstance(raw_gaps, list):
+            icp_gaps = raw_gaps
+    for item in enriched:
+        _apply_measurement_feedback(item, icp_gaps)
 
     # Log summary
     dropped = [i for i, c in enumerate(enriched) if c.get("classifier_drop")]
@@ -348,4 +510,85 @@ if __name__ == "__main__":  # pragma: no cover
             if actual != expected:
                 ok = False
             print(f"  [{mark}] detail={inp['detail']!r} expected_drop={expected} got_drop={actual} reason={out.get('classifier_reason')}")
+
+    # ── Layer 2 measurement-feedback fixtures (require engine_summary) ────────
+    # Scenario: image-24 quadruped from 2026-04-22. Validator hallucinates
+    # "camera floating 45mm" and "shin detached 38mm" on a build where ICP
+    # reports flush high-confidence gaps for those joints.
+    layer2_icp = [
+        {"linkName": "sensor_depth_camera_small_5", "parentConnector": "structural_baseplate_large.front",
+         "childConnector": "sensor_depth_camera_small.mount_back",
+         "pairedCount": 80, "sampleCount": 80, "gapP50Mm": -1.72, "gapP90Mm": -0.74,
+         "gapMinMm": -2.0, "gapMaxMm": -0.5, "nudgeMm": 0.0, "reason": "flush", "confidence": "high"},
+        {"linkName": "shin_extrusion_rl", "parentConnector": "actuator_servo_high_torque.bottom",
+         "childConnector": "structural_extrusion.top",
+         "pairedCount": 78, "sampleCount": 80, "gapP50Mm": 0.80, "gapP90Mm": 1.10,
+         "gapMinMm": 0.4, "gapMaxMm": 1.3, "nudgeMm": 0.0, "reason": "flush", "confidence": "high"},
+    ]
+    layer2_summary = {"placements": [], "icpGaps": layer2_icp}
+    layer2_fixtures = [
+        # Should DROP — validator claim > 10mm, but ICP says flush high-confidence.
+        {"check": "grounded", "pass": False, "fixable_by": "placement",
+         "detail": "sensor_depth_camera_small_5 is floating ~45mm past the +X edge of the baseplate",
+         "expect_drop": True, "expect_fixable_by": "placement"},
+        {"check": "overlap", "pass": False, "fixable_by": "placement",
+         "detail": "shin_extrusion_rl shifted 38mm along X-axis from where it should sit",
+         "expect_drop": True, "expect_fixable_by": "placement"},
+        # Should NOT drop — magnitude present but joint has no ICP entry.
+        # Should ESCALATE to topology-fixable so AI gets a redesign.
+        {"check": "direction", "pass": False, "fixable_by": "placement",
+         "detail": "thigh_extrusion_fl is angled 30mm off-axis relative to its hip joint",
+         "expect_drop": False, "expect_fixable_by": "topology"},
+        # Should NOT drop, NOT escalate — magnitude below threshold.
+        {"check": "overlap", "pass": False, "fixable_by": "placement",
+         "detail": "shin_extrusion_rl clips into its parent by ~3mm",
+         "expect_drop": False, "expect_fixable_by": "placement"},
+        # Should NOT drop, NOT escalate — topology-fixable already.
+        {"check": "completeness", "pass": False, "fixable_by": "topology",
+         "detail": "missing a gripper at the end of forearm_extrusion_1 (gap ~150mm)",
+         "expect_drop": False, "expect_fixable_by": "topology"},
+        # Should NOT drop — ICP entry exists but confidence is low, so we
+        # can't refute the screenshot claim.
+        {"check": "grounded", "pass": False, "fixable_by": "placement",
+         "detail": "imu_board_1 is floating 20mm above the baseplate",
+         "expect_drop": False, "expect_fixable_by": "placement"},
+    ]
+    # Seed the low-confidence case.
+    layer2_icp.append({
+        "linkName": "imu_board_1", "parentConnector": "structural_baseplate_large.top",
+        "childConnector": "imu_board.bottom",
+        "pairedCount": 6, "sampleCount": 80, "gapP50Mm": -0.1, "gapP90Mm": 2.0,
+        "gapMinMm": -1.0, "gapMaxMm": 8.0, "nudgeMm": 0.0, "reason": "sparse", "confidence": "low",
+    })
+    layer2_enriched = classify_checklist(layer2_fixtures, "quadruped smoke test", layer2_summary)
+    for inp, out in zip(layer2_fixtures, layer2_enriched):
+        actual_drop = bool(out.get("classifier_drop"))
+        expected_drop = bool(inp.get("expect_drop"))
+        actual_fixable = out.get("fixable_by")
+        expected_fixable = inp.get("expect_fixable_by")
+        pass_ok = actual_drop == expected_drop and actual_fixable == expected_fixable
+        mark = "PASS" if pass_ok else "FAIL"
+        if not pass_ok:
+            ok = False
+        print(f"  [{mark}] (layer2) drop={actual_drop}(exp={expected_drop}) "
+              f"fixable_by={actual_fixable}(exp={expected_fixable}) reason={out.get('classifier_reason')}")
+
+    # Magnitude parsing direct unit coverage
+    magnitude_cases = [
+        ("the camera floats ~45mm from the chassis", 45.0),
+        ("shin offset 1.5cm along X", 15.0),
+        ("foot sunk 0.05m into ground", 50.0),
+        ("biggest offset is 120 mm, smaller ~5mm", 120.0),
+        ("no numeric claim here", None),
+    ]
+    for text, expected in magnitude_cases:
+        actual = _extract_largest_magnitude_mm(text)
+        pass_ok = (actual == expected) or (
+            expected is not None and actual is not None and abs(actual - expected) < 1e-6
+        )
+        mark = "PASS" if pass_ok else "FAIL"
+        if not pass_ok:
+            ok = False
+        print(f"  [{mark}] (magnitude) text={text!r} expected={expected} got={actual}")
+
     sys.exit(0 if ok else 1)

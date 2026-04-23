@@ -146,6 +146,45 @@ export interface TopologyOp {
   mate_type?: string
 }
 
+/** One row of engine-computed placement ground-truth (what the placement loop
+ *  actually emitted per child). `linkName` / `parentLinkName` are final URDF
+ *  names after nameMap remap. Threaded to the validator so Gemini can compare
+ *  screenshot inspection against the engine's authoritative xyz/rpy. */
+export interface EnginePlacementEntry {
+  linkName: string
+  parentLinkName: string
+  xyz: string   // space-separated meters, as written to URDF
+  rpy: string   // space-separated radians, as written to URDF
+}
+
+/** One row of ICP contact-cleanup diagnostics per mated pair. Mirrors the
+ *  `[icp][trace]` console line. `confidence` is derived from paired-ratio +
+ *  reason: "high" when paired ≥ 75% OR reason mentions "confident-cap",
+ *  "low" otherwise. gap values are in mm; negative = child slightly overlaps
+ *  parent (flush). Validator uses gap_p50_mm / confidence to refute screenshot
+ *  claims of "floating N mm". */
+export interface EngineIcpEntry {
+  linkName: string
+  parentConnector: string   // `${parentPresetId}.${parentConnectorId}`
+  childConnector: string    // `${childPresetId}.${childConnectorId}`
+  pairedCount: number
+  sampleCount: number
+  gapP50Mm: number | null
+  gapP90Mm: number | null
+  gapMinMm: number | null
+  gapMaxMm: number | null
+  nudgeMm: number
+  reason: string
+  confidence: 'high' | 'low'
+}
+
+/** Ground-truth payload returned from resolveAssemblyGraph and forwarded to
+ *  the Gemini validator (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). */
+export interface EngineSummary {
+  placements: EnginePlacementEntry[]
+  icpGaps: EngineIcpEntry[]
+}
+
 export interface UrdfAssemblyApi {
   onModelUpdated(): void
   recordUndoExternal(content: string): void
@@ -154,7 +193,7 @@ export interface UrdfAssemblyApi {
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
-  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary }
   /** Render-time alignment: measure real AABBs of rendered meshes and shift pivots
    *  so child contact surfaces meet their parent's attach face. No-op if no graph
    *  has been resolved yet. Safe to call multiple times (EPS-guarded, idempotent). */
@@ -1704,10 +1743,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return null
   }
 
-  function runContactCleanupPass(): { adjustedCount: number; shifts: Array<{ linkName: string; dMm: number }> } {
+  function runContactCleanupPass(): { adjustedCount: number; shifts: Array<{ linkName: string; dMm: number }>; icpEntries: EngineIcpEntry[] } {
     const graphSnap = _lastAssemblyGraph
     const shifts: Array<{ linkName: string; dMm: number }> = []
-    if (!graphSnap) return { adjustedCount: 0, shifts }
+    const icpEntries: EngineIcpEntry[] = []
+    if (!graphSnap) return { adjustedCount: 0, shifts, icpEntries }
 
     const parsed = ctx.getParsedRobot()
     const pivotGroups = new Set<THREE.Object3D>()
@@ -1767,6 +1807,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       if (!shouldApplyRuntimeNudge(parentConn.engagement_depth_mm)) {
         console.log(`[icp][trace] ${comp.link_name}: skip — ${parentPreset.id}.${parentConnectorId}.engagement_depth_mm=${parentConn.engagement_depth_mm}mm authored (Step 1 path)`)
+        icpEntries.push({
+          linkName: comp.link_name,
+          parentConnector: `${parentPreset.id}.${parentConnectorId}`,
+          childConnector: `${childPreset.id}.${childConnectorId}`,
+          pairedCount: 0,
+          sampleCount: 0,
+          gapP50Mm: null,
+          gapP90Mm: null,
+          gapMinMm: null,
+          gapMaxMm: null,
+          nudgeMm: 0,
+          reason: `authored-engagement-depth=${parentConn.engagement_depth_mm}mm (Step 1 path)`,
+          confidence: 'high',
+        })
         continue
       }
 
@@ -1808,6 +1862,27 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         : `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits}`
       console.log(`[icp][trace] ${comp.link_name} ${parentPreset.id}.${parentConnectorId}→${childPreset.id}.${childConnectorId} r=${(diagnostics.faceRadiusM * 1000).toFixed(1)}mm ${gapSummary} → nudge=${diagnostics.nudgeMm.toFixed(2)}mm (${diagnostics.reason})`)
 
+      // Confidence heuristic for the validator payload: high when the paired-
+      // sample ratio is ≥75% OR the nudge reason tripped the adaptive confident
+      // cap (tight percentile spread). Everything else is "low" — the gap
+      // estimate is real but should not be used to refute a screenshot claim.
+      const pairedRatio = diagnostics.sampleCount > 0 ? diagnostics.pairedCount / diagnostics.sampleCount : 0
+      const confident = pairedRatio >= 0.75 || /confident[- ]?cap/i.test(diagnostics.reason || '')
+      icpEntries.push({
+        linkName: comp.link_name,
+        parentConnector: `${parentPreset.id}.${parentConnectorId}`,
+        childConnector: `${childPreset.id}.${childConnectorId}`,
+        pairedCount: diagnostics.pairedCount,
+        sampleCount: diagnostics.sampleCount,
+        gapP50Mm: Number.isFinite(diagnostics.gapP50Mm as number) ? (diagnostics.gapP50Mm as number) : null,
+        gapP90Mm: Number.isFinite(diagnostics.gapP90Mm as number) ? (diagnostics.gapP90Mm as number) : null,
+        gapMinMm: Number.isFinite(diagnostics.gapMinMm as number) ? (diagnostics.gapMinMm as number) : null,
+        gapMaxMm: Number.isFinite(diagnostics.gapMaxMm as number) ? (diagnostics.gapMaxMm as number) : null,
+        nudgeMm: diagnostics.nudgeMm,
+        reason: diagnostics.reason,
+        confidence: confident ? 'high' : 'low',
+      })
+
       if (!(nudgeM > 0)) continue
 
       // Apply to pivot in parent-local: pivot.position -= nudgeM * parent_axis_unit.
@@ -1821,7 +1896,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     if (shifts.length > 0) parsed.group.updateMatrixWorld(true)
-    return { adjustedCount: shifts.length, shifts }
+    return { adjustedCount: shifts.length, shifts, icpEntries }
   }
 
   /**
@@ -3681,7 +3756,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } catch { /* localStorage full or unavailable — non-critical */ }
   }
 
-  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] } {
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
@@ -3844,6 +3919,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Hoisted above the try block so the post-try remappedComponents map can
     // read it.
     const viaConnectorMap = new Map<string, boolean>()
+
+    // Ground-truth placement rows (xyz/rpy actually written to URDF, per child)
+    // captured inline during the placement loop. Threaded to the Gemini validator
+    // so screenshot misreads can be refuted against authoritative engine output
+    // (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). Hoisted above the try so
+    // the final return (which runs outside the try) can read it.
+    const placementEntries: EnginePlacementEntry[] = []
 
     // try/finally is load-bearing: if the loop throws we MUST clear _bulkMode,
     // else every future commitUrdf in the session writes to an orphaned buffer.
@@ -4199,6 +4281,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (changed) {
         nameMap.set(comp.link_name, childName)
         placedCount++
+        placementEntries.push({
+          linkName: childName,
+          parentLinkName,
+          xyz: placement.xyz,
+          rpy: placement.rpy,
+        })
         console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
         // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
@@ -4270,6 +4358,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // extents. Safe when meshes haven't loaded yet — the EPS guard no-ops any
     // link whose parent/child AABB is unavailable or already aligned, and the
     // debounced onMeshLoaded path re-fires reconcile once GLBs settle.
+    let icpEntriesForSummary: EngineIcpEntry[] = []
     try {
       ctx.getParsedRobot().group.updateMatrixWorld(true)
       const reconcileRes = reconcileNodePlacement({
@@ -4299,6 +4388,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // does so the debounced reparse doesn't wipe the adjustments.
       try {
         const cleanupRes = runContactCleanupPass()
+        icpEntriesForSummary = cleanupRes.icpEntries
         if (cleanupRes.adjustedCount > 0) {
           persistReconcileShiftsToUrdf(ctx.getParsedRobot().linkGroups)
           rebuildMountNodes()
@@ -4319,7 +4409,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     ctx.showToast(`Assembled ${placedCount} components`, 'success')
 
-    return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
+    const engineSummary: EngineSummary = {
+      placements: placementEntries,
+      icpGaps: icpEntriesForSummary,
+    }
+    return {
+      urdf: ctx.getUrdfText(),
+      topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined,
+      engineSummary,
+    }
   }
 
   // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────
