@@ -458,6 +458,7 @@ async fn ai_edit(
     session_id: Option<String>,
     model: Option<String>,
     images: Option<Vec<serde_json::Value>>,
+    assembly_graph: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
@@ -470,7 +471,40 @@ async fn ai_edit(
         "session_id": session_id.unwrap_or_else(|| "default".to_string()),
         "model": model,
         "images": images.unwrap_or_default(),
+        // Workstream #1: canonical AssemblyGraph preserved across edits.
+        // When present, the Python side hands this to Claude as the lossless
+        // source of truth instead of the URDF (which drops orientation /
+        // elevation_angle / length_mm / attach_rpy on round-trip).
+        "assembly_graph": assembly_graph,
     }), 1, &app)
+}
+
+/// WS2 tool-call edit surface: one turn of the multi-round tool-use loop.
+/// Frontend drives the loop — first call with `prompt`, then each round with
+/// `tool_results` until the response's `done` field is true.
+#[tauri::command]
+async fn ai_edit_turn(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    prompt: Option<String>,
+    assembly_graph: Option<serde_json::Value>,
+    kinematic_context: Option<String>,
+    tool_results: Option<serde_json::Value>,
+    model: Option<String>,
+    images: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+
+    process.send_rpc("ai_edit_turn", json!({
+        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+        "prompt": prompt,
+        "assembly_graph": assembly_graph,
+        "kinematic_context": kinematic_context,
+        "tool_results": tool_results,
+        "model": model,
+        "images": images.unwrap_or_default(),
+    }), 1)
 }
 
 /// Restore conversation history for an AI session from frontend localStorage
@@ -488,7 +522,7 @@ async fn ai_set_history(state: State<'_, AppState>, session_id: String, history:
 
 /// Second-pass AI validation of assembled URDF — checks spatial correctness
 #[tauri::command]
-async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>, reference_images: Option<Vec<serde_json::Value>>, engine_summary: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -498,7 +532,12 @@ async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_c
         "original_prompt": original_prompt,
         "session_id": session_id.unwrap_or_else(|| "default".to_string()),
         "screenshot_base64": screenshot_base64,
-        "screenshots": screenshots
+        "screenshots": screenshots,
+        "reference_images": reference_images.unwrap_or_default(),
+        // Engine-computed ground truth (placement + ICP tables) —
+        // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1. Pass-through to the
+        // Python core which formats it into the Gemini validator prompt.
+        "engine_summary": engine_summary,
     }), 1, &app)
 }
 
@@ -981,6 +1020,7 @@ pub fn run() {
             sim_set_script,
             sim_render,
             ai_edit,
+            ai_edit_turn,
             ai_set_history,
             ai_validate_assembly,
             ai_complete,

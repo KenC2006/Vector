@@ -205,6 +205,42 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   'power_lipo_6s_10000': [Math.PI / 2, 0, Math.PI / 2],
 }
 
+/**
+ * Components whose GLB models the entire servo (body + shaft) as a single
+ * primitive — the per-axis scaling stretches the full mesh to fill bbox.z, so
+ * there is no visible shaft column above the body. For face-mount mates, the
+ * authored body_top connector wants a real body-vs-shaft distinction so the
+ * coupler bore can hide the shaft.
+ *
+ * When a component has an entry here, applyMeshToLink:
+ *   1. Scales the GLB Z to (bbox.z - shaft_length_mm) instead of bbox.z, so the
+ *      body GLB occupies only the lower (bbox.z - shaft_length) of the link.
+ *   2. Adds a procedural cylinder above the body — radius = shaft_radius_mm,
+ *      height = shaft_length_mm, axis along URDF +Z — to fill the upper
+ *      shaft_length region of the bbox.
+ *
+ * The total visible envelope (body + shaft) still fills the bbox; per-axis
+ * scaling just splits its allocation between two meshes. The procedural shaft
+ * is a smooth metallic cylinder, not a splined output horn — at robot-scale
+ * zoom this is invisible; at extreme close-up it reads as a generic shaft.
+ *
+ * Only needed for GLBs that don't already split body and shaft as separate
+ * primitives. Servo presets whose GLBs DO split (e.g. servo_standard.glb has
+ * the shaft as a 19.5×19.5×4 primitive at +Z) don't need an entry here.
+ */
+export const SHAFT_OVERLAYS: Record<string, { shaft_length_mm: number; shaft_radius_mm: number }> = {
+  // servo_high_torque.glb is one continuous primitive — no shaft separation.
+  // Both presets that share this GLB get an overlay shaft sized to their
+  // shaft_out connector's diameter_mm. Length = 5mm covers a typical Dynamixel
+  // XM-class output horn protrusion (a real spline horn would be ~6-8mm).
+  'actuator_servo_high_torque': { shaft_length_mm: 5, shaft_radius_mm: 4 },
+  'actuator_servo_heavy_duty':  { shaft_length_mm: 5, shaft_radius_mm: 6 },
+}
+
+export function getShaftOverlay(componentId: string): { shaft_length_mm: number; shaft_radius_mm: number } | null {
+  return SHAFT_OVERLAYS[componentId] ?? null
+}
+
 /** Get the per-component rotation override (XYZ Euler radians), or null if none. */
 export function getRotationOverride(componentId: string): [number, number, number] | null {
   return ROTATION_OVERRIDES[componentId] ?? null

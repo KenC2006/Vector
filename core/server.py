@@ -75,8 +75,9 @@ _generate_assembly_with_tools = None
 _validate_assembly = None
 _set_conversation_history = None
 _generate_sim_script = None
+_generate_edit_turn = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script, generate_edit_turn as _generate_edit_turn
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
@@ -401,6 +402,7 @@ class JSONRPCServer:
             "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
+            "ai_edit_turn": self.handle_ai_edit_turn,
             "ai_complete": self.handle_ai_complete,
             "ai_validate_assembly": self.handle_ai_validate_assembly,
             "ai_set_history": self.handle_ai_set_history,
@@ -817,6 +819,14 @@ class JSONRPCServer:
         urdf_content = params["urdf_content"]
         kinematic_context = params.get("kinematic_context", None)
         session_id = params.get("session_id", "default")
+        # Workstream #1: canonical AssemblyGraph from the frontend. When provided,
+        # claude_client prefers it over URDF as the edit-retry source of truth.
+        # Kept as a dict (not stringified) so generate_edit can json.dumps with its
+        # own formatting and the roundtrip shape stays inspectable in logs.
+        assembly_graph = params.get("assembly_graph", None)
+        if assembly_graph is not None and not isinstance(assembly_graph, dict):
+            print(f"[ai_edit] Ignoring non-dict assembly_graph: {type(assembly_graph).__name__}", file=sys.stderr)
+            assembly_graph = None
 
         if not isinstance(prompt, str):
             raise ValueError("Parameter 'prompt' must be a string")
@@ -881,6 +891,7 @@ class JSONRPCServer:
                     on_progress=self._emit_progress,
                     model=model,
                     images=images,
+                    assembly_graph=assembly_graph,
                 )
             else:
                 self._emit_progress("thinking", "Processing request...")
@@ -888,6 +899,7 @@ class JSONRPCServer:
                     prompt, urdf_content, kg_json, kinematic_context, session_id,
                     model=model,
                     images=images,
+                    assembly_graph=assembly_graph,
                 )
 
             self._emit_progress("done", "Complete")
@@ -904,6 +916,73 @@ class JSONRPCServer:
             return response
         except Exception as e:
             raise ValueError(f"AI edit failed: {e}")
+
+    def handle_ai_edit_turn(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Workstream #2 tool-call edit surface: one turn of the multi-round
+        tool-use loop. The frontend drives the loop — it calls this once with
+        `prompt` (first turn), then again for each round with `tool_results`
+        from local dispatch until `done` comes back true.
+
+        Params:
+            session_id (str)
+            prompt (str, optional)          — first-turn user message
+            assembly_graph (dict, optional) — first-turn graph snapshot
+            kinematic_context (str, optional)
+            tool_results (list, optional)   — subsequent turns, one per tool_use_id
+            model (str, optional)           — 'claude-sonnet-4-6' | 'claude-opus-4-7'
+            images (list, optional)
+
+        Returns: dict — see generate_edit_turn docstring for the shape.
+        """
+        if _generate_edit_turn is None:
+            raise ValueError(
+                f"Claude AI not installed. Run: pip install anthropic\n"
+                f"Error: {_ai_import_error}"
+            )
+
+        session_id = params.get("session_id", "default")
+        prompt = params.get("prompt")
+        assembly_graph = params.get("assembly_graph")
+        if assembly_graph is not None and not isinstance(assembly_graph, dict):
+            assembly_graph = None
+        kinematic_context = params.get("kinematic_context")
+        tool_results = params.get("tool_results")
+
+        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"}
+        model = params.get("model") or "claude-sonnet-4-6"
+        if model not in _ALLOWED_MODELS:
+            model = "claude-sonnet-4-6"
+
+        # Normalize images (same treatment as ai_edit — strip data: URL prefix).
+        raw_images = params.get("images") or []
+        images: list = []
+        if isinstance(raw_images, list):
+            for img in raw_images:
+                if not isinstance(img, dict):
+                    continue
+                media_type = img.get("media_type")
+                data = img.get("data", "")
+                if not isinstance(data, str) or not isinstance(media_type, str):
+                    continue
+                if data.startswith("data:"):
+                    comma = data.find(",")
+                    if comma != -1:
+                        data = data[comma + 1:]
+                images.append({"media_type": media_type, "data": data})
+
+        try:
+            return _generate_edit_turn(
+                session_id=session_id,
+                prompt=prompt,
+                assembly_graph=assembly_graph,
+                kinematic_context=kinematic_context,
+                tool_results=tool_results,
+                model=model,
+                images=images,
+            )
+        except Exception as e:
+            raise ValueError(f"AI edit turn failed: {e}")
 
     def handle_ai_complete(self, params: Dict[str, Any]) -> str:
         """
@@ -983,10 +1062,19 @@ class JSONRPCServer:
         session_id = params.get("session_id", "default")
         screenshot_base64 = params.get("screenshot_base64")
         screenshots = params.get("screenshots")  # array of 3 base64 PNGs
+        # User-uploaded reference images — [{media_type, data}, ...]. Threaded
+        # through so Gemini compares the rendered output against the reference
+        # the user originally gave Claude (G3 fix).
+        reference_images = params.get("reference_images") or []
+        # Engine-computed ground truth (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md
+        # Layer 1). Shape: {placements: [...], icpGaps: [...]}. Forwarded to
+        # the Gemini prompt so screenshot misreads can be refuted with the
+        # actual xyz/rpy the placement engine wrote and the ICP gap it measured.
+        engine_summary = params.get("engine_summary")
 
         try:
             self._emit_progress("validating", "Checking assembly with visual feedback...")
-            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots)
+            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots, reference_images, engine_summary)
             self._emit_progress("done", "Validation complete")
             return result
         except Exception as e:

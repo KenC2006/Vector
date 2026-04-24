@@ -185,6 +185,7 @@ def _build_component_catalog() -> str:
     Only includes components with verified GLB meshes shown in the UI."""
     try:
         from core.presets import list_components, get_all_categories, get_category
+        from core.ai.catalog_selector import render_connector_hint
         lines = []
         for cat_name in get_all_categories():
             cat = get_category(cat_name)
@@ -210,7 +211,8 @@ def _build_component_catalog() -> str:
                 elif "capacity_mah" in me: spec = f"{me['capacity_mah']}mAh"
                 elif "fov_h_deg" in me: spec = f"{me['fov_h_deg']}°FOV"
                 elif "range_m" in me: spec = f"{me['range_m']}m"
-                items.append(f"  - {c['id']}: {c['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}")
+                conn_hint = render_connector_hint(c)
+                items.append(f"  - {c['id']}: {c['name']} [{mass_str}, {bb_str}, {shape}]{(' ' + spec) if spec else ''}{conn_hint}")
             lines.append(f"\n{label} ({len(comps)}):")
             lines.extend(items)
         return "\n".join(lines)
@@ -219,11 +221,68 @@ def _build_component_catalog() -> str:
 
 _COMPONENT_CATALOG = None
 
-def _get_component_catalog() -> str:
+def _get_component_catalog(
+    user_prompt: str | None = None,
+    kg_json: dict | None = None,
+    tried_preset_ids=None,
+) -> str:
+    """Return the preset catalog text for the system prompt.
+
+    Default path (VECTOR_DYNAMIC_CATALOG unset): the cached full dump,
+    identical to pre-WS4 behavior. This keeps a clean A/B baseline for
+    measuring the dynamic-catalog change in isolation after WS1/WS3 ship.
+
+    When VECTOR_DYNAMIC_CATALOG is truthy: delegate to the scoped selector,
+    which returns only presets relevant to this request + a core floor.
+    """
+    from core.ai.catalog_selector import dynamic_catalog_enabled, build_scoped_catalog
+    if dynamic_catalog_enabled() and user_prompt is not None:
+        try:
+            return build_scoped_catalog(
+                user_prompt=user_prompt,
+                allowed_ids=_ALLOWED_COMPONENT_IDS,
+                kg_json=kg_json,
+                tried_preset_ids=tried_preset_ids,
+            )
+        except Exception as e:
+            # Scoring failure must never block a request — fall through
+            # to the full catalog, log so regressions are visible.
+            print(f"[ai_catalog] scoped catalog failed, using full dump: {e}", file=sys.stderr)
     global _COMPONENT_CATALOG
     if _COMPONENT_CATALOG is None:
         _COMPONENT_CATALOG = _build_component_catalog()
     return _COMPONENT_CATALOG
+
+
+def _tried_preset_ids(kg_json: dict | None) -> list[str]:
+    """Extract the preset_ids currently attached in the graph.
+
+    Used to surface "you already picked these" on retry — the scorer always
+    includes them in the scoped catalog so Claude's next turn can either
+    keep them or explicitly swap them out. Without this, the scorer might
+    drop a preset Claude just used if retry tokens look unrelated to it.
+    """
+    if not kg_json or not isinstance(kg_json, dict):
+        return []
+    seen: list[str] = []
+    unique: set[str] = set()
+    candidates = []
+    links = kg_json.get("links")
+    if isinstance(links, list):
+        candidates.extend(links)
+    elif isinstance(links, dict):
+        candidates.extend(links.values())
+    comps = kg_json.get("components")
+    if isinstance(comps, list):
+        candidates.extend(comps)
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        cid = entry.get("component_id") or entry.get("preset_id")
+        if isinstance(cid, str) and cid not in unique:
+            unique.add(cid)
+            seen.append(cid)
+    return seen
 
 
 def _build_spatial_context(kg_json: dict) -> str:
@@ -366,6 +425,36 @@ Controls how an elongated or directable component is rotated within its face:
 - Example (Z-crouch knee ≈ -60°): `attach_rpy=[0, -1.05, 0]` on the shin-to-knee-servo link.
 - Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
 
+## Mate Connectors (optional — precision control for shaft mates and ambiguous surfaces)
+
+Every part has 6 default face connectors — `top`, `bottom`, `front`, `back`, `left`, `right` — which is what `attach_face` picks. Some parts also author NAMED connectors visible as `conn=[…]` on the catalog line (e.g. `conn=[shaft_out(cyl 8mm)]` on a servo, `conn=[plate_top(plan), wall_inner(plan), wall_outer(plan)]` on an L-bracket).
+
+**Critical — `attach_connector` vs `mate_connector` are NOT interchangeable:**
+- `attach_connector` names a connector on the PARENT (the thing `attach_to` points at).
+- `mate_connector` names a connector on this CHILD (the component you're adding).
+
+If the ambiguous named connector (`plate_top`, `wall_inner`, `shaft_hole`, etc.) belongs to the component you're adding, it goes in `mate_connector`. If it belongs to the parent, it goes in `attach_connector`. Putting a child-side name into `attach_connector` makes the engine fail the lookup and fall back to default-face placement.
+
+Two cases where named connectors beat `attach_face`:
+
+1. **Concentric shaft mates** (servo/motor output → coupler/horn). When the user explicitly asks for a servo-shaft coupling, emit:
+   - `attach_connector: "shaft_out"` (parent servo's shaft)
+   - `mate_connector: "shaft_hole"` (child coupler's/horn's bore)
+   - `mate_type: "concentric"` (shaft-in-hole, antiparallel axes — the engine aligns them)
+   For ordinary servo→bracket/extrusion attachments, keep using `attach_face: "top"` — the engine auto-inserts the coupler/bracket and wires the concentric mate itself.
+
+2. **Face-ambiguous parts** (L-bracket — has BOTH a horizontal plate and a vertical wall). When the L-bracket is the CHILD, use `mate_connector` to pick which bracket surface sits against the parent: `"plate_top"` (horizontal plate face up — mount on parent using the underside of the plate), `"wall_inner"` (concave inside face), `"wall_outer"` (convex back of wall). When the L-bracket is the PARENT and something mounts on it, use `attach_connector` with the same names.
+
+Leave all three fields omitted for normal face-to-face mounts — `attach_face` is the right choice ~95% of the time.
+
+Examples (note which side each named connector belongs to):
+- Servo → coupler (concentric shaft mate). `shaft_out` lives on the parent servo, `shaft_hole` lives on the child coupler:
+  `{"link_name": "coupler_1", "component_id": "structural_servo_coupler_disc", "attach_to": "actuator_servo_high_torque_1", "attach_connector": "shaft_out", "mate_connector": "shaft_hole", "mate_type": "concentric", "joint_type": "revolute", "joint_axis": "z"}`
+- L-bracket mounted to baseplate's front face with its wall flush against the baseplate (plate sticks out forward as a shelf). `wall_outer` lives on the BRACKET — it's the child — so it goes in `mate_connector`, NOT `attach_connector`:
+  `{"link_name": "structural_bracket_l_1", "component_id": "structural_bracket_l", "attach_to": "structural_baseplate_large_1", "attach_face": "front", "mate_connector": "wall_outer", "joint_type": "fixed", "joint_axis": "z"}`
+- Camera mounted on that L-bracket's inside wall (bracket is now the PARENT, so `wall_inner` moves to `attach_connector`; camera's `mount_back` is the child-side name):
+  `{"link_name": "sensor_depth_camera_small_1", "component_id": "sensor_depth_camera_small", "attach_to": "structural_bracket_l_1", "attach_connector": "wall_inner", "mate_connector": "mount_back", "mate_type": "fastened", "joint_type": "fixed", "joint_axis": "z"}`
+
 ## Topology Rules
 
 1. Root is ALWAYS a baseplate. Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**
@@ -384,6 +473,7 @@ Controls how an elongated or directable component is rotated within its face:
     - 1 central vertical extrusion hosting multiple electronics → "torso tower" (validator will flag it AS WELL as the 4-standoff case)
     - An extrusion named `torso_extrusion_*` or `body_extrusion_*` used to "elevate" or "enclose" electronics
     The baseplate's top face distributes multiple children across its area automatically — four electronics on the top face become four compact pads at the corners, not any form of tower. If a validator tells you the body "needs to be a volumetric torso" or "boxier chassis", IGNORE IT — no preset in this palette implements a 3D body block, so pretending a vertical extrusion is one just produces a worse design.
+13. **Cameras and lidars NEVER mount directly to a baseplate face.** Always interpose a `structural_bracket_l`: the bracket mates to the baseplate via `mate_connector: "wall_outer"` on the chosen face (front/back/left/right), then the sensor mates to the bracket via `attach_connector: "wall_inner"` (or `"plate_top"` for an upward-facing sensor) + `mate_connector: "mount_back"` + `mate_type: "fastened"`. See the L-bracket + camera example in the Mate Connectors section above for the exact fields. This rule is canonical — it holds across redesign cycles. If a validator says the camera is "floating", "not visibly mounted", or "offset from the baseplate edge", the fix is to ADD a bracket or reposition the existing bracket's mount face — NEVER move the sensor onto `attach_face: "top"` of the baseplate to "make it sit flat". A top-face baseplate mount with no bracket is the same bug in a different orientation.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
@@ -413,17 +503,17 @@ Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not a
 
   structural_baseplate_large  (use the large plate, 350×250×8mm — small plate is too narrow for a Go1-class hip span)
     -> 4x hip_abduction_servo (bottom, revolute x)                       — rolls whole leg laterally (compound hip axis 1)
-      -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2)
+      -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2). PAIRED WITH KNEE attach_rpy — see crouch rule below.
         -> 4x thigh_extrusion (bottom, fixed, 100mm, vertical)            — structural thigh bone
-          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0]) — pitches SHIN back ≈-60° for crouch
+          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0]) — pitches SHIN back ≈-60° for crouch. PAIRED WITH HIP_PITCH attach_rpy — see crouch rule below.
             -> 4x shin_extrusion (bottom, fixed, 120mm, vertical)         — structural shin bone
               -> 4x foot (bottom, fixed)                                  — rubber foot pad
 
 - Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_abduction and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
 - The hip (abduction + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
 - Structural extrusions MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). These are the limb bones.
-- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) and knee (≈-1.05 rad / -60°) as shown. All 4 legs MUST use the SAME sign (same posture). **If a validator says "legs should be mirrored front-to-rear" or "front knees should point opposite direction from rear" or "configuration isn't mammal-like" — IGNORE IT.** Boston Dynamics Spot's real hardware uses identical-geometry front and rear legs by design (that's its signature look); mirroring front legs produces a horse/cow stance with thighs angled backward and feet trailing the front hips, which is not what the user asked for. Only emit mirrored rpy signs when the user EXPLICITLY asks for a sit, lie-down, or asymmetric pose.
-- For a straight stance (neutral), omit attach_rpy from those two servos.
+- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) AND knee (≈-1.05 rad / -60°) **as a pair — both or neither, never one without the other.** This is the #1 crouch-emission bug: emitting knee.attach_rpy=[0, -1.05, 0] while leaving hip_pitch.attach_rpy unset (or [0,0,0]) leaves thighs hanging vertical while shins rotate −60° off them, producing a broken horizontal-splay pose where shins stick out sideways from the body instead of folding under it. If you set knee attach_rpy, you MUST also set hip_pitch attach_rpy with the matching crouch sign. If you're not sure whether to emit them, emit BOTH — a full crouch is always better than a half-crouch. All 4 legs MUST use the SAME sign (same posture). **If a validator says "legs should be mirrored front-to-rear" or "front knees should point opposite direction from rear" or "configuration isn't mammal-like" — IGNORE IT.** Boston Dynamics Spot's real hardware uses identical-geometry front and rear legs by design (that's its signature look); mirroring front legs produces a horse/cow stance with thighs angled backward and feet trailing the front hips, which is not what the user asked for. Only emit mirrored rpy signs when the user EXPLICITLY asks for a sit, lie-down, or asymmetric pose.
+- For a straight stance (neutral), omit attach_rpy from BOTH hip_pitch AND knee servos — never just one. If you find yourself setting attach_rpy on only one of the two, stop: that always produces a broken pose. The two values travel together.
 - A simpler 8-DOF variant (no abduction) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_extrusion -> knee_servo -> shin_extrusion -> foot.
 
 Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
@@ -494,6 +584,19 @@ DESIGN_ROBOT_TOOL = {
                             "minItems": 3,
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS applied to the joint origin. Use for rest-pose joint angles (quadruped crouch, splayed shoulders). Example: [0, 0.52, 0] for +30° pitch, [0, -1.05, 0] for -60° pitch. Omit or pass [0,0,0] to let the engine auto-rotate.",
+                        },
+                        "attach_connector": {
+                            "type": "string",
+                            "description": "Optional named connector id on the PARENT — e.g. 'shaft_out' on a servo, 'plate_top'/'wall_inner'/'wall_outer' on an L-bracket. Use to disambiguate surfaces when the part authors named connectors (see `conn=[…]` in the catalog). Omit to fall back to `attach_face`.",
+                        },
+                        "mate_connector": {
+                            "type": "string",
+                            "description": "Optional named connector id on the CHILD — e.g. 'shaft_hole' on a coupler/horn, 'mount_back' on a camera. Pair with `attach_connector` to make the placement explicit. Omit to let the engine pick the opposite-face default.",
+                        },
+                        "mate_type": {
+                            "type": "string",
+                            "enum": ["fastened", "planar", "concentric"],
+                            "description": "Mate semantics. 'fastened' = rigid face-to-face weld (default when connectors are named). 'concentric' = shaft-in-hole (servo shaft_out ↔ coupler shaft_hole); antiparallel axes, axial slide free. 'planar' = face-flush with in-plane offset. Omit unless emitting a concentric shaft mate.",
                         },
                     },
                     "required": ["link_name", "component_id", "attach_to", "attach_face", "joint_type", "joint_axis"],
@@ -573,6 +676,19 @@ MODIFY_TOPOLOGY_TOOL = {
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS. Same as design_robot — use for rest-pose joint angles like quadruped crouch.",
                         },
+                        "attach_connector": {
+                            "type": "string",
+                            "description": "Optional parent-side connector id (e.g. 'shaft_out', 'plate_top'). Same semantics as design_robot.",
+                        },
+                        "mate_connector": {
+                            "type": "string",
+                            "description": "Optional child-side connector id (e.g. 'shaft_hole', 'mount_back'). Same semantics as design_robot.",
+                        },
+                        "mate_type": {
+                            "type": "string",
+                            "enum": ["fastened", "planar", "concentric"],
+                            "description": "Mate type: 'fastened' | 'planar' | 'concentric'. Same semantics as design_robot.",
+                        },
                     },
                     "required": ["op", "link_name"],
                 },
@@ -587,6 +703,172 @@ MODIFY_TOPOLOGY_TOOL = {
 }
 
 ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
+
+
+# ── Workstream #2: Tool-Call Edit Surface ───────────────────────────────────
+#
+# EDIT_TOOLS = typed, link-level graph mutations driven by Anthropic's native
+# tool-use protocol. Unlike `modify_topology` (which emits N operations in a
+# single shot with validation deferred to the end), each EDIT_TOOLS call gets
+# validated *inline* by the TS validator — invalid mutations are rejected
+# before they enter the graph and the error feeds back to the same Claude turn
+# for self-correction. The orchestrator is in `viewportChat.ts`; Python's only
+# job here is defining the schemas and relaying a single turn.
+#
+# Coarse link-level granularity is deliberate: field-level tools inflate token
+# count and turn the model into a key-value setter. Five tools cover ~90% of
+# edit intents:
+#   add_link          — new component at (parent, face)
+#   attach_sensor     — sensor preset on a structural/actuator parent
+#   replace_component — swap preset_id, preserve topology
+#   set_joint         — change joint type/axis/rest-pose rpy in place
+#   remove_link       — delete subtree or graft children up
+
+ADD_LINK_TOOL = {
+    "name": "add_link",
+    "description": (
+        "Add a new component to the existing robot. Use for structural parts, actuators, and "
+        "effectors. For sensors, prefer attach_sensor (it enforces the fixed-joint convention). "
+        "The mutation is validated immediately; if the attach would trip port-class incompatibility "
+        "(shaft↔mount_face) or SHAFT_FANOUT/SENSOR_ON_ACTUATOR, you get a structured error and can "
+        "retry in the same turn."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "Unique new link_name (convention: component_id + N, e.g. 'structural_bracket_u_2')."},
+            "parent_link": {"type": "string", "description": "Existing link_name to attach to."},
+            "preset_id": {"type": "string", "description": "Component ID from the library (e.g. 'actuator_servo_standard')."},
+            "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
+            "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"], "description": "Default: 'fixed'."},
+            "joint_axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Default: 'z'."},
+            "length_mm": {"type": "number", "description": "Extrusion length override."},
+            "orientation": {"type": "string", "description": "'vertical' (default) | 'horizontal' | 'auto' | numeric degrees for yaw."},
+            "elevation_angle": {"type": "number", "description": "Side-face tilt in degrees (positive=up). Ignored on top/bottom."},
+            "attach_rpy": {
+                "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
+                "description": "Rest-pose [roll, pitch, yaw] in radians (e.g. quadruped crouch [0, 0.52, 0]). Omit for auto.",
+            },
+            "attach_connector": {
+                "type": "string",
+                "description": "Optional parent-side named connector (e.g. 'shaft_out', 'plate_top'). See the 'Mate Connectors' section of the main system prompt — pair with mate_connector + mate_type='concentric' for shaft mounts.",
+            },
+            "mate_connector": {
+                "type": "string",
+                "description": "Optional child-side named connector (e.g. 'shaft_hole', 'mount_back'). Omit to let the engine pick the default opposite face.",
+            },
+            "mate_type": {
+                "type": "string",
+                "enum": ["fastened", "planar", "concentric"],
+                "description": "Mate type. Use 'concentric' for shaft-in-hole mates. Omit for ordinary face-to-face mounts.",
+            },
+        },
+        "required": ["link_name", "parent_link", "preset_id", "attach_face"],
+    },
+}
+
+ATTACH_SENSOR_TOOL = {
+    "name": "attach_sensor",
+    "description": (
+        "Attach a sensor_* preset to a structural/actuator parent. Joint is forced to 'fixed' so "
+        "the sensor frame stays stable as the robot articulates. Attaching a sensor directly to an "
+        "actuator's shaft face returns SENSOR_ON_ACTUATOR — mount on a nearby structural extrusion."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "Unique new link_name (convention: sensor_<kind>_N)."},
+            "parent_link": {"type": "string"},
+            "preset_id": {"type": "string", "description": "Must start with 'sensor_' (e.g. 'sensor_depth_camera_small')."},
+            "mount_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
+            "elevation_angle": {"type": "number"},
+        },
+        "required": ["link_name", "parent_link", "preset_id", "mount_face"],
+    },
+}
+
+REPLACE_COMPONENT_TOOL = {
+    "name": "replace_component",
+    "description": (
+        "Swap the preset on an existing link while preserving its attach_to / attach_face / children. "
+        "Use for 'change the gripper to a suction cup' or 'make this servo the high-torque variant'. "
+        "If the new preset's port class doesn't mate with the parent face, returns PORT_MISMATCH."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string", "description": "The existing link to modify."},
+            "new_preset_id": {"type": "string", "description": "Replacement component_id from the library."},
+        },
+        "required": ["link_name", "new_preset_id"],
+    },
+}
+
+SET_JOINT_TOOL = {
+    "name": "set_joint",
+    "description": (
+        "Change an existing link's joint type, axis, or rest-pose rpy without touching topology. "
+        "Use for 'make the elbow revolute around y', 'angle the hip joint 30° forward at rest'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string"},
+            "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"]},
+            "joint_axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Omit to keep current."},
+            "attach_rpy": {
+                "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
+                "description": "Omit to keep current. Use for rest-pose joint angles in radians.",
+            },
+        },
+        "required": ["link_name", "joint_type"],
+    },
+}
+
+REMOVE_LINK_TOOL = {
+    "name": "remove_link",
+    "description": (
+        "Remove a link. By default the whole subtree goes with it (same as modify_topology's "
+        "remove). Pass reparent_children=true to graft direct children onto the removed link's "
+        "parent — useful when yanking a redundant structural intermediate."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "link_name": {"type": "string"},
+            "reparent_children": {
+                "type": "boolean",
+                "description": "Default: false (cascade delete). True: graft direct children onto the removed link's parent.",
+            },
+        },
+        "required": ["link_name"],
+    },
+}
+
+EDIT_TOOLS = [
+    ADD_LINK_TOOL,
+    ATTACH_SENSOR_TOOL,
+    REPLACE_COMPONENT_TOOL,
+    SET_JOINT_TOOL,
+    REMOVE_LINK_TOOL,
+]
+
+# Canonical tool names — kept in one place so the frontend dispatcher and the
+# Python turn-loop both agree on what counts as an "edit tool" vs. the
+# legacy design_robot / modify_topology paths.
+EDIT_TOOL_NAMES = {t["name"] for t in EDIT_TOOLS}
+
+# Per-session buffer for the multi-turn tool-use message history. Separate from
+# `_conversation_history` (which is the summarized long-term chat) because the
+# tool loop needs the raw tool_use / tool_result blocks intact between turns —
+# once the loop ends, a summary entry is pushed to _conversation_history so
+# subsequent non-edit calls see "[Used add_link] …" instead of the raw blocks.
+_edit_tool_sessions: dict[str, dict] = defaultdict(dict)
+
+# Safety cap on tool-loop rounds. Ten covers realistic self-correction chains
+# (bad attach → retry with bracket → validator warn → done) without letting a
+# confused model run up a bill. viewportChat also caps this independently.
+_MAX_EDIT_TOOL_ROUNDS = 10
 
 COMPLETION_SYSTEM_PROMPT = """You are a URDF/XML code completion engine for a robotics IDE.
 
@@ -1320,7 +1602,10 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
     """
     client = _get_client()
 
-    system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(user_prompt=prompt),
+    )
 
     first_user_content = _build_user_content(f"Build this robot: {prompt}", images)
     messages = [{"role": "user", "content": first_user_content}]
@@ -1514,38 +1799,38 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
         }
 
 
-def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
-                   kinematic_context: str = None, session_id: str = "default",
-                   model: str = "claude-sonnet-4-6",
-                   images: list | None = None) -> dict:
+def _build_edit_user_message(prompt: str, current_urdf: str, kinematic_graph_json: dict,
+                              kinematic_context: str | None,
+                              assembly_graph: dict | None) -> str:
+    """Assemble the user turn for a Claude edit call.
+
+    When `assembly_graph` is present (Workstream #1 canonical-graph preservation),
+    it becomes the authoritative source of truth: Claude is told to reason and
+    edit against this JSON, and the URDF is dropped. URDF is a lossy renderer
+    serialization — including it when the graph is available wastes tokens and
+    reintroduces the round-trip losses the workstream exists to fix (orientation,
+    elevation_angle, length_mm, attach_rpy).
+
+    On first-ever-turn / import-URDF / backward-compat paths, the graph is
+    absent; we fall back to URDF + kinematic_graph_json as before.
     """
-    Call Claude API to generate a robot edit based on natural language.
-    Maintains conversation history per session for multi-turn context.
-
-    Args:
-        prompt: User's natural language edit request
-        current_urdf: Current URDF XML as string
-        kinematic_graph_json: Kinematic graph as dict (from kg.to_json())
-        kinematic_context: Optional structured text summary of robot structure from frontend
-        session_id: Session identifier for conversation history tracking
-
-    Returns:
-        Dict with keys:
-        - "explanation": str
-        - "new_urdf": str
-        - "stats": str
-
-    Raises:
-        ImportError: If anthropic package is not installed
-        ValueError: If ANTHROPIC_API_KEY env var not set
-        Exception: On API errors or JSON parsing issues
-    """
-    client = _get_client()
-
-    # Build spatial context from kinematic graph
     spatial_context = _build_spatial_context(kinematic_graph_json) if kinematic_graph_json else ""
 
-    # Build user message with available context
+    if assembly_graph is not None:
+        # Canonical-graph path. Keep kinematic_graph_json out too — it's also
+        # derived from URDF and carries no fields the assembly graph doesn't.
+        user_message = f"""Canonical AssemblyGraph (authoritative — reason and edit against this, not URDF):
+```json
+{json.dumps(assembly_graph, indent=2)}
+```"""
+        if spatial_context:
+            user_message += f"\n\n{spatial_context}"
+        if kinematic_context:
+            user_message += f"\n\nRobot Structure Summary:\n{kinematic_context}"
+        user_message += f"\n\nUser Request: {prompt}"
+        return user_message
+
+    # Legacy / fallback path: no canonical graph available.
     user_message = f"""Current URDF:
 ```xml
 {current_urdf}
@@ -1569,11 +1854,56 @@ Robot Structure Summary:
 
 User Request: {prompt}"""
 
+    return user_message
+
+
+def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
+                   kinematic_context: str = None, session_id: str = "default",
+                   model: str = "claude-sonnet-4-6",
+                   images: list | None = None,
+                   assembly_graph: dict | None = None) -> dict:
+    """
+    Call Claude API to generate a robot edit based on natural language.
+    Maintains conversation history per session for multi-turn context.
+
+    Args:
+        prompt: User's natural language edit request
+        current_urdf: Current URDF XML as string
+        kinematic_graph_json: Kinematic graph as dict (from kg.to_json())
+        kinematic_context: Optional structured text summary of robot structure from frontend
+        session_id: Session identifier for conversation history tracking
+        assembly_graph: Optional canonical AssemblyGraph dict (Workstream #1). When present,
+            used as the authoritative source of truth; URDF is omitted from the prompt.
+
+    Returns:
+        Dict with keys:
+        - "explanation": str
+        - "new_urdf": str
+        - "stats": str
+
+    Raises:
+        ImportError: If anthropic package is not installed
+        ValueError: If ANTHROPIC_API_KEY env var not set
+        Exception: On API errors or JSON parsing issues
+    """
+    client = _get_client()
+
+    user_message = _build_edit_user_message(
+        prompt, current_urdf, kinematic_graph_json, kinematic_context, assembly_graph,
+    )
+
     # Build messages array with conversation history
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(
+            user_prompt=prompt,
+            kg_json=kinematic_graph_json,
+            tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
+        ),
+    )
 
     response = client.messages.create(
         model=model,
@@ -1609,43 +1939,31 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
                              kinematic_context: str = None, session_id: str = "default",
                              on_progress=None,
                              model: str = "claude-sonnet-4-6",
-                             images: list | None = None) -> dict:
+                             images: list | None = None,
+                             assembly_graph: dict | None = None) -> dict:
     """
     Streaming version of generate_edit. Calls on_progress(stage, text) as tokens arrive.
     Stages: "thinking", "generating", "applying"
+
+    `assembly_graph`: see generate_edit docstring — Workstream #1 canonical graph.
     """
     client = _get_client()
 
-    # Build spatial context
-    spatial_context = _build_spatial_context(kinematic_graph_json) if kinematic_graph_json else ""
-
-    user_message = f"""Current URDF:
-```xml
-{current_urdf}
-```
-
-Kinematic Graph:
-```json
-{json.dumps(kinematic_graph_json, indent=2)}
-```"""
-
-    if spatial_context:
-        user_message += f"\n\n{spatial_context}"
-
-    if kinematic_context:
-        user_message += f"""
-
-Robot Structure Summary:
-{kinematic_context}"""
-
-    user_message += f"""
-
-User Request: {prompt}"""
+    user_message = _build_edit_user_message(
+        prompt, current_urdf, kinematic_graph_json, kinematic_context, assembly_graph,
+    )
 
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+    system_prompt = SYSTEM_PROMPT.replace(
+        "{COMPONENT_CATALOG}",
+        _get_component_catalog(
+            user_prompt=prompt,
+            kg_json=kinematic_graph_json,
+            tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
+        ),
+    )
 
     if on_progress:
         on_progress("thinking", "Analyzing model...")
@@ -1694,6 +2012,224 @@ User Request: {prompt}"""
         history.pop(0)
 
     return result
+
+
+def generate_edit_turn(
+    session_id: str,
+    prompt: str | None = None,
+    assembly_graph: dict | None = None,
+    kinematic_context: str | None = None,
+    tool_results: list | None = None,
+    model: str = "claude-sonnet-4-6",
+    images: list | None = None,
+) -> dict:
+    """Run ONE turn of the Workstream #2 tool-use edit loop.
+
+    The frontend (`viewportChat.ts`) drives the loop — each call hits Claude
+    once, dispatches any tool_use blocks locally with per-call validation, then
+    comes back here with the tool_results to let Claude see the outcomes and
+    either call another tool or stop with a final text response.
+
+    First-turn shape:
+        generate_edit_turn(session_id, prompt="add a depth camera to the head",
+                           assembly_graph={...}, ...)
+    Subsequent turns:
+        generate_edit_turn(session_id, tool_results=[
+            {"tool_use_id": "toolu_…", "ok": true,  "summary": "added …"},
+            {"tool_use_id": "toolu_…", "ok": false, "code": "PORT_MISMATCH", ...},
+        ])
+
+    The per-session raw message buffer lives in `_edit_tool_sessions[session_id]` —
+    distinct from `_conversation_history`, which only gets the summary once the
+    loop ends (so later non-edit turns don't have to digest raw tool_use blocks).
+
+    Returns: {
+        "stop_reason": "tool_use" | "end_turn" | "max_tokens" | ...,
+        "text": "…",                              # empty if no text blocks
+        "tool_calls": [                           # empty when stop_reason != tool_use
+          { "id": "toolu_…", "name": "add_link", "input": {…} }, ...
+        ],
+        "done": bool,                             # True when the caller should stop looping
+    }
+    """
+    client = _get_client()
+
+    session = _edit_tool_sessions[session_id]
+    # Reset session on a new user prompt (first turn of a fresh edit request).
+    # Re-using the old buffer across distinct edit requests would confuse Claude
+    # (stale tool_use pairs in history) and inflate token count.
+    if prompt is not None:
+        # Seed with the long-term conversation history so the model keeps
+        # multi-edit context ("now move it to the chest" after a prior add).
+        # list() copies so downstream mutations on session["messages"] don't
+        # touch the shared history deque.
+        session["messages"] = list(_conversation_history[session_id])
+        session["rounds"] = 0
+        # Stash the user's prompt so the final-turn history summary can cite
+        # what they actually asked ("add a depth camera") instead of recording
+        # "(tool-loop continuation)" — which would happen otherwise because
+        # `prompt` is None on continuation turns.
+        session["initial_prompt"] = prompt
+        # Track whether at least one tool call has fired so the `done` branch
+        # can skip history noise when Claude responded without any mutation
+        # (the caller then falls through to ai_edit, which records its own turn).
+        session["any_tool_used"] = False
+        # Snapshot the starting graph for summary/diagnostics. Only read, never
+        # mutated here — the frontend owns the canonical graph.
+        session["initial_graph"] = assembly_graph
+
+    session["rounds"] = session.get("rounds", 0) + 1
+    if session["rounds"] > _MAX_EDIT_TOOL_ROUNDS:
+        _edit_tool_sessions.pop(session_id, None)
+        return {
+            "stop_reason": "max_rounds",
+            "text": f"Hit the {_MAX_EDIT_TOOL_ROUNDS}-round safety limit. Stopping the edit loop.",
+            "tool_calls": [],
+            "done": True,
+        }
+
+    messages: list = session.get("messages", [])
+
+    # Turn 1: build the initial user message from prompt + graph + context.
+    # Turn N: caller passes tool_results, we marshal them into a user turn.
+    if prompt is not None:
+        # Keep the same graph-as-source-of-truth framing as _build_edit_user_message
+        # — URDF is not passed because tool-call edits operate strictly on the graph.
+        parts = []
+        if assembly_graph is not None:
+            parts.append(
+                "Current AssemblyGraph (authoritative — reason and edit against this):\n"
+                f"```json\n{json.dumps(assembly_graph, indent=2)}\n```"
+            )
+        if kinematic_context:
+            parts.append(f"Robot Structure Summary:\n{kinematic_context}")
+        parts.append(f"User Request: {prompt}")
+        parts.append(
+            "Use the add_link / attach_sensor / replace_component / set_joint / "
+            "remove_link tools to mutate the graph. Each call is validated immediately — "
+            "if you see a structured error (PORT_MISMATCH, SENSOR_ON_ACTUATOR, etc.), "
+            "adjust and try again in the same turn. When the edit is complete, respond "
+            "with a short plain-text confirmation and stop (no further tool calls)."
+        )
+        user_text = "\n\n".join(parts)
+        messages.append({"role": "user", "content": _build_user_content(user_text, images)})
+    elif tool_results is not None:
+        # Stale-resend guard: a continuation can only be processed if the
+        # session's last assistant message contains tool_use blocks with IDs
+        # the frontend is replying to. When the loop already ended (session
+        # cleared or empty), Anthropic rejects orphan tool_result messages
+        # with a 400. Surface a structured error instead so the frontend can
+        # restart the loop with a fresh prompt.
+        if not messages:
+            _edit_tool_sessions.pop(session_id, None)
+            return {
+                "stop_reason": "session_expired",
+                "text": "Edit session expired — resend the request to start a new tool-use loop.",
+                "tool_calls": [],
+                "done": True,
+            }
+        # Marshal the frontend-side dispatch results into Anthropic tool_result blocks.
+        # The "ok": true branch surfaces the mutation summary + any warnings; the
+        # error branch surfaces the rule code + message + suggested_repair so Claude
+        # can pattern-match on the code and self-correct.
+        blocks = []
+        for tr in tool_results:
+            tool_use_id = tr.get("tool_use_id")
+            if not tool_use_id:
+                continue
+            if tr.get("ok"):
+                payload = {
+                    "ok": True,
+                    "summary": tr.get("summary", ""),
+                    "warnings": tr.get("warnings", []),
+                }
+            else:
+                payload = {
+                    "ok": False,
+                    "code": tr.get("code", "UNKNOWN"),
+                    "message": tr.get("message", ""),
+                    "suggested_repair": tr.get("suggested_repair", ""),
+                }
+            blocks.append({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": json.dumps(payload),
+                "is_error": not tr.get("ok"),
+            })
+        if blocks:
+            messages.append({"role": "user", "content": blocks})
+    else:
+        raise ValueError("generate_edit_turn requires either prompt (first turn) or tool_results (subsequent turns)")
+
+    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=8192,  # per-turn cap — the full loop is the budget-heavy axis
+        system=[{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=messages,
+        tools=EDIT_TOOLS,
+        # "auto" instead of "any": after the mutation succeeds, Claude should be
+        # able to stop naturally with a text block instead of being forced to
+        # keep calling tools. "any" forces tool use every turn — infinite loop.
+        tool_choice={"type": "auto"},
+        timeout=120.0,
+    )
+    _log_cache_usage("generate_edit_turn", response)
+
+    # Persist the assistant response verbatim — Anthropic requires the raw blocks
+    # (not a summary) to remain in history so subsequent tool_result messages
+    # reference valid tool_use_ids.
+    assistant_content = response.content
+    messages.append({"role": "assistant", "content": assistant_content})
+    session["messages"] = messages
+
+    text_parts: list[str] = []
+    tool_calls: list[dict] = []
+    for block in assistant_content:
+        if block.type == "text":
+            text_parts.append(block.text)
+        elif block.type == "tool_use":
+            tool_calls.append({
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+
+    if tool_calls:
+        session["any_tool_used"] = True
+
+    stop_reason = getattr(response, "stop_reason", "end_turn") or "end_turn"
+    done = stop_reason != "tool_use" or not tool_calls
+
+    if done:
+        # Loop finished — push a summary to the long-term history for context on
+        # future turns, but ONLY when at least one tool actually fired. If Claude
+        # answered with pure text (no mutation), the frontend falls through to
+        # ai_edit, which records its own history entry; double-recording here
+        # would fabricate a "[Used edit tools]" line that didn't correspond to
+        # any real mutation.
+        any_tool_used = bool(session.get("any_tool_used"))
+        initial_prompt = session.get("initial_prompt") or prompt
+        if any_tool_used:
+            history = _conversation_history[session_id]
+            summary_text = " ".join(t for t in text_parts if t).strip() or "Edit complete"
+            history.append({"role": "user", "content": f"[Edit request] {initial_prompt or '(tool-loop continuation)'}"})
+            history.append({"role": "assistant", "content": f"[Used edit tools] {summary_text}"})
+            while len(history) > _MAX_HISTORY_MESSAGES:
+                history.pop(0)
+        _edit_tool_sessions.pop(session_id, None)
+
+    return {
+        "stop_reason": stop_reason,
+        "text": " ".join(text_parts).strip(),
+        "tool_calls": tool_calls,
+        "done": done,
+    }
 
 
 def _build_history_summary(result: dict) -> str:
@@ -2119,6 +2655,14 @@ The robot is built in two stages: (1) an AI designs the TOPOLOGY (which componen
 - **"topology"** = The AI chose wrong components, missed components, or connected things incorrectly. Examples: missing head on a dog, no gripper on an arm, using wrong component type, too few legs. THESE CAN BE FIXED by redesigning the topology.
 - **"placement"** = The components are correct but the placement engine positioned them poorly. Examples: legs too close together, body not elevated enough, components overlapping due to small splay angles, parts appearing too small on the grid. THESE CANNOT BE FIXED by the AI — the placement engine handles all coordinates.
 
+## Engine ground truth — do not contradict
+
+When the prompt contains an "Engine ground-truth measurements" section with ICP-gap and/or placement tables, treat those numbers as authoritative. The placement engine already computed the real xyz/rpy applied and the real contact gap along each mate's normal. If a screenshot makes a joint LOOK like it is floating or detached, but the ICP row for that joint reports `gap_p50 < 2mm` at `confidence=high`, the part IS touching — the apparent gap is mesh visual offset or proportions, not placement. Do NOT emit `grounded`, `overlap`, or `direction` failures with numeric magnitudes that contradict a high-confidence gap < 2mm. If two siblings share the same xyz/rpy but one looks displaced, the displacement lives on an ancestor's `attach_rpy` — name the ancestor, do not call the child detached.
+
+## Describe symptoms, do NOT prescribe geometry
+
+Your job is to DESCRIBE what looks wrong. It is NOT to prescribe specific angles, sign flips, axis mirrors, or pose changes. Do NOT write `"mirror legs in pairs"`, `"rotate shoulder by 30°"`, `"flip the rear hip_pitch sign"`, or `"set attach_rpy=[0, π, 0]"`. The downstream topology AI will choose the corrective change — prescriptive geometry suggestions from the validator have historically steered it toward worse poses (e.g. mirroring a quadruped's hip_pitch produces a crossed-leg stance; real quadrupeds keep all four the same direction). Describe the SYMPTOM ("legs collide at the centerline", "torso leans forward", "camera points sideways instead of forward") and stop.
+
 ## Check for These Problems in the IMAGE
 
 1. **shape_match**: Does it look like what was requested? (topology: wrong structure. placement: correct structure but poor positioning)
@@ -2163,13 +2707,29 @@ REMINDER: Return ONLY JSON. Start with { end with }.
 def validate_assembly(urdf_content: str, original_prompt: str,
                       session_id: str = "default",
                       screenshot_base64: str = None,
-                      screenshots: list = None) -> dict:
+                      screenshots: list = None,
+                      reference_images: list = None,
+                      engine_summary: dict = None) -> dict:
     """
     Second-pass validation: send assembled URDF + 3 viewport screenshots to Gemini.
     Uses Gemini 3 Flash for visual validation (cheap, fast, good vision, separate rate limits).
     Falls back to Claude Sonnet if Gemini is unavailable.
     Returns dict with 'ok' bool, 'notes' str, 'checklist', and 'needs_redesign'.
     Cost: ~$0.0003 per call (Gemini 3 Flash with 3 images).
+
+    reference_images: optional list of user-uploaded reference images in the
+    shape [{"media_type": "image/png", "data": "<base64>"}], forwarded so
+    Gemini can compare rendered output against the reference.
+
+    engine_summary: optional engine ground-truth payload of the shape
+    {"placements": [{linkName, parentLinkName, xyz, rpy}, ...],
+     "icpGaps": [{linkName, parentConnector, childConnector, pairedCount,
+                  sampleCount, gapP50Mm, gapP90Mm, gapMinMm, gapMaxMm,
+                  nudgeMm, reason, confidence}, ...]}. When present, rendered
+    into tables the validator is told not to contradict (Layer 1 of
+    docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). The same structure is passed to
+    the critique classifier so it can drop validator-misreads that contradict
+    a high-confidence ICP gap (Layer 2).
     """
     # Gemini required — no Claude fallback to avoid burning Anthropic tokens/rate limit
     if _genai is None:
@@ -2182,7 +2742,8 @@ def validate_assembly(urdf_content: str, original_prompt: str,
     # Retry once on transient errors (503 overload, network timeouts)
     for attempt in range(2):
         try:
-            return _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots)
+            raw = _validate_assembly_gemini(urdf_content, original_prompt, screenshot_base64, screenshots, reference_images, engine_summary)
+            return _classify_and_enrich(raw, original_prompt, engine_summary)
         except Exception as e:
             err_str = str(e)
             is_transient = '503' in err_str or 'UNAVAILABLE' in err_str or 'timeout' in err_str.lower()
@@ -2194,15 +2755,142 @@ def validate_assembly(urdf_content: str, original_prompt: str,
             return {"ok": True, "notes": f"Validation skipped: Gemini error — {e}"}
 
 
+def _classify_and_enrich(valresult: dict, original_prompt: str, engine_summary: dict = None) -> dict:
+    """
+    Run the critique classifier over Gemini's checklist and attach drop flags
+    per-item. Infeasible critiques (components not in the catalog) get
+    classifier_drop=True + classifier_reason; the TS side uses these to skip
+    redesigns that can't be satisfied.
+
+    engine_summary (optional): Layer 2 pass-through so the classifier can drop
+    placement-fixable critiques with mm magnitudes that contradict a
+    high-confidence ICP gap entry.
+    """
+    checklist = valresult.get("checklist")
+    if not checklist:
+        return valresult
+    try:
+        from core.ai.critique_classifier import classify_checklist
+        enriched = classify_checklist(checklist, original_prompt, engine_summary)
+        valresult = {**valresult, "checklist": enriched}
+    except Exception as e:
+        print(f"[ai_validate] critique classifier failed, passing raw checklist: {e}", file=sys.stderr)
+    return valresult
+
+
+def _format_engine_summary_block(engine_summary: dict) -> str:
+    """
+    Render the engine ground-truth payload as two fixed-width tables for the
+    validator prompt. Empty/None input returns ''. Kept compact — long tables
+    balloon token counts and the validator only needs representative rows to
+    sanity-check screenshot claims.
+    """
+    if not engine_summary or not isinstance(engine_summary, dict):
+        return ""
+    placements = engine_summary.get("placements") or []
+    icp_gaps = engine_summary.get("icpGaps") or []
+    if not placements and not icp_gaps:
+        return ""
+
+    lines: list = []
+    lines.append("## Engine ground-truth measurements (authoritative)")
+    lines.append("")
+    lines.append(
+        "The two tables below come directly from Vector's placement engine. "
+        "Each row is what the engine ACTUALLY wrote/measured, not a screenshot "
+        "inference. Treat them as ground truth and do not contradict them "
+        "from pixel inspection alone."
+    )
+    lines.append("")
+
+    if icp_gaps:
+        lines.append("### ICP gap table (per mated pair)")
+        lines.append("")
+        lines.append(
+            "`gap_p50/p90` are the median / 90th-percentile face-to-face gaps "
+            "in mm along the contact normal. Negative = child slightly "
+            "interpenetrates the parent (flush contact). `confidence=high` "
+            "means paired-sample ratio ≥75% or the adaptive confident-cap "
+            "fired; a high-confidence gap < 2mm means the part IS in contact "
+            "regardless of what the screenshot looks like."
+        )
+        lines.append("")
+        lines.append("| link | parent→child connector | gap_p50(mm) | gap_p90(mm) | nudge(mm) | paired | confidence |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for row in icp_gaps[:200]:  # hard cap; >200 rows is a pathological graph
+            p50 = row.get("gapP50Mm")
+            p90 = row.get("gapP90Mm")
+            paired = f"{row.get('pairedCount', 0)}/{row.get('sampleCount', 0)}"
+            lines.append(
+                f"| `{row.get('linkName','?')}` | `{row.get('parentConnector','?')}` → `{row.get('childConnector','?')}` | "
+                f"{'' if p50 is None else f'{p50:.2f}'} | "
+                f"{'' if p90 is None else f'{p90:.2f}'} | "
+                f"{row.get('nudgeMm', 0):.2f} | {paired} | {row.get('confidence','?')} |"
+            )
+        lines.append("")
+
+    if placements:
+        lines.append("### Placement table (xyz/rpy as written to URDF, per child)")
+        lines.append("")
+        lines.append(
+            "If two siblings share the same xyz and rpy but the screenshot "
+            "shows one displaced, the displacement comes from rotation "
+            "accumulated up the ancestor chain (attach_rpy on a parent). "
+            "Call out the ancestor, do NOT claim the child is detached."
+        )
+        lines.append("")
+        lines.append("| link | parent | xyz (m) | rpy (rad) |")
+        lines.append("|---|---|---|---|")
+        for row in placements[:200]:
+            lines.append(
+                f"| `{row.get('linkName','?')}` | `{row.get('parentLinkName','?')}` | "
+                f"{row.get('xyz','?')} | {row.get('rpy','?')} |"
+            )
+        lines.append("")
+
+    lines.append(
+        "**Rules for using these tables:** If the engine reports an ICP gap < 2mm "
+        "at high confidence for a joint but the screenshot looks like the child "
+        "is \"floating\" by tens of mm, the screenshot is showing mesh visual "
+        "offset / proportions, not a placement error. Do NOT emit a `grounded`, "
+        "`overlap`, or `direction` failure that contradicts a high-confidence gap."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
                                screenshot_base64: str = None,
-                               screenshots: list = None) -> dict:
+                               screenshots: list = None,
+                               reference_images: list = None,
+                               engine_summary: dict = None) -> dict:
     """Gemini 3 Flash visual validation. ~$0.0003 per call."""
     client = _get_gemini_client()
 
     # Build multimodal content parts
     parts = []
     parts.append(_genai_types.Part.from_text(text=VALIDATION_SYSTEM_PROMPT))
+
+    # Reference images from the user's original Claude turn come first so the
+    # reference establishes context before Gemini sees the rendered output
+    # (G3 fix). Shape: [{"media_type": "image/png", "data": "<base64>"}].
+    ref_count = 0
+    if reference_images:
+        for ref in reference_images:
+            if not isinstance(ref, dict):
+                continue
+            data = ref.get("data")
+            media_type = ref.get("media_type") or "image/png"
+            if not data:
+                continue
+            parts.append(_genai_types.Part.from_text(text="**User reference image (target to match):**"))
+            parts.append(_genai_types.Part.from_bytes(
+                data=base64.b64decode(data),
+                mime_type=media_type,
+            ))
+            ref_count += 1
+        if ref_count:
+            print(f"[ai_validate] [Gemini] Including {ref_count} reference image(s) from user", file=sys.stderr)
 
     view_labels = ["Low side view", "Three-quarter view", "Overhead view"]
     has_images = False
@@ -2226,6 +2914,25 @@ def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
         has_images = True
         print(f"[ai_validate] [Gemini] Including 1 viewport screenshot ({len(screenshot_base64) // 1024}KB)", file=sys.stderr)
 
+    if has_images and ref_count:
+        view_instruction = (
+            "COMPARE THE RENDERED ROBOT AGAINST THE USER REFERENCE IMAGE ABOVE. "
+            "Flag gaps between the reference and the output (missing parts, wrong counts, wrong proportions, missing features). "
+            "Then examine all 3 rendered views for physical correctness. Be critical."
+        )
+    elif has_images:
+        view_instruction = "EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems."
+    else:
+        view_instruction = "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."
+
+    engine_block = _format_engine_summary_block(engine_summary)
+    if engine_block:
+        print(
+            f"[ai_validate] [Gemini] Including engine summary "
+            f"(placements={len(engine_summary.get('placements') or [])}, "
+            f"icpGaps={len(engine_summary.get('icpGaps') or [])})",
+            file=sys.stderr,
+        )
     prompt_text = f"""Original user request: "{original_prompt}"
 
 Assembled URDF:
@@ -2233,7 +2940,8 @@ Assembled URDF:
 {urdf_content}
 ```
 
-{"EXAMINE ALL 3 VIEWS ABOVE (front-right, rear-left, top-down). Does the assembled robot actually look like what the user asked for? Be critical — check shape from every angle, proportions, direction of components, overlap, and completeness. Find problems." if has_images else "Check the spatial layout for physical correctness based on the URDF joint origins. Be critical."}"""
+{engine_block}
+{view_instruction}"""
     parts.append(_genai_types.Part.from_text(text=prompt_text))
 
     t0 = time.time()

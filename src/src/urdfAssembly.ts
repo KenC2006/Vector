@@ -20,9 +20,41 @@ import {
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
+import { getOrComputeBbox } from './componentDims'
+import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
 import { quatToRpy } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
-import type { ValidationPreset } from './topologyValidation.ts'
+import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
+import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
+import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
+// Mate-connector resolver (Phase 1/2, docs/MATE_CONNECTOR_MIGRATION.md). Pure
+// module, bit-identical to the bbox math when mating default face connectors
+// with `fastened` — see mateCorpus.ts for the parity proof. Feature-flagged
+// so the legacy path can still be exercised for A/B comparison.
+import {
+  generateDefaultConnectors,
+  mergeConnectors,
+  resolveMate,
+  findConnector,
+  childConnectorIdForAttachFace,
+  faceUVToWorldOffset,
+  tangentBasisFromAxis,
+  type MateConnector,
+  type MateType,
+} from './mateConnectors.ts'
+import { applyMutation as runApplyMutation } from './graphMutations.ts'
+import type { GraphMutation, MutationResult } from './graphMutations.ts'
+// Render-time alignment pass (Option C — see docs/ENGINE_ARCHITECTURE.md).
+// Kept in its own module so the test harness can import it without pulling in
+// this file's DOM/tauri dependencies. Re-exported below for external callers.
+import { reconcileNodePlacement } from './reconcileAlignment.ts'
+import type { ReconcileResult } from './reconcileAlignment.ts'
+export { reconcileNodePlacement } from './reconcileAlignment.ts'
+export type { ReconcileInputs, ReconcileResult, ReconcileShift } from './reconcileAlignment.ts'
+// Re-export so existing importers (topologyValidation.ts, topologyCorpus.ts,
+// viewportChat.ts, main.ts) keep working from their usual location.
+export { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
+export type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
 
 export interface ParsedRobotLike {
   group: THREE.Group
@@ -68,6 +100,12 @@ interface PresetPhysical {
   bounding_box_mm?: number[]
   cross_section_mm?: number[]
   inertia_primitive: string
+  /** Step 4 of docs/ENGINE_NEXT_STEPS.md — convex-hull collision OBJ
+   *  filename (under src/public/meshes/collision/). When set, URDF
+   *  emission replaces per-visual primitive <box>/<cylinder>/<sphere>
+   *  collision with a single <mesh filename="package://meshes/collision/{file}"/>.
+   *  Generated one-shot by scripts/generate-collision-meshes.mjs. */
+  collision_mesh?: string
 }
 
 interface PresetComponent {
@@ -78,6 +116,11 @@ interface PresetComponent {
   mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
   sim_metadata: Record<string, unknown>
+  /** Phase 3 mate-connector authorship (docs/MATE_CONNECTOR_MIGRATION.md).
+   *  Optional; merged OVER the 6 auto-generated defaults by id so a preset
+   *  can add new connectors (shaft_out, plate_top) or override a default
+   *  whose bbox-derived pose doesn't match the rendered mesh. */
+  connectors?: MateConnector[]
 }
 
 interface PresetCategory {
@@ -125,28 +168,9 @@ function presetContactClass(preset: PresetComponent | null | undefined): string 
   return typeof contactClass === 'string' ? contactClass : ''
 }
 
-export interface AssemblyComponent {
-  link_name: string
-  component_id: string
-  attach_to: string | null
-  attach_face: string | null
-  joint_type: string
-  joint_axis: string
-  length_mm?: number
-  /** 'horizontal' | 'vertical' | 'auto' or a numeric string in degrees (e.g. '45') for yaw rotation around face normal */
-  orientation?: string
-  /** Degrees of upward/downward tilt for side-face (front/back/left/right) attachments. Positive = upward. */
-  elevation_angle?: number
-  /** Explicit rest-pose [roll, pitch, yaw] in radians. When any component is non-zero, overrides
-   *  the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
-  attach_rpy?: number[]
-}
-
-export interface AssemblyGraph {
-  base_link: string
-  ground_offset?: boolean
-  components: AssemblyComponent[]
-}
+// AssemblyComponent / AssemblyGraph are defined in ./urdfGraphEquivalence.ts
+// and re-exported at the top of this file (keeps the pure-from-Node test harness
+// free of THREE/DOM imports).
 
 export interface TopologyOp {
   op: 'add' | 'remove' | 'modify'
@@ -160,6 +184,52 @@ export interface TopologyOp {
   orientation?: string
   elevation_angle?: number
   attach_rpy?: number[]
+  // Phase 4 of docs/MATE_CONNECTOR_MIGRATION.md — optional named-connector
+  // overrides that mirror the AssemblyComponent fields. Forwarded verbatim
+  // so Claude's modify_topology add/modify ops can target shaft_out /
+  // shaft_hole / plate_top etc. instead of falling back to attach_face.
+  attach_connector?: string
+  mate_connector?: string
+  mate_type?: string
+}
+
+/** One row of engine-computed placement ground-truth (what the placement loop
+ *  actually emitted per child). `linkName` / `parentLinkName` are final URDF
+ *  names after nameMap remap. Threaded to the validator so Gemini can compare
+ *  screenshot inspection against the engine's authoritative xyz/rpy. */
+export interface EnginePlacementEntry {
+  linkName: string
+  parentLinkName: string
+  xyz: string   // space-separated meters, as written to URDF
+  rpy: string   // space-separated radians, as written to URDF
+}
+
+/** One row of ICP contact-cleanup diagnostics per mated pair. Mirrors the
+ *  `[icp][trace]` console line. `confidence` is derived from paired-ratio +
+ *  reason: "high" when paired ≥ 75% OR reason mentions "confident-cap",
+ *  "low" otherwise. gap values are in mm; negative = child slightly overlaps
+ *  parent (flush). Validator uses gap_p50_mm / confidence to refute screenshot
+ *  claims of "floating N mm". */
+export interface EngineIcpEntry {
+  linkName: string
+  parentConnector: string   // `${parentPresetId}.${parentConnectorId}`
+  childConnector: string    // `${childPresetId}.${childConnectorId}`
+  pairedCount: number
+  sampleCount: number
+  gapP50Mm: number | null
+  gapP90Mm: number | null
+  gapMinMm: number | null
+  gapMaxMm: number | null
+  nudgeMm: number
+  reason: string
+  confidence: 'high' | 'low'
+}
+
+/** Ground-truth payload returned from resolveAssemblyGraph and forwarded to
+ *  the Gemini validator (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). */
+export interface EngineSummary {
+  placements: EnginePlacementEntry[]
+  icpGaps: EngineIcpEntry[]
 }
 
 export interface UrdfAssemblyApi {
@@ -170,13 +240,27 @@ export interface UrdfAssemblyApi {
   /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
-  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] }
-  /** Get the last successfully resolved AssemblyGraph (stored after each successful resolveAssemblyGraph). */
+  resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary }
+  /** Render-time alignment: measure real AABBs of rendered meshes and shift pivots
+   *  so child contact surfaces meet their parent's attach face. No-op if no graph
+   *  has been resolved yet. Safe to call multiple times (EPS-guarded, idempotent). */
+  reconcileNodePlacement(): ReconcileResult
+  /** Get a deep-cloned snapshot of the last successfully resolved AssemblyGraph. Cloned so
+   *  callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
   urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null
+  /** Structural + parametric equality for two AssemblyGraphs. Use to detect drift when a
+   *  reverse-parse is unavoidable (import-URDF path). */
+  graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult
   /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
+  /** WS2 tool-call edit surface: apply a single typed mutation with per-call
+   *  validation. Runs against a deep clone of `graph`; on success the new graph
+   *  is returned and the caller commits via resolveAssemblyGraph. On failure,
+   *  a structured error returns to the Claude tool loop for same-turn self-
+   *  correction — no full-graph redesign fired. */
+  applyGraphMutation(graph: AssemblyGraph, mutation: GraphMutation): MutationResult
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
   refreshMountNodeTransforms(): void
@@ -623,6 +707,71 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     walk(linkGroup)
 
     return hasGeom ? box : null
+  }
+
+  /**
+   * Sync reconcile's in-scene pivot shifts back into the URDF text so the next
+   * reparse doesn't undo them. Called by resolveAssemblyGraph after the
+   * initial reconcile pass — see the adjacent comment there for the timing
+   * problem this solves (editor-change debounce → reparse → wiped shifts →
+   * duplicate reconcile replay).
+   *
+   * For each joint in the URDF, read the live pivot.position (which reconcile
+   * has already updated) and write it back as the joint's origin xyz. We also
+   * rewrite rpy from pivot.quaternion — reconcile today only shifts position,
+   * but keeping both fields in sync avoids a divergence hazard if a future
+   * pass learns to rotate pivots.
+   */
+  function persistReconcileShiftsToUrdf(linkGroups: Map<string, THREE.Group>): void {
+    const raw = ctx.getUrdfText()
+    const doc = new DOMParser().parseFromString(raw, 'application/xml')
+    if (doc.querySelector('parsererror')) return
+
+    let changed = false
+    const jointEls = Array.from(doc.querySelectorAll('joint'))
+    for (const jointEl of jointEls) {
+      const childEl = jointEl.querySelector('child')
+      const childName = childEl?.getAttribute('link')
+      if (!childName) continue
+      const childGroup = linkGroups.get(childName)
+      const pivot = childGroup?.parent as THREE.Group | null
+      if (!pivot) continue
+      const origin = jointEl.querySelector('origin')
+      if (!origin) continue
+
+      const x = pivot.position.x
+      const y = pivot.position.y
+      const z = pivot.position.z
+      const newXyz = `${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}`
+      if (origin.getAttribute('xyz') !== newXyz) {
+        origin.setAttribute('xyz', newXyz)
+        changed = true
+      }
+    }
+    if (!changed) return
+
+    // Pretty-print using the same rule resolveAssemblyGraph uses for its own
+    // post-placement formatting pass, so the editor diff stays small.
+    const serialized = new XMLSerializer().serializeToString(doc)
+    const lines = serialized.replace(/></g, '>\n<').split('\n')
+    let indent = 0
+    const prettyUrdf = lines.map(line => {
+      const trimmed = line.trim()
+      if (!trimmed) return ''
+      if (trimmed.startsWith('</')) indent = Math.max(0, indent - 1)
+      const result = '  '.repeat(indent) + trimmed
+      if (trimmed.startsWith('<') && !trimmed.startsWith('</') && !trimmed.startsWith('<?') && !trimmed.endsWith('/>')) {
+        indent++
+      }
+      return result
+    }).filter(l => l.length > 0).join('\n')
+
+    // setUrdfText without reparse — the live scene is already in the aligned
+    // state, so a reparse right now would just rebuild redundantly. The
+    // debounced editor-change reparse (main.ts) will fire ~500ms later and
+    // rebuild from the aligned text; that rebuild then triggers a meshLoaded
+    // debounce → reconcile → zero deltas (genuine no-op, which is the point).
+    ctx.setUrdfText(prettyUrdf)
   }
 
   function rebuildMountNodes() {
@@ -1633,6 +1782,323 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return childZ
   }
 
+  // ── Phase 2 connector branch (docs/MATE_CONNECTOR_MIGRATION.md) ───────────
+  // Feature flag. Defaults on: when no preset has authored connectors, the new
+  // path only fires for components that explicitly opt in via
+  // attach_connector/mate_connector/mate_type. For every other component,
+  // computeFacePlacement runs unchanged — bit-identical to WS5 output. Toggle
+  // via globalThis.VECTOR_USE_MATE_CONNECTORS for A/B or rollback.
+  function useMateConnectors(): boolean {
+    const g = (globalThis as unknown as { VECTOR_USE_MATE_CONNECTORS?: boolean })
+      .VECTOR_USE_MATE_CONNECTORS
+    return g !== false
+  }
+  function hasMateConnectorFields(c: AssemblyComponent): boolean {
+    return !!(c.attach_connector || c.mate_connector || c.mate_type)
+  }
+
+  // ── Scene-level ICP contact cleanup (Step 2 — docs/ENGINE_NEXT_STEPS.md) ──
+  // Runs AFTER reparse + rich-visuals + reconcileNodePlacement so it can
+  // raycast against the REAL rendered meshes (per-axis-scaled GLBs with
+  // shaft overlays baked in). The in-loop hook was a dead-end: bulk
+  // assembly commits URDF text then reparses ONCE at the end, so nothing
+  // but the root is in the scene during the placement loop. See
+  // scripts/contact-analysis-output.txt for the Phase 1 diagnosis.
+
+  /** Standalone preset lookup that doesn't depend on the `findPreset`
+   *  closure inside `resolveAssemblyGraph`. Reads the outer `presetData`. */
+  function _findPresetForCleanup(componentId: string): PresetComponent | null {
+    if (!presetData) return null
+    for (const cat of Object.values(presetData.categories)) {
+      for (const comp of cat.components) {
+        if (comp.id === componentId) return comp
+      }
+    }
+    return null
+  }
+
+  function runContactCleanupPass(): { adjustedCount: number; shifts: Array<{ linkName: string; dMm: number }>; icpEntries: EngineIcpEntry[] } {
+    const graphSnap = _lastAssemblyGraph
+    const shifts: Array<{ linkName: string; dMm: number }> = []
+    const icpEntries: EngineIcpEntry[] = []
+    if (!graphSnap) return { adjustedCount: 0, shifts, icpEntries }
+
+    const parsed = ctx.getParsedRobot()
+    const pivotGroups = new Set<THREE.Object3D>()
+    for (const [, j] of parsed.joints) pivotGroups.add(j.group)
+
+    for (const comp of graphSnap.components) {
+      if (!comp.attach_to) continue
+      const parentLg = parsed.linkGroups.get(comp.attach_to)
+      const childLg = parsed.linkGroups.get(comp.link_name)
+      if (!parentLg || !childLg) continue
+      const pivot = childLg.parent as THREE.Group | null
+      if (!pivot) continue
+
+      const parentComp = graphSnap.components.find(c => c.link_name === comp.attach_to)
+      if (!parentComp) continue
+      const parentPreset = _findPresetForCleanup(parentComp.component_id)
+      const childPreset = _findPresetForCleanup(comp.component_id)
+      if (!parentPreset || !childPreset) continue
+
+      // Parametric components (extrusions) carry their Z-length on the
+      // COMPONENT instance via `length_mm`, not on the preset. The preset
+      // only authors `cross_section_mm`. Splice the instance length in so
+      // the default-top connector lands at (0, 0, +length/2) — matches the
+      // splice computeMatePlacement already does for parent bbox upstream.
+      // Without this, the default child.top for a 100mm extrusion mates at
+      // (0, 0, +20mm) (hardcoded-40 fallback / 2), 30mm off from where the
+      // placement engine actually sits the extrusion, producing bogus
+      // per-sample gap values in the 10-30mm range on extrusion mates.
+      const parentPhys = parentPreset.physical
+      const parentBbRaw = getOrComputeBbox(parentPreset.id, parentPreset)
+      const parentBbMm = (parentPhys.cross_section_mm && parentComp.length_mm !== undefined)
+        ? [parentBbRaw[0] ?? 40, parentBbRaw[1] ?? 40, parentComp.length_mm]
+        : parentBbRaw
+      const childPhys = childPreset.physical
+      const childBbRaw = getOrComputeBbox(childPreset.id, childPreset)
+      const childBbMm = (childPhys.cross_section_mm && comp.length_mm !== undefined)
+        ? [childBbRaw[0] ?? 40, childBbRaw[1] ?? 40, comp.length_mm]
+        : childBbRaw
+      const parentDefaults = generateDefaultConnectors({
+        hxMm: (parentBbMm[0] ?? 40) / 2,
+        hyMm: (parentBbMm[1] ?? 40) / 2,
+        hzMm: (parentBbMm[2] ?? 40) / 2,
+      })
+      const childDefaults = generateDefaultConnectors({
+        hxMm: (childBbMm[0] ?? 40) / 2,
+        hyMm: (childBbMm[1] ?? 40) / 2,
+        hzMm: (childBbMm[2] ?? 40) / 2,
+      })
+      const pAll = mergeConnectors(parentDefaults, parentPreset.connectors)
+      const cAll = mergeConnectors(childDefaults, childPreset.connectors)
+      const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
+      const inferredChildId = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
+      const childConnectorId = comp.mate_connector ?? inferredChildId ?? 'bottom'
+      const parentConn = findConnector(pAll, parentConnectorId)
+      const childConn = findConnector(cAll, childConnectorId)
+      if (!parentConn || !childConn) continue
+
+      if (!shouldApplyRuntimeNudge(parentConn.engagement_depth_mm)) {
+        console.log(`[icp][trace] ${comp.link_name}: skip — ${parentPreset.id}.${parentConnectorId}.engagement_depth_mm=${parentConn.engagement_depth_mm}mm authored (Step 1 path)`)
+        icpEntries.push({
+          linkName: comp.link_name,
+          parentConnector: `${parentPreset.id}.${parentConnectorId}`,
+          childConnector: `${childPreset.id}.${childConnectorId}`,
+          pairedCount: 0,
+          sampleCount: 0,
+          gapP50Mm: null,
+          gapP90Mm: null,
+          gapMinMm: null,
+          gapMaxMm: null,
+          nudgeMm: 0,
+          reason: `authored-engagement-depth=${parentConn.engagement_depth_mm}mm (Step 1 path)`,
+          confidence: 'high',
+        })
+        continue
+      }
+
+      // THREE.Raycaster operates in WORLD coordinates; transform the
+      // authored LOCAL-frame connector data (mm) up into world before
+      // passing it to nudgeAlongNormal. Axes transform as DIRECTIONS
+      // (rotation only); origins transform as POINTS (rotation + translation).
+      parentLg.updateMatrixWorld(true)
+      childLg.updateMatrixWorld(true)
+      const pOriginWorld = new THREE.Vector3(
+        parentConn.origin_xyz_mm[0] / 1000,
+        parentConn.origin_xyz_mm[1] / 1000,
+        parentConn.origin_xyz_mm[2] / 1000,
+      ).applyMatrix4(parentLg.matrixWorld)
+      const pAxisWorld = new THREE.Vector3(
+        parentConn.axis_xyz[0], parentConn.axis_xyz[1], parentConn.axis_xyz[2],
+      ).transformDirection(parentLg.matrixWorld).normalize()
+      const cOriginWorld = new THREE.Vector3(
+        childConn.origin_xyz_mm[0] / 1000,
+        childConn.origin_xyz_mm[1] / 1000,
+        childConn.origin_xyz_mm[2] / 1000,
+      ).applyMatrix4(childLg.matrixWorld)
+
+      const diagnostics: NudgeDiagnostics = {
+        sampleCount: 0, parentHits: 0, childHits: 0, pairedCount: 0, faceRadiusM: 0,
+        nudgeMm: 0, reason: '',
+      }
+      const nudgeM = nudgeAlongNormal(
+        parentLg,
+        childLg,
+        [pOriginWorld.x, pOriginWorld.y, pOriginWorld.z],
+        [pAxisWorld.x, pAxisWorld.y, pAxisWorld.z],
+        [cOriginWorld.x, cOriginWorld.y, cOriginWorld.z],
+        { excludeParent: pivotGroups, excludeChild: pivotGroups, diagnostics },
+      )
+
+      const gapSummary = diagnostics.pairedCount > 0
+        ? `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits} | gap(mm) min=${(diagnostics.gapMinMm ?? NaN).toFixed(2)} p50=${(diagnostics.gapP50Mm ?? NaN).toFixed(2)} p90=${(diagnostics.gapP90Mm ?? NaN).toFixed(2)} max=${(diagnostics.gapMaxMm ?? NaN).toFixed(2)}`
+        : `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits}`
+      console.log(`[icp][trace] ${comp.link_name} ${parentPreset.id}.${parentConnectorId}→${childPreset.id}.${childConnectorId} r=${(diagnostics.faceRadiusM * 1000).toFixed(1)}mm ${gapSummary} → nudge=${diagnostics.nudgeMm.toFixed(2)}mm (${diagnostics.reason})`)
+
+      // Confidence heuristic for the validator payload: high when the paired-
+      // sample ratio is ≥75% OR the nudge reason tripped the adaptive confident
+      // cap (tight percentile spread). Everything else is "low" — the gap
+      // estimate is real but should not be used to refute a screenshot claim.
+      const pairedRatio = diagnostics.sampleCount > 0 ? diagnostics.pairedCount / diagnostics.sampleCount : 0
+      const confident = pairedRatio >= 0.75 || /confident[- ]?cap/i.test(diagnostics.reason || '')
+      icpEntries.push({
+        linkName: comp.link_name,
+        parentConnector: `${parentPreset.id}.${parentConnectorId}`,
+        childConnector: `${childPreset.id}.${childConnectorId}`,
+        pairedCount: diagnostics.pairedCount,
+        sampleCount: diagnostics.sampleCount,
+        gapP50Mm: Number.isFinite(diagnostics.gapP50Mm as number) ? (diagnostics.gapP50Mm as number) : null,
+        gapP90Mm: Number.isFinite(diagnostics.gapP90Mm as number) ? (diagnostics.gapP90Mm as number) : null,
+        gapMinMm: Number.isFinite(diagnostics.gapMinMm as number) ? (diagnostics.gapMinMm as number) : null,
+        gapMaxMm: Number.isFinite(diagnostics.gapMaxMm as number) ? (diagnostics.gapMaxMm as number) : null,
+        nudgeMm: diagnostics.nudgeMm,
+        reason: diagnostics.reason,
+        confidence: confident ? 'high' : 'low',
+      })
+
+      if (!(nudgeM > 0)) continue
+
+      // Apply to pivot in parent-local: pivot.position -= nudgeM * parent_axis_unit.
+      const ax = parentConn.axis_xyz
+      const axLen = Math.hypot(ax[0], ax[1], ax[2]) || 1
+      pivot.position.x -= (nudgeM * ax[0]) / axLen
+      pivot.position.y -= (nudgeM * ax[1]) / axLen
+      pivot.position.z -= (nudgeM * ax[2]) / axLen
+      pivot.updateMatrixWorld(true)
+      shifts.push({ linkName: comp.link_name, dMm: nudgeM * 1000 })
+    }
+
+    if (shifts.length > 0) parsed.group.updateMatrixWorld(true)
+    return { adjustedCount: shifts.length, shifts, icpEntries }
+  }
+
+  /**
+   * Resolve a child's joint origin via the mate-connector closed-form
+   * composition. Returns null to signal "fall through to legacy path" — the
+   * caller uses that to preserve bit-identical bbox math whenever the new
+   * fields aren't authored or the feature flag is off.
+   *
+   * Phase 2 scope: default face connectors only (attach_face → connector id
+   * via the opposite-face convention). Authored per-preset connectors land
+   * in Phase 3 alongside the problem-child presets (L-bracket, servo shaft).
+   * Multi-child distribution / splay / elevation / orientation keywords stay
+   * on the legacy path — the migration doc calls these out explicitly as
+   * orthogonal post-passes, not resolver concerns.
+   */
+  function computeMatePlacement(
+    comp: AssemblyComponent,
+    parentPresetBboxMm: { hxMm: number; hyMm: number; hzMm: number },
+    childPresetBboxMm:  { hxMm: number; hyMm: number; hzMm: number },
+    parentAuthored?: MateConnector[],
+    childAuthored?:  MateConnector[],
+    multiChild?: {
+      total: number
+      index: number
+      face: string
+      childSizes?: Array<{ hu: number; hv: number }>
+      insetOverride?: number
+    },
+  ): { xyz: string; rpy: string } | null {
+    if (!useMateConnectors()) return null
+    // Only fire when the COMPONENT opts in (attach_connector/mate_connector/
+    // mate_type). Authored preset connectors are vocabulary, not behavior —
+    // they sit available for Claude/auto-repair to reference by name via
+    // mate_connector. Auto-firing whenever a preset ships authored connectors
+    // would bypass legacy splay/multi-child distribution/orientation for every
+    // child of the parent, which is exactly the risk flagged by the migration
+    // doc "Multi-child distribution" note.
+    if (!hasMateConnectorFields(comp)) return null
+
+    // Defaults first, authored-on-preset overrides by id (mergeConnectors contract).
+    const parentDefaults = generateDefaultConnectors(parentPresetBboxMm)
+    const childDefaults  = generateDefaultConnectors(childPresetBboxMm)
+    const parentConnectors = mergeConnectors(parentDefaults, parentAuthored)
+    const childConnectors  = mergeConnectors(childDefaults,  childAuthored)
+
+    // Infer connector ids from attach_face when the new fields are partial.
+    // "top" on the parent implies "bottom" on the child, matching the default-
+    // connector naming. An explicitly authored attach_connector/mate_connector
+    // wins; the legacy attach_face is only consulted as a fallback.
+    const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
+    const inferredChildId   = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
+    const childConnectorId  = comp.mate_connector ?? inferredChildId ?? 'bottom'
+
+    const parentConn = findConnector(parentConnectors, parentConnectorId)
+    const childConn  = findConnector(childConnectors,  childConnectorId)
+    if (!parentConn || !childConn) {
+      const details = `${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
+        `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'})`
+      // C1 (docs/ENGINE_EXECUTION_PLAN.md): dev builds hard-error on a
+      // connector miss. A silent fall-through is how structural_baseplate_
+      // large shipped without authored connectors — the legacy path accepted
+      // it and nothing flagged the coverage hole until the 21mm reconcile
+      // shifts showed up in smoke. Prod keeps the fall-through so end users
+      // aren't stranded, but the warning is tagged [ENGINE-REGRESSION] so
+      // bug reports surface the class without having to parse the message.
+      if (import.meta.env?.DEV) {
+        throw new Error(`[ENGINE-REGRESSION] Connector miss: ${details}`)
+      }
+      console.warn(
+        `[ENGINE-REGRESSION][mate] connector lookup failed for ${details}. Falling through to legacy bbox path.`,
+      )
+      return null
+    }
+
+    const mateType: MateType = ((comp.mate_type as MateType) ?? 'fastened')
+    if (mateType !== 'fastened' && mateType !== 'planar' && mateType !== 'concentric') {
+      console.warn(`[mate] unknown mate_type="${mateType}" for ${comp.link_name}; falling through to legacy`)
+      return null
+    }
+
+    const childLocal = resolveMate(new THREE.Matrix4(), parentConn, childConn, mateType, {})
+    const pos = new THREE.Vector3()
+    const quat = new THREE.Quaternion()
+    const scl = new THREE.Vector3()
+    childLocal.decompose(pos, quat, scl)
+
+    // Multi-child tangential distribution (task #8/#9 — addresses the risk
+    // flagged in docs/MATE_CONNECTOR_MIGRATION.md "Multi-child distribution").
+    // Without this, N children all mating via the same connector id collapse
+    // to the same world point — four legs on baseplate.bottom would stack.
+    // Skipped for concentric mates because SHAFT_FANOUT validator enforces
+    // single-child-per-shaft, so the case doesn't arise there; spreading
+    // would also be wrong (a shaft-in-hole mate is supposed to be concentric).
+    if (multiChild && multiChild.total > 1 && mateType !== 'concentric') {
+      const parentMeters = {
+        hx: parentPresetBboxMm.hxMm / 1000,
+        hy: parentPresetBboxMm.hyMm / 1000,
+        hz: parentPresetBboxMm.hzMm / 1000,
+      }
+      // Pass the resolved face connector so multi-child distribution projects
+      // the parent AABB onto the connector's tangent axes rather than the
+      // face-name lookup. parentConn was resolved above by id (usually equal
+      // to multiChild.face); reuse it directly when so, otherwise re-search.
+      const faceConnector = parentConn.id === multiChild.face
+        ? parentConn
+        : (findConnector(parentConnectors, multiChild.face) ?? null)
+      const offsets = _computeMultiChildOffsets(
+        multiChild.total,
+        multiChild.index,
+        parentMeters,
+        multiChild.face,
+        multiChild.insetOverride,
+        multiChild.childSizes,
+        faceConnector,
+      )
+      const { dx, dy, dz } = faceUVToWorldOffset(multiChild.face, offsets.u, offsets.v)
+      pos.x += dx
+      pos.y += dy
+      pos.z += dz
+    }
+
+    const [r, p, y] = quatToRpy(quat)
+    return {
+      xyz: `${pos.x.toFixed(4)} ${pos.y.toFixed(4)} ${pos.z.toFixed(4)}`,
+      rpy: `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`,
+    }
+  }
+
   function computeFacePlacement(
     doc: Document, parentLinkName: string,
     childX: number, childY: number, childZ: number,
@@ -1646,6 +2112,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     elevationAngleDeg: number = 0,
     childSizes?: Array<{ hu: number; hv: number }>,
     childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
+    parentConnectors?: MateConnector[],
+    outFlags?: { viaConnector: boolean },
+    childConnectors?: MateConnector[],
     placementHints: {
       parentIsDrivetrain?: boolean
       childIsTire?: boolean
@@ -1689,6 +2158,55 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const dz = motorHalfZ + tireHalfAxle
       return { xyz: `0.0000 0.0000 ${dz.toFixed(4)}`, rpy: '0 0 0' }
     }
+    // Layer 2 — multi-child mount_face → mount_face was bypassing the parent's
+    // authored connectors (computeMatePlacement only fires when the component
+    // opts in via attach_connector/mate_connector/mate_type). When the parent
+    // has an authored connector for this face, override face-normal coord and
+    // tangential center with the connector's origin so e.g. four IMU/lipo/SBC
+    // children on a baseplate land at connector_top.z + child/2 instead of
+    // bbox_hz + child/2. For symmetric meshes the two agree (Layer 1 made
+    // bbox match rendered for the 5 parametric plates); for asymmetric or
+    // recessed connectors the connector wins. Defaults from the bbox are NOT
+    // consulted here — that path already matches the legacy bbox math, so
+    // only authored entries trigger the override.
+    const authoredConn = parentConnectors?.find(c => c.id === face) ?? null
+    const connOriginM = authoredConn
+      ? [
+          authoredConn.origin_xyz_mm[0] / 1000,
+          authoredConn.origin_xyz_mm[1] / 1000,
+          authoredConn.origin_xyz_mm[2] / 1000,
+        ] as const
+      : null
+    // Engagement depth: child sinks INTO parent along this connector's axis at
+    // mate time. Per-face branches below subtract this along the face normal
+    // (+axis for top/front/right, -axis for bottom/back/left), shrinking the
+    // contact gap. Closes chamfer-vs-flat visible gaps on chamfered tops
+    // without per-GLB edits. See docs/ENGINE_NEXT_STEPS.md Step 1.
+    const engagementM = (authoredConn?.engagement_depth_mm ?? 0) / 1000
+    // Same idea on the child side. The child contacts the parent face with
+    // its OPPOSITE face (top↔bottom etc). When the child has an authored
+    // connector for that opposite face, prefer its origin over childBodyHZ —
+    // this is what closes the servo body-vs-shaft gap. The bbox-derived
+    // childBodyHZ uses the FULL AABB half (which on a servo includes the
+    // shaft tip), so the servo body sits 4-5mm BELOW the parent's mating
+    // face. An authored `top` at body_top puts the body flush instead.
+    const oppositeFaceMap: Record<string, string> = {
+      top: 'bottom', bottom: 'top',
+      front: 'back', back: 'front',
+      left: 'right', right: 'left',
+    }
+    const childFace = oppositeFaceMap[face]
+    const childAuthoredConn = childFace
+      ? (childConnectors?.find(c => c.id === childFace) ?? null)
+      : null
+    const childConnOriginM = childAuthoredConn
+      ? [
+          childAuthoredConn.origin_xyz_mm[0] / 1000,
+          childAuthoredConn.origin_xyz_mm[1] / 1000,
+          childAuthoredConn.origin_xyz_mm[2] / 1000,
+        ] as const
+      : null
+    if (outFlags && (connOriginM || childConnOriginM)) outFlags.viaConnector = true
 
     // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
     // Rolling assemblies and their tire children skip leg splay and use the
@@ -1707,11 +2225,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     // ── Multi-child tangential offsets (uses splay-corrected inset on bottom face) ──
+    // When the parent has an authored connector for this face, project the
+    // AABB onto the connector's tangent (u,v) axes for the face extent.
+    // authoredConn was already resolved above for engagement_depth_mm.
     let tu = 0, tv = 0
     if (totalOnFace > 1) {
-      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes)
+      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes, authoredConn)
       tu = offsets.u
       tv = offsets.v
+    }
+    // Connector-relative tangential offset: distribute children around the
+    // connector origin's tangent components, not the bbox face center. For
+    // baseplate-class connectors centered at (0,0,*) this is a no-op.
+    if (connOriginM) {
+      switch (face) {
+        case 'top': case 'bottom':  tu += connOriginM[0]; tv += connOriginM[1]; break
+        case 'front': case 'back':  tu += connOriginM[1]; tv += connOriginM[2]; break
+        case 'left': case 'right':  tu += connOriginM[0]; tv += connOriginM[2]; break
+      }
     }
 
     // ── 1c: Numeric orientation — yaw rotation around the face normal ──
@@ -1740,8 +2271,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const longestAxisIdx = dims.indexOf(longest)
       if (longestAxisIdx === 2) {
         // Pitch 90° swings X onto Z — use childX as the vertical extent.
+        // Skip child-connector override here: this branch already rebuilds the
+        // contact extent via verticalExtentForRotation against the rotated dims,
+        // so a static `bottom` authored connector wouldn't be the right value.
         const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-        const oz = parent.hz + vExtent / 2 + gap
+        const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap - engagementM
         const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
       }
@@ -1757,9 +2291,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // protrusion's footprint is real when arranging multiple children.
     switch (face) {
       case 'top': {
-        const oz = parentBodyHZ + childBodyHZ + gap
+        // Child contact distance: an authored child `bottom` connector wins over
+        // childBodyHZ. The connector z is negative (e.g. coupler.bottom = -4mm),
+        // so contact distance from pivot = -childConnZ = +abs(childConnZ).
+        const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
+        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap - engagementM
         // 1c: numeric orientation → yaw (Z-rotation) on top face
-        const rpy = hasNumericOrient ? `0 0 ${(orientDeg * Math.PI / 180).toFixed(4)}` : '0 0 0'
+        // elevation_angle: sign-consistent with front (`0 -elevRad 0`) — negative elev
+        // pitches the sensor forward/down so a top-mounted camera can look toward +X and down.
+        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
+        const rpy = elevRad !== 0 || hasNumericOrient
+          ? `0 ${(-elevRad).toFixed(4)} ${yawRad.toFixed(4)}`
+          : '0 0 0'
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
       }
       case 'bottom': {
@@ -1788,36 +2331,53 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (childIsDrivetrain && tv < 0) {
           yawRad += Math.PI
         }
+        // elevation_angle on bottom: flips the top-face sign so negative elev still
+        // pitches the sensor forward/down from its parent's perspective.
+        if (elevRad !== 0) pitchRad += elevRad
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
         // Rotation-aware vertical extent uses body half-extents so a rolled wheel
         // or pitched bracket snaps to the body, not to a shaft/horn tip.
+        // When the child has an authored `top` connector AND the child is not
+        // rotated (no splay/wheel/orient), prefer the connector. Authored body
+        // tops on servos (top connector at body_top, not bbox_top) close the
+        // shaft-vs-body gap that AABB-based vExtent leaves visible.
         const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
-        const oz = -(parentBodyHZ + vExtent / 2 + gap)
+        const isRotated = usesRollingBottomPose || splayAngle > 0
+        const childContact = (childConnOriginM && !isRotated) ? childConnOriginM[2] : vExtent / 2
+        const oz = (connOriginM ? connOriginM[2] : -parentBodyHZ) - childContact - gap + engagementM
         return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
       }
       case 'front': {
         // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
         const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(parentBodyHX + childBodyHX + gap).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        const childContact = childConnOriginM ? -childConnOriginM[0] : childBodyHX
+        const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap - engagementM
+        return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'back': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
         // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
         const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
-        return { xyz: `${(-(parentBodyHX + childBodyHX + gap)).toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        const childContact = childConnOriginM ? childConnOriginM[0] : childBodyHX
+        const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap + engagementM
+        return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'right': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Right face: elevation is a roll about X
         const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(parentBodyHY + childBodyHY + gap).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        const childContact = childConnOriginM ? -childConnOriginM[1] : childBodyHY
+        const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap - engagementM
+        return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'left': {
         const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
         // Left face: elevation is an inverted roll about X
         const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${(-(parentBodyHY + childBodyHY + gap)).toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
+        const childContact = childConnOriginM ? childConnOriginM[1] : childBodyHY
+        const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap + engagementM
+        return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
       }
       case 'coaxial':
         // Explicit coaxial: child is concentric with parent (same center), rotated to align axis.
@@ -1837,6 +2397,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       case 'left': case 'right': return { hu: b.hx, hv: b.hz }
       default: return { hu: b.hx, hv: b.hy }
     }
+  }
+
+  /** Project parent AABB half-extents onto the tangent plane of a connector's
+   *  axis. For axis-aligned connectors the result equals `faceUVHalfExtents`;
+   *  tilted-axis connectors get the AABB extent along their actual (u,v)
+   *  tangent basis. Support along unit w: hx*|wx|+hy*|wy|+hz*|wz|. */
+  function faceUVHalfExtentsFromConnector(
+    b: { hx: number; hy: number; hz: number },
+    connector: MateConnector,
+  ): { hu: number; hv: number } {
+    const axis = new THREE.Vector3(
+      connector.axis_xyz[0],
+      connector.axis_xyz[1],
+      connector.axis_xyz[2],
+    )
+    const { u, v } = tangentBasisFromAxis(axis)
+    const hu = b.hx * Math.abs(u.x) + b.hy * Math.abs(u.y) + b.hz * Math.abs(u.z)
+    const hv = b.hx * Math.abs(v.x) + b.hy * Math.abs(v.y) + b.hz * Math.abs(v.z)
+    return { hu, hv }
   }
 
   /** Build a preset with length_mm override applied to bounding_box_mm (for extrusions). */
@@ -1861,13 +2440,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     face: string,
     inset: number,
     childSizes?: Array<{ hu: number; hv: number }>,
+    parentConnector?: MateConnector | null,
   ): Array<{ u: number; v: number }> {
-    // Cache key: deterministic for same inputs
-    const cacheKey = `${total}:${face}:${parent.hx},${parent.hy},${parent.hz}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
+    // When a parent connector is supplied, project the AABB onto its tangent
+    // axes; otherwise fall back to the face-name bbox-component lookup.
+    const { hu: extU, hv: extV } = parentConnector
+      ? faceUVHalfExtentsFromConnector(parent, parentConnector)
+      : faceUVHalfExtents(parent, face)
+    // Cache key keys off the resolved (extU,extV) so the connector-derived
+    // and face-name paths don't collide when they would diverge (tilted axes).
+    const cacheKey = `${total}:${face}:${extU.toFixed(6)},${extV.toFixed(6)}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
     const cached = _multiChildPositionsCache.get(cacheKey)
     if (cached) return cached
-
-    const { hu: extU, hv: extV } = faceUVHalfExtents(parent, face)
     let positions: Array<{ u: number; v: number }>
 
     if (total === 2) {
@@ -1951,10 +2535,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     face: string,
     insetOverride?: number,
     childSizes?: Array<{ hu: number; hv: number }>,
+    parentConnector?: MateConnector | null,
   ): { u: number; v: number } {
     const inset = insetOverride ?? 0.7
     const safeIndex = Math.min(index, Math.max(total - 1, 0))
-    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes)
+    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes, parentConnector)
     return positions[safeIndex] || { u: 0, v: 0 }
   }
 
@@ -2014,8 +2599,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     const shape: 'box' | 'cylinder' = allCylinders ? 'cylinder' : 'box'
     if (!isFinite(minX)) {
-      const bb = comp.physical.bounding_box_mm ?? comp.physical.cross_section_mm ?? [40, 40, 40]
-      return { hx: (bb[0] ?? 40) / 2000, hy: (bb[1] ?? 40) / 2000, hz: (bb[2] ?? 40) / 2000, cx: 0, cy: 0, cz: 0, shape }
+      const bb = getOrComputeBbox(comp.id, comp)
+      return { hx: bb[0] / 2000, hy: bb[1] / 2000, hz: bb[2] / 2000, cx: 0, cy: 0, cz: 0, shape }
     }
     return {
       hx: (maxX - minX) / 2,
@@ -2087,6 +2672,27 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
+  // Step 4 of docs/ENGINE_NEXT_STEPS.md: when a preset declares
+  // physical.collision_mesh, emit one <mesh> collision element instead
+  // of per-visual primitives. The OBJ lives under
+  // src/public/meshes/collision/ and is referenced via the standard
+  // ROS package:// URI. Origin matches the visual primitives' frame
+  // (link-local 0,0,0) — the convex hull is in the GLB's authoring
+  // coords, same frame the rendered visuals share.
+  function addMeshCollisionElement(doc: Document, link: Element, meshFile: string) {
+    const collision = doc.createElement('collision')
+    const co = doc.createElement('origin')
+    co.setAttribute('xyz', '0 0 0')
+    co.setAttribute('rpy', '0 0 0')
+    const geometry = doc.createElement('geometry')
+    const mesh = doc.createElement('mesh')
+    mesh.setAttribute('filename', `package://meshes/collision/${meshFile}`)
+    geometry.appendChild(mesh)
+    collision.appendChild(co)
+    collision.appendChild(geometry)
+    link.appendChild(collision)
+  }
+
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
   function addComponentCore(
     comp: PresetComponent,
@@ -2101,11 +2707,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const phys = comp.physical
     const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
+    const bb = getOrComputeBbox(comp.id, comp)
     const shape = phys.inertia_primitive || 'box'
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    const zm = (bb[2] ?? 40) / 1000
+    const xm = bb[0] / 1000
+    const ym = bb[1] / 1000
+    const zm = bb[2] / 1000
 
     let inertia: { ixx: number; iyy: number; izz: number }
     if (shape === 'cylinder') {
@@ -2138,7 +2744,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       link.appendChild(inertialEl)
 
       visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
-      visuals.forEach(vis => addCollisionElement(doc, link, vis))
+      const collisionMesh = comp.physical.collision_mesh
+      if (collisionMesh) {
+        addMeshCollisionElement(doc, link, collisionMesh)
+      } else {
+        visuals.forEach(vis => addCollisionElement(doc, link, vis))
+      }
 
       const joint = doc.createElement('joint')
       joint.setAttribute('name', jointName)
@@ -2527,11 +3138,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } else {
       const graph = ctx.getKinematicGraph()
       const parent = resolveFreePlacementParent(graph)
-      const phys = comp.physical
-      const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-      const xm = (bb[0] ?? 40) / 1000
-      const ym = (bb[1] ?? 40) / 1000
-      const zm = (bb[2] ?? 40) / 1000
+      const bb = getOrComputeBbox(comp.id, comp)
+      const xm = bb[0] / 1000
+      const ym = bb[1] / 1000
+      const zm = bb[2] / 1000
       const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
       const placement = computePlacement(doc, parent, comp, xm, ym, zm)
       addComponentCore(comp, parent, placement.xyz, placement.rpy)
@@ -2560,8 +3170,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
     const massLabel = comp.physical.mass_kg_per_100mm ? `${(comp.physical.mass_kg_per_100mm * 1000).toFixed(0)}g/100mm` :
                       mass != null ? (mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`) : '—'
-    const bb = comp.physical.bounding_box_mm
-    const dims = bb ? `${bb[0]}×${bb[1]}×${bb[2]} mm` : '—'
+    const bb = getOrComputeBbox(comp.id, comp)
+    const dims = `${Math.round(bb[0])}×${Math.round(bb[1])}×${Math.round(bb[2])} mm`
     const shape = comp.physical.inertia_primitive || 'box'
     const mounting = ((comp.mounting_logic as Record<string, unknown>).primary ?? '—') as string
 
@@ -2672,6 +3282,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then((data: PresetData) => {
       presetData = data
+      // Log the connector setup per preset — 6 default face connectors plus
+      // any Phase 3 authored connectors (shaft_out, plate_top, wall_inner,
+      // mount_back, etc.). This is the load-time signal that JSON authoring
+      // took effect; presets with authored connectors stand out in the log
+      // so "did my preset edit reach the runtime?" is obvious at startup.
+      if (useMateConnectors()) {
+        for (const cat of Object.values(data.categories)) {
+          for (const comp of cat.components) {
+            const authored = comp.connectors?.length ?? 0
+            if (authored > 0) {
+              const ids = comp.connectors!.map(c => c.id).join(', ')
+              console.log(`[mate] connectors: 6 defaults + ${authored} authored = ${6 + authored} (${comp.id}) — authored: [${ids}]`)
+            } else {
+              console.log(`[mate] connectors: 6 defaults (${comp.id})`)
+            }
+          }
+        }
+      }
       renderComponents('')
     })
     .catch(() => {
@@ -3268,7 +3896,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } catch { /* localStorage full or unavailable — non-critical */ }
   }
 
-  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[] } {
+  function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary } {
     _multiChildPositionsCache.clear()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
@@ -3345,10 +3973,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     // Create a fresh minimal URDF with just a base_link
     const phys = rootPreset.physical
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-    const xm = (bb[0] ?? 40) / 1000
-    const ym = (bb[1] ?? 40) / 1000
-    let zm = (bb[2] ?? 40) / 1000
+    const bb = getOrComputeBbox(rootPreset.id, rootPreset)
+    const xm = bb[0] / 1000
+    const ym = bb[1] / 1000
+    let zm = bb[2] / 1000
     if (root.length_mm && phys.cross_section_mm) {
       zm = root.length_mm / 1000
     }
@@ -3380,20 +4008,31 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     </visual>`
     })
 
-    // Collision geometry — one element per visual piece for accurate hitboxes
+    // Collision geometry — one mesh element when the preset has a
+    // convex-hull OBJ (Step 4 of docs/ENGINE_NEXT_STEPS.md), else one
+    // primitive element per visual piece.
     let collisionsXml = ''
-    visuals.forEach(vis => {
-      const cGeomXml = vis.geometry.type === 'box'
-        ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
-        : vis.geometry.type === 'cylinder'
-        ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
-        : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+    const rootCollisionMesh = rootPreset.physical.collision_mesh
+    if (rootCollisionMesh) {
       collisionsXml += `
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://meshes/collision/${rootCollisionMesh}"/></geometry>
+    </collision>`
+    } else {
+      visuals.forEach(vis => {
+        const cGeomXml = vis.geometry.type === 'box'
+          ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
+          : vis.geometry.type === 'cylinder'
+          ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
+          : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
+        collisionsXml += `
     <collision>
       <origin xyz="${vis.origin_xyz.map(v => v.toFixed(6)).join(' ')}" rpy="${vis.origin_rpy.map(v => v.toFixed(6)).join(' ')}"/>
       <geometry>${cGeomXml}</geometry>
     </collision>`
-    })
+      })
+    }
 
     const baseUrdf = `<?xml version="1.0"?>
 <robot name="assembled_robot">
@@ -3411,6 +4050,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!editor) return { urdf: null }
     editor.setValue(baseUrdf)
     ctx.reparseUrdf()
+
+    // Layer 3 — track which children were placed via the authored connector
+    // path so reconcile can skip them. Key = comp.link_name (Claude's name,
+    // pre-remap). Set when computeMatePlacement fires OR Layer-2's
+    // computeFacePlacement override engages. Threaded into _lastAssemblyGraph
+    // below so reconcileAlignment.ts sees the flag without a separate channel.
+    // Hoisted above the try block so the post-try remappedComponents map can
+    // read it.
+    const viaConnectorMap = new Map<string, boolean>()
+
+    // Ground-truth placement rows (xyz/rpy actually written to URDF, per child)
+    // captured inline during the placement loop. Threaded to the Gemini validator
+    // so screenshot misreads can be refuted against authoritative engine output
+    // (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). Hoisted above the try so
+    // the final return (which runs outside the try) can read it.
+    const placementEntries: EnginePlacementEntry[] = []
 
     // try/finally is load-bearing: if the loop throws we MUST clear _bulkMode,
     // else every future commitUrdf in the session writes to an orphaned buffer.
@@ -3512,20 +4167,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       let childPort: ReturnType<typeof resolveFaceToPort> = undefined
 
       if (parentPreset) {
-        const pPhys = parentPreset.physical
-        const pBb = pPhys.bounding_box_mm ?? pPhys.cross_section_mm ?? [40, 40, 40]
+        const pBb = getOrComputeBbox(parentPreset.id, parentPreset)
         const parentPorts = componentPortsForPreset(
-          parentPreset.id, (pBb[0] ?? 40) / 2000, (pBb[1] ?? 40) / 2000, (pBb[2] ?? 40) / 2000,
+          parentPreset.id, pBb[0] / 2000, pBb[1] / 2000, pBb[2] / 2000,
           parentPreset.mounting_logic
         )
         parentPort = resolveFaceToPort(attachFace, parentPorts)
         console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
 
         if (childPreset) {
-          const cPhysP = childPreset.physical
-          const cBbP = cPhysP.bounding_box_mm ?? cPhysP.cross_section_mm ?? [40, 40, 40]
+          const cBbP = getOrComputeBbox(childPreset.id, childPreset)
           const childPorts = componentPortsForPreset(
-            childPreset.id, (cBbP[0] ?? 40) / 2000, (cBbP[1] ?? 40) / 2000, (cBbP[2] ?? 40) / 2000,
+            childPreset.id, cBbP[0] / 2000, cBbP[1] / 2000, cBbP[2] / 2000,
             childPreset.mounting_logic
           )
           childPort = resolveFaceToPort(childFace, childPorts)
@@ -3623,7 +4276,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (typeof aor === 'number') effectiveCym = aor / 1000
       }
 
-      const placement = computeFacePlacement(
+      let placement = computeFacePlacement(
         doc, parentLinkName,
         cxm, effectiveCym, czm,
         comp.attach_face,
@@ -3636,9 +4289,75 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         elevAngle,
         faceChildSizes.get(faceKey),
         { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz },
+        undefined,
+        undefined,
+        undefined,
         { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
       )
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${jointType} axis=${comp.joint_axis}`)
+      // Phase 2/3: if this component has authored mate-connector fields OR
+      // either preset carries authored connectors, AND the feature flag is on,
+      // resolve via closed-form frame composition instead of the bbox half-
+      // extent math. Returns null to fall through to legacy whenever neither
+      // side opts in.
+      // Connector-aware placement below may override the fallback placement.
+      const parentPhys = parentPreset?.physical
+      const rawParentBb = parentPreset
+        ? getOrComputeBbox(parentPreset.id, parentPreset)
+        : [40, 40, 40]
+      // Parametric components (extrusions, bars, tubes) declare cross_section_mm
+      // and carry their length on the COMPONENT instance via `length_mm`. The
+      // raw preset bbox falls through to a `[w, h, undefined]` and matePlacement
+      // gets `[w, h, 40]` — so a 100mm extrusion default-`bottom` connector
+      // lands at -20mm instead of -50mm, and any child mating to it floats
+      // 30mm short of the real end. Look the parent comp up by link_name and
+      // splice its length_mm into the Z slot when the preset only authored a
+      // cross-section.
+      const parentComp = components.find(c => c.link_name === parentLinkName)
+      const parentBb = (parentPhys?.cross_section_mm && parentComp?.length_mm !== undefined)
+        ? [rawParentBb[0] ?? 40, rawParentBb[1] ?? 40, parentComp.length_mm]
+        : rawParentBb
+      const matePlacement = (parentPreset && childPreset)
+        ? computeMatePlacement(
+            comp,
+            { hxMm: (parentBb[0] ?? 40) / 2, hyMm: (parentBb[1] ?? 40) / 2, hzMm: (parentBb[2] ?? 40) / 2 },
+            { hxMm: cxm * 500,                hyMm: effectiveCym * 500,       hzMm: czm * 500 },
+            parentPreset.connectors,
+            childPreset.connectors,
+            totalOnFace > 1
+              ? {
+                  total: totalOnFace,
+                  index: childIdx,
+                  face: comp.attach_face || 'top',
+                  childSizes: faceChildSizes.get(faceKey),
+                }
+              : undefined,
+          )
+        : null
+
+      if (matePlacement) {
+        placement = matePlacement
+        viaConnectorMap.set(comp.link_name, true)
+        console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
+      } else {
+        const placeFlags = { viaConnector: false }
+        placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags, childPreset?.connectors, { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose })
+        if (placeFlags.viaConnector) {
+          viaConnectorMap.set(comp.link_name, true)
+          const oppositeFaceLog: Record<string, string> = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' }
+          const childFaceLog = comp.attach_face ? (oppositeFaceLog[comp.attach_face] ?? '?') : '?'
+          console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=${childPreset?.id ?? '?'}.${childFaceLog}, type=face-distribute → ${JSON.stringify(placement)}`)
+        }
+      }
+
+      // Step 2's runtime ICP pass now runs post-reparse as a scene-level
+      // pass (see runContactCleanupPass below). The in-loop hook here was
+      // a dead-end — bulk assembly's single-reparse-at-end timing meant
+      // every mate saw an empty scene. Leave this block intentionally
+      // empty; placement xyz is what `computeMatePlacement` /
+      // `computeFacePlacement` produced, with any nudges layered on
+      // after reconcile.
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
       let jointAxis = axisTupleToUrdf(connectionJoint.axis_xyz)
@@ -3687,7 +4406,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         link.appendChild(inertialEl)
 
         cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
-        cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
+        const cCollisionMesh = preset.physical.collision_mesh
+        if (cCollisionMesh) {
+          addMeshCollisionElement(urdfDoc, link, cCollisionMesh)
+        } else {
+          cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
+        }
 
         const joint = urdfDoc.createElement('joint')
         joint.setAttribute('name', jointName)
@@ -3748,6 +4472,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (changed) {
         nameMap.set(comp.link_name, childName)
         placedCount++
+        placementEntries.push({
+          linkName: childName,
+          parentLinkName,
+          xyz: placement.xyz,
+          rpy: placement.rpy,
+        })
         console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
         // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
@@ -3800,23 +4530,85 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.reparseUrdf()
     }
 
-    // Ground the robot so it sits on the floor plane (Y=0 in Three.js)
-    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
-
-    ctx.showToast(`Assembled ${placedCount} components`, 'success')
-    // Store the resolved graph with URDF link names (remapped via nameMap)
-    // so modify_topology ops can reference the same names Claude sees in the URDF
+    // Store the resolved graph with URDF link names (remapped via nameMap) so the
+    // reconcile pass below + later modify_topology ops reference the same names
+    // Claude sees in the URDF.
     const remappedComponents = graph.components.map(c => ({
       ...c,
       link_name: nameMap.get(c.link_name) || c.link_name,
       attach_to: c.attach_to ? (nameMap.get(c.attach_to) || c.attach_to) : null,
+      placed_via_connector: viaConnectorMap.get(c.link_name) || c.placed_via_connector,
     }))
     const remappedBase = nameMap.get(graph.base_link) || graph.base_link
     _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
-    return { urdf: ctx.getUrdfText(), topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined }
+    // Render-time alignment: shift pivots so visible mesh faces meet. Must run
+    // BEFORE groundAssembly because groundRobot measures post-reconcile world
+    // extents. Safe when meshes haven't loaded yet — the EPS guard no-ops any
+    // link whose parent/child AABB is unavailable or already aligned, and the
+    // debounced onMeshLoaded path re-fires reconcile once GLBs settle.
+    let icpEntriesForSummary: EngineIcpEntry[] = []
+    try {
+      ctx.getParsedRobot().group.updateMatrixWorld(true)
+      const reconcileRes = reconcileNodePlacement({
+        graph: _lastAssemblyGraph,
+        linkGroups: ctx.getParsedRobot().linkGroups,
+        joints: ctx.getParsedRobot().joints,
+      })
+      if (reconcileRes.adjustedCount > 0) {
+        // Persist the shifted pivot positions into the URDF text. Without this,
+        // the debounced 500ms editor-change reparse (main.ts:743) rebuilds the
+        // scene from the original (unshifted) URDF xyz values, wiping every
+        // shift — and then the debounced onMeshLoaded callback re-fires reconcile
+        // and replays the identical 37 shifts. Baking shifts into the text makes
+        // the reparsed scene come up already-aligned, so the second reconcile
+        // pass finds zero deltas (genuine no-op).
+        persistReconcileShiftsToUrdf(ctx.getParsedRobot().linkGroups)
+        // Mount nodes were placed against the pre-reconcile pivot positions;
+        // rebuild so the attachment rings follow the real rendered geometry.
+        rebuildMountNodes()
+      }
+
+      // Step 2 — runtime ICP contact cleanup (docs/ENGINE_NEXT_STEPS.md).
+      // Runs AFTER reconcile so the scene is already flush where it can be
+      // via pure placement math. Then we raycast each mated pair's face and
+      // sink the child slightly into the parent to hide chamfers / beveled
+      // edges that flat placement can't close. Persist the same way reconcile
+      // does so the debounced reparse doesn't wipe the adjustments.
+      try {
+        const cleanupRes = runContactCleanupPass()
+        icpEntriesForSummary = cleanupRes.icpEntries
+        if (cleanupRes.adjustedCount > 0) {
+          persistReconcileShiftsToUrdf(ctx.getParsedRobot().linkGroups)
+          rebuildMountNodes()
+          const totalMm = cleanupRes.shifts.reduce((a, s) => a + s.dMm, 0)
+          console.log(`[icp] Done: ${cleanupRes.adjustedCount} link(s) nudged, total nudge = ${totalMm.toFixed(2)}mm`)
+        } else {
+          console.log(`[icp] Done: 0 link(s) nudged (all mates flush within ${NUDGE_MIN_MM}mm tolerance)`)
+        }
+      } catch (e) {
+        console.warn('[assembly] runContactCleanupPass failed:', e)
+      }
+    } catch (e) {
+      console.warn('[assembly] reconcileNodePlacement failed:', e)
+    }
+
+    // Ground the robot so it sits on the floor plane (Y=0 in Three.js)
+    try { ctx.groundAssembly?.() } catch (e) { console.warn('[assembly] groundAssembly failed:', e) }
+
+    ctx.showToast(`Assembled ${placedCount} components`, 'success')
+
+    const engineSummary: EngineSummary = {
+      placements: placementEntries,
+      icpGaps: icpEntriesForSummary,
+    }
+    return {
+      urdf: ctx.getUrdfText(),
+      topologyWarnings: topologyWarnings.length > 0 ? topologyWarnings : undefined,
+      engineSummary,
+    }
   }
 
   // ── Reverse Parser: URDF → AssemblyGraph ──────────────────────────────────
@@ -3991,6 +4783,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           orientation: op.orientation,
           elevation_angle: op.elevation_angle,
           attach_rpy: op.attach_rpy,
+          attach_connector: op.attach_connector,
+          mate_connector: op.mate_connector,
+          mate_type: op.mate_type,
         })
         console.log(`[topology] Added ${op.link_name} (${op.component_id}) → ${op.attach_to}:${op.attach_face}`)
 
@@ -4010,6 +4805,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (op.orientation !== undefined) existing.orientation = op.orientation
         if (op.elevation_angle !== undefined) existing.elevation_angle = op.elevation_angle
         if (op.attach_rpy !== undefined) existing.attach_rpy = op.attach_rpy
+        if (op.attach_connector !== undefined) existing.attach_connector = op.attach_connector
+        if (op.mate_connector !== undefined) existing.mate_connector = op.mate_connector
+        if (op.mate_type !== undefined) existing.mate_type = op.mate_type
         console.log(`[topology] Modified ${op.link_name}: ${JSON.stringify(op)}`)
       }
     }
@@ -4032,9 +4830,51 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     onInteractionModeChanged,
     setSelectedLink: selectLink,
     resolveAssemblyGraph,
-    getLastAssemblyGraph: () => _lastAssemblyGraph,
+    reconcileNodePlacement: (): ReconcileResult => {
+      if (!_lastAssemblyGraph) {
+        return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
+      }
+      const parsed = ctx.getParsedRobot()
+      const res = reconcileNodePlacement({
+        graph: _lastAssemblyGraph,
+        linkGroups: parsed.linkGroups,
+        joints: parsed.joints,
+      })
+      // I1-bis: mirror the first-pass persistence so the debounced
+      // onMeshLoaded path (main.ts) doesn't leave shifts only in the live
+      // scene — without this the next reparse rebuilds from the un-baked
+      // URDF and replays identical shifts on every mesh-settle cycle.
+      // Must also rebuildMountNodes to match the first-pass pair at line
+      // ~3940: mount nodes were placed against the pre-reconcile pivots,
+      // and persisting without rebuilding leaves attachment rings on the
+      // old pose while the URDF and scene have moved on.
+      if (res.adjustedCount > 0) {
+        persistReconcileShiftsToUrdf(parsed.linkGroups)
+        rebuildMountNodes()
+      }
+      return res
+    },
+    getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
     urdfToAssemblyGraph,
     applyTopologyOps,
+    applyGraphMutation: (graph: AssemblyGraph, mutation: GraphMutation): MutationResult => {
+      // Build a ValidationContext from the live preset catalog so graphMutations
+      // enforces the same rules the placement engine does. findPreset returns
+      // null when presets haven't loaded yet — the mutation dispatch itself
+      // surfaces that as UNKNOWN_COMPONENT so the tool loop sees a real error.
+      const validationCtx: ValidationContext = {
+        findPreset: (id: string): ValidationPreset | null => {
+          if (!presetData) return null
+          for (const cat of Object.values(presetData.categories)) {
+            const p = cat.components.find(c => c.id === id)
+            if (p) return p as ValidationPreset
+          }
+          return null
+        },
+      }
+      return runApplyMutation(graph, mutation, validationCtx)
+    },
+    graphsEquivalent,
     rebuildMountNodes,
     refreshMountNodeTransforms: () => refreshNodeWorldTransforms(),
     getUndoState: () => ({ undo: [...urdfUndo], redo: [...urdfRedo] }),

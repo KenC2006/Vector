@@ -6,6 +6,7 @@
 
 import { componentPortsForPreset, isDrivetrainComponentId, isTireComponentId, resolveFaceToPort } from './attachmentNodes.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
+import { getOrComputeBbox } from './componentDims.ts'
 
 // Minimal shape of a preset that the validator needs. The real PresetComponent
 // in urdfAssembly.ts is a superset of this; pass anything structurally compatible.
@@ -67,12 +68,12 @@ export function findStructuralAncestor(
 function portsForComponent(
   preset: ValidationPreset,
 ) {
-  const bb = preset.physical.bounding_box_mm ?? preset.physical.cross_section_mm ?? [40, 40, 40]
+  const bb = getOrComputeBbox(preset.id, preset)
   return componentPortsForPreset(
     preset.id,
-    (bb[0] ?? 40) / 2000,
-    (bb[1] ?? 40) / 2000,
-    (bb[2] ?? 40) / 2000,
+    bb[0] / 2000,
+    bb[1] / 2000,
+    bb[2] / 2000,
     preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
   )
 }
@@ -243,14 +244,14 @@ export function validateTopology(
   if (rootComp && rootComp.component_id.startsWith('structural_baseplate')) {
     const rootPreset = ctx.findPreset(rootComp.component_id)
     if (rootPreset) {
-      const rootBb = rootPreset.physical.bounding_box_mm ?? rootPreset.physical.cross_section_mm ?? [200, 200, 5]
-      const baseW = Math.min(rootBb[0] ?? 200, rootBb[1] ?? 200)
+      const rootBb = getOrComputeBbox(rootPreset.id, rootPreset)
+      const baseW = Math.min(rootBb[0], rootBb[1])
 
       const heightOf = (comp: AssemblyComponent): number => {
         const p = ctx.findPreset(comp.component_id)
         if (!p) return 0
-        const bb = p.physical.bounding_box_mm ?? p.physical.cross_section_mm ?? [40, 40, 40]
-        let h = bb[2] ?? 40
+        const bb = getOrComputeBbox(p.id, p)
+        let h = bb[2]
         if (comp.length_mm && p.physical.cross_section_mm) h = comp.length_mm
         return h
       }
@@ -501,6 +502,32 @@ export function autoRepairTopology(
       // 'z' resolves through urdfAssembly's axisMap to '0 0 1' intentionally,
       // instead of landing in the fallback branch via an unrecognized literal.
       joint_axis: 'z',
+    }
+    // Phase 3 task #7 / C4 (docs/ENGINE_EXECUTION_PLAN.md): route both
+    // mismatch cases through the mate-connector resolver.
+    //
+    // Case 1 (shaft parent, mount_face child): coupler's shaft_hole
+    // mates concentrically onto the parent's shaft_out. Without this,
+    // a shaft-in-hole would be encoded as a flat stack in URDF and the
+    // visual seam at the shaft tip wouldn't close.
+    //
+    // Case 2 (mount_face parent, shaft child): coupler mounts flat on
+    // the parent face via default face connectors (fastened). Bit-
+    // identical to the legacy bbox path while every parent still carries
+    // default connectors, but flips the auto-repair path onto the
+    // connector engine so it picks up authored parent connectors
+    // automatically as Phase 2 lands them. Multi-child distribution is
+    // preserved — computeMatePlacement threads totalOnFace/childIdx
+    // through the connector resolver so N coupler discs still spread
+    // across one face.
+    if (pClass === 'shaft' && cClass === 'mount_face') {
+      bracket.attach_connector = 'shaft_out'
+      bracket.mate_connector = 'shaft_hole'
+      bracket.mate_type = 'concentric'
+    } else if (pClass === 'mount_face' && cClass === 'shaft') {
+      bracket.attach_connector = parentFace
+      bracket.mate_connector = childFace
+      bracket.mate_type = 'fastened'
     }
     insertions.push({ bracket, beforeLinkName: comp.link_name })
     comp.attach_to = bracketName

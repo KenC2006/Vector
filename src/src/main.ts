@@ -9,6 +9,10 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
 import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
 import { applyRichVisuals, preloadMeshCache } from './richVisuals'
+import {
+  refreshConnectorOverlay,
+  toggleConnectorOverlay,
+} from './connectorInspector'
 import { SAMPLE_URDF } from './sampleUrdf'
 import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
@@ -1029,6 +1033,10 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       _rebuildNodesTimer = null
       if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
       if (simApi.isSimActive()) return          // don't disturb sim joint state
+      // Re-fire alignment BEFORE groundRobot so the ground-level calc sees
+      // post-reconcile world extents. Idempotent — already-aligned links no-op.
+      try { urdfAssemblyApi?.reconcileNodePlacement() }
+      catch (e) { console.warn('[reconcile] post-mesh-load pass failed:', e) }
       groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
       // STEP/GLB meshes load async — re-run edges so late arrivals get the
@@ -1058,6 +1066,7 @@ let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
 applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+refreshConnectorOverlay(parsedRobot)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1663,6 +1672,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
           applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+          refreshConnectorOverlay(parsedRobot)
           // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
           const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
           if (!skipHeavy) addEdgeLines(parsedRobot)
@@ -1708,6 +1718,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
     applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+    refreshConnectorOverlay(parsedRobot)
     // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
     const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
     if (!skipHeavy) addEdgeLines(parsedRobot)
@@ -1894,7 +1905,12 @@ document.addEventListener('keydown', (e) => {
       if (e.shiftKey) document.getElementById('toggle-axes')?.click()
       break
     case 'c':
-      document.getElementById('toggle-com')?.click()
+      if (e.shiftKey) {
+        const on = toggleConnectorOverlay(parsedRobot)
+        showToast(`Mate-connector overlay ${on ? 'on' : 'off'}`, 'info')
+      } else {
+        document.getElementById('toggle-com')?.click()
+      }
       break
     case 'w':
       if (e.shiftKey) document.getElementById('toggle-wireframe')?.click()

@@ -234,8 +234,8 @@ function generateTBracket(id: string, dims: GeneratorDims): THREE.Group {
 function generateJointPlate(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const thick = Math.max(d, Math.min(w, h) * 0.08)
-  const chamfer = Math.min(w, h) * 0.03
+  const thick = d
+  const chamfer = Math.min(Math.min(w, h) * 0.03, thick * 0.4)
   const mat = catMetal()
 
   const plate = new THREE.Mesh(nurbsFilletBox(w, h, thick, chamfer, 16), mat)
@@ -264,8 +264,8 @@ function generateJointPlate(id: string, dims: GeneratorDims): THREE.Group {
 function generateBaseplate(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const thick = Math.max(d, Math.min(w, h) * 0.12)
-  const chamfer = Math.min(w, h) * 0.04
+  const thick = d
+  const chamfer = Math.min(Math.min(w, h) * 0.04, thick * 0.4)
   const mat = catMetal('anodized_aluminum', 0.2)
 
   const plate = new THREE.Mesh(nurbsFilletBox(w, h, thick, chamfer, 16), mat)
@@ -431,7 +431,7 @@ function generateHexStandoff(id: string, dims: GeneratorDims): THREE.Group {
 function generateGusset(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const thick = Math.max(d, Math.min(w, h) * 0.08)
+  const thick = d
 
   const shape = new THREE.Shape()
   shape.moveTo(-w / 2, -h / 2)
@@ -506,7 +506,7 @@ function generateCornerCube(id: string, dims: GeneratorDims): THREE.Group {
 function generateCrossPlate(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const thick = Math.max(d, Math.min(w, h) * 0.08)
+  const thick = d
   const chamfer = thick * 0.3
   const armW = Math.min(w, h) * 0.35
   const mat = catMetal()

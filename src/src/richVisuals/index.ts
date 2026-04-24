@@ -11,8 +11,9 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getRotationOverride, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
-import { getComponentColor, getTintedMaterial } from './materials'
+import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
+import { getRenderedMeshDims as _getRenderedMeshDims, setRenderedMeshDims } from '../meshDimsCache'
 
 
 interface ParsedRobotLike {
@@ -96,13 +97,22 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
 // Cache loaded STEP meshes so they survive reparse cycles
 const meshCache = new Map<string, THREE.Group>()  // compId → cloneable mesh group
 const loadingInProgress = new Set<string>()  // prevent duplicate loads
-// Cache actual rendered size (full extents in meters) after scaling + centering.
-// Used by urdfAssembly to align ghost bounds with the real visual.
-const meshDimsCache = new Map<string, THREE.Vector3>()  // compId → full size (x,y,z) in meters
+// Rendered mesh AABB cache is owned by ../meshDimsCache so pure/node-runnable
+// modules can read it through componentDims without pulling in this module's
+// directory-import dependency tree. Re-exported here for source-compat with
+// existing urdfAssembly imports.
+export const getRenderedMeshDims = _getRenderedMeshDims
 
-/** Return the actual rendered mesh size (full extents, meters) for a component, or null if not yet loaded. */
-export function getRenderedMeshDims(compId: string): THREE.Vector3 | null {
-  return meshDimsCache.get(compId) ?? null
+/** Return the raw parsed GLB/STEP mesh group for a component, or null if
+ *  the cache hasn't been populated yet. Caller should treat the returned
+ *  group as READ-ONLY (shared across every instance of that component).
+ *  Used by the runtime ICP nudge in urdfAssembly.ts to raycast against the
+ *  child's actual mesh surface when the child isn't yet in the scene
+ *  (new-component adds). The group is in its raw authored units (GLBs from
+ *  our STEP converter are mm; scale before raycasting against meter-space
+ *  origins). */
+export function getCachedMeshGroup(compId: string): THREE.Group | null {
+  return meshCache.get(compId) ?? null
 }
 // Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
 // Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
@@ -332,13 +342,21 @@ function applyMeshToLink(
     // scale cleanly along independent axes.
     const PERAXIS_BLACKLIST = ['gripper', 'effector', 'claw', 'suction']
     const skipPerAxis = PERAXIS_BLACKLIST.some(k => compId.includes(k))
+    // Shaft overlay: when this component has an entry in SHAFT_OVERLAYS, the GLB
+    // body is scaled to (bbox.z - shaft_length) and a procedural cylinder fills
+    // the remaining shaft_length region above. This lets the placement engine
+    // align the body face to a coupler bottom (Layer 4 child connector path)
+    // while keeping the shaft visible inside the coupler bore.
+    const shaftOverlay = getShaftOverlay(compId)
+    const shaftLenM = shaftOverlay ? shaftOverlay.shaft_length_mm / 1000 : 0
+    const targetZ = shaftOverlay ? Math.max(0.001, dims.z - shaftLenM) : dims.z
     if (!skipPerAxis) {
       meshBox.setFromObject(meshGroup)
       meshBox.getSize(meshSize)
       if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
         const scaleX = dims.x / meshSize.x
         const scaleY = dims.y / meshSize.y
-        const scaleZ = dims.z / meshSize.z
+        const scaleZ = targetZ / meshSize.z
         meshGroup.scale.x *= scaleX
         meshGroup.scale.y *= scaleY
         meshGroup.scale.z *= scaleZ
@@ -351,13 +369,31 @@ function applyMeshToLink(
     meshBox.getCenter(center)
     meshGroup.position.sub(center)
 
+    // Shaft overlay: shift the now-centered body DOWN by shaft_length/2 so its
+    // top face sits at z = (bbox.z/2 - shaft_length) = body_top, and the upper
+    // shaft_length region is empty for the procedural cylinder added below.
+    if (shaftOverlay) {
+      meshGroup.position.z -= shaftLenM / 2
+    }
+
     // Cache the actual rendered size (full extents in meters) as the authoritative
-    // dimension source for ghost bounds and node placement.
+    // dimension source for ghost bounds and node placement. For shaft-overlay
+    // components, measure the BODY mesh only (the procedural shaft cylinder is
+    // added to `geometryChild` below, AFTER this measurement; it doesn't appear
+    // in `finalBox`). Previously we overwrote `finalSize.z = dims.z` here to
+    // report the full body+shaft envelope, but that meant getParentBounds →
+    // getRenderedMeshDims returned 34mm for high_torque when the actual mating
+    // face sits at ±14.5mm; placement stacked children 2.5-4mm beyond the real
+    // body surface, and the post-reconcile ICP saw a `p90 ≈ 4mm` gap that
+    // exceeded the 3mm cap (clamp → visible under-engage). Reporting body-only
+    // dims lets placement math land the child against the real body extent
+    // instead of the cosmetic envelope. Ghost bounds lose a few mm of "shaft"
+    // visualization but gain correctness — acceptable tradeoff.
     const finalBox = new THREE.Box3().setFromObject(meshGroup)
     const finalSize = new THREE.Vector3()
     finalBox.getSize(finalSize)
     if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
-      meshDimsCache.set(compId, finalSize.clone())
+      setRenderedMeshDims(compId, finalSize)
     }
   }
 
@@ -374,6 +410,26 @@ function applyMeshToLink(
       geometryChild.remove(geometryChild.children[0])
     }
     geometryChild.add(meshGroup)
+
+    // Shaft overlay: add a procedural shaft cylinder above the body. Sibling to
+    // meshGroup (not its child) so meshGroup's per-axis scale doesn't deform it.
+    // Cylinder is along URDF +Z, centered in the upper shaft_length region of
+    // the bbox, with brushed-steel material to match catalog shaft features
+    // (shaft_collar, hex_standoff stubs, etc.).
+    const overlay = getShaftOverlay(compId)
+    if (overlay) {
+      const shaftLength = overlay.shaft_length_mm / 1000
+      const shaftRadius = overlay.shaft_radius_mm / 1000
+      const shaftMat = getMaterial('brushed_steel')
+      const shaftGeo = new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 24)
+      const shaftMesh = new THREE.Mesh(shaftGeo, shaftMat)
+      shaftMesh.rotation.x = Math.PI / 2 // align cylinder Y axis with URDF +Z
+      shaftMesh.position.z = dims.z / 2 - shaftLength / 2
+      shaftMesh.castShadow = true
+      shaftMesh.receiveShadow = true
+      ;(shaftMesh.userData as Record<string, unknown>).urdfLinkName = linkName
+      geometryChild.add(shaftMesh)
+    }
   }
 }
 

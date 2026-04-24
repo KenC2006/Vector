@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { escapeHtml } from './chatHistory'
 import type { UrdfAssemblyApi, TopologyOp, AssemblyGraph } from './urdfAssembly'
+import { cloneAssemblyGraph } from './urdfGraphEquivalence'
+import type { GraphMutation, MutationResult } from './graphMutations'
 
 export interface ViewportChatDeps {
   // Editor
@@ -243,6 +245,117 @@ function formatWarningsHtml(warnings: string[] | undefined): string {
 function formatWarningsForPrompt(warnings: string[] | undefined): string {
   if (!warnings || warnings.length === 0) return ''
   return `\n\nTopology warnings (non-blocking, but worth addressing in a redesign):\n${warnings.map(w => `- ${w}`).join('\n')}`
+}
+
+// ── Workstream #2 tool-call edit surface ─────────────────────────────────────
+// The Python side sends Anthropic tool_use blocks; this table resolves each
+// back into a typed GraphMutation the TS dispatcher can apply. Keeping the
+// (tool_name → mutation.kind) mapping in one place avoids drift between the
+// JSON schema declared in claude_client.py and the TS mutator names.
+
+interface ClaudeToolCall { id: string; name: string; input: Record<string, unknown> }
+
+interface ToolResultBlock {
+  tool_use_id: string
+  ok: boolean
+  summary?: string
+  warnings?: string[]
+  code?: string
+  message?: string
+  suggested_repair?: string
+}
+
+interface EditTurnResponse {
+  stop_reason: string
+  text: string
+  tool_calls: ClaudeToolCall[]
+  done: boolean
+}
+
+function toolCallToMutation(call: ClaudeToolCall): GraphMutation | { error: string } {
+  const input = call.input || {}
+  const s = (k: string) => typeof input[k] === 'string' ? input[k] as string : undefined
+  const n = (k: string) => typeof input[k] === 'number' ? input[k] as number : undefined
+  const b = (k: string) => typeof input[k] === 'boolean' ? input[k] as boolean : undefined
+  const a = (k: string): number[] | undefined => {
+    const v = input[k]
+    return Array.isArray(v) && v.every(x => typeof x === 'number') ? v as number[] : undefined
+  }
+  switch (call.name) {
+    case 'add_link': {
+      const link_name = s('link_name'), parent_link = s('parent_link'),
+            preset_id = s('preset_id'), attach_face = s('attach_face')
+      if (!link_name || !parent_link || !preset_id || !attach_face) {
+        return { error: 'add_link missing required field(s): link_name, parent_link, preset_id, attach_face' }
+      }
+      return { kind: 'add_link', args: {
+        link_name, parent_link, component_id: preset_id, attach_face,
+        joint_type: s('joint_type'), joint_axis: s('joint_axis'),
+        length_mm: n('length_mm'), orientation: s('orientation'),
+        elevation_angle: n('elevation_angle'), attach_rpy: a('attach_rpy'),
+        attach_connector: s('attach_connector'),
+        mate_connector: s('mate_connector'),
+        mate_type: s('mate_type'),
+      } }
+    }
+    case 'attach_sensor': {
+      const link_name = s('link_name'), parent_link = s('parent_link'),
+            preset_id = s('preset_id'), mount_face = s('mount_face')
+      if (!link_name || !parent_link || !preset_id || !mount_face) {
+        return { error: 'attach_sensor missing required field(s): link_name, parent_link, preset_id, mount_face' }
+      }
+      return { kind: 'attach_sensor', args: {
+        link_name, parent_link, component_id: preset_id, mount_face,
+        elevation_angle: n('elevation_angle'),
+      } }
+    }
+    case 'replace_component': {
+      const link_name = s('link_name'), new_preset_id = s('new_preset_id')
+      if (!link_name || !new_preset_id) {
+        return { error: 'replace_component missing required field(s): link_name, new_preset_id' }
+      }
+      // Tool schema uses new_preset_id (user-facing); TS dispatcher uses
+      // new_component_id (internal naming consistent with component_id).
+      return { kind: 'replace_component', args: { link_name, new_component_id: new_preset_id } }
+    }
+    case 'set_joint': {
+      const link_name = s('link_name'), joint_type = s('joint_type')
+      if (!link_name || !joint_type) {
+        return { error: 'set_joint missing required field(s): link_name, joint_type' }
+      }
+      return { kind: 'set_joint', args: {
+        link_name, joint_type, joint_axis: s('joint_axis'), attach_rpy: a('attach_rpy'),
+      } }
+    }
+    case 'remove_link': {
+      const link_name = s('link_name')
+      if (!link_name) return { error: 'remove_link missing required field: link_name' }
+      return { kind: 'remove_link', args: { link_name, reparent_children: b('reparent_children') } }
+    }
+    default:
+      return { error: `unknown tool: ${call.name}` }
+  }
+}
+
+function mutationResultToToolResult(
+  toolUseId: string,
+  result: MutationResult,
+): ToolResultBlock {
+  if (result.ok) {
+    return {
+      tool_use_id: toolUseId,
+      ok: true,
+      summary: result.summary,
+      warnings: result.warnings,
+    }
+  }
+  return {
+    tool_use_id: toolUseId,
+    ok: false,
+    code: result.code,
+    message: result.message,
+    suggested_repair: result.suggested_repair,
+  }
 }
 
 function computeSimpleDiff(oldText: string, newText: string): { added: string[]; removed: string[] } {
@@ -563,6 +676,130 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
   // ── AI send ───────────────────────────────────────────────────────────────
 
+  /** Run the Workstream #2 tool-call edit loop. Returns true if the loop
+   *  handled the turn (UI update owned by the loop); false if it stopped
+   *  with no mutations so the caller should fall through to `ai_edit`. */
+  async function runToolCallEditLoop(args: {
+    prompt: string
+    initialGraph: AssemblyGraph
+    kinematicContext: string
+    images: ImageAttachment[]
+    sessionId: string
+    fullUrdf: string
+    thinking: HTMLElement & { updateStage: (stage: string, text: string) => void }
+    urdfAssemblyApi: UrdfAssemblyApi
+  }): Promise<boolean> {
+    const { prompt, initialGraph, kinematicContext, images, sessionId, fullUrdf, thinking, urdfAssemblyApi } = args
+
+    // Working copy — each successful tool dispatch replaces this; a failed
+    // call feeds the error back without touching the working graph. Final
+    // commit via resolveAssemblyGraph happens only after the loop ends.
+    let workingGraph: AssemblyGraph = cloneAssemblyGraph(initialGraph)
+    const mutationSummaries: string[] = []
+    let explanationText = ''
+    let turnCount = 0
+    // Independent cap on the frontend side — the Python side has its own cap;
+    // this is a belt-and-braces guard against a server bug looping forever.
+    const MAX_TURNS = 12
+
+    // ── Turn 1: send prompt + graph ───────────────────────────────────────
+    args.thinking.updateStage('generating', 'Planning edits...')
+    let turn: EditTurnResponse
+    try {
+      turn = await invoke('ai_edit_turn', {
+        sessionId,
+        prompt,
+        assemblyGraph: workingGraph,
+        kinematicContext,
+        images: images.map(({ media_type, data }) => ({ media_type, data })),
+      }) as EditTurnResponse
+    } catch (err) {
+      console.warn('[AI][tool-loop] First turn failed, falling back to ai_edit:', err)
+      return false
+    }
+
+    // ── Loop: dispatch → feed tool_results back → next turn ────────────────
+    while (!turn.done && turnCount < MAX_TURNS) {
+      turnCount++
+      if (turn.text) {
+        // Claude sometimes narrates before a tool call ("I'll add a camera
+        // to the extrusion. Let me call add_link..."). Stash the latest,
+        // we'll show the final text block after the loop.
+        explanationText = turn.text
+      }
+      if (turn.tool_calls.length === 0) break
+
+      const toolResults: ToolResultBlock[] = []
+      for (const call of turn.tool_calls) {
+        const mapped = toolCallToMutation(call)
+        if ('error' in mapped) {
+          toolResults.push({
+            tool_use_id: call.id, ok: false, code: 'BAD_TOOL_INPUT', message: mapped.error,
+          })
+          continue
+        }
+        const result = urdfAssemblyApi.applyGraphMutation(workingGraph, mapped)
+        if (result.ok) {
+          workingGraph = result.graph
+          mutationSummaries.push(result.summary)
+          console.log(`[AI][tool-loop] ${call.name} OK: ${result.summary}`)
+        } else {
+          console.log(`[AI][tool-loop] ${call.name} REJECTED [${result.code}]: ${result.message}`)
+        }
+        toolResults.push(mutationResultToToolResult(call.id, result))
+      }
+
+      thinking.updateStage('generating', `Tool round ${turnCount + 1}...`)
+      try {
+        turn = await invoke('ai_edit_turn', {
+          sessionId,
+          toolResults,
+        }) as EditTurnResponse
+      } catch (err) {
+        console.warn('[AI][tool-loop] Continuation failed:', err)
+        break
+      }
+    }
+
+    if (turn.text) explanationText = turn.text
+
+    thinking.remove()
+
+    if (mutationSummaries.length === 0) {
+      // Claude ended without applying any mutations (e.g., answered as plain text
+      // or asked a clarifying question). Return false so the caller falls through
+      // to the legacy ai_edit path; if Claude truly wanted to answer in text,
+      // it'll show up there.
+      console.log('[AI][tool-loop] Claude stopped without mutations — falling back to ai_edit')
+      return false
+    }
+
+    // Commit the final graph via the normal placement pipeline, which also
+    // runs the full TS validator as a sanity gate (auto-repairs + warnings).
+    const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(workingGraph)
+    if (!assemblyOut.urdf) {
+      const errText = assemblyOut.topologyErrors?.join(', ') || 'unknown placement error'
+      addVCMessage('assistant',
+        `<span style="color:#f85149;">Edit applied ${mutationSummaries.length} mutation(s) but final placement failed: ${escapeHtml(errText)}</span>`)
+      return true
+    }
+    await new Promise(r => setTimeout(r, 300))
+    deps.groundRobot()
+    deps.autoFrameRobot()
+
+    const diff = computeSimpleDiff(fullUrdf, assemblyOut.urdf)
+    const mutationBlock = mutationSummaries.length > 0
+      ? `<div style="font-size:11px;color:#888;margin-bottom:4px;">${mutationSummaries.length} tool call(s): ${escapeHtml(mutationSummaries.join(' · '))}</div>`
+      : ''
+    const warnBlock = formatWarningsHtml(assemblyOut.topologyWarnings)
+    const explainHtml = explanationText ? escapeHtml(explanationText) : 'Edit applied.'
+    addVCMessage('assistant', `${mutationBlock}${explainHtml}${warnBlock}`, {
+      diff, newUrdf: assemblyOut.urdf,
+    })
+    deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+    return true
+  }
+
   async function sendVCMessage(prompt: string, retryCount = 0, imagesOverride?: ImageAttachment[]) {
     if (!prompt.trim()) return
 
@@ -666,26 +903,82 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
       const augmentedContext = isRedesign ? '' : (kinematicContext + portOccupancyCtx + graphSummaryCtx)
 
+      // Workstream #1 (AssemblyGraph Preservation): pass the canonical graph as a
+      // first-class field so the backend can hand Claude the lossless source of
+      // truth on edit-retry, not a reconstructed URDF. URDF is a renderer/export
+      // serialization — feeding it to Claude wastes tokens and reintroduces the
+      // urdfToAssemblyGraph round-trip losses this workstream exists to solve.
+      //
+      // Non-redesign: send the stored graph when the editor's URDF still matches
+      // it (same guard as the text summary — prevents ghosting a stale design).
+      // Redesign: send the latest resolved graph — that's the canonical form of
+      // the attempt Gemini just rejected, and the thing Claude needs to reason
+      // "what did I try, what to change" against. (On first-ever turn with no
+      // stored graph, the backend falls back to URDF — see claude_client.py.)
+      const canonicalGraphForAi: AssemblyGraph | null = isRedesign
+        ? (deps.getUrdfAssemblyApi()?.getLastAssemblyGraph() ?? null)
+        : (storedGraphForContext && storedMatchesEditor ? storedGraphForContext : null)
+
+      const urdfAssemblyApiEarly = deps.getUrdfAssemblyApi()
+
+      // ── Workstream #2: Tool-Call Edit Surface ────────────────────────────
+      // When we have a real in-hand graph (not a redesign, graph actually
+      // matches editor, with ≥1 attached child — i.e. something beyond a
+      // lone baseplate root), route through the tool-use loop. Each tool
+      // call gets per-call validation and can self-correct in the same turn
+      // instead of regenerating the whole graph. Design generation (no
+      // graph yet, or only a root) + redesigns stay on the old path.
+      const hasAttachedChild = (g: AssemblyGraph | null): boolean =>
+        !!g && g.components.some(c => c.attach_to !== null)
+      const canRunToolLoop =
+        !isRedesign &&
+        urdfAssemblyApiEarly !== null &&
+        hasAttachedChild(canonicalGraphForAi)
+
+      if (canRunToolLoop && urdfAssemblyApiEarly) {
+        const handled = await runToolCallEditLoop({
+          prompt,
+          initialGraph: canonicalGraphForAi!,
+          kinematicContext: augmentedContext,
+          images: imagesForThisSend,
+          sessionId: deps.getCurrentChatId(),
+          fullUrdf,
+          thinking,
+          urdfAssemblyApi: urdfAssemblyApiEarly,
+        })
+        if (handled) {
+          // Loop owned the UI update (diff + assistant message). Nothing else
+          // to do for this send; exit cleanly.
+          return
+        }
+        // Loop declined (e.g. Claude stopped with no mutations) — fall through
+        // to the existing `ai_edit` single-shot path for backwards compat.
+      }
+
       const result = await invoke('ai_edit', {
         prompt,
         urdfContent: currentUrdf,
         kinematicContext: augmentedContext,
         sessionId: deps.getCurrentChatId(),
         images: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
+        assemblyGraph: canonicalGraphForAi ?? undefined,
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       thinking.remove()
 
-      const urdfAssemblyApi = deps.getUrdfAssemblyApi()
+      const urdfAssemblyApi = urdfAssemblyApiEarly
 
       // ── modify_topology path: parse current URDF → apply ops → re-resolve ──
       if (result.topology_ops && result.topology_ops.length > 0 && urdfAssemblyApi) {
         console.log(`[AI] Received ${result.topology_ops.length} topology operations — applying to current assembly`)
-        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback)
+        // Prefer stored graph (exact, no round-trip loss) over reverse-parsing (lossy fallback).
+        // This is the detect-and-log half of WS1's divergence guard: when we're forced to
+        // reverse-parse (no canonical stashed), warn which fields are known to drop so the
+        // symptom is obvious if a later turn shows lost orientation / elevation_angle etc.
         const storedGraph = urdfAssemblyApi.getLastAssemblyGraph()
         const currentGraph = storedGraph || urdfAssemblyApi.urdfToAssemblyGraph(fullUrdf)
         if (currentGraph && !storedGraph) {
-          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available')
+          console.warn('[AI] Using lossy reverse-parsed graph — stored graph not available. URDF round-trip drops: orientation, elevation_angle, length_mm, attach_rpy; forces ground_offset=true.')
         }
         if (!currentGraph) {
           addVCMessage('assistant', `<span style="color:#f85149;">Could not parse current URDF for topology editing. Try "start over" to redesign from scratch.</span>`)
@@ -715,7 +1008,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.log('[AI] Received assembly_graph — resolving via frontend snap system')
         const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(result.assembly_graph as import('./urdfAssembly').AssemblyGraph)
         let assemblyResult = assemblyOut.urdf
-        console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}`)
+        const engineSummary = assemblyOut.engineSummary
+        console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}, engineSummary=${engineSummary ? `${engineSummary.placements.length} placements / ${engineSummary.icpGaps.length} ICP gaps` : 'null'}`)
 
         if (assemblyResult) {
           try {
@@ -841,6 +1135,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               sessionId: deps.getCurrentChatId(),
               screenshotBase64: screenshots[0],
               screenshots,
+              referenceImages: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
+              // Engine-computed placement + ICP ground truth (Layer 1 of
+              // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). Lets Gemini refute
+              // "camera floating 45mm" / "shin detached" misreads using the
+              // actual xyz/rpy written to URDF plus per-joint ICP gaps.
+              engineSummary,
             }) as { ok: boolean; notes: string; corrected_urdf?: string; edit_count?: number }
 
             console.log(`[AI][redesign] Validation result: ok=${valResult.ok}, needs_redesign=${(valResult as any).needs_redesign}, retryCount=${retryCount}`)
@@ -848,7 +1148,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
             if (!valResult.ok) {
               console.log(`[AI][redesign] Validation FAILED: ${valResult.notes}`)
-              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string }[] | undefined
+              const checklist = (valResult as any).checklist as { check: string; pass: boolean; detail: string; fixable_by?: string; classifier_drop?: boolean; classifier_reason?: string }[] | undefined
               const needsRedesign = (valResult as any).needs_redesign
               const allFailures = checklist ? checklist.filter(c => !c.pass) : []
               const topoFailures = allFailures.filter(c => c.fixable_by === 'topology')
@@ -863,34 +1163,28 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               // needs_redesign:false when only placement failures remain; this
               // heuristic now aligns with that judgment instead of overriding it.
               //
-              // Additional guard: when the topology failures are purely aesthetic
-              // dimension critiques on structural components (e.g. "baseplate
-              // should be 60-100mm thick" — no preset offers that), the redesign
-              // can't satisfy them. Claude tends to respond by stacking parts
-              // (extrusions as standoffs etc.) which Gemini then flags as ALSO
-              // wrong, so the second pass produces a visually worse result than
-              // the first. Detect and skip those cases.
-              const isAestheticDimensionCritique = (f: { check: string; detail: string }) => {
-                const detail = (f.detail || '').toLowerCase()
-                const aestheticChecks = new Set(['proportions', 'shape_match'])
-                if (!aestheticChecks.has(f.check)) return false
-                // Mentions visual style / dimension / anatomical-style language without
-                // naming a missing/wrong component or connection. Conservative — only
-                // matches "boxy chassis", "should be ~Nmm thick", "aesthetic", and a
-                // class of mammal-like/leg-mirror critiques that Gemini emits against
-                // Spot-style quadrupeds. Spot's actual design uses same-sign rpy on
-                // all 4 legs (per system prompt); a "legs should be mirrored" critique
-                // is anatomically mammal-correct but breaks the Spot look the user asked
-                // for, AND Claude's best attempt at it produces a horse-pose regression
-                // (front thighs angle backward, shins forward) — so treat it as aesthetic.
-                const aestheticHints = /\b(boxy|aesthetic|chassis|integrated body|thick(ness)?|thin(ness)?|too (thin|narrow|wide|short|tall|long)|ratio|proportion(s|al)?|mammal(-|\s)?like|spot(-|\s)?style|dachshund)\b|\bknees?\s+(?:point|bend|face|angle)\w*|mirror(?:ed)?\s+\w*\s*(?:pitch|leg|knee|hip|limb|orient|front|rear)|(?:leg|knee|hip|limb)s?\s+\w*\s*mirror(?:ed)?/
-                const actionableHints = /\b(missing|absent|forgot|no\s+(?:gripper|sensor|servo|wheel|battery|leg|head|arm|hip|knee|foot|imu|camera|extrusion|bracket)|should\s+(?:be\s+)?(?:attach|connect|added)|wrong\s+(?:component|connection|attach))/
-                return aestheticHints.test(detail) && !actionableHints.test(detail)
-              }
-              const actionableTopoFailures = topoFailures.filter(f => !isAestheticDimensionCritique(f))
-              const aestheticTopoFailures = topoFailures.filter(isAestheticDimensionCritique)
+              // Additional guard: the server-side critique classifier
+              // (core/ai/critique_classifier.py) tags infeasible critiques —
+              // e.g. "add a rocker-bogie", "widen feet to 100mm", "baseplate
+              // should be 60-100mm thick" — with classifier_drop=true. Those
+              // are partitioned off the redesign list; Claude can't satisfy
+              // asks outside the catalog and previous attempts produced
+              // visibly worse second passes.
+              const actionableTopoFailures = topoFailures.filter(f => !f.classifier_drop)
+              const aestheticTopoFailures = topoFailures.filter(f => f.classifier_drop)
               const allTopoFailuresAreAesthetic = topoFailures.length > 0 && actionableTopoFailures.length === 0
-              const shouldRedesign = actionableTopoFailures.length > 0
+              // Redesign fires when either (a) there's an actionable topology
+              // failure, OR (b) there are placement failures we haven't
+              // attempted to fix yet. Placement failures often ARE resolvable
+              // by a different component choice / attach_face / orientation
+              // (e.g. swap the 137mm battery for a shorter preset when it
+              // overhangs the baseplate, add a bracket instead of floating a
+              // camera). Without branch (b), the "all topo aesthetic +
+              // placement failures" case silently leaves a broken build on
+              // screen with no redesign attempt. The retryCount<1 cap still
+              // limits the loop to one extra pass.
+              const placementOnlyRedesign = actionableTopoFailures.length === 0 && placementFailures.length > 0 && retryCount < 1
+              const shouldRedesign = actionableTopoFailures.length > 0 || placementOnlyRedesign
 
               if (shouldRedesign && retryCount < 1) {
                 // Only include actionable topology failures in the "fix these" list.
@@ -906,12 +1200,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                   .map(c => `- [${c.fixable_by || '?'}] ${c.check}: ${c.detail}`)
                   .join('\n')
                 const aestheticLines = aestheticTopoFailures
-                  .map(c => `- [ignored — no preset fits] ${c.check}: ${c.detail}`)
+                  .map(c => `- [ignored — ${c.classifier_reason || 'no preset fits'}] ${c.check}: ${c.detail}`)
                   .join('\n')
                 const failuresBlock = [actionableLines, placementLines].filter(Boolean).join('\n')
                 const reason = needsRedesign
                   ? 'Visual validation found topology issues. Redesigning...'
-                  : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
+                  : placementOnlyRedesign
+                    ? `Visual validation flagged ${placementFailures.length} placement issue(s) — redesigning with different component choices.`
+                    : `Visual validation flagged ${actionableTopoFailures.length} actionable topology issue(s) — redesigning.`
                 addVCMessage('system', `<span style="color:#e5c07b;">${reason}</span>`)
                 const notesLine = valResult.notes ? `\n\nValidator notes: ${valResult.notes}` : ''
                 const placementGuidance = placementFailures.length > 0
@@ -927,7 +1223,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 // careful: this is still a full design_robot call (not an
                 // incremental edit), so we say "produce a NEW full topology"
                 // but encourage reusing whatever the validator did not flag.
-                const previousGraph = result.assembly_graph as AssemblyGraph | undefined
+                //
+                // Prefer the resolved canonical graph (via getLastAssemblyGraph)
+                // over Claude's raw return — the resolved one has link-name
+                // remap + any auto-repairs applied, so it matches the URDF
+                // Gemini actually critiqued. This is also what the next
+                // sendVCMessage call picks up as the `assemblyGraph` IPC param.
+                const resolvedPrevious = urdfAssemblyApi?.getLastAssemblyGraph() ?? null
+                const previousGraph = resolvedPrevious ?? (result.assembly_graph as AssemblyGraph | undefined)
                 const previousTopologyBlock = previousGraph
                   ? `\n\nPrevious attempt (the one that failed validation):\n${summarizeAssemblyGraphForAI(previousGraph)}`
                   : ''
@@ -937,13 +1240,25 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 unlisten?.()
                 return sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
               }
-              if (placementFailures.length > 0 && topoFailures.length === 0) {
-                console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable, which Claude's topology can't address. Returning current build as final.`)
-              }
-              if (allTopoFailuresAreAesthetic) {
-                const lines = topoFailures.map(c => `  • ${c.check}: ${c.detail}`).join('\n')
-                console.log(`[AI][redesign] Skipping redesign — all topology failures are aesthetic dimension critiques no preset can satisfy:\n${lines}`)
-                addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged aesthetic concerns the available presets can't satisfy (e.g. "needs boxier chassis"). Keeping current build — request a different style or part if you want to iterate.</span>`)
+              // Skip-paths: we only reach here when shouldRedesign was false
+              // OR retryCount already hit the cap. Log + surface remaining
+              // failures so the user isn't left staring at a broken build
+              // with no feedback.
+              if (!shouldRedesign || retryCount >= 1) {
+                if (placementFailures.length > 0 && topoFailures.length === 0) {
+                  console.log(`[AI][redesign] Skipping redesign — all ${placementFailures.length} failure(s) are placement-fixable and retry cap reached.`)
+                }
+                if (allTopoFailuresAreAesthetic) {
+                  const lines = topoFailures.map(c => `  • [${c.classifier_reason || 'infeasible'}] ${c.check}: ${c.detail}`).join('\n')
+                  console.log(`[AI][redesign] Skipping redesign — all topology failures dropped by critique classifier:\n${lines}`)
+                  // Include placement failures in the user-facing note when
+                  // present — previously the aesthetic-skip branch swallowed
+                  // them, leaving the user with no actionable feedback.
+                  const placementNote = placementFailures.length > 0
+                    ? ` Placement issues remain: ${placementFailures.map(p => p.detail).join('; ')}.`
+                    : ''
+                  addVCMessage('system', `<span style="color:#858585;font-size:11px">Validator flagged critiques the available presets can't satisfy (e.g. "add a rocker-bogie", "100mm feet"). Keeping current build — request a different style or part if you want to iterate.${placementNote}</span>`)
+                }
               }
             }
           } catch (valErr) {

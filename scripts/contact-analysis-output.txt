@@ -1,0 +1,91 @@
+Phase 3 — component contact analysis
+Generated: 2026-04-22 by scripts/analyze-contact.mjs.
+
+IMPORTANT CAVEAT
+================
+This script samples VERTICES inside a tangent-plane disc around each
+connector, not raycast surface hits. That's fine for understanding the
+vertex distribution but misleading for "what a ray from outside hits."
+The actuator_servo_high_torque GLB is one continuous primitive, so
+vertices are scattered through the full body volume; the histogram
+shows a wide `min..max` band not a tight "chamfer depth" signal.
+
+Use this output to understand the MESH SHAPE and confirm the key facts
+below. Use [icp][trace] logs at runtime for the real nudge numbers.
+
+KEY FACTS (confirmed from the script + Phase 1 log trace)
+=========================================================
+
+1. actuator_servo_high_torque.glb is a SINGLE primitive (10,542 verts,
+   raw AABB [33.50, 58.50, 54.30] mm). Pre-axis-scale 1.388 × 0.615 × 0.534
+   (anisotropic — Z shrinks 46% to fit preset bbox_z 34 mm minus the
+   5 mm procedural shaft overlay). The "chamfer" on the rendered servo
+   top is whatever that single primitive's mesh has at its top edges,
+   AFTER non-uniform scaling destroys the raw chamfer proportions.
+
+2. actuator_servo_heavy_duty shares the same GLB at a LARGER bbox
+   (54 × 42 × 54) — scale factors 1.612 × 0.718 × 0.902.
+
+3. structural_servo_coupler_disc.glb has rotation override [π/2, 0, 0]
+   and 13,768 vertices. Raw AABB is [31.96, 8.00, 31.98] (Y is the 8mm
+   thickness in source space), preset bbox [32, 32, 8] Z-thick after
+   rotation. Post-scale: essentially identity (1.001, 1.001, 1.000).
+   The coupler has a clear through-hole (8mm diameter shaft_hole
+   connector, axis −Z).
+
+4. actuator_servo_standard.glb has 16 primitives with a 12.18 mm shaft
+   extending above the body. preset bbox [40, 20, 37] but bodyTopZ 6.32
+   mm (body maxZ after scaling) vs bboxTopZ 18.5 (full extent).
+
+5. Step 1 authored engagement_depth_mm=1.5 on actuator_servo_high_torque
+   connector "top" (z=12, +Z axis). This is the SERVO BODY TOP, not the
+   shaft tip. The semantic intent: when the servo mates body-top-down
+   against a coupler, sink 1.5mm into the coupler so the chamfered
+   body edge hides behind the coupler bore.
+
+6. KNOWN BUG in Step 1: resolveMate() at mateConnectors.ts:227 reads
+   ONLY the parent connector's engagement_depth_mm. When servo mates
+   as the CHILD (coupler.bottom is parent, servo.top is child), the
+   authored 1.5 mm on servo.top is silently dropped. This is the
+   root cause the user sees in the quadruped — every hip/knee joint
+   places servo as child on coupler.bottom (zero engagement).
+
+7. Phase 1 log trace: every `[icp-nudge]` line in the user's smoke
+   test was `skipped — parent … not in scene yet`. The in-loop hook
+   reads from `ctx.getParsedRobot().linkGroups` but bulk assembly
+   commits URDF text to a buffer and reparses ONCE at the end. During
+   the loop the scene holds only `structural_baseplate_large_1`
+   (reset-stub). Every deeper parent lookup returns undefined → skip.
+
+CONCLUSION
+==========
+
+Step 2's no-op is caused by TWO independent bugs:
+
+A. The runtime nudge ran inside the bulk-assembly loop against a scene
+   that hadn't been reparsed. It skipped every mate.
+
+B. Even if it had fired, the in-loop hook used the CACHED RAW GLB
+   (servo_high_torque.glb) for the child, per-axis-scaled it to the
+   preset bbox, and sampled it. That sampling produces a noisy "axial
+   distribution" because the single GLB primitive has geometry all
+   through its volume; the 90th-percentile pick would not land reliably
+   on a "chamfer depth" scalar.
+
+Phase 4 fix: move the nudge to a SCENE-LEVEL post-reconcile pass so
+it runs against the LIVE rendered mesh (parent and child already
+loaded + per-axis-scaled + shaft-overlay applied), with pivot-subtree
+exclusion. Use raycasting against actual surfaces. Switch the metric
+to "signed distance from child surface samples to parent surface,
+measured along parent's connector axis" — matching the production
+pattern from three research agents (Drake SignedDistancePair, Agent C
+recommendation).
+
+FOLLOW-UP NOTE (out of Step 2 scope)
+====================================
+
+The Step 1 child-side engagement_depth_mm bug (item 6 above) is not
+fixed by ICP alone. Even with the ICP pass working, a well-authored
+1.5 mm engagement on a CHILD connector still won't fire. That's a
+Step 1 scope item — separate commit, separate workstream. ICP is
+still the right fallback for IMPORTED (un-authored) components.
