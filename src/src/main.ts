@@ -1219,6 +1219,24 @@ const collisionEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444, transpar
 
 let showCollision = false
 
+function componentIdFromLinkName(linkName: string): string {
+  const match = linkName.match(/^(.+)_(\d+)$/)
+  return match ? match[1] : linkName
+}
+
+function isWheelCollisionLink(linkName: string): boolean {
+  const componentId = componentIdFromLinkName(linkName).toLowerCase()
+  return (
+    (componentId.startsWith('mobility_') && componentId.includes('wheel')) ||
+    /(^|[_\-\s])(wheel|tire)([_\-\s]|$)/.test(componentId)
+  )
+}
+
+function collisionCylinderRadius(collisionEl: Element): number {
+  const radius = parseFloat(collisionEl.querySelector('geometry > cylinder')?.getAttribute('radius') || '0')
+  return Number.isFinite(radius) ? radius : 0
+}
+
 function rebuildCollisionVisuals(urdfText: string) {
   // Strip any existing collision meshes from all link groups.
   // Collect first, THEN remove — removing during traverse() corrupts the scene graph
@@ -1242,7 +1260,16 @@ function rebuildCollisionVisuals(urdfText: string) {
     const linkGroup = parsedRobot.linkGroups.get(linkName)
     if (!linkGroup) continue
 
-    for (const collisionEl of Array.from(linkEl.querySelectorAll('collision'))) {
+    let collisionEls = Array.from(linkEl.querySelectorAll('collision'))
+    const wheelCollision = isWheelCollisionLink(linkName)
+    if (wheelCollision) {
+      const tireCollision = collisionEls
+        .filter(el => el.querySelector('geometry > cylinder'))
+        .sort((a, b) => collisionCylinderRadius(b) - collisionCylinderRadius(a))[0]
+      if (tireCollision) collisionEls = [tireCollision]
+    }
+
+    for (const collisionEl of collisionEls) {
       const geomEl = collisionEl.querySelector('geometry')
       if (!geomEl) continue
 
@@ -1281,7 +1308,10 @@ function rebuildCollisionVisuals(urdfText: string) {
         const wrapper = new THREE.Group()
         wrapper.userData.isCollision = true
         wrapper.visible = showCollision
-        wrapper.quaternion.copy(rpyToQuat(rpy))
+        // Match the MuJoCo conversion path for wheel links: the link/joint pose
+        // already orients the tire, so applying the collision cylinder's own rpy
+        // here makes the debug overlay show a misleading flat puck.
+        wrapper.quaternion.copy(wheelCollision && cylEl ? new THREE.Quaternion() : rpyToQuat(rpy))
         wrapper.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
         mesh.position.set(0, 0, 0)
         wrapper.add(mesh)

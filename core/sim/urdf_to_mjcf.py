@@ -17,6 +17,42 @@ except Exception:  # pragma: no cover - depends on import entrypoint
     except Exception:  # pragma: no cover
         _get_preset_component = None
 
+# Resolve package:// URIs emitted by the frontend URDF builder.
+# This file lives at <repo_root>/core/sim/urdf_to_mjcf.py, so the repo root
+# is two directories up.  The frontend maps package:// to src/public/.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PACKAGE_URL_PREFIX = "package://"
+_PACKAGE_MESH_ROOTS = [
+    os.path.join(_REPO_ROOT, "src", "public"),
+]
+
+
+def _resolve_mesh_filename(filename: str, urdf_dir: str) -> str:
+    """
+    Resolve a URDF mesh filename to an absolute filesystem path.
+
+    Handles three cases:
+      1. package://meshes/... — frontend-emitted URI, resolved under src/public/
+      2. Absolute path — returned as-is.
+      3. Relative path — resolved against the URDF file's directory.
+
+    Returns an empty string if the path resolves outside the expected mesh root
+    or if filename is empty.
+    """
+    if not filename:
+        return ""
+    if filename.startswith(_PACKAGE_URL_PREFIX):
+        rel = filename[len(_PACKAGE_URL_PREFIX):]
+        for root in _PACKAGE_MESH_ROOTS:
+            candidate = os.path.normpath(os.path.join(root, rel))
+            if candidate.startswith(os.path.normpath(root) + os.sep) or \
+               candidate == os.path.normpath(root):
+                return candidate
+        return ""
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(urdf_dir, filename)
+
 
 def _load_urdf_xml(urdf_path: str) -> etree._Element:
     """Load URDF XML file and return root element."""
@@ -92,9 +128,7 @@ def _extract_link_data(link_elem: etree._Element, urdf_dir: str) -> Dict[str, An
         geom_el = vis_elem.find("geometry/mesh")
         if geom_el is None:
             continue
-        fname = geom_el.get("filename", "")
-        if fname and not os.path.isabs(fname):
-            fname = os.path.join(urdf_dir, fname)
+        fname = _resolve_mesh_filename(geom_el.get("filename", ""), urdf_dir)
         if not (fname and os.path.exists(fname)):
             continue
         origin_xyz = [0.0, 0.0, 0.0]
@@ -191,10 +225,7 @@ def _extract_geometry(geom_elem: etree._Element, urdf_dir: str) -> Optional[Dict
     # Mesh
     mesh_elem = geom_elem.find("mesh")
     if mesh_elem is not None:
-        filename = mesh_elem.get("filename", "")
-        # Resolve relative paths
-        if filename and not os.path.isabs(filename):
-            filename = os.path.join(urdf_dir, filename)
+        filename = _resolve_mesh_filename(mesh_elem.get("filename", ""), urdf_dir)
         # Parse optional <mesh scale="sx sy sz"> — URDF default is 1 1 1.
         scale = [1.0, 1.0, 1.0]
         scale_str = mesh_elem.get("scale")
