@@ -618,7 +618,7 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 
 #sim-speed { font-size: 10px; color: var(--text-dimmer); min-width: 28px; text-align: center; }
 
-#sim-time { font-size: 10px; color: var(--text-dim); min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+#sim-time { font-size: 10px; color: var(--text-dim); min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; margin-left: auto; }
 
 /* ── Command bar ─────────────────────────────────────── */
 

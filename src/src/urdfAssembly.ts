@@ -4263,10 +4263,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       )
       const childUsesRollingBottomPose = childIsDrivetrain || childIsTire || preset.id.startsWith('mobility_swerve_')
       const isRollingHardware = childUsesRollingBottomPose || hasTireChild || isShaftBoreConnection
-      // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
-      // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
-      // auto-inserted shaft↔mount_face brackets and servo coupler discs, which represent the
-      // START of a leg chain (not a stance element); splaying them tilts the whole chain ~30°.
+      // Splay is the outward roll/pitch tilt on the bottom face for multi-child legs.
+      // Skip for wheels/drivetrain (usesRollingBottomPose) and passive stacks (brackets,
+      // coupler discs, sensors…) — not for revolute hip servos: they are revolute joints
+      // and still need splay so quadruped legs aim outward instead of bunching inward.
       const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
         || comp.component_id.startsWith('structural_joint_plate')
         || comp.component_id.startsWith('structural_sheet')
@@ -4274,7 +4274,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
-      const noSplay = isRollingHardware || jointType === 'revolute' || isPassiveHardware
+      const noSplay = isRollingHardware || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
       // Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance

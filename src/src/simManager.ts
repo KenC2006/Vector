@@ -61,7 +61,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simWallStart = 0                     // wall clock when sim started (ms)
   let simTimeAtStart = 0                   // simTime when sim started
   let simSpeedMult = 1.0                   // user-controlled speed multiplier
-  let simRtf = 0                           // measured real-time factor (last frame)
   let simErrorState = false
   let lastSimStagingPath: string | null = null
 
@@ -704,9 +703,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       const stepStart = performance.now()
       const rawState = await invoke('sim_step', { nSteps })
       const stepMs = performance.now() - stepStart
-      // RTF = simulated seconds / real seconds spent stepping
-      const simStepped = nSteps * simModelDt
-      simRtf = stepMs > 0 ? (simStepped / (stepMs / 1000)) : 0
       const state = normalizeMuJoCoState(rawState)
       if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
       updateSimStateDisplay(state)
@@ -791,8 +787,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.simPlay.classList.toggle('active', simRunning)
     deps.simPause.classList.toggle('active', !simRunning && simActive)
     deps.simTimeEl.textContent = simTime.toFixed(3) + 's'
-    const rtfEl = document.getElementById('sim-rtf-display')
-    if (rtfEl && simRunning) rtfEl.textContent = `RTF ${simRtf.toFixed(1)}×`
     const speedEl = document.getElementById('sim-speed-display')
     if (speedEl) speedEl.textContent = `${simSpeedMult.toFixed(1)}×`
   }
