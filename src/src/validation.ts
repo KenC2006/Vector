@@ -43,6 +43,7 @@ export function validateXMLStructure(content: string): ValResult[] {
   }
   const joints = xmlDoc.getElementsByTagName('joint')
   const jointNames = new Set<string>()
+  const childLinkNames = new Set<string>()
   for (let i = 0; i < joints.length; i++) {
     const joint = joints[i]
     const jointName = joint.getAttribute('name')
@@ -57,6 +58,21 @@ export function validateXMLStructure(content: string): ValResult[] {
     const childLink = child.getAttribute('link')
     if (!parentLink || !linkNames.has(parentLink)) errors.push({ name: `Invalid parent link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Parent link "${parentLink}" is not defined`, category: 'Structural' })
     if (!childLink || !linkNames.has(childLink)) errors.push({ name: `Invalid child link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Child link "${childLink}" is not defined`, category: 'Structural' })
+    if (childLink) childLinkNames.add(childLink)
+  }
+
+  const rootLinks = Array.from(linkNames)
+    .filter(name => !name.includes('__mount__'))
+    .filter(name => !childLinkNames.has(name))
+  if (rootLinks.length !== 1) {
+    errors.push({
+      name: rootLinks.length === 0 ? 'No root link' : 'Multiple root links',
+      severity: 'error',
+      message: rootLinks.length === 0
+        ? 'URDF must have exactly one root link for simulation'
+        : `Simulation supports one connected robot tree; found ${rootLinks.length} root links: ${rootLinks.slice(0, 8).join(', ')}${rootLinks.length > 8 ? ', ...' : ''}`,
+      category: 'Structural',
+    })
   }
   if (errors.length === 0) errors.push({ name: 'XML structure valid', severity: 'pass', message: `${links.length} links, ${joints.length} joints`, category: 'Structural' })
   return errors

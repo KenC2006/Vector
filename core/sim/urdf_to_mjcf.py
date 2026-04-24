@@ -930,14 +930,17 @@ def urdf_to_mjcf(
 
     # Find root link (link with no parent)
     child_links = {j["child"] for j in joints}
-    root_link = None
-    for link_name in links:
-        if link_name not in child_links:
-            root_link = link_name
-            break
-
-    if root_link is None and links:
-        root_link = list(links.keys())[0]
+    root_links = [link_name for link_name in links if link_name not in child_links]
+    if len(root_links) != 1:
+        if not root_links:
+            raise ValueError("URDF must have exactly one root link for simulation")
+        preview = ", ".join(root_links[:8])
+        suffix = ", ..." if len(root_links) > 8 else ""
+        raise ValueError(
+            f"Simulation supports one connected robot tree; found "
+            f"{len(root_links)} root links: {preview}{suffix}"
+        )
+    root_link = root_links[0]
 
     # Build MJCF
     mjcf_root = etree.Element("mujoco")
