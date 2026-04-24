@@ -667,7 +667,136 @@ def _create_body_element(
     return body
 
 
-def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
+def _terrain_float(config: Dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _terrain_int(config: Dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def normalize_terrain_config(terrain_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    config = terrain_config if isinstance(terrain_config, dict) else {}
+    terrain_type = str(config.get("type", "flat")).lower()
+    if terrain_type not in {"flat", "rough", "stairs"}:
+        terrain_type = "flat"
+    return {
+        "type": terrain_type,
+        "seed": _terrain_int(config, "seed", 1, 0, 2_147_483_647),
+        "height": _terrain_float(config, "height", 0.08, 0.0, 0.4),
+        "scale": _terrain_float(config, "scale", 1.0, 0.25, 3.0),
+        "roughness": _terrain_float(config, "roughness", 0.6, 0.0, 1.0),
+        "friction": _terrain_float(config, "friction", 3.0, 0.05, 5.0),
+    }
+
+
+def _set_terrain_friction(geom: etree._Element, friction: float) -> None:
+    geom.set("friction", f"{friction:.6g} {friction / 10.0:.6g} {friction / 100.0:.6g}")
+    geom.set("condim", "6")
+
+
+def _add_flat_floor(worldbody: etree._Element, friction: float, rgba: str = "0.5 0.5 0.5 1") -> etree._Element:
+    floor_geom = etree.SubElement(worldbody, "geom")
+    floor_geom.set("name", "floor")
+    floor_geom.set("type", "plane")
+    floor_geom.set("size", "0 0 0.05")
+    floor_geom.set("rgba", rgba)
+    _set_terrain_friction(floor_geom, friction)
+    return floor_geom
+
+
+def _add_rough_terrain(asset: etree._Element, worldbody: etree._Element, config: Dict[str, Any]) -> None:
+    n = 49
+    height = max(config["height"], 0.01)
+    scale = config["scale"]
+    roughness = config["roughness"]
+    rng = np.random.default_rng(config["seed"])
+    data = rng.normal(0.0, 1.0, (n, n))
+
+    # Smooth the raw noise so feet see rolling bumps rather than a sharp checkerboard.
+    smooth_passes = max(1, int(round(2 + scale * 3)))
+    for _ in range(smooth_passes):
+        data = (
+            data
+            + np.roll(data, 1, axis=0)
+            + np.roll(data, -1, axis=0)
+            + np.roll(data, 1, axis=1)
+            + np.roll(data, -1, axis=1)
+        ) / 5.0
+
+    data -= float(np.min(data))
+    span = float(np.max(data))
+    if span > 1e-9:
+        data /= span
+    data *= roughness
+
+    coords = np.linspace(-1.0, 1.0, n)
+    xx, yy = np.meshgrid(coords, coords, indexing="ij")
+    rr = np.sqrt(xx * xx + yy * yy)
+    # Keep the spawn pad flat and blend out gradually so the robot never starts
+    # intersecting random terrain.
+    blend = np.clip((rr - 0.16) / 0.18, 0.0, 1.0)
+    data *= blend
+
+    hfield = etree.SubElement(asset, "hfield")
+    hfield.set("name", "terrain_hfield")
+    hfield.set("nrow", str(n))
+    hfield.set("ncol", str(n))
+    hfield.set("size", f"{4.5 * scale:.6g} {4.5 * scale:.6g} {height:.6g} 0.02")
+    hfield.set("elevation", " ".join(f"{v:.5f}" for v in data.reshape(-1)))
+
+    geom = etree.SubElement(worldbody, "geom")
+    geom.set("name", "floor")
+    geom.set("type", "hfield")
+    geom.set("hfield", "terrain_hfield")
+    geom.set("rgba", "0.24 0.30 0.27 1")
+    _set_terrain_friction(geom, config["friction"])
+
+
+def _add_stair_terrain(worldbody: etree._Element, config: Dict[str, Any]) -> None:
+    friction = config["friction"]
+    height = max(config["height"], 0.02)
+    scale = config["scale"]
+    depth = 0.34 * scale
+    width = 2.4 * scale
+    start_x = 0.9
+    count = 7
+
+    _add_flat_floor(worldbody, friction, "0.38 0.38 0.36 1")
+    for i in range(count):
+        step_height = height * (i + 1)
+        step = etree.SubElement(worldbody, "geom")
+        step.set("name", f"terrain_step_{i + 1}")
+        step.set("type", "box")
+        step.set("pos", f"{start_x + depth * (i + 0.5):.6g} 0 {step_height / 2.0:.6g}")
+        step.set("size", f"{depth / 2.0:.6g} {width / 2.0:.6g} {step_height / 2.0:.6g}")
+        step.set("rgba", "0.36 0.35 0.32 1")
+        _set_terrain_friction(step, friction)
+
+
+def _add_terrain(asset: etree._Element, worldbody: etree._Element, terrain_config: Optional[Dict[str, Any]]) -> None:
+    config = normalize_terrain_config(terrain_config)
+    if config["type"] == "rough":
+        _add_rough_terrain(asset, worldbody, config)
+    elif config["type"] == "stairs":
+        _add_stair_terrain(worldbody, config)
+    else:
+        _add_flat_floor(worldbody, config["friction"])
+
+
+def urdf_to_mjcf(
+    urdf_path: str,
+    free_base: bool = False,
+    terrain_config: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Convert a URDF file to MJCF XML string.
 
@@ -675,6 +804,8 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
         urdf_path: Path to the URDF file.
         free_base: If True, add a <freejoint/> to the root body so it is
                    free-floating (useful for mobile robots and UAVs).
+        terrain_config: Optional terrain settings. Supported types are
+                        "flat", "rough", and "stairs".
 
     Returns:
         MJCF XML as a string.
@@ -814,10 +945,10 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     foot_cls = etree.SubElement(default_block, "default")
     foot_cls.set("class", "foot")
     foot_geom = etree.SubElement(foot_cls, "geom")
-    foot_geom.set("friction", "1.5 0.1 0.01")
+    foot_geom.set("friction", "3.0 0.3 0.03")
     foot_geom.set("condim", "6")
     foot_geom.set("solref", "0.005 1")
-    foot_geom.set("solimp", "0.9 0.95 0.001")
+    foot_geom.set("solimp", "0.95 0.99 0.001")
     # Wheel sub-class: high lateral friction, low torsional/rolling — prevents
     # lateral slip but allows rolling with minimal resistance.
     wheel_cls = etree.SubElement(default_block, "default")
@@ -851,16 +982,9 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
     # Build world body
     worldbody = etree.SubElement(mjcf_root, "worldbody")
 
-    # Default ground plane (can be toggled off later)
-    floor_geom = etree.SubElement(worldbody, "geom")
-    floor_geom.set("name", "floor")
-    floor_geom.set("type", "plane")
-    floor_geom.set("size", "0 0 0.05")
-    floor_geom.set("rgba", "0.5 0.5 0.5 1")
-    # Explicit floor friction: high lateral (1.5), moderate torsional/rolling
-    # condim=6 on floor so it can provide torsional reaction to foot condim=6
-    floor_geom.set("friction", "1.5 0.1 0.01")
-    floor_geom.set("condim", "6")
+    # Terrain lives in the world body so physics and contact reporting see the
+    # same landscape the UI asks for.  The default is the old flat floor.
+    _add_terrain(asset, worldbody, terrain_config)
 
     # Track mesh assets that need declarations in <asset>: name → (file, [sx, sy, sz])
     mesh_assets: Dict[str, Tuple[str, List[float]]] = {}

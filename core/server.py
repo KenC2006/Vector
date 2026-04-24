@@ -102,10 +102,15 @@ _SAFE_BUILTINS = {
         "print", "isinstance",
     )
 }
-_SCRIPT_GLOBALS: Dict[str, Any] = {
+_SCRIPT_BASE_GLOBALS: Dict[str, Any] = {
     "__builtins__": _SAFE_BUILTINS,
     "math": _math,
 }
+
+
+def _fresh_script_globals() -> Dict[str, Any]:
+    """Return a clean globals sandbox for one script install/validation run."""
+    return dict(_SCRIPT_BASE_GLOBALS)
 # Names a script may not use, even though they aren't reachable through
 # builtins — defense in depth against future _SAFE_BUILTINS additions.
 _SCRIPT_NAME_DENY = frozenset({
@@ -374,6 +379,101 @@ def _extract_sim_joint_context(urdf_content: str) -> tuple:
             "forward_alignment": round(float(forward_alignment), 6),
         })
 
+    # ── Leg kinematic analysis ──────────────────────────────────────────────
+    # Annotate non-wheel revolute joints that form leg groups with:
+    #   is_leg, leg_id (FR/FL/RR/RL/...), leg_depth (0=rootward, increasing outward),
+    #   leg_role ("swing", "bend", "swing_bend", or "aux"),
+    #   swing_sign (+1 = positive angle swings foot forward, assigned to joint with largest fwd Jacobian),
+    #   bend_sign  (+1 = positive angle bends knee into stance, foot moves -Z).
+    # Signs are computed via the Jacobian:  delta_tip = cross(axis_world, tip - center)
+
+    # Compute revolute depth for each joint (# revolute ancestors from root).
+    rev_depth_map: Dict[str, int] = {}
+    _rd_seen: set = set()
+
+    def _assign_rev_depths(link: str, rev_count: int) -> None:
+        if link in _rd_seen:
+            return
+        _rd_seen.add(link)
+        for cj in children_by_link.get(link, []):
+            if cj["type"] not in ("fixed", None):
+                rev_depth_map[cj["name"]] = rev_count
+                _assign_rev_depths(cj["child"], rev_count + 1)
+            else:
+                _assign_rev_depths(cj["child"], rev_count)
+
+    if primary_root:
+        _assign_rev_depths(primary_root, 0)
+
+    # Group non-wheel movable joints by body-relative position → leg_id.
+    leg_groups: Dict[str, list] = {}
+    for m in joint_metadata:
+        if m["is_wheel_drive"]:
+            continue
+        if m["side"] == "center" and m["end"] == "center":
+            continue  # body/neck/tail joints — skip
+        leg_key = f"{m['end'][0].upper()}{m['side'][0].upper()}"  # FR, FL, RR, RL, CR, CL …
+        leg_groups.setdefault(leg_key, []).append(m)
+
+    # Only treat groups as legs if ≥2 joints/group and ≥2 distinct groups.
+    valid_leg_groups = {k: v for k, v in leg_groups.items() if len(v) >= 2}
+    if len(valid_leg_groups) >= 2:
+        joint_info_by_name = {j["name"]: j for j in joints}
+        # Robots are always assembled facing +X (orange axis).
+        fwd_axis = 0
+
+        def _tip_pos(child_link: str) -> list:
+            """Walk to the leaf of a leg subtree, return its world position."""
+            lnk = child_link
+            _seen_t: set = set()
+            while True:
+                if lnk in _seen_t:
+                    break
+                _seen_t.add(lnk)
+                cjs = children_by_link.get(lnk, [])
+                if not cjs:
+                    break
+                lnk = cjs[0]["child"]
+            pos, _ = link_pose.get(lnk, ([0.0, 0.0, 0.0], ident))
+            return list(pos)
+
+        for leg_id, members in valid_leg_groups.items():
+            members.sort(key=lambda m: rev_depth_map.get(m["name"], 99))
+            min_depth = rev_depth_map.get(members[0]["name"], 0)
+
+            # First pass: annotate all members and compute Jacobian deltas.
+            deltas: list = []
+            for m in members:
+                m["is_leg"] = True
+                m["leg_id"] = leg_id
+                m["leg_depth"] = rev_depth_map.get(m["name"], 0) - min_depth
+                m["leg_role"] = "aux"
+                ji = joint_info_by_name.get(m["name"])
+                if ji is None:
+                    deltas.append(None)
+                    continue
+                tip = _tip_pos(ji["child"])
+                r = [tip[i] - m["center"][i] for i in range(3)]
+                deltas.append(_sim_cross(m["axis_world"], r))
+
+            # Second pass: assign swing_sign to the joint whose Jacobian has the
+            # largest forward component (fwd_axis), and bend_sign to the joint
+            # whose Jacobian has the largest downward component (-Z).
+            # This correctly handles 3-DOF legs where leg_depth=0 may be an
+            # abduction joint (side-to-side) rather than the forward-swing joint.
+            valid_idx = [i for i, d in enumerate(deltas) if d is not None]
+            if valid_idx:
+                swing_idx = max(valid_idx, key=lambda i: abs(deltas[i][fwd_axis]))
+                bend_idx  = max(valid_idx, key=lambda i: abs(deltas[i][2]))
+                d = deltas[swing_idx]
+                members[swing_idx]["swing_sign"] = 1 if d[fwd_axis] >= 0 else -1
+                members[swing_idx]["leg_role"] = "swing"
+                d = deltas[bend_idx]
+                members[bend_idx]["bend_sign"]   = 1 if d[2] < 0 else -1
+                members[bend_idx]["leg_role"] = (
+                    "swing_bend" if bend_idx == swing_idx else "bend"
+                )
+
     return joint_names, joint_limits, joint_metadata
 
 
@@ -386,6 +486,9 @@ class JSONRPCServer:
         # Script runner state (Phase C)
         self.sim_script_fn = None   # compiled step(t, state) callable or None
         self.sim_script_error: Optional[str] = None
+        # Per-server script globals sandbox; reset on clear/install to avoid stale
+        # constants/helpers leaking across script sessions.
+        self._script_globals: Dict[str, Any] = _fresh_script_globals()
         self.methods = {
             "parse_urdf": self.handle_parse_urdf,
             "ping": self.handle_ping,
@@ -396,8 +499,6 @@ class JSONRPCServer:
             "sim_get_state": self.handle_sim_get_state,
             "sim_render": self.handle_sim_render,
             "sim_set_gravity": self.handle_sim_set_gravity,
-            "sim_set_floor_friction": self.handle_sim_set_floor_friction,
-            "sim_scrub": self.handle_sim_scrub,
             "sim_set_script": self.handle_sim_set_script,
             "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
@@ -563,10 +664,14 @@ class JSONRPCServer:
             raise ValueError("Parameter 'path' must be a string")
 
         free_base = bool(params.get("free_base", False))
+        terrain_config = params.get("terrain_config", params.get("terrainConfig", None))
+        if terrain_config is not None and not isinstance(terrain_config, dict):
+            terrain_config = None
         seed = params.get("seed", None)
         # Clear any active script when loading a new model
         self.sim_script_fn = None
         self.sim_script_error = None
+        self._script_globals = _fresh_script_globals()
         try:
             if seed is not None:
                 try:
@@ -579,7 +684,11 @@ class JSONRPCServer:
                     _mj.mj_setSeed(int(seed))
                 except Exception:
                     pass
-            return self.simulator.load_urdf(path, free_base=free_base)
+            return self.simulator.load_urdf(
+                path,
+                free_base=free_base,
+                terrain_config=terrain_config,
+            )
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
         except Exception as e:
@@ -611,6 +720,15 @@ class JSONRPCServer:
                         self.simulator.set_control(controls)
                 except Exception as se:
                     script_error = str(se)
+                    self.sim_script_error = script_error
+                    # Fail-safe: clear controls immediately so stale commands do not
+                    # keep driving the robot after a script runtime error.
+                    try:
+                        self.simulator.set_control({})
+                    except Exception:
+                        pass
+                    # Disable script until explicitly re-applied/reset by user.
+                    self.sim_script_fn = None
 
             self.simulator.step(n_steps)
             state = self.simulator.get_state()
@@ -692,37 +810,6 @@ class JSONRPCServer:
         except Exception as e:
             raise ValueError(f"Failed to get state: {e}")
 
-    def handle_sim_set_floor_friction(self, params: Dict[str, Any]) -> None:
-        """
-        Update the floor geom's lateral friction coefficient.
-
-        Params:
-            friction (float): Lateral friction (0 = frictionless, 3 = very sticky).
-        """
-        self._require_simulator()
-        friction = params.get("friction", 1.5)
-        try:
-            self.simulator.set_floor_friction(float(friction))
-        except Exception as e:
-            raise ValueError(f"Failed to set floor friction: {e}")
-
-    def handle_sim_scrub(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Restore the simulation to a ring-buffer frame index and return state.
-
-        Params:
-            frame_idx (int): 0 = oldest frame, -1 or omitted = newest.
-
-        Returns:
-            Simulation state at that frame.
-        """
-        self._require_simulator()
-        frame_idx = int(params.get("frame_idx", -1))
-        try:
-            return self.simulator.scrub(frame_idx)
-        except Exception as e:
-            raise ValueError(f"Failed to scrub: {e}")
-
     def handle_sim_set_script(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Compile and install a Python step-callback script.
@@ -738,19 +825,23 @@ class JSONRPCServer:
         if not code:
             self.sim_script_fn = None
             self.sim_script_error = None
+            self._script_globals = _fresh_script_globals()
             return {"status": "cleared"}
         try:
             self._reject_unsafe_script(code)
-            exec(compile(code, "<sim_script>", "exec"), _SCRIPT_GLOBALS)
-            fn = _SCRIPT_GLOBALS.pop("step", None)
+            script_globals = _fresh_script_globals()
+            exec(compile(code, "<sim_script>", "exec"), script_globals)
+            fn = script_globals.pop("step", None)
             if fn is None or not callable(fn):
                 raise ValueError("Script must define a callable 'step(t, state)' function")
             self.sim_script_fn = fn
             self.sim_script_error = None
+            self._script_globals = script_globals
             return {"status": "ok"}
         except Exception as e:
             self.sim_script_fn = None
             self.sim_script_error = str(e)
+            self._script_globals = _fresh_script_globals()
             return {"status": "error", "message": str(e)}
 
     @staticmethod
@@ -1137,6 +1228,9 @@ class JSONRPCServer:
         prompt = params.get("prompt", "") or ""
         urdf_content = params.get("urdf_content", "")
         current_script = params.get("current_script", "") or ""
+        terrain_config = params.get("terrain_config", params.get("terrainConfig", None))
+        if terrain_config is not None and not isinstance(terrain_config, dict):
+            terrain_config = None
         if not isinstance(prompt, str):
             raise ValueError("Parameter 'prompt' must be a string")
         if not isinstance(urdf_content, str) or not urdf_content.strip():
@@ -1155,7 +1249,7 @@ class JSONRPCServer:
 
         try:
             code = _generate_sim_script(
-                prompt, joint_names, current_script, joint_limits, joint_metadata
+                prompt, joint_names, current_script, joint_limits, joint_metadata, terrain_config
             )
         except Exception as e:
             return {"status": "error", "message": f"AI call failed: {e}"}
@@ -1167,7 +1261,7 @@ class JSONRPCServer:
         try:
             self._reject_unsafe_script(code)
             compiled = compile(code, "<ai_sim_script>", "exec")
-            validation_globals = dict(_SCRIPT_GLOBALS)
+            validation_globals = _fresh_script_globals()
             exec(compiled, validation_globals)
             fn = validation_globals.get("step")
             if fn is None or not callable(fn):

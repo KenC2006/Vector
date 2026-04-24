@@ -3027,6 +3027,86 @@ Your output MUST be a single Python module defining exactly this function:
   Using full or near-full torque causes wheel slip → oscillating contact forces
   → the robot bounces and jumps. Start low; ramp up slowly if needed.
 
+## Locomotion reference
+
+Use LEG DRIVE INFO when it is present. swing_sign and bend_sign are computed
+from the URDF geometry — they tell you which direction is physically correct.
+Never guess joint polarity from names or numeric suffixes.
+Use the explicit leg role, not chain depth, to decide what each joint does:
+- role=leg_swing: forward/back stride joint; command with swing_sign.
+- role=leg_bend: stance/clearance joint; bend_sign moves the foot downward.
+- role=leg_swing_bend: rare combined joint; apply both effects conservatively.
+- role=leg_aux: auxiliary abduction/roll/yaw joint; hold at 0.0 by default.
+Chain depth is only root-to-tip order. It is not a reliable hip/knee label.
+
+### Archetype detection
+
+Classify the robot from the joint list before writing code:
+- LEG DRIVE INFO present, 4 leg groups (FR/FL/RR/RL) → QUADRUPED
+- LEG DRIVE INFO present, 2 leg groups → BIPED
+- LEG DRIVE INFO present, 6 leg groups → HEXAPOD
+- WHEEL DRIVE INFO present → WHEELED
+- joints contain shoulder/elbow/wrist with no leg groups → ARM
+- joints contain finger/palm/thumb only → GRIPPER
+
+### QUADRUPED — diagonal trot
+
+Diagonal pairs: Group A = FR + RL, Group B = FL + RR.
+Phase A = 0, Phase B = π. FREQ_HZ = 1.5, SETTLE_TIME = 0.8 s.
+
+  w = 2 * math.pi * FREQ_HZ
+  ramp = min(1.0, t / SETTLE_TIME)
+  sin_a = math.sin(w * t)
+  sin_b = math.sin(w * t + math.pi)
+
+For each role=leg_swing joint:
+  angle = swing_sign * ramp * HIP_AMP * sin_X       # HIP_AMP = 0.35 rad
+
+For each role=leg_bend joint:
+  angle = bend_sign * ramp * (KNEE_BIAS - KNEE_AMP * max(0.0, sin_X))
+    # KNEE_BIAS = 0.45 rad (stance extension), KNEE_AMP = 0.30 rad (swing foot clearance)
+    # max(0, sin) = rectified. Subtract the swing term because bend_sign points the foot downward.
+
+For each role=leg_aux joint:
+  angle = 0.0
+  # Do not oscillate abduction/roll/yaw joints for a straight default gait.
+
+The rectified knee is critical. Using raw sin for the knee produces a piston
+motion that fights the ground. Always use max(0, sin_X) for the tuck component.
+
+Hold all non-leg joints (neck, tail, spine) at 0.0. The default gait should
+move straight forward: do not intentionally turn, yaw, sidestep, or crab-walk.
+
+### BIPED — alternating step
+
+Two leg groups. Phase L = 0, Phase R = π (or vice versa).
+FREQ_HZ = 0.8, HIP_AMP = 0.25, KNEE_BIAS = 0.3, KNEE_AMP = 0.2, SETTLE_TIME = 1.0 s.
+Same role=leg_swing / role=leg_bend pattern as quadruped. Optionally add a
+small counter-rotation only to a clearly marked distal bend/ankle joint.
+
+### HEXAPOD — alternating tripod
+
+Two tripods: A = legs 0, 2, 4; B = legs 1, 3, 5 (by position order).
+Phase A = 0, Phase B = π. FREQ_HZ = 1.2, HIP_AMP = 0.3, KNEE_AMP = 0.25,
+KNEE_BIAS = 0.35, SETTLE_TIME = 0.6 s. Same role-based swing/bend pattern and
+same rectified-knee pattern.
+
+### WHEELED — differential drive
+
+Use WHEEL DRIVE INFO. forward = throttle * forward_sign per wheel.
+THROTTLE = 10–20 % of max_torque_Nm. Ramp throttle over SETTLE_TIME = 0.5 s.
+Never oscillate individual wheel commands for straight motion.
+
+### ARM — reach and return
+
+Drive joints with slow sinusoids staggered by π/N phases so they move in
+sequence. FREQ_HZ = 0.3, amplitude = 35 % of joint range. SETTLE_TIME = 1.0 s.
+
+### GRIPPER — open/close cycle
+
+angle = limit_max * 0.8 * 0.5 * (1 - math.cos(2 * math.pi * FREQ_HZ * t))
+FREQ_HZ = 0.25. Ramp over 0.5 s.
+
 ## Sandbox — HARD RULES
 
 The script runs in a restricted sandbox. Violations will be rejected.
@@ -3067,6 +3147,7 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
     }
     joint_rows = []
     wheel_rows = []
+    leg_rows = []
 
     for name in joint_names:
         meta = by_name.get(name, {})
@@ -3086,6 +3167,19 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
                 f", wheel={meta.get('side', 'unknown')}/{meta.get('end', 'unknown')}, "
                 f"forward_sign={int(meta.get('forward_sign', 1)):+d}"
             )
+        if meta.get("is_leg"):
+            depth = meta.get("leg_depth", 0)
+            role = meta.get("leg_role") or (
+                "swing_bend" if "swing_sign" in meta and "bend_sign" in meta else
+                "swing" if "swing_sign" in meta else
+                "bend" if "bend_sign" in meta else
+                "aux"
+            )
+            row += f", leg={meta.get('leg_id', '?')}, chain_depth={depth}, role=leg_{role}"
+            if "swing_sign" in meta:
+                row += f", swing_sign={int(meta['swing_sign']):+d}"
+            if "bend_sign" in meta:
+                row += f", bend_sign={int(meta['bend_sign']):+d}"
         joint_rows.append(row)
 
         if meta.get("is_wheel_drive"):
@@ -3101,6 +3195,24 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
                 f"max_torque_Nm={effort:.3f}"
             )
 
+        if meta.get("is_leg"):
+            depth = meta.get("leg_depth", 0)
+            role = meta.get("leg_role") or (
+                "swing_bend" if "swing_sign" in meta and "bend_sign" in meta else
+                "swing" if "swing_sign" in meta else
+                "bend" if "bend_sign" in meta else
+                "aux"
+            )
+            leg_entry = (
+                f"  - joint={name}; leg={meta.get('leg_id', '?')}; "
+                f"chain_depth={depth}; role=leg_{role}"
+            )
+            if "swing_sign" in meta:
+                leg_entry += f"; swing_sign={int(meta['swing_sign']):+d}"
+            if "bend_sign" in meta:
+                leg_entry += f"; bend_sign={int(meta['bend_sign']):+d}"
+            leg_rows.append(leg_entry)
+
     wheel_block = ""
     if wheel_rows:
         wheel_block = (
@@ -3112,7 +3224,180 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
             + "\n".join(wheel_rows)
         )
 
-    return "\n".join(joint_rows) or "  (none)", wheel_block
+    leg_block = ""
+    if leg_rows:
+        leg_block = (
+            "\n\nLEG DRIVE INFO:\n"
+            "swing_sign and bend_sign are geometrically computed from the URDF - do not guess.\n"
+            "Use role=leg_swing for stride, role=leg_bend for crouch/tuck, and hold role=leg_aux at 0.0.\n"
+            "swing angle = swing_sign * HIP_AMP * sin(phase)  (straight forward stride)\n"
+            "bend angle  = bend_sign * (KNEE_BIAS - KNEE_AMP * max(0, sin(phase)))  (stance + foot clearance)\n"
+            + "\n".join(leg_rows)
+        )
+
+    return "\n".join(joint_rows) or "  (none)", wheel_block + leg_block
+
+
+def _leg_role(meta: dict) -> str:
+    return (
+        meta.get("leg_role")
+        or ("swing_bend" if "swing_sign" in meta and "bend_sign" in meta else
+            "swing" if "swing_sign" in meta else
+            "bend" if "bend_sign" in meta else
+            "aux")
+    )
+
+
+def _phase_map_for_legs(leg_ids: list[str]) -> dict[str, float]:
+    unique = sorted(set(leg_ids))
+    if {"FR", "FL", "RR", "RL"}.issubset(set(unique)):
+        return {"FR": 0.0, "RL": 0.0, "FL": 3.141592653589793, "RR": 3.141592653589793}
+    if len(unique) == 2:
+        return {unique[0]: 0.0, unique[1]: 3.141592653589793}
+    if len(unique) == 6:
+        return {leg: (0.0 if i % 2 == 0 else 3.141592653589793) for i, leg in enumerate(unique)}
+    return {leg: (0.0 if i % 2 == 0 else 3.141592653589793) for i, leg in enumerate(unique)}
+
+
+def _default_terrain_profile(terrain_config: dict | None) -> dict:
+    """
+    Return deterministic gait/drive tuning for blank-prompt defaults.
+    Flat keeps current behavior; rough/stairs become slower with more clearance.
+    """
+    terrain_type = str((terrain_config or {}).get("type", "flat")).lower()
+    if terrain_type == "stairs":
+        return {
+            "freq_hz": 0.85,
+            "hip_amp": 0.34,
+            "knee_bias": 0.50,
+            "knee_clearance": 0.34,
+            "settle_time_leg": 1.2,
+            "wheel_throttle_frac": 0.10,
+            "settle_time_wheel": 0.8,
+        }
+    if terrain_type == "rough":
+        return {
+            "freq_hz": 1.00,
+            "hip_amp": 0.30,
+            "knee_bias": 0.46,
+            "knee_clearance": 0.31,
+            "settle_time_leg": 1.1,
+            "wheel_throttle_frac": 0.12,
+            "settle_time_wheel": 0.7,
+        }
+    return {
+        "freq_hz": 1.2,
+        "hip_amp": 0.26,
+        "knee_bias": 0.42,
+        "knee_clearance": 0.28,
+        "settle_time_leg": 1.0,
+        "wheel_throttle_frac": 0.15,
+        "settle_time_wheel": 0.5,
+    }
+
+
+def _generate_default_sim_script(joint_names: list, joint_metadata: list | None, terrain_config: dict | None = None) -> str:
+    if not joint_metadata:
+        return ""
+    profile = _default_terrain_profile(terrain_config)
+
+    by_name = {
+        item.get("name"): item
+        for item in joint_metadata
+        if isinstance(item, dict) and item.get("name")
+    }
+
+    wheel_joints = []
+    leg_swing = []
+    leg_bend = []
+    leg_aux = []
+    leg_ids = []
+    hold_joints = []
+
+    for name in joint_names:
+        meta = by_name.get(name, {})
+        if meta.get("is_wheel_drive"):
+            effort = float(meta.get("effort", 10.0) or 10.0)
+            wheel_joints.append({
+                "joint": name,
+                "sign": int(meta.get("forward_sign", 1) or 1),
+                "effort": round(effort, 6),
+            })
+            continue
+
+        if meta.get("is_leg"):
+            leg_id = str(meta.get("leg_id", ""))
+            if leg_id:
+                leg_ids.append(leg_id)
+            role = _leg_role(meta)
+            if role in ("swing", "swing_bend") and "swing_sign" in meta:
+                leg_swing.append({
+                    "joint": name,
+                    "leg": leg_id,
+                    "sign": int(meta.get("swing_sign", 1) or 1),
+                })
+            if role in ("bend", "swing_bend") and "bend_sign" in meta:
+                leg_bend.append({
+                    "joint": name,
+                    "leg": leg_id,
+                    "sign": int(meta.get("bend_sign", 1) or 1),
+                })
+            if role == "aux":
+                leg_aux.append(name)
+            continue
+
+        hold_joints.append(name)
+
+    if leg_swing and leg_bend and len(set(leg_ids)) >= 2:
+        phases = _phase_map_for_legs(leg_ids)
+        return (
+            "# Auto-generated default legged locomotion controller.\n"
+            "# Positive X/orange axis is treated as forward. Auxiliary lateral joints stay neutral.\n"
+            f"FREQ_HZ = {profile['freq_hz']:.2f}\n"
+            f"HIP_AMP = {profile['hip_amp']:.2f}\n"
+            f"KNEE_BIAS = {profile['knee_bias']:.2f}\n"
+            f"KNEE_CLEARANCE = {profile['knee_clearance']:.2f}\n"
+            f"SETTLE_TIME = {profile['settle_time_leg']:.1f}\n\n"
+            f"LEG_PHASE = {phases!r}\n"
+            f"SWING_JOINTS = {leg_swing!r}\n"
+            f"BEND_JOINTS = {leg_bend!r}\n"
+            f"AUX_JOINTS = {leg_aux!r}\n"
+            f"HOLD_JOINTS = {hold_joints!r}\n\n"
+            "def step(t, state):\n"
+            "    ramp = min(1.0, t / SETTLE_TIME) if SETTLE_TIME > 0 else 1.0\n"
+            "    w = 2.0 * math.pi * FREQ_HZ\n"
+            "    cmds = {}\n"
+            "    for name in HOLD_JOINTS:\n"
+            "        cmds[name] = 0.0\n"
+            "    for name in AUX_JOINTS:\n"
+            "        cmds[name] = 0.0\n"
+            "    for row in SWING_JOINTS:\n"
+            "        phase = LEG_PHASE.get(row['leg'], 0.0)\n"
+            "        s = math.sin(w * t + phase)\n"
+            "        cmds[row['joint']] = row['sign'] * ramp * HIP_AMP * s\n"
+            "    for row in BEND_JOINTS:\n"
+            "        phase = LEG_PHASE.get(row['leg'], 0.0)\n"
+            "        s = math.sin(w * t + phase)\n"
+            "        # bend_sign points the foot downward; subtract the swing term for foot clearance.\n"
+            "        cmds[row['joint']] = row['sign'] * ramp * (KNEE_BIAS - KNEE_CLEARANCE * max(0.0, s))\n"
+            "    return cmds"
+        )
+
+    if wheel_joints:
+        return (
+            "# Auto-generated default wheeled locomotion controller.\n"
+            f"SETTLE_TIME = {profile['settle_time_wheel']:.1f}\n"
+            f"DRIVE_JOINTS = {wheel_joints!r}\n\n"
+            "def step(t, state):\n"
+            "    ramp = min(1.0, t / SETTLE_TIME) if SETTLE_TIME > 0 else 1.0\n"
+            "    cmds = {}\n"
+            "    for row in DRIVE_JOINTS:\n"
+            f"        throttle = {profile['wheel_throttle_frac']:.2f} * row['effort']\n"
+            "        cmds[row['joint']] = ramp * throttle * row['sign']\n"
+            "    return cmds"
+        )
+
+    return ""
 
 
 def generate_sim_script(
@@ -3121,6 +3406,7 @@ def generate_sim_script(
     current_script: str = "",
     joint_limits: dict = None,
     joint_metadata: list = None,
+    terrain_config: dict = None,
 ) -> str:
     """
     Generate a sim-sandbox Python script from a natural-language prompt.
@@ -3131,11 +3417,10 @@ def generate_sim_script(
         current_script: if non-empty, treat prompt as a modification request
         joint_limits: optional {name: (lower, upper)} for revolute joints
         joint_metadata: optional per-joint type/axis/wheel direction metadata
+        terrain_config: optional terrain settings from the active sim world
 
     Returns the raw Python source (no fences).
     """
-    client = _get_client()
-
     joints_block, wheel_block = _format_sim_joint_blocks(joint_names, joint_metadata)
     limits_block = ""
     if joint_limits:
@@ -3147,7 +3432,35 @@ def generate_sim_script(
         if rows:
             limits_block = "\n\nLIMITS (rad or m):\n" + "\n".join(rows)
 
+    terrain_block = ""
+    if isinstance(terrain_config, dict):
+        terrain_type = str(terrain_config.get("type", "flat"))
+        try:
+            height = float(terrain_config.get("height", 0.0))
+            scale = float(terrain_config.get("scale", 1.0))
+            roughness = float(terrain_config.get("roughness", 0.0))
+            friction = float(terrain_config.get("friction", 3.0))
+            terrain_block = (
+                "\n\nTERRAIN:\n"
+                f"  - type: {terrain_type}\n"
+                f"  - height_m: {height:.3f}\n"
+                f"  - scale: {scale:.2f}\n"
+                f"  - roughness: {roughness:.2f}\n"
+                f"  - friction: {friction:.2f}\n"
+                "Use terrain-aware motion when the request calls for locomotion: "
+                "slower, higher-clearance steps for rough ground or stairs; smoother lower motion for flat ground."
+            )
+        except Exception:
+            terrain_block = f"\n\nTERRAIN:\n  - type: {terrain_type}"
+
     p = prompt.strip()
+    if not p and not current_script.strip():
+        default_script = _generate_default_sim_script(joint_names, joint_metadata, terrain_config)
+        if default_script:
+            return default_script
+
+    client = _get_client()
+
     if current_script.strip():
         request_line = (
             f"MODIFY REQUEST: {p}" if p else
@@ -3155,29 +3468,32 @@ def generate_sim_script(
             "more natural, and better matched to the robot's morphology."
         )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}\n\n"
             f"CURRENT SCRIPT:\n{current_script}\n\n"
             f"{request_line}\n\n"
-            f"Return the full modified script. Keep the same joint names and wheel signs."
+            f"Return the full modified script. Keep the same joint names, wheel signs, leg signs, and leg roles."
         )
     else:
         if p:
             request_line = f"REQUEST: {p}"
         else:
             request_line = (
-                "REQUEST: Infer the robot's morphology from joint names "
-                "(e.g. 'hip'/'knee' → legged; 'shoulder'/'elbow' → arm; "
-                "numeric suffixes → limb indices) and generate a sensible "
-                "default control script:\n"
-                "  - wheeled robot -> a smooth forward drive or gentle arc using WHEEL DRIVE INFO\n"
-                "  - legged robot → a stable diagonal trot or walk gait\n"
-                "  - arm / manipulator → a smooth reach-and-return motion\n"
-                "  - gripper / claw → a slow open/close cycle\n"
-                "  - otherwise → a gentle sinusoidal idle across all joints\n"
-                "Include a brief SETTLE_TIME ramp so motion eases in from zero."
+                "REQUEST: Classify the robot using the Archetype detection rules in your "
+                "instructions, then generate the matching default controller:\n"
+                "  - QUADRUPED -> diagonal trot using LEG DRIVE INFO roles and signs\n"
+                "  - BIPED     -> alternating step using LEG DRIVE INFO roles and signs\n"
+                "  - HEXAPOD   -> alternating tripod using LEG DRIVE INFO roles and signs\n"
+                "  - WHEELED   -> smooth forward drive using WHEEL DRIVE INFO forward_sign\n"
+                "  - ARM       -> slow staggered reach-and-return sinusoids\n"
+                "  - GRIPPER   -> slow open/close cycle\n"
+                "  - other     -> gentle sinusoidal idle across all joints\n"
+                "Always use the precomputed signs from LEG/WHEEL DRIVE INFO - never guess polarity.\n"
+                "For legged robots with no user prompt, make straight forward locomotion: no turn, yaw, sidestep, or crab-walk.\n"
+                "Hold role=leg_aux joints at 0.0 unless the user explicitly asks for lateral motion or balancing.\n"
+                "Include a SETTLE_TIME ramp so motion eases in from zero."
             )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}\n\n"
             f"{request_line}\n\n"
             f"Write a sandbox-compliant script."
         )

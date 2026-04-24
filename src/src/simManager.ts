@@ -36,15 +36,47 @@ export interface SimManagerDeps {
   resize(): void
   onEnterSim(): void
   onExitSim(): void
+  setTerrainVisual?(config: SimTerrainConfig): void
+}
+
+type SimTerrainType = 'flat' | 'rough' | 'stairs'
+
+interface SimTerrainConfig {
+  type: SimTerrainType
+  seed: number
+  height: number
+  scale: number
+  roughness: number
+  friction: number
+  roughHeightfield?: {
+    nrow: number
+    ncol: number
+    elevation: number[]
+    size: number[]
+  } | null
+}
+
+const TERRAIN_SCHEMA = {
+  seed: { default: 1, min: 0, max: 2147483647 },
+  height: { default: 0.08, min: 0, max: 0.4 },
+  scale: { default: 1.0, min: 0.25, max: 3.0 },
+  roughness: { default: 0.6, min: 0, max: 1.0 },
+  friction: { default: 3.0, min: 0.05, max: 5.0 },
+} as const
+
+const DEFAULT_TERRAIN_CONFIG: SimTerrainConfig = {
+  type: 'flat',
+  seed: TERRAIN_SCHEMA.seed.default,
+  height: TERRAIN_SCHEMA.height.default,
+  scale: TERRAIN_SCHEMA.scale.default,
+  roughness: TERRAIN_SCHEMA.roughness.default,
+  friction: TERRAIN_SCHEMA.friction.default,
 }
 
 export interface SimManagerApi {
   isSimActive(): boolean
   isSimRunning(): boolean
-  isSimCoreRunning(): boolean
   getSimTime(): number
-  /** Called from animate() each frame. Drives joint preview animation when core isn't running. */
-  tickPreviewAnimation(): void
   /** Called from animate() each frame. Smooth camera follow when sim is active. */
   tickCameraFollow(): void
 }
@@ -56,6 +88,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simRunning = false
   let simTime = 0
   let simCoreRunning = false
+  let simAtResetMode = true
   let simRafId: number | null = null       // requestAnimationFrame handle
   let simModelDt = 0.002
   let simWallStart = 0                     // wall clock when sim started (ms)
@@ -63,6 +96,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simSpeedMult = 1.0                   // user-controlled speed multiplier
   let simErrorState = false
   let lastSimStagingPath: string | null = null
+  let simTransitioning = false
+  let simReloading = false
+  let aiRequestToken = 0
+  let aiGenerating = false
+  let activeTerrainConfig: SimTerrainConfig = { ...DEFAULT_TERRAIN_CONFIG }
 
   const originalJointPoses = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>()
   const simPreviewLimits = new Map<string, { lower: number; upper: number }>()
@@ -72,6 +110,116 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   const simNotActive = document.getElementById('sim-not-active')!
   const simControlsBody = document.getElementById('sim-controls-body')!
   const simGravityEnabled = document.getElementById('sim-gravity-enabled') as HTMLInputElement | null
+  const terrainTypeEl = document.getElementById('sim-terrain-type') as HTMLSelectElement | null
+  const terrainSeedEl = document.getElementById('sim-terrain-seed') as HTMLInputElement | null
+  const terrainRandomizeBtn = document.getElementById('sim-terrain-randomize') as HTMLButtonElement | null
+  const terrainHeightEl = document.getElementById('sim-terrain-height') as HTMLInputElement | null
+  const terrainHeightValEl = document.getElementById('sim-terrain-height-val')
+  const terrainScaleEl = document.getElementById('sim-terrain-scale') as HTMLInputElement | null
+  const terrainScaleValEl = document.getElementById('sim-terrain-scale-val')
+  const terrainRoughnessEl = document.getElementById('sim-terrain-roughness') as HTMLInputElement | null
+  const terrainRoughnessValEl = document.getElementById('sim-terrain-roughness-val')
+  const terrainFrictionEl = document.getElementById('sim-terrain-friction') as HTMLInputElement | null
+  const terrainFrictionValEl = document.getElementById('sim-terrain-friction-val')
+
+  function clampNumber(value: number, lo: number, hi: number, fallback: number) {
+    return Number.isFinite(value) ? Math.max(lo, Math.min(hi, value)) : fallback
+  }
+
+  function getTerrainConfig(): SimTerrainConfig {
+    const rawType = terrainTypeEl?.value as SimTerrainType | undefined
+    const type: SimTerrainType = rawType === 'rough' || rawType === 'stairs' ? rawType : 'flat'
+    const seed = clampNumber(
+      parseInt(terrainSeedEl?.value || String(TERRAIN_SCHEMA.seed.default), 10),
+      TERRAIN_SCHEMA.seed.min, TERRAIN_SCHEMA.seed.max, TERRAIN_SCHEMA.seed.default,
+    )
+    return {
+      type,
+      seed: Math.round(seed),
+      height: clampNumber(
+        parseFloat(terrainHeightEl?.value || String(TERRAIN_SCHEMA.height.default)),
+        TERRAIN_SCHEMA.height.min, TERRAIN_SCHEMA.height.max, TERRAIN_SCHEMA.height.default,
+      ),
+      scale: clampNumber(
+        parseFloat(terrainScaleEl?.value || String(TERRAIN_SCHEMA.scale.default)),
+        TERRAIN_SCHEMA.scale.min, TERRAIN_SCHEMA.scale.max, TERRAIN_SCHEMA.scale.default,
+      ),
+      roughness: clampNumber(
+        parseFloat(terrainRoughnessEl?.value || String(TERRAIN_SCHEMA.roughness.default)),
+        TERRAIN_SCHEMA.roughness.min, TERRAIN_SCHEMA.roughness.max, TERRAIN_SCHEMA.roughness.default,
+      ),
+      friction: clampNumber(
+        parseFloat(terrainFrictionEl?.value || String(TERRAIN_SCHEMA.friction.default)),
+        TERRAIN_SCHEMA.friction.min, TERRAIN_SCHEMA.friction.max, TERRAIN_SCHEMA.friction.default,
+      ),
+    }
+  }
+
+  function normalizeTerrainConfig(raw: unknown): SimTerrainConfig {
+    const config = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
+    const typeRaw = String(config.type ?? DEFAULT_TERRAIN_CONFIG.type).toLowerCase()
+    const type: SimTerrainType = typeRaw === 'rough' || typeRaw === 'stairs' ? typeRaw : 'flat'
+    return {
+      type,
+      seed: Math.round(clampNumber(
+        Number(config.seed),
+        TERRAIN_SCHEMA.seed.min, TERRAIN_SCHEMA.seed.max, TERRAIN_SCHEMA.seed.default,
+      )),
+      height: clampNumber(
+        Number(config.height),
+        TERRAIN_SCHEMA.height.min, TERRAIN_SCHEMA.height.max, TERRAIN_SCHEMA.height.default,
+      ),
+      scale: clampNumber(
+        Number(config.scale),
+        TERRAIN_SCHEMA.scale.min, TERRAIN_SCHEMA.scale.max, TERRAIN_SCHEMA.scale.default,
+      ),
+      roughness: clampNumber(
+        Number(config.roughness),
+        TERRAIN_SCHEMA.roughness.min, TERRAIN_SCHEMA.roughness.max, TERRAIN_SCHEMA.roughness.default,
+      ),
+      friction: clampNumber(
+        Number(config.friction),
+        TERRAIN_SCHEMA.friction.min, TERRAIN_SCHEMA.friction.max, TERRAIN_SCHEMA.friction.default,
+      ),
+      roughHeightfield: null,
+    }
+  }
+
+  function applyTerrainConfigToUi(config: SimTerrainConfig) {
+    if (terrainTypeEl) terrainTypeEl.value = config.type
+    if (terrainSeedEl) terrainSeedEl.value = String(config.seed)
+    if (terrainHeightEl) terrainHeightEl.value = String(config.height)
+    if (terrainScaleEl) terrainScaleEl.value = String(config.scale)
+    if (terrainRoughnessEl) terrainRoughnessEl.value = String(config.roughness)
+    if (terrainFrictionEl) terrainFrictionEl.value = String(config.friction)
+    syncTerrainUi()
+  }
+
+  function syncTerrainUi() {
+    const config = getTerrainConfig()
+    activeTerrainConfig = config
+    if (terrainSeedEl) terrainSeedEl.value = String(config.seed)
+    if (terrainHeightValEl) terrainHeightValEl.textContent = `${config.height.toFixed(2)} m`
+    if (terrainScaleValEl) terrainScaleValEl.textContent = `${config.scale.toFixed(1)}x`
+    if (terrainRoughnessValEl) terrainRoughnessValEl.textContent = config.roughness.toFixed(2)
+    if (terrainFrictionValEl) terrainFrictionValEl.textContent = config.friction.toFixed(1)
+    document.querySelectorAll<HTMLElement>('[data-terrain-advanced]').forEach(el => {
+      const mode = el.dataset.terrainAdvanced
+      el.hidden = config.type === 'flat' || (mode === 'rough' && config.type !== 'rough')
+    })
+  }
+
+  function setTerrainControlsDisabled(disabled: boolean) {
+    ;[
+      terrainTypeEl,
+      terrainSeedEl,
+      terrainRandomizeBtn,
+      terrainHeightEl,
+      terrainScaleEl,
+      terrainRoughnessEl,
+      terrainFrictionEl,
+    ].forEach(el => { if (el) el.disabled = disabled })
+  }
 
   // ── Phase D visualization groups ──────────────────────────────────────────
 
@@ -82,6 +230,27 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   const simContactGroup = new THREE.Group()
   simContactGroup.name = 'sim_contacts'
   deps.worldGroup.add(simContactGroup)
+
+  // MuJoCo world is Z-up; Three.js world is Y-up.
+  // Centralize this conversion for all sim overlays/state surfaces.
+  function mjVecToThreeWorld(v: number[]): THREE.Vector3 {
+    return new THREE.Vector3(v[0] ?? 0, v[2] ?? 0, -(v[1] ?? 0))
+  }
+
+  function mjDirToThreeWorld(v: number[]): THREE.Vector3 {
+    return new THREE.Vector3(v[0] ?? 0, v[2] ?? 0, -(v[1] ?? 0))
+  }
+
+  function threeWorldToWorldGroupLocal(pWorld: THREE.Vector3): THREE.Vector3 {
+    return deps.worldGroup.worldToLocal(pWorld.clone())
+  }
+
+  function threeWorldDirToWorldGroupLocal(dirWorld: THREE.Vector3): THREE.Vector3 {
+    const qWorldGroup = new THREE.Quaternion()
+    deps.worldGroup.getWorldQuaternion(qWorldGroup)
+    const qInv = qWorldGroup.invert()
+    return dirWorld.clone().applyQuaternion(qInv)
+  }
 
   // ── CoM Trail ─────────────────────────────────────────────────────────────
 
@@ -96,8 +265,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
     const com = state.com_position as number[] | undefined
     if (!com || com.length < 3) return
-
-    comTrailBuffer.push(new THREE.Vector3(com[0], com[1], com[2]))
+    const comWorldThree = mjVecToThreeWorld(com)
+    const comLocal = threeWorldToWorldGroupLocal(comWorldThree)
+    comTrailBuffer.push(comLocal)
     if (comTrailBuffer.length > COM_TRAIL_MAX) comTrailBuffer.shift()
 
     if (comTrailLine) {
@@ -157,12 +327,13 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       const arrow = contactArrows[i]
       const c = contacts[i]
       if (!c || c.force < 0.001) { arrow.visible = false; continue }
-      const [px, py, pz] = c.pos
-      const [nx, ny, nz] = c.normal
       const len = Math.min(0.4, Math.max(0.02, c.force * 0.002))
-      const dir = new THREE.Vector3(nx, ny, nz).normalize()
+      const posWorldThree = mjVecToThreeWorld(c.pos)
+      const posLocal = threeWorldToWorldGroupLocal(posWorldThree)
+      const dirWorldThree = mjDirToThreeWorld(c.normal)
+      const dir = threeWorldDirToWorldGroupLocal(dirWorldThree).normalize()
       if (dir.lengthSq() < 0.01) { arrow.visible = false; continue }
-      arrow.position.set(px, py, pz)
+      arrow.position.copy(posLocal)
       arrow.setDirection(dir)
       arrow.setLength(len, len * 0.35, len * 0.2)
       const t = Math.min(1, c.force / 100)
@@ -250,6 +421,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   const scriptStatusEl = document.getElementById('sim-script-status')
   const scriptFileInput = document.getElementById('sim-script-file') as HTMLInputElement | null
+  const scriptUploadBtn = document.getElementById('sim-script-upload-btn') as HTMLButtonElement | null
   const scriptClearBtn = document.getElementById('sim-script-clear') as HTMLButtonElement | null
 
   function setScriptStatus(text: string, state: 'idle' | 'active' | 'error' = 'idle') {
@@ -259,15 +431,58 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (state !== 'idle') scriptStatusEl.classList.add(state)
   }
 
-  document.getElementById('sim-script-upload-btn')?.addEventListener('click', () => {
+  function simConfigEditable() {
+    return simActive && simCoreRunning && simAtResetMode && !simRunning && !simTransitioning && !simReloading
+  }
+
+  function requireSimResetMode(action: string): boolean {
+    if (!simCoreRunning) {
+      deps.showToast('Start simulation first', 'warning')
+      return false
+    }
+    if (!simAtResetMode || simRunning) {
+      deps.showToast(`Reset simulation before ${action}`, 'warning')
+      return false
+    }
+    return true
+  }
+
+  function updateSimConfigLock() {
+    const editable = simConfigEditable()
+    setTerrainControlsDisabled(!editable)
+    if (scriptUploadBtn) scriptUploadBtn.disabled = !editable
+    if (scriptFileInput) scriptFileInput.disabled = !editable
+    if (scriptClearBtn) scriptClearBtn.disabled = !editable || !activeScriptCode
+    if (aiPromptEl) aiPromptEl.disabled = !editable
+    if (aiGenBtn) aiGenBtn.disabled = !editable || aiGenerating
+    if (modifyBtn) modifyBtn.disabled = !editable || aiGenerating || !activeScriptCode
+    if (aiApplyBtn) aiApplyBtn.disabled = !editable || aiGenerating || !pendingAiCode
+    if (aiDiscardBtn) aiDiscardBtn.disabled = !editable || aiGenerating || !pendingAiCode
+
+    ;[
+      'sim-speed-down',
+      'sim-speed-up',
+      'sim-camera-follow',
+      'sim-viz-com-trail',
+      'sim-viz-contacts',
+      'sim-viz-heatmap',
+      'sim-gravity-enabled',
+      'sim-free-base',
+    ].forEach(id => {
+      const el = document.getElementById(id) as HTMLButtonElement | HTMLInputElement | null
+      if (el) el.disabled = !editable
+    })
+  }
+
+  scriptUploadBtn?.addEventListener('click', () => {
+    if (!requireSimResetMode('uploading a controller')) return
     scriptFileInput?.click()
   })
 
   scriptFileInput?.addEventListener('change', async () => {
     const file = scriptFileInput.files?.[0]
     if (!file) return
-    if (!simCoreRunning) {
-      deps.showToast('Start simulation first', 'warning')
+    if (!requireSimResetMode('uploading a controller')) {
       scriptFileInput.value = ''
       return
     }
@@ -287,9 +502,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         deps.showToast(`Script error: ${result.message ?? 'unknown'}`, 'error')
       } else {
         setScriptStatus(`${file.name} — active`, 'active')
-        if (scriptClearBtn) scriptClearBtn.disabled = false
         activeScriptCode = code
-        if (modifyBtn) modifyBtn.disabled = false
+        updateSimConfigLock()
         deps.showToast('Controller active', 'success')
       }
     } catch (e) {
@@ -300,13 +514,13 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   })
 
   scriptClearBtn?.addEventListener('click', async () => {
+    if (!requireSimResetMode('clearing the controller')) return
     if (simCoreRunning) {
       try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore */ }
     }
     setScriptStatus('No controller loaded', 'idle')
-    if (scriptClearBtn) scriptClearBtn.disabled = true
     activeScriptCode = ''
-    if (modifyBtn) modifyBtn.disabled = true
+    updateSimConfigLock()
     deps.showToast('Controller cleared', 'info')
   })
 
@@ -338,18 +552,86 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       aiPreviewEl.hidden = false
     }
     if (aiApplyRow) aiApplyRow.hidden = false
+    updateSimConfigLock()
   }
 
   function hideAiPreview() {
     pendingAiCode = ''
     if (aiPreviewEl) aiPreviewEl.hidden = true
     if (aiApplyRow) aiApplyRow.hidden = true
+    updateSimConfigLock()
+  }
+
+  function resetSimStatusDisplay() {
+    deps.simTimeEl.textContent = '0.000s'
+    const timeEl = document.getElementById('sim-status-time')
+    if (timeEl) timeEl.textContent = '0.000 s'
+    const rtfEl = document.getElementById('sim-status-rtf')
+    if (rtfEl) rtfEl.textContent = '-'
+    const energyRow = document.getElementById('sim-status-energy-row') as HTMLElement | null
+    const energyEl = document.getElementById('sim-status-energy')
+    if (energyRow) energyRow.style.display = 'none'
+    if (energyEl) energyEl.textContent = '-'
+    const contactsRow = document.getElementById('sim-status-contacts-row') as HTMLElement | null
+    const contactsEl = document.getElementById('sim-status-contacts')
+    if (contactsRow) contactsRow.style.display = 'none'
+    if (contactsEl) contactsEl.textContent = '0'
+    const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
+    if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
+  }
+
+  function resetSimSessionState() {
+    aiRequestToken++
+    simRunning = false
+    simAtResetMode = true
+    simTime = 0
+    simErrorState = false
+    simWallStart = 0
+    simTimeAtStart = 0
+    simSpeedMult = 1.0
+    aiGenerating = false
+    pendingAiCode = ''
+    activeScriptCode = ''
+    hideAiPreview()
+    setAiStatus('Ready', 'idle')
+    setScriptStatus('No controller loaded', 'idle')
+    if (scriptFileInput) scriptFileInput.value = ''
+    const errEl = document.getElementById('sim-error-overlay')
+    if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden') }
+    const gravityEl = document.getElementById('sim-gravity-enabled') as HTMLInputElement | null
+    if (gravityEl) gravityEl.checked = true
+    const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
+    if (freeBaseEl) freeBaseEl.checked = true
+    const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
+    if (followEl) followEl.checked = false
+    clearSimViz()
+    resetSimStatusDisplay()
+    updateSimUI()
+  }
+
+  async function cleanupBackendSimSession() {
+    activeScriptCode = ''
+    stopSimLoop()
+    try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore cleanup failure */ }
+    try { await invoke('sim_reset') } catch { /* ignore cleanup failure */ }
+    if (lastSimStagingPath) {
+      try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
+      lastSimStagingPath = null
+    }
+    try { await invoke('stop_core') } catch { /* ignore cleanup failure */ }
+    simCoreRunning = false
+    const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
+    if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
   }
 
   async function runGenerate(modify: boolean) {
+    if (aiGenerating) return
+    if (!requireSimResetMode('generating a controller')) return
     const prompt = aiPromptEl?.value.trim() ?? ''
     const urdf = deps.getEditorValue()
     if (!urdf.trim()) { deps.showToast('Load a URDF first', 'warning'); return }
+    aiGenerating = true
+    const requestToken = ++aiRequestToken
     setAiStatus('Generating…', 'idle')
     if (aiGenBtn) aiGenBtn.disabled = true
     if (modifyBtn) modifyBtn.disabled = true
@@ -360,8 +642,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
           prompt,
           urdfContent: urdf,
           currentScript: modify ? activeScriptCode : '',
+          terrainConfig: activeTerrainConfig,
         }
       )
+      if (requestToken !== aiRequestToken || !simActive) return
       if (result.status !== 'ok' || !result.code) {
         setAiStatus(`Error: ${result.message ?? 'unknown'}`, 'error')
         if (result.code) showAiPreview(result.code)   // show rejected code for debugging
@@ -371,11 +655,14 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         showAiPreview(result.code)
       }
     } catch (e) {
+      if (requestToken !== aiRequestToken || !simActive) return
       setAiStatus(`Failed: ${e}`, 'error')
       deps.showToast(`AI request failed: ${e}`, 'error')
     } finally {
-      if (aiGenBtn) aiGenBtn.disabled = false
-      if (modifyBtn) modifyBtn.disabled = !activeScriptCode
+      if (requestToken === aiRequestToken && simActive) {
+        aiGenerating = false
+        updateSimConfigLock()
+      }
     }
   }
 
@@ -391,10 +678,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   aiApplyBtn?.addEventListener('click', async () => {
     if (!pendingAiCode) return
-    if (!simCoreRunning) {
-      deps.showToast('Start simulation first', 'warning')
-      return
-    }
+    if (!requireSimResetMode('applying a controller')) return
     try {
       const result = await invoke<{ status: string; message?: string }>(
         'sim_set_script', { code: pendingAiCode }
@@ -406,10 +690,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         activeScriptCode = pendingAiCode
         setAiStatus('Applied', 'active')
         setScriptStatus('Generated controller active', 'active')
-        if (scriptClearBtn) scriptClearBtn.disabled = false
-        if (modifyBtn) modifyBtn.disabled = false
         deps.showToast('Generated controller active', 'success')
         hideAiPreview()
+        updateSimConfigLock()
       }
     } catch (e) {
       setAiStatus(`Apply failed: ${e}`, 'error')
@@ -418,6 +701,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   })
 
   aiDiscardBtn?.addEventListener('click', () => {
+    if (!requireSimResetMode('discarding generated controller code')) return
     hideAiPreview()
     setAiStatus('Discarded', 'idle')
   })
@@ -477,11 +761,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   function exitSimPanel() {
     simNotActive.classList.remove('hidden')
     simControlsBody.classList.add('hidden')
-    clearSimViz()
-    setScriptStatus('No controller loaded', 'idle')
-    if (scriptClearBtn) scriptClearBtn.disabled = true
-    const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
-    if (followEl) followEl.checked = false
+    resetSimSessionState()
   }
 
   // ── State Display ──────────────────────────────────────────────────────────
@@ -502,7 +782,13 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         }
       }
     }
-    return { ...s, joints }
+    const normalized = { ...s, joints } as Record<string, unknown>
+    // Backend emits n_contacts; keep a stable contacts alias for UI.
+    const nContacts = normalized.n_contacts
+    if (typeof nContacts === 'number' && typeof normalized.contacts !== 'number') {
+      normalized.contacts = nContacts
+    }
+    return normalized
   }
 
   function updateSimStateDisplay(state: any) {
@@ -600,10 +886,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     const neighborPath = (deps.getFilePaths()[deps.getActiveFile()] || deps.getCurrentFilePath() || '').trim()
     const neighborUrdfPath = neighborPath && /\.urdf$/i.test(neighborPath) ? neighborPath : null
 
-    if (lastSimStagingPath) {
-      try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
-      lastSimStagingPath = null
-    }
+    // Keep prior staging path alive until the new model is confirmed loaded.
+    // If sim_load fails we should not eagerly delete the previous artifact.
+    const previousStagingPath = lastSimStagingPath
 
     const simPath = await invoke<string>('write_sim_staging_urdf', {
       content: urdf,
@@ -612,17 +897,48 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
     console.log('[Sim] Loading robot model from', simPath)
     const freeBase = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked ?? false
+    const terrainConfig = getTerrainConfig()
+    deps.setTerrainVisual?.(terrainConfig)
     let modelInfo: Record<string, unknown> = {}
     try {
       modelInfo = await invoke<Record<string, unknown>>('sim_load', {
         path: simPath,
         freeBase,
+        terrainConfig,
       })
     } catch (loadErr) {
       try { await invoke('remove_sim_staging_urdf', { path: simPath }) } catch { /* ignore */ }
       throw loadErr
     }
     lastSimStagingPath = simPath
+    const normalizedTerrain = normalizeTerrainConfig(modelInfo?.terrain_config)
+    const rawHf = modelInfo?.terrain_hfield
+    if (rawHf && typeof rawHf === 'object') {
+      const hf = rawHf as Record<string, unknown>
+      const nrow = Number(hf.nrow)
+      const ncol = Number(hf.ncol)
+      const elevation = Array.isArray(hf.elevation) ? hf.elevation.map(Number) : []
+      const size = Array.isArray(hf.size) ? hf.size.map(Number) : []
+      if (
+        Number.isFinite(nrow) &&
+        Number.isFinite(ncol) &&
+        elevation.length >= Math.max(0, Math.floor(nrow) * Math.floor(ncol)) &&
+        size.length >= 3
+      ) {
+        normalizedTerrain.roughHeightfield = {
+          nrow: Math.floor(nrow),
+          ncol: Math.floor(ncol),
+          elevation,
+          size,
+        }
+      }
+    }
+    activeTerrainConfig = normalizedTerrain
+    applyTerrainConfigToUi(normalizedTerrain)
+    deps.setTerrainVisual?.(normalizedTerrain)
+    if (previousStagingPath && previousStagingPath !== simPath) {
+      try { await invoke('remove_sim_staging_urdf', { path: previousStagingPath }) } catch { /* ignore */ }
+    }
     simModelDt = (typeof modelInfo?.timestep === 'number' && modelInfo.timestep > 0)
       ? modelInfo.timestep : 0.001
     simErrorState = false
@@ -656,15 +972,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   async function shutdownSimulation() {
     try {
-      stopSimLoop()
-      if (lastSimStagingPath) {
-        try { await invoke('remove_sim_staging_urdf', { path: lastSimStagingPath }) } catch { /* ignore */ }
-        lastSimStagingPath = null
-      }
-      await invoke('stop_core')
-      simCoreRunning = false
-      const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
-      if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
+      await cleanupBackendSimSession()
       console.log('[Sim] Core stopped')
     } catch (error) {
       console.error('[Sim] Error stopping simulation:', error)
@@ -700,9 +1008,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     const nSteps = Math.max(1, Math.min(Math.round(simBehind / simModelDt), maxSteps))
 
     try {
-      const stepStart = performance.now()
       const rawState = await invoke('sim_step', { nSteps })
-      const stepMs = performance.now() - stepStart
       const state = normalizeMuJoCoState(rawState)
       if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
       updateSimStateDisplay(state)
@@ -789,6 +1095,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.simTimeEl.textContent = simTime.toFixed(3) + 's'
     const speedEl = document.getElementById('sim-speed-display')
     if (speedEl) speedEl.textContent = `${simSpeedMult.toFixed(1)}×`
+    updateSimConfigLock()
   }
 
   // ── Phase C: Camera Follow ────────────────────────────────────────────────
@@ -802,145 +1109,182 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.controls.update()
   }
 
-  // ── Preview Animation (when MuJoCo core is NOT running) ───────────────────
-
-  function tickPreviewAnimation() {
-    if (!simRunning || simCoreRunning) return
-    simTime += 1 / 60
-    updateSimUI()
-    const t = simTime
-    let i = 0
-    const parsedRobot = deps.getParsedRobot()
-    for (const [jointName, jointInfo] of parsedRobot.joints) {
-      const jType = jointInfo.type
-      if (jType !== 'revolute' && jType !== 'continuous' && jType !== 'prismatic') { i++; continue }
-      const phase = i * 1.3
-      const quat = new THREE.Quaternion()
-      const limits = simPreviewLimits.get(jointName)
-      if (jType === 'continuous') {
-        quat.setFromAxisAngle(jointInfo.axis, t * 1.5 + phase)
-      } else if (limits) {
-        const mid = (limits.lower + limits.upper) / 2
-        const amp = (limits.upper - limits.lower) / 2
-        quat.setFromAxisAngle(jointInfo.axis, mid + Math.sin(t * 0.7 + phase) * amp)
-      } else {
-        quat.setFromAxisAngle(jointInfo.axis, Math.sin(t * 0.7 + phase) * (Math.PI / 4))
-      }
-      jointInfo.group.quaternion.copy(quat)
-      i++
-    }
-  }
-
   // ── Event Handlers ────────────────────────────────────────────────────────
 
   deps.simToggle.addEventListener('click', async () => {
-    simActive = !simActive
-    deps.simBar.classList.toggle('hidden', !simActive)
-    deps.simToggle.classList.toggle('running', simActive)
-    deps.simToggle.querySelector('span')!.textContent = simActive ? 'Exit Sim' : 'Simulate'
-    deps.viewportLabel.textContent = simActive ? 'Simulation' : '3D Preview'
+    if (simTransitioning) return
+    simTransitioning = true
+    deps.simToggle.disabled = true
 
-    if (simActive) {
-      deps.onEnterSim()
-      originalJointPoses.clear()
-      const parsedRobot = deps.getParsedRobot()
-      for (const [jointName, jointInfo] of parsedRobot.joints) {
-        originalJointPoses.set(jointName, {
-          position: jointInfo.group.position.clone(),
-          quaternion: jointInfo.group.quaternion.clone(),
-        })
-      }
-      refreshSimPreviewLimits()
-      const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
-      if (freeBaseEl) freeBaseEl.checked = true
-      try {
-        await initializeSimulation()
-        enterSimPanel()
-        deps.openSidebarPanel('sim')
-        deps.showToast('Entered simulation mode (MuJoCo)', 'success')
-      } catch (error) {
-        console.error('[Sim] Failed to initialize:', error)
-        // Unwind: restore joint poses captured on enter, revert build-mode
-        // state via onExitSim, hide sim UI. Stay on the 3D build plane.
-        simRunning = false
+    try {
+      if (!simActive) {
+        originalJointPoses.clear()
+        const parsedRobot = deps.getParsedRobot()
+        for (const [jointName, jointInfo] of parsedRobot.joints) {
+          originalJointPoses.set(jointName, {
+            position: jointInfo.group.position.clone(),
+            quaternion: jointInfo.group.quaternion.clone(),
+          })
+        }
+        refreshSimPreviewLimits()
+        const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
+        if (freeBaseEl) freeBaseEl.checked = true
+        try {
+          resetSimSessionState()
+          await initializeSimulation()
+          simActive = true
+          simAtResetMode = true
+          deps.simBar.classList.remove('hidden')
+          deps.simToggle.classList.add('running')
+          deps.simToggle.querySelector('span')!.textContent = 'Exit Sim'
+          deps.viewportLabel.textContent = 'Simulation'
+          deps.onEnterSim()
+          enterSimPanel()
+          deps.openSidebarPanel('sim')
+          updateSimUI()
+          deps.showToast('Entered simulation mode (MuJoCo)', 'success')
+        } catch (error) {
+          console.error('[Sim] Failed to initialize:', error)
+          // Unwind: restore joint poses captured before the attempted load and
+          // keep the visible UI in build mode. onExitSim is only needed after
+          // onEnterSim has actually run.
+          simRunning = false
+          simActive = false
+          simCoreRunning = false
+          await cleanupBackendSimSession()
+          const parsedRobot = deps.getParsedRobot()
+          for (const [jointName, jointInfo] of parsedRobot.joints) {
+            const original = originalJointPoses.get(jointName)
+            if (original) {
+              jointInfo.group.position.copy(original.position)
+              jointInfo.group.quaternion.copy(original.quaternion)
+            }
+          }
+          originalJointPoses.clear()
+          deps.simToggle.classList.remove('running')
+          deps.simBar.classList.add('hidden')
+          deps.simToggle.querySelector('span')!.textContent = 'Simulate'
+          deps.viewportLabel.textContent = '3D Preview'
+          const rawMsg = error instanceof Error ? error.message : String(error)
+          let friendly = rawMsg
+          try {
+            const m = rawMsg.match(/\{.*\}/s)
+            if (m) {
+              const parsed = JSON.parse(m[0])
+              if (typeof parsed.data === 'string') friendly = parsed.data
+              else if (typeof parsed.message === 'string') friendly = parsed.message
+            }
+          } catch {}
+          deps.showToast(`Simulation failed: ${friendly}`, 'error')
+        }
+      } else {
         simActive = false
-        simCoreRunning = false
+        deps.simBar.classList.add('hidden')
+        deps.simToggle.classList.remove('running')
+        deps.simToggle.querySelector('span')!.textContent = 'Simulate'
+        deps.viewportLabel.textContent = '3D Preview'
+
+        // Stop the sim loop + core FIRST so no in-flight tick can overwrite
+        // the robot transform after we restore it below.
+        simRunning = false
+        simTime = 0
+        stopSimLoop()
+        await shutdownSimulation()
+
+        // Restore joint-group transforms captured on enter.
         const parsedRobot = deps.getParsedRobot()
         for (const [jointName, jointInfo] of parsedRobot.joints) {
           const original = originalJointPoses.get(jointName)
           if (original) {
             jointInfo.group.position.copy(original.position)
             jointInfo.group.quaternion.copy(original.quaternion)
+          } else {
+            jointInfo.group.quaternion.identity()
           }
         }
         originalJointPoses.clear()
+
+        // Restore robot group transform (position/quaternion) + build visuals.
         deps.onExitSim()
-        deps.simToggle.classList.remove('running')
-        deps.simBar.classList.add('hidden')
-        deps.simToggle.querySelector('span')!.textContent = 'Simulate'
-        deps.viewportLabel.textContent = '3D Preview'
-        const rawMsg = error instanceof Error ? error.message : String(error)
-        let friendly = rawMsg
-        try {
-          const m = rawMsg.match(/\{.*\}/s)
-          if (m) {
-            const parsed = JSON.parse(m[0])
-            if (typeof parsed.data === 'string') friendly = parsed.data
-            else if (typeof parsed.message === 'string') friendly = parsed.message
-          }
-        } catch {}
-        deps.showToast(`Simulation failed: ${friendly}`, 'error')
+
+        exitSimPanel()
+        updateSimUI()
+        deps.showToast('Exited simulation mode', 'info')
       }
-    } else {
-      // Stop the sim loop + core FIRST so no in-flight tick can overwrite
-      // the robot transform after we restore it below.
-      simRunning = false
-      simTime = 0
-      await shutdownSimulation()
-
-      // Restore joint-group transforms captured on enter.
-      const parsedRobot = deps.getParsedRobot()
-      for (const [jointName, jointInfo] of parsedRobot.joints) {
-        const original = originalJointPoses.get(jointName)
-        if (original) {
-          jointInfo.group.position.copy(original.position)
-          jointInfo.group.quaternion.copy(original.quaternion)
-        } else {
-          jointInfo.group.quaternion.identity()
-        }
-      }
-      originalJointPoses.clear()
-
-      // Restore robot group transform (position/quaternion) + build visuals.
-      deps.onExitSim()
-
-      exitSimPanel()
+      deps.resize()
+    } finally {
+      deps.simToggle.disabled = false
+      simTransitioning = false
       updateSimUI()
-      deps.showToast('Exited simulation mode', 'info')
     }
-    deps.resize()
   })
 
   // Free-base checkbox: the value is baked into the MJCF at load time, so a
   // toggle has no effect until the model is reloaded. Rebuild the sim when the
   // user changes it mid-session so the click doesn't silently do nothing.
+  async function reloadSimulationModel(reason: string) {
+    if (!simActive || simReloading) return
+    if (!requireSimResetMode(reason)) {
+      syncTerrainUi()
+      return
+    }
+    simReloading = true
+    simRunning = false
+    stopSimLoop()
+    try {
+      const freeBaseChecked = (document.getElementById('sim-free-base') as HTMLInputElement | null)?.checked
+      resetSimSessionState()
+      const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
+      if (freeBaseEl && typeof freeBaseChecked === 'boolean') freeBaseEl.checked = freeBaseChecked
+      syncTerrainUi()
+      await initializeSimulation()
+      deps.showToast(`Simulation reloaded: ${reason}`, 'info')
+    } catch (error) {
+      console.error('[Sim] Reload failed:', error)
+      deps.showToast(`Reload failed: ${error instanceof Error ? error.message : String(error)}`, 'error')
+      // Reload failure can leave backend with no loaded model (sim_load replaces
+      // the model and may clear it on failure). Force a clean disabled state so
+      // frontend/backend don't drift.
+      await cleanupBackendSimSession()
+      simActive = false
+      simRunning = false
+      simAtResetMode = true
+      resetSimStatusDisplay()
+    } finally {
+      simReloading = false
+      updateSimUI()
+    }
+  }
+
+  syncTerrainUi()
+  terrainTypeEl?.addEventListener('change', () => {
+    syncTerrainUi()
+    reloadSimulationModel('changing terrain')
+  })
+  terrainSeedEl?.addEventListener('change', () => {
+    syncTerrainUi()
+    reloadSimulationModel('changing terrain seed')
+  })
+  terrainRandomizeBtn?.addEventListener('click', () => {
+    if (!requireSimResetMode('randomizing terrain')) return
+    if (terrainSeedEl) terrainSeedEl.value = String(Math.floor(Math.random() * 2147483647))
+    syncTerrainUi()
+    reloadSimulationModel('randomizing terrain')
+  })
+  ;[
+    terrainHeightEl,
+    terrainScaleEl,
+    terrainRoughnessEl,
+    terrainFrictionEl,
+  ].forEach(el => {
+    el?.addEventListener('input', syncTerrainUi)
+    el?.addEventListener('change', () => reloadSimulationModel('changing terrain settings'))
+  })
+
   const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
   if (freeBaseEl) {
-    let reloading = false
     freeBaseEl.addEventListener('change', async () => {
-      if (!simActive || reloading) return
-      reloading = true
-      simRunning = false
-      stopSimLoop()
-      try {
-        await initializeSimulation()
-        deps.showToast(`Free base ${freeBaseEl.checked ? 'enabled' : 'disabled'} — model reloaded`, 'info')
-      } catch (error) {
-        console.error('[Sim] Free-base reload failed:', error)
-        deps.showToast(`Reload failed: ${error instanceof Error ? error.message : String(error)}`, 'error')
-      } finally {
-        reloading = false
-      }
+      reloadSimulationModel('changing free-base mode')
     })
   }
 
@@ -967,6 +1311,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   deps.simPlay.addEventListener('click', () => {
     if (!simCoreRunning) return
     clearSimError()
+    aiRequestToken++
+    aiGenerating = false
+    simAtResetMode = false
     simRunning = true
     startSimLoop()
     updateSimUI()
@@ -996,6 +1343,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       }
       updateRobotFromSimState(state)
       simTime = typeof state.time === 'number' && !Number.isNaN(state.time) ? state.time : 0
+      simAtResetMode = true
       // Re-anchor wall clock so the next play() starts from this simTime, not a stale delta.
       simWallStart = performance.now()
       simTimeAtStart = simTime
@@ -1008,11 +1356,13 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   // Sim speed ±
   document.getElementById('sim-speed-down')?.addEventListener('click', () => {
+    if (!requireSimResetMode('changing simulation speed')) return
     simSpeedMult = Math.max(0.1, parseFloat((simSpeedMult - 0.1).toFixed(1)))
     if (simRunning) { simWallStart = performance.now(); simTimeAtStart = simTime }
     updateSimUI()
   })
   document.getElementById('sim-speed-up')?.addEventListener('click', () => {
+    if (!requireSimResetMode('changing simulation speed')) return
     simSpeedMult = Math.min(2.0, parseFloat((simSpeedMult + 0.1).toFixed(1)))
     if (simRunning) { simWallStart = performance.now(); simTimeAtStart = simTime }
     updateSimUI()
@@ -1020,7 +1370,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   // Gravity toggle
   simGravityEnabled?.addEventListener('change', async () => {
-    if (!simCoreRunning) return
+    if (!requireSimResetMode('changing gravity')) return
     const grav = simGravityEnabled.checked ? [0, 0, -9.81] : [0, 0, 0]
     try {
       await invoke('sim_set_gravity', { gravity: grav })
@@ -1038,6 +1388,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       const state = normalizeMuJoCoState(await invoke('sim_get_state'))
       updateRobotFromSimState(state)
       simTime = 0
+      simAtResetMode = true
       clearSimError()
       updateSimUI()
     } catch (e) { deps.showToast(`Reset failed: ${e}`, 'error') }
@@ -1059,9 +1410,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   return {
     isSimActive: () => simActive,
     isSimRunning: () => simRunning,
-    isSimCoreRunning: () => simCoreRunning,
     getSimTime: () => simTime,
-    tickPreviewAnimation,
     tickCameraFollow,
   }
 }

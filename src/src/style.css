@@ -855,6 +855,17 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   font-family: var(--font-mono, monospace);
 }
 .sim-input-num:focus { outline: none; border-color: var(--accent); }
+.sim-select {
+  width: 100%;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: var(--font);
+}
+.sim-select:focus { outline: none; border-color: var(--accent); }
 
 .sim-advanced {
   border-top: 1px solid var(--border-dim);
@@ -1081,6 +1092,7 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 #panel-sim .sim-status-card,
 #panel-sim .sim-ai-gen,
 #panel-sim .sim-script-upload,
+#panel-sim .sim-terrain-card,
 #panel-sim .sim-viz-toggles,
 #panel-sim .sim-pose-row {
   border: 1px solid rgba(255,255,255,0.07);
@@ -1145,6 +1157,28 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   text-align: right;
 }
 
+#panel-sim .sim-ai-prompt {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1a1a1a;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 52px;
+  outline: none;
+}
+#panel-sim .sim-ai-prompt:focus {
+  border-color: rgba(0, 122, 204, 0.6);
+}
+#panel-sim .sim-ai-prompt::placeholder {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
 #panel-sim .sim-ai-actions {
   padding: 0;
 }
@@ -1170,6 +1204,27 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 
 #panel-sim .sim-pose-row {
   padding: 8px;
+}
+
+#panel-sim .sim-terrain-card {
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#panel-sim .sim-terrain-card .sim-field-row {
+  padding: 0;
+}
+
+#panel-sim .sim-terrain-card .sim-field-row-inline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+#panel-sim .sim-terrain-card input[type="range"] {
+  width: 100%;
 }
 
 #panel-sim .sim-viz-toggles {

@@ -330,7 +330,13 @@ async fn validate_urdf_content(state: State<'_, AppState>, urdf_content: String)
 
 /// Load a robot model for simulation
 #[tauri::command]
-async fn sim_load(state: State<'_, AppState>, path: String, free_base: Option<bool>, seed: Option<u64>) -> Result<serde_json::Value, String> {
+async fn sim_load(
+    state: State<'_, AppState>,
+    path: String,
+    free_base: Option<bool>,
+    seed: Option<u64>,
+    terrain_config: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
@@ -338,6 +344,9 @@ async fn sim_load(state: State<'_, AppState>, path: String, free_base: Option<bo
     let mut params = json!({ "path": path, "free_base": free_base.unwrap_or(false) });
     if let Some(s) = seed {
         params["seed"] = json!(s);
+    }
+    if let Some(config) = terrain_config {
+        params["terrain_config"] = config;
     }
     process.send_rpc("sim_load", params, 1)
 }
@@ -411,18 +420,19 @@ async fn ai_gen_sim_script(
     prompt: String,
     urdf_content: String,
     current_script: Option<String>,
+    terrain_config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
     let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
-    process.send_rpc(
-        "ai_gen_sim_script",
-        json!({
-            "prompt": prompt,
-            "urdf_content": urdf_content,
-            "current_script": current_script.unwrap_or_default(),
-        }),
-        1,
-    )
+    let mut params = json!({
+        "prompt": prompt,
+        "urdf_content": urdf_content,
+        "current_script": current_script.unwrap_or_default(),
+    });
+    if let Some(config) = terrain_config {
+        params["terrain_config"] = config;
+    }
+    process.send_rpc("ai_gen_sim_script", params, 1)
 }
 
 /// Render the simulation viewport to PNG and return base64

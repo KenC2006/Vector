@@ -16,10 +16,28 @@ export interface SimStageDeps {
   buildVisuals: THREE.Object3D[]
 }
 
+export type SimTerrainType = 'flat' | 'rough' | 'stairs'
+
+export interface SimTerrainConfig {
+  type: SimTerrainType
+  seed: number
+  height: number
+  scale: number
+  roughness: number
+  friction: number
+  roughHeightfield?: {
+    nrow: number
+    ncol: number
+    elevation: number[]
+    size: number[] // MuJoCo hfield size [sx, sy, sz, base]
+  } | null
+}
+
 export interface SimStageApi {
   enter(): void
   exit(): void
   isActive(): boolean
+  setTerrain(config: SimTerrainConfig): void
 }
 
 export function initSimStage(deps: SimStageDeps): SimStageApi {
@@ -77,6 +95,7 @@ export function initSimStage(deps: SimStageDeps): SimStageApi {
   rim.rotation.x = -Math.PI / 2
   rim.position.y = 0.001
   stageGroup.add(rim)
+  const referenceObjects: THREE.Object3D[] = [stageDisk, rim]
 
   // Subtle range rings at 0.5, 1, 2 m for scale reference.
   for (const r of [0.5, 1.0, 2.0]) {
@@ -87,6 +106,7 @@ export function initSimStage(deps: SimStageDeps): SimStageApi {
     ring.rotation.x = -Math.PI / 2
     ring.position.y = 0.002
     stageGroup.add(ring)
+    referenceObjects.push(ring)
   }
 
   // Origin tick.
@@ -98,9 +118,100 @@ export function initSimStage(deps: SimStageDeps): SimStageApi {
   originTick.position.y = 0.003
   stageGroup.add(originTick)
 
+  const terrainGroup = new THREE.Group()
+  terrainGroup.name = 'sim_terrain_visuals'
+  stageGroup.add(terrainGroup)
+
   // Make the stage disk double-sided so it stays visible from below
   // rather than back-face culling to invisibility.
   ;(stageDisk.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide
+
+  function disposeObject(obj: THREE.Object3D) {
+    obj.traverse(child => {
+      const mesh = child as THREE.Mesh
+      if (!mesh.isMesh) return
+      mesh.geometry?.dispose()
+      const material = mesh.material
+      if (Array.isArray(material)) material.forEach(m => m.dispose())
+      else material?.dispose()
+    })
+  }
+
+  function clearTerrainVisuals() {
+    for (const child of [...terrainGroup.children]) {
+      terrainGroup.remove(child)
+      disposeObject(child)
+    }
+  }
+
+  function setReferenceVisible(visible: boolean) {
+    referenceObjects.forEach(obj => { obj.visible = visible })
+  }
+
+  function addRoughTerrain(config: SimTerrainConfig) {
+    const hf = config.roughHeightfield
+    const n = Math.max(2, hf?.nrow ?? 49)
+    const m = Math.max(2, hf?.ncol ?? 49)
+    const sx = hf?.size?.[0] ?? (4.5 * config.scale)
+    const sy = hf?.size?.[1] ?? (4.5 * config.scale)
+    const sz = hf?.size?.[2] ?? Math.max(config.height, 0.01)
+    const elev = hf?.elevation ?? []
+    const positions: number[] = []
+    const indices: number[] = []
+    for (let i = 0; i < n; i++) {
+      const x = -sx + (2 * sx * i) / (n - 1)
+      for (let j = 0; j < m; j++) {
+        const z = -sy + (2 * sy * j) / (m - 1)
+        const idx = i * m + j
+        // MuJoCo hfield elevation is normalized [0,1] and scaled by size[2].
+        const y = (typeof elev[idx] === 'number' ? elev[idx] : 0) * sz
+        positions.push(x, y, z)
+      }
+    }
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = 0; j < m - 1; j++) {
+        const a = i * m + j
+        indices.push(a, a + 1, a + m, a + 1, a + m + 1, a + m)
+      }
+    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setIndex(indices)
+    geometry.computeVertexNormals()
+    const terrain = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({ color: 0x3f4d43, roughness: 0.92, metalness: 0.02 })
+    )
+    terrain.receiveShadow = true
+    terrainGroup.add(terrain)
+  }
+
+  function addStairTerrain(config: SimTerrainConfig) {
+    const height = Math.max(0.02, config.height)
+    const depth = 0.34 * config.scale
+    const width = 2.4 * config.scale
+    const startX = 0.9
+    const material = new THREE.MeshStandardMaterial({ color: 0x5c574f, roughness: 0.88, metalness: 0.03 })
+    for (let i = 0; i < 7; i++) {
+      const stepHeight = height * (i + 1)
+      const step = new THREE.Mesh(
+        new THREE.BoxGeometry(depth, stepHeight, width),
+        material.clone()
+      )
+      step.position.set(startX + depth * (i + 0.5), stepHeight / 2, 0)
+      step.receiveShadow = true
+      terrainGroup.add(step)
+    }
+  }
+
+  function setTerrain(config: SimTerrainConfig) {
+    clearTerrainVisuals()
+    const terrainType = config?.type ?? 'flat'
+    setReferenceVisible(terrainType === 'flat')
+    originTick.visible = true
+    if (terrainType === 'rough') addRoughTerrain(config)
+    else if (terrainType === 'stairs') addStairTerrain(config)
+  }
 
   // Snapshot of build-mode state, captured in enter(), restored in exit().
   type Snapshot = {
@@ -145,5 +256,5 @@ export function initSimStage(deps: SimStageDeps): SimStageApi {
     snap = null
   }
 
-  return { enter, exit, isActive: () => snap !== null }
+  return { enter, exit, isActive: () => snap !== null, setTerrain }
 }

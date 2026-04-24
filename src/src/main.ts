@@ -1354,6 +1354,7 @@ simApi = initSimManager({
   showToast,
   openSidebarPanel: (p) => _openSidebarPanel(p),
   resize: () => _resize(),
+  setTerrainVisual: (config) => simStage.setTerrain(config),
   onEnterSim: () => {
     viewportInteractionMode = 'inspect'
     syncViewportModeButton()
@@ -1460,7 +1461,7 @@ function animate() {
     cameraFocusTween = stepCameraFocusTween(cameraFocusTween, camera, controls, performance.now())
   }
 
-  // Phase C: camera follow + preview animation (delegated to simManager)
+  // Sim camera follow (delegated to simManager)
   simApi.tickCameraFollow()
 
   controls.update()
@@ -1471,9 +1472,6 @@ function animate() {
       marker.rotation.y += 0.01
     }
   }
-
-  // Three.js preview animation + real physics update (delegated to simManager)
-  simApi.tickPreviewAnimation()
 
   composer.render()
 }

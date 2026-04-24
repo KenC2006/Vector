@@ -10,7 +10,7 @@ import base64
 import io
 import re
 import numpy as np
-from .urdf_to_mjcf import urdf_to_mjcf
+from .urdf_to_mjcf import urdf_to_mjcf, normalize_terrain_config
 
 # Ring buffer capacity: ~60 s at 60 fps ≈ 3 600 frames.
 _RING_MAX = 3600
@@ -55,8 +55,14 @@ class MuJoCoSimulator:
         self._ring: deque = deque(maxlen=_RING_MAX)
         # joint name → actuator id (built at load); avoids O(nu) name lookup per control.
         self._actuator_by_joint: Dict[str, int] = {}
+        self._terrain_config_active: Dict[str, Any] = normalize_terrain_config(None)
 
-    def load_urdf(self, urdf_path: str, free_base: bool = False) -> Dict[str, Any]:
+    def load_urdf(
+        self,
+        urdf_path: str,
+        free_base: bool = False,
+        terrain_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Load a URDF file into MuJoCo.
 
@@ -74,7 +80,12 @@ class MuJoCoSimulator:
         """
         try:
             # Convert URDF to MJCF
-            mjcf_xml = urdf_to_mjcf(urdf_path, free_base=free_base)
+            mjcf_xml = urdf_to_mjcf(
+                urdf_path,
+                free_base=free_base,
+                terrain_config=terrain_config,
+            )
+            self._terrain_config_active = normalize_terrain_config(terrain_config)
 
             # Load into MuJoCo
             self.model = self.mujoco.MjModel.from_xml_string(mjcf_xml)
@@ -120,6 +131,7 @@ class MuJoCoSimulator:
         except Exception as e:
             self.model = None
             self.data = None
+            self._terrain_config_active = normalize_terrain_config(None)
             raise ValueError(f"Failed to load URDF: {e}")
 
     def _geom_min_z(self, i: int) -> float:
@@ -194,6 +206,8 @@ class MuJoCoSimulator:
         # rotation-aware bounds (see _geom_min_z).
         min_z = float("inf")
         for i in range(self.model.ngeom):
+            if int(self.model.geom_bodyid[i]) == 0:
+                continue
             if i == floor_id:
                 continue
             if int(self.model.geom_type[i]) == plane_type:
@@ -240,6 +254,8 @@ class MuJoCoSimulator:
         # rotation-aware bounds (see _geom_min_z).
         min_z = float("inf")
         for i in range(self.model.ngeom):
+            if int(self.model.geom_bodyid[i]) == 0:
+                continue
             if i == floor_id:
                 continue
             if int(self.model.geom_type[i]) == plane_type:
@@ -629,6 +645,25 @@ class MuJoCoSimulator:
                 "URDF inertial tags may be missing or incorrect."
             )
 
+        terrain_hfield: Optional[Dict[str, Any]] = None
+        try:
+            if self._terrain_config_active.get("type") == "rough" and int(self.model.nhfield) > 0:
+                hfield_id = 0
+                nrow = int(self.model.hfield_nrow[hfield_id])
+                ncol = int(self.model.hfield_ncol[hfield_id])
+                adr = int(self.model.hfield_adr[hfield_id])
+                count = nrow * ncol
+                elev = [float(x) for x in self.model.hfield_data[adr:adr + count]]
+                size = [float(x) for x in self.model.hfield_size[hfield_id]]
+                terrain_hfield = {
+                    "nrow": nrow,
+                    "ncol": ncol,
+                    "elevation": elev,
+                    "size": size,
+                }
+        except Exception:
+            terrain_hfield = None
+
         return {
             "name": "robot",
             "n_bodies": int(self.model.nbody),
@@ -639,4 +674,6 @@ class MuJoCoSimulator:
             "total_mass_kg": total_mass,
             "com_m": com,
             "mass_warning": mass_warning,
+            "terrain_config": dict(self._terrain_config_active),
+            "terrain_hfield": terrain_hfield,
         }
