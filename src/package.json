@@ -11,9 +11,12 @@
     "test:graph-preservation": "node --experimental-strip-types src/graphPreservationCorpus.ts",
     "test:tool-dispatch": "node --experimental-strip-types src/toolDispatchCorpus.ts",
     "test:alignment-corpus": "node --experimental-strip-types src/alignmentCorpus.ts",
-    "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts"
+    "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts",
+    "test:servo-pose": "node --experimental-strip-types src/servoPoseCorpus.ts",
+    "test:servo-migration": "node --experimental-strip-types src/legacyServoMigrationCorpus.ts"
   },
   "devDependencies": {
+    "@xmldom/xmldom": "^0.9.10",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"
   },

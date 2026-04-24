@@ -20,6 +20,7 @@ import { initGitPanel } from './gitPanel'
 import { initValidation, validateXMLStructure, validateURDFPerLink } from './validation'
 import { parseURDFToScene, buildKinematicGraphFromURDF, setPathResolver, defaultMat } from './urdfParser'
 import { rpyToQuat } from './rotationIO'
+import { migrateLegacyServos } from './legacyServoMigration'
 import type { ParsedRobot, KinematicLink, KinematicJoint } from './urdfParser'
 import { initNodeGraph } from './nodeGraph'
 import { initViewportControls } from './viewportControls'
@@ -1627,6 +1628,44 @@ function rebuildJointAxisVisuals() {
 // reparse (user typed again while xacro was processing) is silently discarded.
 let xacroGeneration = 0
 
+// docs/SERVO_SPLIT_PLAN.md §legacy-migration — parse URDF text, migrate any
+// legacy single-link servos into body+output sub-links, and return the
+// serialized result. If the preset catalog isn't loaded yet (first reparse
+// after app start) this is a no-op; next reparse, once presets are in
+// memory, does the migration. When the content is the live monaco buffer
+// (no xmlOverride), migrated XML is also written back so downstream
+// getCurrentUrdfText sees the upgraded form.
+function _maybeMigrateLegacyServos(urdfContent: string, writeBackToEditor: boolean): string {
+  if (!urdfAssemblyApi) return urdfContent
+  if (!urdfContent.includes('actuator_servo_') && !urdfContent.includes('actuator_continuous_')) {
+    return urdfContent
+  }
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(urdfContent, 'application/xml')
+    if (doc.documentElement.nodeName === 'parsererror') return urdfContent
+  } catch {
+    return urdfContent
+  }
+  const ctx = {
+    findPreset: (id: string) => urdfAssemblyApi!.getLegacyMigrationPreset(id),
+  }
+  const result = migrateLegacyServos(doc, ctx)
+  if (result.migrated === 0) return urdfContent
+  console.log(`[servo_migrate] converted ${result.migrated} legacy servos, skipped ${result.skipped}`)
+  const migratedText = new XMLSerializer().serializeToString(doc)
+  if (writeBackToEditor) {
+    const model = monacoEditor.getModel()
+    if (model) {
+      const current = model.getValue()
+      if (current !== migratedText) {
+        model.setValue(migratedText)
+      }
+    }
+  }
+  return migratedText
+}
+
 function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
   try {
     let urdfContent: string
@@ -1660,6 +1699,9 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
       }).then(processed => {
         // Discard result if a newer reparse was issued or the user switched files.
         if (xacroGeneration !== myGeneration || activeFile !== capturedFile) return
+        // docs/SERVO_SPLIT_PLAN.md §legacy-migration — apply to the xacro-
+        // expanded output as well so macro-based URDFs get the same upgrade.
+        processed = _maybeMigrateLegacyServos(processed, false)
         try {
           const newParsed = parseURDFToScene(processed)
           const newKinematicData = buildKinematicGraphFromURDF(processed)
@@ -1701,6 +1743,13 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
       })
       return // async — will reparse when done
     }
+
+    // docs/SERVO_SPLIT_PLAN.md §legacy-migration — upgrade pre-split URDFs
+    // (e.g. dog2.urdf) into body+output sub-links before parsing the scene.
+    // Idempotent: no-op on already-migrated URDFs. Waits for preset catalog
+    // to load; if it's not ready yet, first reparse is a no-op and the next
+    // one (after presets load) migrates.
+    urdfContent = _maybeMigrateLegacyServos(urdfContent, xmlOverride === undefined)
 
     const newParsed = parseURDFToScene(urdfContent)
     const newKinematicData = buildKinematicGraphFromURDF(urdfContent)

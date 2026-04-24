@@ -472,6 +472,12 @@ export function autoRepairTopology(
     const parentPreset = ctx.findPreset(parent.component_id)
     const childPreset = ctx.findPreset(comp.component_id)
     if (!parentPreset || !childPreset) continue
+    // docs/SERVO_SPLIT_PLAN.md §retire-coupler — split-link servos carry a
+    // pre-modeled horn on their `_output` sub-link. Any shaft→mount_face
+    // mismatch against such a parent is resolved by routing the child into
+    // the output link (port subLink='output' in attachmentNodes.ts), so no
+    // bridging coupler disc is needed. Skip auto-repair here.
+    if ((parentPreset as { split_link?: unknown }).split_link) continue
     const parentFace = comp.attach_face || 'top'
     const childFace = OPPOSITE_FACE[parentFace] || 'bottom'
     const pClass = portClassAtFace(parentPreset, parentFace)

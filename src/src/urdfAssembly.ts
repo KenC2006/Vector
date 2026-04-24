@@ -14,9 +14,11 @@ import {
   componentPortsForPreset,
   resolveFaceToPort,
   resolveConnectionJoint,
+  resolveSublinkName,
   isTireComponentId,
   isDrivetrainComponentId,
 } from './attachmentNodes'
+import { solveServoBodyPose, pickBracket } from './servoPose.ts'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
@@ -108,6 +110,18 @@ interface PresetPhysical {
   collision_mesh?: string
 }
 
+/** docs/SERVO_SPLIT_PLAN.md — servos emit as two links (body + output) joined
+ *  by an internal revolute. Presence of `split_link` on a preset triggers the
+ *  emitter split path; absence → legacy single-link emission. Values are all
+ *  body-local (URDF Z-up) and in millimetres where suffixed `_mm`. */
+interface SplitLink {
+  body_mass_frac: number
+  output_origin_xyz_mm: [number, number, number]
+  output_axis_xyz: [number, number, number]
+  output_half_extents_mm: [number, number, number]
+  bracket_tilt_threshold_deg: number
+}
+
 interface PresetComponent {
   id: string
   name: string
@@ -121,6 +135,7 @@ interface PresetComponent {
    *  can add new connectors (shaft_out, plate_top) or override a default
    *  whose bbox-derived pose doesn't match the rendered mesh. */
   connectors?: MateConnector[]
+  split_link?: SplitLink
 }
 
 interface PresetCategory {
@@ -135,8 +150,33 @@ interface PresetData {
 type AssemblyJointType = 'fixed' | 'revolute' | 'continuous' | 'prismatic'
 
 function componentIdFromLinkName(linkName: string): string {
-  const match = linkName.match(/^(.+)_\d+$/)
-  return match ? match[1] : linkName
+  // docs/SERVO_SPLIT_PLAN.md — split-link servos get a `_body` / `_output`
+  // suffix after the instance number. Strip that first so the trailing `_N`
+  // strip sees the canonical `${componentId}_N` shape.
+  const stripped = linkName.replace(/_(body|output)$/, '')
+  const match = stripped.match(/^(.+)_\d+$/)
+  return match ? match[1] : stripped
+}
+
+/** For split-link servos the AI-level name resolves to the BODY sub-link in
+ *  nameMap (most mates live on the body). When a child mates via the `top`
+ *  port — whose subLink is `'output'` — rewrite `..._body` to `..._output`
+ *  so the child's joint parent is the horn. Returns `baseLinkName` unchanged
+ *  for non-split parents. */
+function remapToSplitServoSubLink(
+  baseLinkName: string,
+  port: { subLink?: 'body' | 'output' } | undefined | null,
+  parentPreset: PresetComponent | null | undefined,
+): string {
+  if (!parentPreset?.split_link) return baseLinkName
+  const want = port?.subLink ?? 'body'
+  if (baseLinkName.endsWith('_body') && want === 'output') {
+    return baseLinkName.slice(0, -'_body'.length) + '_output'
+  }
+  if (baseLinkName.endsWith('_output') && want === 'body') {
+    return baseLinkName.slice(0, -'_output'.length) + '_body'
+  }
+  return baseLinkName
 }
 
 function normalizeJointType(value?: string): AssemblyJointType {
@@ -274,6 +314,21 @@ export interface UrdfAssemblyApi {
    *  Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
    *  where per-instance length_mm makes the link's URDF box the authoritative source. */
   getPresetBoundingBoxMm(compId: string): [number, number, number] | null
+  /** docs/SERVO_SPLIT_PLAN.md §legacy-migration — expose a minimal preset
+   *  view (mass + split_link) so the legacy-URDF migration pass can look up
+   *  the preset catalog without pulling the full PresetData type. Returns
+   *  null for ids that aren't in the catalog. */
+  getLegacyMigrationPreset(compId: string): {
+    id: string
+    physical?: { mass_kg?: number }
+    split_link?: {
+      body_mass_frac: number
+      output_origin_xyz_mm: [number, number, number]
+      output_axis_xyz: [number, number, number]
+      output_half_extents_mm: [number, number, number]
+      bracket_tilt_threshold_deg: number
+    }
+  } | null
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -1604,9 +1659,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
     // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
     // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
-    // Strip trailing _N instance number to recover the component ID (e.g. "servo_micro_2" → "servo_micro").
-    const compIdMatch = parentLinkName.match(/^(.+)_(\d+)$/)
-    const compId = compIdMatch?.[1] ?? parentLinkName
+    // Use `componentIdFromLinkName` so split-link sub-link names (…_body / …_output)
+    // also resolve to the underlying component id; the raw `(.+)_(\d+)$` regex
+    // misses them and would silently bypass the rendered-mesh fast-path.
+    const compId = componentIdFromLinkName(parentLinkName)
     const renderedDims = getRenderedMeshDims(compId)
     if (renderedDims && renderedDims.x > 0.001) {
       // GLB is re-centered on its AABB in applyMeshToLink, so AABB center sits at the
@@ -2701,6 +2757,138 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
+  /** docs/SERVO_SPLIT_PLAN.md — emit a split-link servo as two `<link>`s
+   *  (body + output) joined by an internal revolute, plus a fixed mount
+   *  joint to `parentLinkName`. Returns the generated link / joint names
+   *  so callers can keep nameMap and placement logs in sync. Returns
+   *  `null` when the preset has no `split_link`. */
+  function emitSplitServoLinks(
+    doc: Document,
+    preset: PresetComponent,
+    baseName: string,
+    parentLinkName: string,
+    mountPlacement: { xyz: string; rpy: string },
+  ): { bodyLinkName: string; outputLinkName: string; internalJointName: string } | null {
+    const split = preset.split_link
+    if (!split) return null
+
+    const robot = doc.querySelector('robot')
+    if (!robot) return null
+
+    const totalMass = preset.physical.mass_kg ?? preset.physical.mass_kg_per_100mm ?? 0.1
+    const bodyMass = totalMass * split.body_mass_frac
+    const outputMass = totalMass * Math.max(0, 1 - split.body_mass_frac)
+
+    const bb = getOrComputeBbox(preset.id, preset)
+    const xm = bb[0] / 1000
+    const ym = bb[1] / 1000
+    const zm = bb[2] / 1000
+
+    const bodyInertia = computeBoxInertia(bodyMass, xm, ym, zm)
+    // `output_half_extents_mm` is [radius, radius, full_height] despite the
+    // "half_extents" name — matches the geometry formulas in actuators.ts
+    // where hornR = min(w,d)*0.3 (radius) and hornH = h*0.07 (full length).
+    const hornR = split.output_half_extents_mm[0] / 1000
+    const hornH = split.output_half_extents_mm[2] / 1000
+    const outputInertia = computeCylinderInertia(outputMass, hornR, hornH)
+
+    const bodyLinkName = `${baseName}_body`
+    const outputLinkName = `${baseName}_output`
+    const mountJointName = `${baseName}_mount`
+    const internalJointName = `${baseName}_joint`
+
+    // ── Body link (housing + mounting ears + cable; carries body_mass_frac of mass) ──
+    const bodyLink = doc.createElement('link')
+    bodyLink.setAttribute('name', bodyLinkName)
+
+    const bodyInertial = doc.createElement('inertial')
+    const bodyMassEl = doc.createElement('mass')
+    bodyMassEl.setAttribute('value', bodyMass.toFixed(4))
+    const bodyInertiaEl = doc.createElement('inertia')
+    bodyInertiaEl.setAttribute('ixx', bodyInertia.ixx.toFixed(6))
+    bodyInertiaEl.setAttribute('iyy', bodyInertia.iyy.toFixed(6))
+    bodyInertiaEl.setAttribute('izz', bodyInertia.izz.toFixed(6))
+    bodyInertiaEl.setAttribute('ixy', '0'); bodyInertiaEl.setAttribute('ixz', '0'); bodyInertiaEl.setAttribute('iyz', '0')
+    bodyInertial.appendChild(bodyMassEl); bodyInertial.appendChild(bodyInertiaEl)
+    bodyLink.appendChild(bodyInertial)
+
+    // Body URDF primitives (placeholder — generateServoBody rich visual overrides at render time).
+    const catName = findCategory(preset)
+    const visuals = generateVisuals(preset as Parameters<typeof generateVisuals>[0], catName)
+    visuals.forEach((vis, i) => addVisualElement(doc, bodyLink, vis, i))
+    const collisionMesh = preset.physical.collision_mesh
+    if (collisionMesh) {
+      addMeshCollisionElement(doc, bodyLink, collisionMesh)
+    } else {
+      visuals.forEach(vis => addCollisionElement(doc, bodyLink, vis))
+    }
+    robot.appendChild(bodyLink)
+
+    // ── Output link (horn + shaft; carries 1 - body_mass_frac of mass) ──
+    const outputLink = doc.createElement('link')
+    outputLink.setAttribute('name', outputLinkName)
+
+    const outputInertial = doc.createElement('inertial')
+    const outputMassEl = doc.createElement('mass')
+    outputMassEl.setAttribute('value', outputMass.toFixed(4))
+    const outputInertiaEl = doc.createElement('inertia')
+    outputInertiaEl.setAttribute('ixx', outputInertia.ixx.toFixed(6))
+    outputInertiaEl.setAttribute('iyy', outputInertia.iyy.toFixed(6))
+    outputInertiaEl.setAttribute('izz', outputInertia.izz.toFixed(6))
+    outputInertiaEl.setAttribute('ixy', '0'); outputInertiaEl.setAttribute('ixz', '0'); outputInertiaEl.setAttribute('iyz', '0')
+    outputInertial.appendChild(outputMassEl); outputInertial.appendChild(outputInertiaEl)
+    outputLink.appendChild(outputInertial)
+
+    // Output URDF primitives: a small cylinder stand-in for the horn disc.
+    // Positioned at link origin (horn centerline); generateServoOutput rich
+    // visual takes over at render time.
+    const color = CATEGORY_COLORS[catName ?? 'actuators'] ?? [0.6, 0.6, 0.6, 1]
+    const hornVis: UrdfVisualDesc = {
+      origin_xyz: [0, 0, 0],
+      origin_rpy: [0, 0, 0],
+      geometry: { type: 'cylinder', radius: hornR, length: hornH },
+      color_rgba: [Math.min(1, color[0] * 1.2), Math.min(1, color[1] * 1.2), Math.min(1, color[2] * 1.2), 1],
+    }
+    addVisualElement(doc, outputLink, hornVis, 0)
+    addCollisionElement(doc, outputLink, hornVis)
+    robot.appendChild(outputLink)
+
+    // ── Mount joint: parent ─→ body (fixed; carries body orientation) ──
+    const mountJoint = doc.createElement('joint')
+    mountJoint.setAttribute('name', mountJointName)
+    mountJoint.setAttribute('type', 'fixed')
+    const mParent = doc.createElement('parent'); mParent.setAttribute('link', parentLinkName)
+    const mChild = doc.createElement('child'); mChild.setAttribute('link', bodyLinkName)
+    const mOrigin = doc.createElement('origin')
+    mOrigin.setAttribute('xyz', mountPlacement.xyz)
+    mOrigin.setAttribute('rpy', mountPlacement.rpy)
+    mountJoint.appendChild(mParent); mountJoint.appendChild(mChild); mountJoint.appendChild(mOrigin)
+    robot.appendChild(mountJoint)
+
+    // ── Internal revolute: body ─→ output (the actuated DOF) ──
+    const internalJoint = doc.createElement('joint')
+    internalJoint.setAttribute('name', internalJointName)
+    internalJoint.setAttribute('type', 'revolute')
+    const iParent = doc.createElement('parent'); iParent.setAttribute('link', bodyLinkName)
+    const iChild = doc.createElement('child'); iChild.setAttribute('link', outputLinkName)
+    const iOrigin = doc.createElement('origin')
+    const originXyz = split.output_origin_xyz_mm.map(v => (v / 1000).toFixed(6)).join(' ')
+    iOrigin.setAttribute('xyz', originXyz)
+    iOrigin.setAttribute('rpy', '0 0 0')
+    const iAxis = doc.createElement('axis')
+    iAxis.setAttribute('xyz', split.output_axis_xyz.join(' '))
+    const maxTorque = (preset.mechanical_electrical.max_torque_nm as number)
+      ?? (preset.mechanical_electrical.holding_torque_nm as number) ?? 10
+    const iLimit = doc.createElement('limit')
+    iLimit.setAttribute('lower', '-3.14159'); iLimit.setAttribute('upper', '3.14159')
+    iLimit.setAttribute('effort', String(maxTorque)); iLimit.setAttribute('velocity', '3.14')
+    internalJoint.appendChild(iParent); internalJoint.appendChild(iChild); internalJoint.appendChild(iOrigin)
+    internalJoint.appendChild(iAxis); internalJoint.appendChild(iLimit)
+    robot.appendChild(internalJoint)
+
+    return { bodyLinkName, outputLinkName, internalJointName }
+  }
+
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
   function addComponentCore(
     comp: PresetComponent,
@@ -2736,6 +2924,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const changed = commitUrdf(doc => {
       const robot = doc.documentElement
       if (!robot || robot.nodeName !== 'robot') return false
+
+      // docs/SERVO_SPLIT_PLAN.md — UI carry-drop path for split-link servos
+      // emits the body+output pair. No solver here since the UI supplies
+      // explicit xyzStr/rpyStr; those are used verbatim as the mount pose.
+      if (comp.split_link) {
+        const result = emitSplitServoLinks(
+          doc, comp, childName, parentLink,
+          { xyz: xyzStr, rpy: rpyStr },
+        )
+        return result !== null
+      }
 
       const link = doc.createElement('link')
       link.setAttribute('name', childName)
@@ -2787,7 +2986,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     if (changed) {
       ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
-      selectLink(childName)
+      // For split-link servos, selection targets the body sub-link (primary
+      // URDF link); the `${childName}` base name is not a real <link>.
+      selectLink(comp.split_link ? `${childName}_body` : childName)
     }
     return changed
   }
@@ -4146,7 +4347,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         continue
       }
 
-      const parentLinkName = nameMap.get(comp.attach_to!) || comp.attach_to!
+      let parentLinkName = nameMap.get(comp.attach_to!) || comp.attach_to!
 
       // Select the parent link so addComponentCore attaches to it
       selectLink(parentLinkName)
@@ -4237,8 +4438,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           axis_xyz: axisNameToTuple(comp.joint_axis),
         })
         : { joint_type: requestedJointType, axis_xyz: axisNameToTuple(comp.joint_axis) }
-      const jointType = connectionJoint.joint_type
+      let jointType = connectionJoint.joint_type
+      // docs/SERVO_SPLIT_PLAN.md — the actuated DOF lives inside a split-link
+      // servo, so every external mate is fixed regardless of AI intent.
+      if (parentPreset?.split_link && jointType !== 'fixed') {
+        console.log(`[assembly][split_link] ${comp.link_name}: forcing external mate to fixed (parent ${parentPreset.id} has split_link; AI-requested ${jointType} ignored)`)
+        jointType = 'fixed'
+      }
       comp.joint_type = jointType
+
+      // docs/SERVO_SPLIT_PLAN.md — split-link servo's nameMap entry points at
+      // the body sub-link. Children whose mate targets the horn port get
+      // re-parented to `_output` so the internal revolute is downstream.
+      if (parentPreset?.split_link) {
+        const remapped = remapToSplitServoSubLink(parentLinkName, parentPort, parentPreset)
+        if (remapped !== parentLinkName) {
+          console.log(`[assembly][split_link] parent remap: ${parentLinkName} → ${remapped} (port ${parentPort?.nodeId}, subLink ${parentPort?.subLink})`)
+          parentLinkName = remapped
+        }
+      }
 
       // Get multi-child placement info
       const faceKey = `${comp.attach_to}:${comp.attach_face || 'top'}`
@@ -4322,7 +4540,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // 30mm short of the real end. Look the parent comp up by link_name and
       // splice its length_mm into the Z slot when the preset only authored a
       // cross-section.
-      const parentComp = components.find(c => c.link_name === parentLinkName)
+      // Look the parent comp up by its AI-level name (comp.attach_to). Using
+      // the post-remap `parentLinkName` would miss split-link parents after
+      // `remapToSplitServoSubLink` rewrote it to `..._body`/`..._output` —
+      // AssemblyGraph entries keep the base name.
+      const parentComp = components.find(c => c.link_name === comp.attach_to)
       const parentBb = (parentPhys?.cross_section_mm && parentComp?.length_mm !== undefined)
         ? [rawParentBb[0] ?? 40, rawParentBb[1] ?? 40, parentComp.length_mm]
         : rawParentBb
@@ -4396,9 +4618,68 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const visualPreset = buildVisPreset(preset, comp)
       const cVisuals = generateVisuals(visualPreset as Parameters<typeof generateVisuals>[0], cCatName)
 
+      // docs/SERVO_SPLIT_PLAN.md — split-link servos emit a body+output pair
+      // joined by an internal revolute. Body orientation comes from the axis-
+      // to-pose solver so the AI's world-intent `joint_axis` survives the
+      // split. External mates above forced `jointType = fixed`.
+      const faceNormalMap: Record<string, [number, number, number]> = {
+        top: [0, 0, 1], bottom: [0, 0, -1],
+        front: [1, 0, 0], back: [-1, 0, 0],
+        right: [0, 1, 0], left: [0, -1, 0],
+      }
+      let splitEmitResult: ReturnType<typeof emitSplitServoLinks> = null
+      let splitBodyRpy = ''
+      if (preset.split_link) {
+        const faceNormal = faceNormalMap[comp.attach_face || 'top'] ?? [0, 0, 1]
+        const hornAxis = axisNameToTuple(comp.joint_axis)
+        const solved = solveServoBodyPose({
+          parentFaceNormalWorld: new THREE.Vector3(...faceNormal),
+          desiredHornAxisWorld: new THREE.Vector3(...hornAxis),
+          parentWorldQuat: new THREE.Quaternion(),
+          preset: { split_link: preset.split_link },
+        })
+        const bracketKind = pickBracket(solved.bodyTiltDeg, preset.split_link.bracket_tilt_threshold_deg)
+        if (bracketKind !== 'none') {
+          console.warn(
+            `[assembly][split_link] ${comp.link_name} (${preset.id}) tilt=${solved.bodyTiltDeg.toFixed(1)}° ` +
+            `→ bracket recommendation=${bracketKind} (auto-insert deferred; body will rotate)`,
+          )
+        }
+        splitBodyRpy = solved.bodyLocalRpy.map(v => v.toFixed(4)).join(' ')
+      }
+
       const changed = commitUrdf(urdfDoc => {
         const robot = urdfDoc.querySelector('robot')
         if (!robot) return false
+
+        if (preset.split_link) {
+          // Solver RPY is the base; AI `attach_rpy` still overrides. Arm
+          // rest-pose heuristic is skipped — its semantics collide with the
+          // horn-axis solve (adding pitch post-solve breaks horn alignment).
+          let finalRpy = splitBodyRpy
+          const explicitRpy = comp.attach_rpy
+          if (Array.isArray(explicitRpy) && explicitRpy.length === 3
+              && explicitRpy.some(v => Math.abs(v) > 0.001)) {
+            finalRpy = explicitRpy.map(v => Number(v).toFixed(4)).join(' ')
+            console.log(`[assembly] attach_rpy override on split-link ${comp.link_name}: rpy=[${explicitRpy.join(', ')}]`)
+          }
+          const result = emitSplitServoLinks(
+            urdfDoc,
+            preset,
+            childName,
+            parentLinkName,
+            { xyz: placement.xyz, rpy: finalRpy },
+          )
+          if (!result) return false
+          splitEmitResult = result
+          // Propagate arm depth through the split-link servo so downstream
+          // arm-segment heuristics still fire (servo body behaves like any
+          // passthrough in the chain).
+          armDepth.set(comp.link_name, comp.attach_face === 'top'
+            ? (armDepth.get(comp.attach_to!) || 0)
+            : 0)
+          return true
+        }
 
         const link = urdfDoc.createElement('link')
         link.setAttribute('name', childName)
@@ -4479,15 +4760,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       })
 
       if (changed) {
-        nameMap.set(comp.link_name, childName)
+        // For split-link servos, the AI-level name maps to the BODY sub-link.
+        // Downstream consumers using `remapToSplitServoSubLink` remap to
+        // `_output` for children that mate via the horn port.
+        const storedName = splitEmitResult
+          ? splitEmitResult.bodyLinkName
+          : childName
+        nameMap.set(comp.link_name, storedName)
         placedCount++
         placementEntries.push({
-          linkName: childName,
+          linkName: storedName,
           parentLinkName,
           xyz: placement.xyz,
-          rpy: placement.rpy,
+          rpy: splitEmitResult ? splitBodyRpy : placement.rpy,
         })
-        console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
+        console.log(`[assembly] ✓ Placed ${storedName} at xyz=${placement.xyz} rpy=${splitEmitResult ? splitBodyRpy : placement.rpy}${splitEmitResult ? ' (split-link: +' + splitEmitResult.outputLinkName + ')' : ''}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
         // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
         // to URDF-visual dims when the rendered-mesh cache is stale).
@@ -4664,10 +4951,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (!rootLink) return null
       const rootName = rootLink.getAttribute('name') || 'base_link'
 
-      // Extract component_id from link name: strip trailing _N suffix
+      // Extract component_id from link name: strip the split-link sub-link
+      // suffix first (docs/SERVO_SPLIT_PLAN.md §reverse-parse) so a URDF
+      // containing `actuator_servo_micro_4_body` resolves to the same
+      // component_id as a legacy `actuator_servo_micro_4`. Then strip the
+      // trailing `_N` instance number.
       function extractComponentId(linkName: string): string {
-        const match = linkName.match(/^(.+?)_(\d+)$/)
-        return match ? match[1] : linkName
+        const stripped = linkName.replace(/_(body|output)$/, '')
+        const match = stripped.match(/^(.+?)_(\d+)$/)
+        return match ? match[1] : stripped
       }
 
       // Infer attach_face from joint origin xyz relative to parent.
@@ -4905,6 +5197,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           return [bb[0] ?? 40, bb[1] ?? 40, bb[2] ?? 40]
         }
         return null
+      }
+      return null
+    },
+    getLegacyMigrationPreset: (compId: string) => {
+      if (!presetData) return null
+      for (const cat of Object.values(presetData.categories)) {
+        const p = cat.components.find(c => c.id === compId)
+        if (!p) continue
+        return {
+          id: p.id,
+          physical: { mass_kg: p.physical.mass_kg },
+          split_link: p.split_link,
+        }
       }
       return null
     },

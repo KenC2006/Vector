@@ -29,10 +29,21 @@ interface ParsedRobotLike {
  * Returns null if the link name doesn't match a preset pattern.
  */
 function extractComponentId(linkName: string): string | null {
-  // Strip the trailing _N instance number
-  const match = linkName.match(/^(.+)_(\d+)$/)
+  // Strip the trailing _N instance number. For split-link servos (docs/
+  // SERVO_SPLIT_PLAN.md) the name has a further `_body` / `_output` suffix —
+  // strip that first, then fall through to the normal _N strip.
+  const stripped = linkName.replace(/_(body|output)$/, '')
+  const match = stripped.match(/^(.+)_(\d+)$/)
   if (!match) return null
   return match[1]
+}
+
+/** Returns `'body'` / `'output'` for split-link servo sublink names,
+ *  or `undefined` for any other link. See docs/SERVO_SPLIT_PLAN.md. */
+function extractSubLink(linkName: string): 'body' | 'output' | undefined {
+  const m = linkName.match(/_(body|output)$/)
+  if (!m) return undefined
+  return m[1] as 'body' | 'output'
 }
 
 /**
@@ -189,7 +200,8 @@ export function applyRichVisuals(
     let richGroup: THREE.Group
     try {
       const compColor = getComponentColor(compId)
-      richGroup = generator(compId, dims, compColor.tint)
+      const subLink = extractSubLink(linkName)
+      richGroup = generator(compId, dims, compColor.tint, subLink)
     } catch (e) {
       console.warn(`[richVisuals] Generator failed for ${compId}:`, e)
       continue  // keep primitive visuals

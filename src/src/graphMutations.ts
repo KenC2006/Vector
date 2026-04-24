@@ -155,6 +155,12 @@ function _checkPortCompatibility(
     parent.component_id.startsWith('structural_bracket_') ||
     parent.component_id === 'structural_servo_coupler_disc'
   ) return null
+  // docs/SERVO_SPLIT_PLAN.md — split-link servo parents carry a pre-modeled
+  // horn sub-link. `subLink: 'output'` on the top port already routes the
+  // shaft mate to the output link at URDF emit time; a coupler disc between
+  // them would just duplicate that engagement. Skip the PORT_MISMATCH error.
+  const parentPreset = ctx.findPreset(parent.component_id) as { split_link?: unknown } | null
+  if (parentPreset?.split_link) return null
 
   const parentFace = child.attach_face || 'top'
   const childFace = OPPOSITE_FACE[parentFace] || 'bottom'

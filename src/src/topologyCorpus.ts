@@ -290,22 +290,16 @@ const fixtures: Fixture[] = [
     },
   },
   {
-    // Task #7 (WS6 Phase 3) integration check. Previously the PORT_MISMATCH
-    // repair was only asserted on repair-kind firing; this fixture asserts
-    // the inserted bracket actually carries the mate-connector fields
-    // (attach_connector="shaft_out", mate_connector="shaft_hole",
-    // mate_type="concentric") that route the servo↔coupler mate through
-    // the closed-form resolver rather than legacy bbox-stack math.
-    name: 'PORT_MISMATCH: Case 1 (shaft parent) bracket carries concentric mate fields',
+    // docs/SERVO_SPLIT_PLAN.md §retire-coupler — split-link servo parents
+    // own a pre-modeled horn on their `_output` sub-link. Children mating
+    // to the `top` port route into the output at URDF emit time; no
+    // coupler disc is inserted. This fixture guards against that
+    // coupler-insertion auto-repair firing when the parent is split-link.
+    name: 'PORT_MISMATCH: split-link servo parent — no coupler auto-insert (horn is pre-modeled)',
     kind: 'auto_repair',
     expected_pass: true,
     expected_pass_after_repair: true,
-    expected_repair_kinds: ['port_mismatch_bracket'],
-    // Case 1 requires the CHILD to pass isRepairableChild (actuator_* or
-    // motor_*). The setup is a second servo mounted with its bottom
-    // (mount_face) against the parent servo's top (shaft output), which
-    // gives pClass=shaft, cClass=mount_face — the narrow code path that
-    // opts into the connector resolver.
+    forbidden_warnings: [],
     input: {
       base_link: 'base_link',
       components: [
@@ -313,15 +307,6 @@ const fixtures: Fixture[] = [
         { link_name: 'servo1', component_id: 'actuator_servo_high_torque',  attach_to: 'plate',  attach_face: 'top' },
         { link_name: 'servo2', component_id: 'actuator_servo_standard',     attach_to: 'servo1', attach_face: 'top' },
       ],
-    },
-    expected_component_fields: {
-      structural_bracket_auto_1: {
-        component_id: 'structural_servo_coupler_disc',
-        attach_to: 'servo1',
-        attach_connector: 'shaft_out',
-        mate_connector: 'shaft_hole',
-        mate_type: 'concentric',
-      },
     },
   },
   {

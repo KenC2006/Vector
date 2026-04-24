@@ -21,6 +21,11 @@ export interface AttachmentNodeDef {
   }
   /** If true, only one connection may attach to this node. */
   single: boolean
+  /** docs/SERVO_SPLIT_PLAN.md — for split-link servos, tags which sub-link
+   *  this port belongs to. `'output'` routes a child's joint parent to the
+   *  horn (internal revolute downstream); `'body'` (or undefined) routes to
+   *  the body link (fixed external mate). Ignored for non-split presets. */
+  subLink?: 'body' | 'output'
 }
 
 export interface AttachmentNodeRuntime {
@@ -118,12 +123,23 @@ export function componentPortsForPreset(
     }
   }
 
-  // Servos: mark top as shaft output, bottom as bracket mount
+  // Servos: mark top as shaft output, bottom as bracket mount. Under the
+  // split-link model (docs/SERVO_SPLIT_PLAN.md), `top` lives on the output
+  // sub-link (horn) and every other face on the body sub-link.
   if (componentId.startsWith('actuator_servo') || componentId.startsWith('actuator_continuous')) {
     const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft Output'; topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] } }
+    if (topNode) {
+      topNode.cls = 'shaft'
+      topNode.label = 'Shaft Output'
+      topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] }
+      topNode.subLink = 'output'
+    }
     const botNode = nodes.find(n => n.nodeId === 'bottom')
-    if (botNode) { botNode.label = 'Bracket Mount' }
+    if (botNode) { botNode.label = 'Bracket Mount'; botNode.subLink = 'body' }
+    for (const faceId of ['x_plus', 'x_minus', 'y_plus', 'y_minus'] as const) {
+      const n = nodes.find(x => x.nodeId === faceId)
+      if (n) n.subLink = 'body'
+    }
   }
 
   // Motors: shaft on top
@@ -147,6 +163,19 @@ export function componentPortsForPreset(
   }
 
   return nodes
+}
+
+/** docs/SERVO_SPLIT_PLAN.md — translate an AI-authored link name ("servo_1")
+ *  plus a port into the URDF link the mate actually attaches to. For split-
+ *  link servos, `port.subLink === 'output'` maps to the `_output` sub-link
+ *  (horn); all other ports map to the `_body` sub-link. Returns the raw link
+ *  name unchanged when the port has no subLink tag. */
+export function resolveSublinkName(
+  baseLinkName: string,
+  port: { subLink?: 'body' | 'output' } | null | undefined,
+): string {
+  if (!port?.subLink) return baseLinkName
+  return `${baseLinkName}_${port.subLink}`
 }
 
 /**

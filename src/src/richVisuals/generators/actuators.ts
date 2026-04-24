@@ -28,14 +28,24 @@ function catBody(base: string = 'matte_plastic', strength = 0.5) {
 }
 
 // ── Servo ─────────────────────────────────────────────────────────────────────
+//
+// docs/SERVO_SPLIT_PLAN.md — servos emit as two URDF links under the split-link
+// model. `generateServoBody` builds the housing/ears/cable side; `generateServoOutput`
+// builds the horn/shaft side, authored in the OUTPUT link's local frame (i.e.
+// horn centered at local y=0, not at y = h*0.42). `generateServo` is kept as a
+// back-compat wrapper for presets without `split_link` and during migration.
 
-function generateServo(id: string, dims: GeneratorDims): THREE.Group {
+/** Horn centerline offset in THREE Y-up (matches URDF split_link.output_origin_xyz_mm). */
+function servoHornOffsetY(h: number): number {
+  return h * 0.42
+}
+
+/** Housing + ears + cable + label + ribs + vents. Authored in body-local frame. */
+export function generateServoBody(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h, y: d } = dims
 
-  const isHeavy = id.includes('heavy') || id.includes('high_torque')
-
-  // Servo housing — NURBS filleted box (smooth mathematically exact edges)
+  // Servo housing — NURBS filleted box
   const housing = new THREE.Mesh(
     nurbsFilletBox(w, h * 0.72, d, Math.min(w, d) * 0.06, 16),
     catBody(),
@@ -61,44 +71,6 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
       g.add(hole)
     }
   }
-
-  // Output horn — NURBS smooth disc with lip profile
-  const hornR = Math.min(w, d) * 0.3
-  const hornH = h * 0.07
-  const horn = new THREE.Mesh(
-    nurbsServoHorn(hornR, hornH, Math.min(w, d) * 0.04, 48),
-    getMaterial('glossy_plastic', 0xeeeeee),
-  )
-  horn.position.y = h * 0.42
-  g.add(horn)
-
-  // Horn bolt circle
-  const hornBolts = boltCircle(hornR * 0.68, holeR * 0.55, isHeavy ? 6 : 4, hornH * 1.1)
-  hornBolts.position.y = h * 0.42
-  g.add(hornBolts)
-
-  // Center screw
-  const screw = screwHead(holeR * 1.3, hornH * 0.6)
-  screw.position.y = h * 0.46
-  g.add(screw)
-
-  // Output shaft — NURBS smooth cylinder
-  const shaftR = Math.min(w, d) * 0.055
-  const shaft = new THREE.Mesh(
-    nurbsCylinder(shaftR, hornH * 1.8, shaftR * 0.15, 32),
-    getMaterial('brushed_steel'),
-  )
-  shaft.position.y = h * 0.48
-  g.add(shaft)
-
-  // Shaft bearing ring — NURBS torus
-  const bearingRing = new THREE.Mesh(
-    nurbsTorus(shaftR * 2.2, shaftR * 0.4, 48, 16),
-    getMaterial('brushed_steel'),
-  )
-  bearingRing.rotation.x = Math.PI / 2
-  bearingRing.position.y = h * 0.38
-  g.add(bearingRing)
 
   // Cable exit
   const cable = cablePort(Math.min(w, d) * 0.06, Math.min(w, d) * 0.02)
@@ -140,6 +112,71 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
     g.add(slot)
   }
 
+  return g
+}
+
+/** Horn + bolts + center screw + output shaft + bearing ring. Authored in the
+ *  OUTPUT link's local frame: horn surface at y = 0, so parts that used to sit
+ *  at y = h*0.42 in the merged frame now sit at y = 0. The output link is
+ *  placed at (0, h*0.42, 0) THREE-local by the URDF loader (y_THREE = z_URDF). */
+export function generateServoOutput(id: string, dims: GeneratorDims): THREE.Group {
+  const g = new THREE.Group()
+  const { x: w, z: h, y: d } = dims
+
+  const isHeavy = id.includes('heavy') || id.includes('high_torque')
+  const holeR = Math.min(w, d) * 0.03
+  const hornOffsetY = servoHornOffsetY(h)
+
+  // Output horn — NURBS smooth disc with lip profile
+  const hornR = Math.min(w, d) * 0.3
+  const hornH = h * 0.07
+  const horn = new THREE.Mesh(
+    nurbsServoHorn(hornR, hornH, Math.min(w, d) * 0.04, 48),
+    getMaterial('glossy_plastic', 0xeeeeee),
+  )
+  horn.position.y = 0
+  g.add(horn)
+
+  // Horn bolt circle
+  const hornBolts = boltCircle(hornR * 0.68, holeR * 0.55, isHeavy ? 6 : 4, hornH * 1.1)
+  hornBolts.position.y = 0
+  g.add(hornBolts)
+
+  // Center screw (was at y = h*0.46; horn at h*0.42 → offset +0.04h above horn)
+  const screw = screwHead(holeR * 1.3, hornH * 0.6)
+  screw.position.y = h * 0.46 - hornOffsetY
+  g.add(screw)
+
+  // Output shaft — NURBS smooth cylinder
+  const shaftR = Math.min(w, d) * 0.055
+  const shaft = new THREE.Mesh(
+    nurbsCylinder(shaftR, hornH * 1.8, shaftR * 0.15, 32),
+    getMaterial('brushed_steel'),
+  )
+  shaft.position.y = h * 0.48 - hornOffsetY
+  g.add(shaft)
+
+  // Shaft bearing ring — NURBS torus
+  const bearingRing = new THREE.Mesh(
+    nurbsTorus(shaftR * 2.2, shaftR * 0.4, 48, 16),
+    getMaterial('brushed_steel'),
+  )
+  bearingRing.rotation.x = Math.PI / 2
+  bearingRing.position.y = h * 0.38 - hornOffsetY
+  g.add(bearingRing)
+
+  return g
+}
+
+/** Back-compat wrapper: composes body + output into a single group with the
+ *  output shifted to the original horn offset. Used by the legacy single-link
+ *  emission path for any preset that hasn't opted into split_link. */
+function generateServo(id: string, dims: GeneratorDims): THREE.Group {
+  const g = new THREE.Group()
+  g.add(generateServoBody(id, dims))
+  const out = generateServoOutput(id, dims)
+  out.position.y = servoHornOffsetY(dims.z)
+  g.add(out)
   return g
 }
 
@@ -446,11 +483,18 @@ function generateLinearActuator(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
-export function generateRichActuator(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichActuator(
+  id: string,
+  dims: GeneratorDims,
+  color?: [number, number, number],
+  subLink?: 'body' | 'output',
+): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('bldc')) return generateBLDC(id, dims)
   if (id.includes('stepper') || id.includes('nema')) return generateStepper(id, dims)
   if (id.includes('linear')) return generateLinearActuator(id, dims)
   // Default: servo (covers servo_micro, servo_standard, servo_high_torque, etc.)
+  if (subLink === 'body') return generateServoBody(id, dims)
+  if (subLink === 'output') return generateServoOutput(id, dims)
   return generateServo(id, dims)
 }
