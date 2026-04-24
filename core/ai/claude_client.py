@@ -167,6 +167,19 @@ _ALLOWED_COMPONENT_IDS = {
 }
 
 
+def _is_tire_component_id(component_id: str) -> bool:
+    return component_id.startswith((
+        "mobility_wheel_",
+        "mobility_mecanum_",
+        "mobility_omni_",
+        "mobility_caster_",
+    ))
+
+
+def _is_drivetrain_component_id(component_id: str) -> bool:
+    return component_id.startswith("drivetrain_")
+
+
 def _build_component_catalog() -> str:
     """Build a compact summary of available preset components for the AI system prompt.
     Only includes components with verified GLB meshes shown in the UI."""
@@ -702,9 +715,8 @@ def _assemble_from_graph(assembly: dict) -> str:
         # handled by yawing drivetrains on the -Y half 180 deg (bottom-face branch).
         child_id = (child_preset or {}).get("id", "")
         parent_id = (parent_preset or {}).get("id", "")
-        _tire_prefixes = ("mobility_wheel_", "mobility_mecanum_", "mobility_omni_", "mobility_caster_")
-        _is_tire_child = any(child_id.startswith(p) for p in _tire_prefixes)
-        _is_drivetrain_parent = parent_id.startswith("drivetrain_")
+        _is_tire_child = _is_tire_component_id(child_id)
+        _is_drivetrain_parent = _is_drivetrain_component_id(parent_id)
         if _is_tire_child and _is_drivetrain_parent:
             motor_hz = p_bbox[2] / 2  # axle half-length along drivetrain local Z
             tire_half_axle = c_bbox[2] / 2  # tire half-width along axle
@@ -725,11 +737,9 @@ def _assemble_from_graph(assembly: dict) -> str:
             # so their output shaft lies along Y (standard ROS convention).
             # Tires (mobility_wheel_*) attach fixed to the drivetrain and inherit
             # the orientation; they do not need their own roll correction.
-            # Legacy: also fires for bare wheels/casters for backwards compat.
             child_id = (child_preset or {}).get("id", "")
-            _is_drivetrain = child_id.startswith("drivetrain_")
-            _is_legacy_wheel = ("wheel" in child_id or "caster" in child_id) and not _is_drivetrain
-            if (_is_drivetrain or _is_legacy_wheel) and attach_face == "bottom":
+            _is_drivetrain = _is_drivetrain_component_id(child_id)
+            if _is_drivetrain and attach_face == "bottom":
                 rpy = [-math.pi / 2, 0, 0]
                 print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face drivetrain mount", file=sys.stderr)
 
@@ -756,7 +766,7 @@ def _assemble_from_graph(assembly: dict) -> str:
         elif is_roll_rotated:
             cx_eff, cz_eff = cx, cy  # ±90° roll: old Y → Z (X unchanged)
             # Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
-            if child_id.startswith("drivetrain_") and child_preset:
+            if _is_drivetrain_component_id(child_id) and child_preset:
                 ml = child_preset.get("mounting_logic", {})
                 aor = ml.get("assembled_outer_radius_mm")
                 if aor:
@@ -889,7 +899,7 @@ def _assemble_from_graph(assembly: dict) -> str:
             # Drivetrain motors on bottom face get Rx(-90°); after that rotation,
             # local Z = world Y (the rolling axis). Remap "y" → [0,0,1].
             child_cid = child_preset.get("id", "") if child_preset else ""
-            if child_cid.startswith("drivetrain_") and attach_face == "bottom" and raw_axis == "y":
+            if _is_drivetrain_component_id(child_cid) and attach_face == "bottom" and raw_axis == "y":
                 joint_axis = [0, 0, 1]
 
             joint_name = f"j_{link_name}"
@@ -1155,10 +1165,9 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
     # Do NOT offset in local +Y — that is world -Z (downward) after the roll and
     # places the tire below the motor rather than beside it. Outboard direction
     # is handled by the 180° yaw flip on the -Y baseplate half (below).
-    _tire_prefixes = ("mobility_wheel_", "mobility_mecanum_", "mobility_omni_", "mobility_caster_")
-    _is_tire = any(comp_id.startswith(p) for p in _tire_prefixes)
+    _is_tire = _is_tire_component_id(comp_id)
     parent_comp_id = links.get(parent_link, {}).get("component_id", "") if parent_link else ""
-    _is_drivetrain_parent = parent_comp_id.startswith("drivetrain_")
+    _is_drivetrain_parent = _is_drivetrain_component_id(parent_comp_id)
     if attach_face == "coaxial" and _is_tire and _is_drivetrain_parent:
         # pz = motor axle half-length (local Z), cz = tire half-width along axle.
         origin_xyz = [0, 0, pz + cz]
@@ -1166,7 +1175,7 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
 
     # Drivetrain side-flip: yaw 180° when on baseplate -Y half so the coaxial
     # wheel-offset ends up outboard on both sides of the chassis.
-    if comp_id.startswith("drivetrain_") and attach_face == "bottom" and tv < 0:
+    if _is_drivetrain_component_id(comp_id) and attach_face == "bottom" and tv < 0:
         origin_rpy = [origin_rpy[0], origin_rpy[1], origin_rpy[2] + math.pi]
 
     # Compute world position
@@ -2292,14 +2301,23 @@ SIM_SCRIPT_SYSTEM_PROMPT = r"""You generate Python control scripts for a robot s
 Your output MUST be a single Python module defining exactly this function:
 
     def step(t, state):
-        # return {joint_name: target_position_radians_or_meters, ...}
+        # return {joint_name: actuator_command, ...}
         return {...}
 
 - `t` is simulation time in seconds (float, starts at 0).
 - `state` is a dict; you may ignore it. It is a read-only snapshot.
 - Return a dict mapping joint names (strings, exactly as listed under JOINTS) to
-  target positions. Revolute joints are radians; prismatic are meters. Omitted
-  joints hold their last command.
+  actuator commands. Revolute joints are target angles in radians. Prismatic
+  joints are target positions in meters. Continuous joints are raw torque
+  commands in N*m, not angle targets. Omitted joints hold their last command.
+- For wheeled robots, use WHEEL DRIVE INFO when it is present. For straight
+  forward motion command every drive wheel as `throttle * forward_sign`.
+  Wheels on the same side must receive the same straight-drive command sign.
+  Do not alternate wheel signs by numeric suffix, front/rear position, or guess.
+- THROTTLE MAGNITUDE: use 10–20% of max_torque_Nm as your throttle value for
+  smooth, stable motion. Example: if max_torque_Nm=3.5, use throttle=0.35–0.70.
+  Using full or near-full torque causes wheel slip → oscillating contact forces
+  → the robot bounces and jumps. Start low; ramp up slowly if needed.
 
 ## Sandbox — HARD RULES
 
@@ -2322,11 +2340,79 @@ Return ONLY the Python code. No markdown fences, no prose before or after.
 Do not include `import math`. Do not wrap in ```python. Just the code."""
 
 
+def _format_sim_vec(vec) -> str:
+    try:
+        vals = [float(x) for x in vec[:3]]
+    except Exception:
+        vals = [0.0, 0.0, 0.0]
+    return "(" + ", ".join(f"{v:+.3f}" for v in vals) + ")"
+
+
+def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> tuple[str, str]:
+    if not joint_metadata:
+        return "\n".join(f"  - {n}" for n in joint_names) or "  (none)", ""
+
+    by_name = {
+        item.get("name"): item
+        for item in joint_metadata
+        if isinstance(item, dict) and item.get("name")
+    }
+    joint_rows = []
+    wheel_rows = []
+
+    for name in joint_names:
+        meta = by_name.get(name, {})
+        jtype = meta.get("type", "unknown")
+        if jtype == "continuous":
+            control = "torque_Nm"
+        elif jtype == "prismatic":
+            control = "position_m"
+        elif jtype == "revolute":
+            control = "position_rad"
+        else:
+            control = meta.get("control", "command")
+
+        row = f"  - {name}: type={jtype}, control={control}"
+        if meta.get("is_wheel_drive"):
+            row += (
+                f", wheel={meta.get('side', 'unknown')}/{meta.get('end', 'unknown')}, "
+                f"forward_sign={int(meta.get('forward_sign', 1)):+d}"
+            )
+        joint_rows.append(row)
+
+        if meta.get("is_wheel_drive"):
+            effort = float(meta.get("effort", 10.0) or 10.0)
+            wheel_rows.append(
+                "  - "
+                f"joint={name}; side={meta.get('side', 'unknown')}; "
+                f"side_sign={int(meta.get('side_sign', 0)):+d}; "
+                f"end={meta.get('end', 'unknown')}; "
+                f"forward_sign={int(meta.get('forward_sign', 1)):+d}; "
+                f"axis_world={_format_sim_vec(meta.get('axis_world', [0, 0, 0]))}; "
+                f"center={_format_sim_vec(meta.get('center', [0, 0, 0]))}; "
+                f"max_torque_Nm={effort:.3f}"
+            )
+
+    wheel_block = ""
+    if wheel_rows:
+        wheel_block = (
+            "\n\nWHEEL DRIVE INFO:\n"
+            "Use these precomputed signs; do not infer drive direction from numeric suffixes.\n"
+            "For straight forward motion, command each wheel joint as throttle * forward_sign.\n"
+            "For straight backward motion, negate that same command. Front and rear wheels on\n"
+            "the same side should not fight each other during straight drive.\n"
+            + "\n".join(wheel_rows)
+        )
+
+    return "\n".join(joint_rows) or "  (none)", wheel_block
+
+
 def generate_sim_script(
     prompt: str,
     joint_names: list,
     current_script: str = "",
     joint_limits: dict = None,
+    joint_metadata: list = None,
 ) -> str:
     """
     Generate a sim-sandbox Python script from a natural-language prompt.
@@ -2336,12 +2422,13 @@ def generate_sim_script(
         joint_names: exact joint names the robot exposes
         current_script: if non-empty, treat prompt as a modification request
         joint_limits: optional {name: (lower, upper)} for revolute joints
+        joint_metadata: optional per-joint type/axis/wheel direction metadata
 
     Returns the raw Python source (no fences).
     """
     client = _get_client()
 
-    joints_block = "\n".join(f"  - {n}" for n in joint_names) or "  (none)"
+    joints_block, wheel_block = _format_sim_joint_blocks(joint_names, joint_metadata)
     limits_block = ""
     if joint_limits:
         rows = []
@@ -2360,10 +2447,10 @@ def generate_sim_script(
             "more natural, and better matched to the robot's morphology."
         )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}\n\n"
             f"CURRENT SCRIPT:\n{current_script}\n\n"
             f"{request_line}\n\n"
-            f"Return the full modified script. Keep the same joint names."
+            f"Return the full modified script. Keep the same joint names and wheel signs."
         )
     else:
         if p:
@@ -2374,6 +2461,7 @@ def generate_sim_script(
                 "(e.g. 'hip'/'knee' → legged; 'shoulder'/'elbow' → arm; "
                 "numeric suffixes → limb indices) and generate a sensible "
                 "default control script:\n"
+                "  - wheeled robot -> a smooth forward drive or gentle arc using WHEEL DRIVE INFO\n"
                 "  - legged robot → a stable diagonal trot or walk gait\n"
                 "  - arm / manipulator → a smooth reach-and-return motion\n"
                 "  - gripper / claw → a slow open/close cycle\n"
@@ -2381,7 +2469,7 @@ def generate_sim_script(
                 "Include a brief SETTLE_TIME ramp so motion eases in from zero."
             )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}\n\n"
             f"{request_line}\n\n"
             f"Write a sandbox-compliant script."
         )

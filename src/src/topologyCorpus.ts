@@ -120,6 +120,18 @@ const feasibilityChecks: FeasibilityCheck[] = [
       ],
     },
   },
+  {
+    rule: 'BARE_TIRE',
+    note: 'A tire attached coaxially to a drivetrain passes.',
+    satisfyingGraph: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate', attach_to: null },
+        { link_name: 'hub1',  component_id: 'drivetrain_hub_motor_80', attach_to: 'plate', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+        { link_name: 'tire1', component_id: 'mobility_wheel_driven', attach_to: 'hub1', attach_face: 'coaxial' },
+      ],
+    },
+  },
 ]
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -174,17 +186,18 @@ const fixtures: Fixture[] = [
     },
   },
   {
-    name: 'SHAFT_FANOUT: allowed — diff-drive wheel pair on a motor shaft',
+    name: 'SHAFT_FANOUT: bad — two tires on one drivetrain shaft',
     kind: 'validate',
-    expected_pass: true,
-    forbidden_errors: ['[SHAFT_FANOUT]'],
+    expected_pass: false,
+    expected_errors: ['[SHAFT_FANOUT]'],
+    forbidden_errors: ['[BARE_TIRE]'],
     input: {
       base_link: 'base_link',
       components: [
-        { link_name: 'plate',  component_id: 'structural_baseplate', attach_to: null },
-        { link_name: 'motor1', component_id: 'motor_dc_small_130',              attach_to: 'plate',  attach_face: 'top' },
-        { link_name: 'wheelL', component_id: 'mobility_wheel_driven',      attach_to: 'motor1', attach_face: 'top' },
-        { link_name: 'wheelR', component_id: 'mobility_wheel_driven',      attach_to: 'motor1', attach_face: 'top' },
+        { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'hub1',   component_id: 'drivetrain_hub_motor_80', attach_to: 'plate', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+        { link_name: 'wheelL', component_id: 'mobility_wheel_driven',   attach_to: 'hub1',  attach_face: 'coaxial' },
+        { link_name: 'wheelR', component_id: 'mobility_wheel_driven',   attach_to: 'hub1',  attach_face: 'coaxial' },
       ],
     },
   },
@@ -255,18 +268,18 @@ const fixtures: Fixture[] = [
     },
   },
   {
-    name: 'PORT_MISMATCH: wheel on motor shaft is not repaired (legitimate)',
+    name: 'PORT_MISMATCH: tire on drivetrain shaft is not repaired',
     kind: 'auto_repair',
     expected_pass: true,
     expected_pass_after_repair: true,
-    // Mobility children on motor shafts are the intended diff-drive pattern —
-    // no bracket insertion should happen.
+    // Tire children on drivetrain shafts are the intended wheel pattern; no
+    // bracket insertion should happen.
     input: {
       base_link: 'base_link',
       components: [
-        { link_name: 'plate',  component_id: 'structural_baseplate',   attach_to: null },
-        { link_name: 'motor1', component_id: 'motor_dc_small_130',     attach_to: 'plate',  attach_face: 'bottom' },
-        { link_name: 'wheelL', component_id: 'mobility_wheel_driven',  attach_to: 'motor1', attach_face: 'top' },
+        { link_name: 'plate', component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'hub1',  component_id: 'drivetrain_hub_motor_80', attach_to: 'plate', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+        { link_name: 'tire1', component_id: 'mobility_wheel_driven',   attach_to: 'hub1',  attach_face: 'coaxial' },
       ],
     },
   },
@@ -287,7 +300,50 @@ const fixtures: Fixture[] = [
     },
   },
 
-  // DIRECT_SERVO_STACK (warning) ───────────────────────────────────────────
+  // BARE_TIRE -----------------------------------------------------------------
+  {
+    name: 'BARE_TIRE: bad - tire attached directly to baseplate',
+    kind: 'validate',
+    expected_pass: false,
+    expected_errors: ['[BARE_TIRE]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',  attach_to: null },
+        { link_name: 'tire1', component_id: 'mobility_wheel_driven', attach_to: 'plate', attach_face: 'bottom' },
+      ],
+    },
+  },
+  {
+    name: 'BARE_TIRE: fix - tire attached coaxially to drivetrain',
+    kind: 'validate',
+    expected_pass: true,
+    forbidden_errors: ['[BARE_TIRE]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'hub1',  component_id: 'drivetrain_hub_motor_80', attach_to: 'plate', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+        { link_name: 'tire1', component_id: 'mobility_wheel_driven',   attach_to: 'hub1',  attach_face: 'coaxial' },
+      ],
+    },
+  },
+  {
+    name: 'BARE_TIRE: autorepair - inserts drivetrain parent',
+    kind: 'auto_repair',
+    expected_pass: false,
+    expected_pass_after_repair: true,
+    expected_repair_kinds: ['bare_tire_drivetrain'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',  attach_to: null },
+        { link_name: 'tire1', component_id: 'mobility_wheel_driven', attach_to: 'plate', attach_face: 'bottom' },
+      ],
+    },
+  },
+
+  // DIRECT_SERVO_STACK (warning) ----------------------------------------------
   {
     name: 'DIRECT_SERVO_STACK: servo on servo emits warning',
     kind: 'validate',

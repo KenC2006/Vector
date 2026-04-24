@@ -14,6 +14,11 @@ export interface AttachmentNodeDef {
   /** Local frame relative to the component's main link frame (URDF coordinates). */
   origin_xyz: [number, number, number]
   origin_rpy: [number, number, number]
+  /** Optional joint semantics for a connection made at this node. */
+  kinematic?: {
+    joint_type?: 'fixed' | 'revolute' | 'continuous' | 'prismatic'
+    axis_xyz?: [number, number, number]
+  }
   /** If true, only one connection may attach to this node. */
   single: boolean
 }
@@ -61,6 +66,19 @@ export function defaultFaceNodesForBoxDims(
   ]
 }
 
+export function isTireComponentId(componentId: string): boolean {
+  return (
+    componentId.startsWith('mobility_wheel_') ||
+    componentId.startsWith('mobility_mecanum_') ||
+    componentId.startsWith('mobility_omni_') ||
+    componentId.startsWith('mobility_caster_')
+  )
+}
+
+export function isDrivetrainComponentId(componentId: string): boolean {
+  return componentId.startsWith('drivetrain_')
+}
+
 /**
  * Generate component-specific ports based on component ID and mounting_logic.
  * Servos get a shaft_output port on top, mounting ports on bottom/sides.
@@ -70,33 +88,40 @@ export function defaultFaceNodesForBoxDims(
 export function componentPortsForPreset(
   componentId: string,
   hx: number, hy: number, hz: number,
-  _mountingLogic?: { primary?: string; output?: string; shaft_diameter_mm?: number },
+  mountingLogic?: Record<string, unknown>,
 ): AttachmentNodeDef[] {
   // Tires: single hub_bore node at the wheel center. The cylinder axis is local Z
   // (set by wheelShape's π/2 X-rotation), so a shaft coming in along Z mates.
   // Rim/face nodes are physically meaningless on a spinning tire.
-  if (
-    componentId.startsWith('mobility_wheel_') ||
-    componentId.startsWith('mobility_mecanum_') ||
-    componentId.startsWith('mobility_omni_') ||
-    componentId.startsWith('mobility_caster_')
-  ) {
+  if (isTireComponentId(componentId)) {
     return [{
       nodeId: 'hub_bore',
       label: 'Hub Bore',
       cls: 'bore',
       origin_xyz: [0, 0, 0],
       origin_rpy: [0, 0, 0],
+      kinematic: { joint_type: 'fixed', axis_xyz: [0, 0, 1] },
       single: true,
     }]
   }
 
   const nodes = defaultFaceNodesForBoxDims(hx, hy, hz)
 
+  // Drivetrain assemblies expose a shaft/bore contract for child tires. The
+  // drivetrain link owns the spinning joint; the tire-to-shaft connection is fixed.
+  if (isDrivetrainComponentId(componentId) || mountingLogic?.output === 'axial_shaft') {
+    const topNode = nodes.find(n => n.nodeId === 'top')
+    if (topNode) {
+      topNode.cls = 'shaft'
+      topNode.label = 'Axial Shaft'
+      topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] }
+    }
+  }
+
   // Servos: mark top as shaft output, bottom as bracket mount
   if (componentId.startsWith('actuator_servo') || componentId.startsWith('actuator_continuous')) {
     const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft Output' }
+    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft Output'; topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] } }
     const botNode = nodes.find(n => n.nodeId === 'bottom')
     if (botNode) { botNode.label = 'Bracket Mount' }
   }
@@ -104,7 +129,7 @@ export function componentPortsForPreset(
   // Motors: shaft on top
   if (componentId.startsWith('motor_') || componentId.startsWith('actuator_bldc')) {
     const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft' }
+    if (topNode) { topNode.cls = 'shaft'; topNode.label = 'Shaft'; topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] } }
   }
 
   // Extrusions: label ends clearly
@@ -132,6 +157,12 @@ export function resolveFaceToPort(
   face: string,
   nodes: AttachmentNodeDef[],
 ): AttachmentNodeDef | undefined {
+  if (face === 'coaxial') {
+    return nodes.find(n => n.nodeId === 'hub_bore')
+      ?? nodes.find(n => n.cls === 'shaft')
+      ?? nodes.find(n => n.cls === 'bore')
+      ?? nodes.find(n => n.nodeId === 'top')
+  }
   const faceToNodeId: Record<string, string> = {
     'top': 'top', 'bottom': 'bottom',
     'front': 'x_plus', 'back': 'x_minus',
@@ -233,3 +264,31 @@ export function incompatibleReason(srcCls: AttachmentNodeClass, targetCls: Attac
   return `${srcCls} ↔ ${targetCls} incompatible`
 }
 
+export interface ResolvedConnectionJoint {
+  joint_type: 'fixed' | 'revolute' | 'continuous' | 'prismatic'
+  axis_xyz: [number, number, number]
+}
+
+export function resolveConnectionJoint(
+  parentPort: AttachmentNodeDef,
+  childPort: AttachmentNodeDef,
+  fallback: ResolvedConnectionJoint = { joint_type: 'fixed', axis_xyz: [0, 0, 1] },
+): ResolvedConnectionJoint {
+  const shaftBore =
+    (parentPort.cls === 'shaft' && childPort.cls === 'bore') ||
+    (parentPort.cls === 'bore' && childPort.cls === 'shaft')
+  if (shaftBore) {
+    const shaftPort = parentPort.cls === 'shaft' ? parentPort : childPort
+    return {
+      joint_type: 'fixed',
+      axis_xyz: shaftPort.kinematic?.axis_xyz ?? fallback.axis_xyz,
+    }
+  }
+  if (parentPort.cls === 'rail' && childPort.cls === 'rail') {
+    return {
+      joint_type: 'prismatic',
+      axis_xyz: parentPort.kinematic?.axis_xyz ?? childPort.kinematic?.axis_xyz ?? fallback.axis_xyz,
+    }
+  }
+  return fallback
+}

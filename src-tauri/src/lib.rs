@@ -249,8 +249,12 @@ impl CoreProcess {
 async fn start_core(state: State<'_, AppState>) -> Result<String, String> {
     let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    if core.is_some() {
-        return Err("Core process already running".to_string());
+    if let Some(process) = core.as_mut() {
+        if process.is_alive() {
+            return Err("Core process already running".to_string());
+        }
+        eprintln!("[Core] Stored Python core process had exited; restarting...");
+        *core = None;
     }
 
     let mut process = CoreProcess::spawn()?;

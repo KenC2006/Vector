@@ -69,12 +69,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   const originalJointPoses = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>()
   const simPreviewLimits = new Map<string, { lower: number; upper: number }>()
   const simJointLimits = new Map<string, { lower: number; upper: number; effort: number }>()
-  const simCurrentPositions = new Map<string, number>()
   // ── DOM refs (grabbed lazily) ──────────────────────────────────────────────
 
   const simNotActive = document.getElementById('sim-not-active')!
   const simControlsBody = document.getElementById('sim-controls-body')!
-  const simJointSliders = document.getElementById('sim-joint-sliders')!
   const simGravityEnabled = document.getElementById('sim-gravity-enabled') as HTMLInputElement | null
 
   // ── Phase D visualization groups ──────────────────────────────────────────
@@ -294,7 +292,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         if (scriptClearBtn) scriptClearBtn.disabled = false
         activeScriptCode = code
         if (modifyBtn) modifyBtn.disabled = false
-        deps.showToast('Script active', 'success')
+        deps.showToast('Controller active', 'success')
       }
     } catch (e) {
       setScriptStatus(`${file.name} — failed`, 'error')
@@ -307,11 +305,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (simCoreRunning) {
       try { await invoke('sim_set_script', { code: '' }) } catch { /* ignore */ }
     }
-    setScriptStatus('No script loaded', 'idle')
+    setScriptStatus('No controller loaded', 'idle')
     if (scriptClearBtn) scriptClearBtn.disabled = true
     activeScriptCode = ''
-    modifyBtn && (modifyBtn.disabled = true)
-    deps.showToast('Script cleared', 'info')
+    if (modifyBtn) modifyBtn.disabled = true
+    deps.showToast('Controller cleared', 'info')
   })
 
   // ── AI Script Generator ───────────────────────────────────────────────────
@@ -326,7 +324,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   const aiDiscardBtn = document.getElementById('sim-ai-discard') as HTMLButtonElement | null
 
   let pendingAiCode = ''
-  let activeScriptCode = ''   // last code successfully applied to the sim
+  let activeScriptCode = ''
 
   function setAiStatus(text: string, state: 'idle' | 'active' | 'error' = 'idle') {
     if (!aiStatusEl) return
@@ -409,10 +407,10 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       } else {
         activeScriptCode = pendingAiCode
         setAiStatus('Applied', 'active')
-        setScriptStatus('AI script — active', 'active')
+        setScriptStatus('Generated controller active', 'active')
         if (scriptClearBtn) scriptClearBtn.disabled = false
         if (modifyBtn) modifyBtn.disabled = false
-        deps.showToast('AI script active', 'success')
+        deps.showToast('Generated controller active', 'success')
         hideAiPreview()
       }
     } catch (e) {
@@ -451,8 +449,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   function buildSimPanel() {
     simJointLimits.clear()
-    simCurrentPositions.clear()
-    simJointSliders.innerHTML = ''
 
     const urdf = deps.getEditorValue()
     const doc = new DOMParser().parseFromString(urdf, 'application/xml')
@@ -466,80 +462,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         const e = parseFloat(lEl?.getAttribute('effort') || '10')
         return Number.isFinite(e) && e > 0 ? e : 10
       })()
+      const isTorqueMotor = jointInfo.type === 'continuous'
       const lim = simPreviewLimits.get(jointName)
-      const lower = lim?.lower ?? -Math.PI
-      const upper = lim?.upper ?? Math.PI
+      const lower = isTorqueMotor ? -effort : (lim?.lower ?? -Math.PI)
+      const upper = isTorqueMotor ? effort : (lim?.upper ?? Math.PI)
       simJointLimits.set(jointName, { lower, upper, effort })
-
-      const row = document.createElement('div')
-      row.className = 'sim-slider-row'
-      row.dataset.joint = jointName
-      row.innerHTML = `
-        <div class="sim-slider-label">
-          <span class="sim-slider-name">${jointName}</span>
-          <span class="sim-slider-val" id="sslv-${jointName}" title="Actual position">0.000</span>
-        </div>
-        <input type="range" class="sim-slider" id="ssl-${jointName}"
-          min="${lower.toFixed(4)}" max="${upper.toFixed(4)}" step="0.001" value="0"
-          data-joint="${jointName}" data-effort="${effort}"
-          title="Target position (rad)">
-        <div class="sim-pos-row">
-          <button class="sim-pos-center" data-joint="${jointName}" title="Return to zero">⟳ Zero</button>
-        </div>
-      `
-      simJointSliders.appendChild(row)
-    }
-
-    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(slider => {
-      slider.addEventListener('input', () => {
-        stopActiveScriptForManualControl()
-        sendSimControl()
-      })
-    })
-    simJointSliders.querySelectorAll<HTMLButtonElement>('.sim-pos-center').forEach(btn => {
-      btn.addEventListener('click', () => {
-        stopActiveScriptForManualControl()
-        const joint = btn.dataset.joint!
-        const s = document.getElementById(`ssl-${joint}`) as HTMLInputElement | null
-        if (s) s.value = '0'
-        sendSimControl()
-      })
-    })
-  }
-
-  // If a step-script is running, any manual slider touch cancels it —
-  // otherwise the script would overwrite the user's target every tick.
-  function stopActiveScriptForManualControl() {
-    if (!activeScriptCode && scriptClearBtn?.disabled !== false) return
-    activeScriptCode = ''
-    if (simCoreRunning) {
-      invoke('sim_set_script', { code: '' }).catch(() => { /* ignore */ })
-    }
-    setScriptStatus('No script loaded', 'idle')
-    if (scriptClearBtn) scriptClearBtn.disabled = true
-    if (modifyBtn) modifyBtn.disabled = true
-    deps.showToast('Manual control — script stopped', 'info')
-  }
-
-  function sendSimControl() {
-    if (!simCoreRunning) return
-    const controls: Record<string, number> = {}
-    // Position sliders (ssl-) send target joint angles in radians to position actuators.
-    simJointSliders.querySelectorAll<HTMLInputElement>('.sim-slider').forEach(s => {
-      controls[s.dataset.joint!] = parseFloat(s.value) || 0
-    })
-    invoke('sim_set_control', { controls }).catch(() => { /* ignore */ })
-  }
-
-  function updateSimSliders(state: Record<string, unknown>) {
-    const joints = state.joints as Record<string, { position: number; velocity: number }> | undefined
-    if (!joints) return
-    for (const [name, j] of Object.entries(joints)) {
-      simCurrentPositions.set(name, j.position)
-      // Only update the text readout (actual physics position), not the slider itself.
-      // The slider now represents the user's position *target*, not the measured state.
-      const valEl = document.getElementById(`sslv-${name}`)
-      if (valEl) valEl.textContent = j.position.toFixed(3)
     }
   }
 
@@ -552,9 +479,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   function exitSimPanel() {
     simNotActive.classList.remove('hidden')
     simControlsBody.classList.add('hidden')
-    simJointSliders.innerHTML = ''
     clearSimViz()
-    setScriptStatus('No script loaded', 'idle')
+    setScriptStatus('No controller loaded', 'idle')
     if (scriptClearBtn) scriptClearBtn.disabled = true
     const followEl = document.getElementById('sim-camera-follow') as HTMLInputElement | null
     if (followEl) followEl.checked = false
@@ -615,15 +541,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         }
       }
 
-      // Keep scrub slider range in sync with ring buffer size
-      if (typeof state.ring_frames === 'number') {
-        const scrubSlider = document.getElementById('sim-scrub') as HTMLInputElement | null
-        if (scrubSlider) {
-          scrubSlider.setAttribute('data-ring-max', String(state.ring_frames))
-          scrubSlider.max = String(Math.max(0, state.ring_frames - 1))
-          if (!simRunning) scrubSlider.value = scrubSlider.max  // track newest frame
-        }
-      }
     } catch (e) {
       console.error('[Sim] Error updating display:', e)
     }
@@ -750,8 +667,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       simCoreRunning = false
       const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
       if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
-      const scrubRow = document.getElementById('sim-scrub-row') as HTMLElement | null
-      if (scrubRow) scrubRow.style.display = 'none'
       console.log('[Sim] Core stopped')
     } catch (error) {
       console.error('[Sim] Error stopping simulation:', error)
@@ -797,7 +712,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
       updateSimStateDisplay(state)
       updateRobotFromSimState(state)
-      updateSimSliders(state)
       tickSimViz(state)
       updateSimUI()
       clearSimError()
@@ -883,14 +797,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (rtfEl && simRunning) rtfEl.textContent = `RTF ${simRtf.toFixed(1)}×`
     const speedEl = document.getElementById('sim-speed-display')
     if (speedEl) speedEl.textContent = `${simSpeedMult.toFixed(1)}×`
-    // Show scrub slider when paused and ring has data
-    const scrubRow = document.getElementById('sim-scrub-row') as HTMLElement | null
-    const scrubSlider = document.getElementById('sim-scrub') as HTMLInputElement | null
-    if (scrubRow && scrubSlider) {
-      const ringMax = parseInt(scrubSlider.getAttribute('data-ring-max') || '0', 10)
-      const showScrub = !simRunning && simCoreRunning && ringMax > 0
-      scrubRow.style.display = showScrub ? 'flex' : 'none'
-    }
   }
 
   // ── Phase C: Camera Follow ────────────────────────────────────────────────
@@ -1106,24 +1012,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     }
   })
 
-  // Scrub slider — replays ring buffer when paused
-  document.getElementById('sim-scrub')?.addEventListener('input', async (e) => {
-    if (simRunning || !simCoreRunning) return
-    const slider = e.target as HTMLInputElement
-    const pct = parseFloat(slider.value) / parseFloat(slider.max)
-    const ringFrames = parseInt(slider.getAttribute('data-ring-max') || '0', 10)
-    if (ringFrames === 0) return
-    const frameIdx = Math.round(pct * (ringFrames - 1))
-    document.getElementById('sim-scrub-val')!.textContent = frameIdx.toString()
-    try {
-      const state = normalizeMuJoCoState(await invoke('sim_scrub', { frameIdx }))
-      if (typeof state.time === 'number' && !Number.isNaN(state.time)) simTime = state.time
-      updateSimStateDisplay(state)
-      updateRobotFromSimState(state)
-      updateSimUI()
-    } catch { /* ignore */ }
-  })
-
   // Sim speed ±
   document.getElementById('sim-speed-down')?.addEventListener('click', () => {
     simSpeedMult = Math.max(0.1, parseFloat((simSpeedMult - 0.1).toFixed(1)))
@@ -1134,15 +1022,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     simSpeedMult = Math.min(2.0, parseFloat((simSpeedMult + 0.1).toFixed(1)))
     if (simRunning) { simWallStart = performance.now(); simTimeAtStart = simTime }
     updateSimUI()
-  })
-
-  // Floor friction slider
-  document.getElementById('sim-floor-friction')?.addEventListener('input', async (e) => {
-    const v = parseFloat((e.target as HTMLInputElement).value)
-    const valEl = document.getElementById('sim-floor-friction-val')
-    if (valEl) valEl.textContent = v.toFixed(2)
-    if (!simCoreRunning) return
-    try { await invoke('sim_set_floor_friction', { friction: v }) } catch { /* ignore */ }
   })
 
   // Gravity toggle

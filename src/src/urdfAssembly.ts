@@ -5,7 +5,18 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
 import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
-import { isMountLinkName, makeMountLinkName, defaultFaceNodesForBoxDims, nodesCompatible, incompatibleReason, componentPortsForPreset, resolveFaceToPort } from './attachmentNodes'
+import {
+  isMountLinkName,
+  makeMountLinkName,
+  defaultFaceNodesForBoxDims,
+  nodesCompatible,
+  incompatibleReason,
+  componentPortsForPreset,
+  resolveFaceToPort,
+  resolveConnectionJoint,
+  isTireComponentId,
+  isDrivetrainComponentId,
+} from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
@@ -76,6 +87,42 @@ interface PresetCategory {
 
 interface PresetData {
   categories: Record<string, PresetCategory>
+}
+
+type AssemblyJointType = 'fixed' | 'revolute' | 'continuous' | 'prismatic'
+
+function componentIdFromLinkName(linkName: string): string {
+  const match = linkName.match(/^(.+)_\d+$/)
+  return match ? match[1] : linkName
+}
+
+function normalizeJointType(value?: string): AssemblyJointType {
+  const jointType = (value || '').toLowerCase()
+  if (
+    jointType === 'revolute' ||
+    jointType === 'continuous' ||
+    jointType === 'prismatic'
+  ) {
+    return jointType
+  }
+  return 'fixed'
+}
+
+function axisNameToTuple(axis?: string): [number, number, number] {
+  switch ((axis || 'z').toLowerCase()) {
+    case 'x': return [1, 0, 0]
+    case 'y': return [0, 1, 0]
+    default: return [0, 0, 1]
+  }
+}
+
+function axisTupleToUrdf(axis: [number, number, number]): string {
+  return axis.map(v => (Math.abs(v) < 1e-9 ? 0 : v)).join(' ')
+}
+
+function presetContactClass(preset: PresetComponent | null | undefined): string {
+  const contactClass = preset?.sim_metadata?.contact_class
+  return typeof contactClass === 'string' ? contactClass : ''
 }
 
 export interface AssemblyComponent {
@@ -630,19 +677,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const linkWorldQuat = new THREE.Quaternion()
       lg.matrixWorld.decompose(new THREE.Vector3(), linkWorldQuat, new THREE.Vector3())
 
-      // Tires only have one meaningful mount: the axial hub bore at the wheel
-      // center. Default face nodes on the bounding box produce rim-surface
-      // markers (physically meaningless) and two competing axial nodes, only
-      // one of which aligns with the driving shaft.
-      const isTire = (
-        linkName.startsWith('mobility_wheel_') ||
-        linkName.startsWith('mobility_mecanum_') ||
-        linkName.startsWith('mobility_omni_') ||
-        linkName.startsWith('mobility_caster_')
-      )
-      const faceDefs = isTire
-        ? [{ nodeId: 'hub_bore', label: 'Hub Bore', cls: 'bore' as const, origin_xyz: [-center.x, -center.y, -center.z] as [number, number, number], origin_rpy: [0, 0, 0] as [number, number, number], single: true }]
-        : defaultFaceNodesForBoxDims(half.x, half.y, half.z)
+      const componentId = componentIdFromLinkName(linkName)
+      const preset = findPresetById(componentId)
+      const faceDefs = componentPortsForPreset(
+        componentId,
+        half.x, half.y, half.z,
+        preset?.mounting_logic,
+      ).map(f => (
+        isTireComponentId(componentId) && f.nodeId === 'hub_bore'
+          ? { ...f, origin_xyz: [-center.x, -center.y, -center.z] as [number, number, number] }
+          : f
+      ))
 
       for (const f of faceDefs) {
         const localPos = new THREE.Vector3(
@@ -1335,6 +1380,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const compItems = document.getElementById('comp-items') as HTMLDivElement | null
   const compDetail = document.getElementById('comp-detail') as HTMLDivElement | null
   let presetData: PresetData | null = null
+  function findPresetById(componentId: string): PresetComponent | null {
+    if (!presetData) return null
+    for (const cat of Object.values(presetData.categories)) {
+      for (const comp of cat.components) {
+        if (comp.id === componentId) return comp
+      }
+    }
+    return null
+  }
   // comp.id → list item element, for compatibility updates without full re-render
   const compItemEls = new Map<string, HTMLElement>()
 
@@ -1592,6 +1646,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     elevationAngleDeg: number = 0,
     childSizes?: Array<{ hu: number; hv: number }>,
     childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
+    placementHints: {
+      parentIsDrivetrain?: boolean
+      childIsTire?: boolean
+      childIsDrivetrain?: boolean
+      childUsesRollingBottomPose?: boolean
+    } = {},
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
@@ -1619,13 +1679,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // against the motor's outboard end. Do NOT use parent.hy (the motor radius)
     // here — that direction is world -Z (downward) after the drivetrain roll and
     // would place the tire below the motor instead of beside it.
-    const parentIsDrivetrain = parentLinkName.startsWith('drivetrain_')
-    const childIsTire = (
-      childComponentId.startsWith('mobility_wheel_') ||
-      childComponentId.startsWith('mobility_mecanum_') ||
-      childComponentId.startsWith('mobility_omni_') ||
-      childComponentId.startsWith('mobility_caster_')
-    )
+    const parentIsDrivetrain = placementHints.parentIsDrivetrain
+      ?? isDrivetrainComponentId(componentIdFromLinkName(parentLinkName))
+    const childIsTire = placementHints.childIsTire
+      ?? isTireComponentId(childComponentId)
     if (parentIsDrivetrain && childIsTire) {
       const motorHalfZ = parent.hz   // axle half-length along drivetrain local Z
       const tireHalfAxle = childZ / 2
@@ -1634,21 +1691,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
-    // Hoist isWheel so it's visible inside the switch below.
-    // Use preset-ID prefixes rather than substring matching so drivetrain
-    // assemblies (drivetrain_*) and their tire children are both treated as
-    // no-splay bottom-face components.
-    const isWheel = (
-      childComponentId.startsWith('drivetrain_') ||
-      childComponentId.startsWith('mobility_wheel_') ||
-      childComponentId.startsWith('mobility_mecanum_') ||
-      childComponentId.startsWith('mobility_omni_') ||
-      childComponentId.startsWith('mobility_caster_') ||
-      childComponentId.startsWith('mobility_swerve_')
-    )
+    // Rolling assemblies and their tire children skip leg splay and use the
+    // lateral bottom-face pose.
+    const childIsDrivetrain = placementHints.childIsDrivetrain
+      ?? isDrivetrainComponentId(childComponentId)
+    const usesRollingBottomPose = placementHints.childUsesRollingBottomPose
+      ?? (childIsDrivetrain || childIsTire || childComponentId.startsWith('mobility_swerve_'))
     let splayAngle = 0
     let insetOverride: number | undefined
-    if (face === 'bottom' && !isWheel && !noSplay && totalOnFace >= 2) {
+    if (face === 'bottom' && !usesRollingBottomPose && !noSplay && totalOnFace >= 2) {
       splayAngle = splayAngleForLegCount(totalOnFace)
       // Shrink the corner inset proportionally so post-splay tips stay within parent footprint.
       // At 0 splay inset=0.7; at ~40° (max) inset≈0.51.
@@ -1716,7 +1767,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // 1a: topology-aware splay — splayAngle was pre-computed above
         let rollRad = 0
         let pitchRad = 0
-        if (isWheel) {
+        if (usesRollingBottomPose) {
           // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
           // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
           rollRad = -Math.PI / 2
@@ -1734,8 +1785,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // every drivetrain's tire ends up on the same world side. Yaw drivetrains
         // on the baseplate's -Y half by 180° so their bore points the opposite
         // world direction — both sides of the chassis then get outboard wheels.
-        const isDrivetrain = childComponentId.startsWith('drivetrain_')
-        if (isDrivetrain && tv < 0) {
+        if (childIsDrivetrain && tv < 0) {
           yawRad += Math.PI
         }
         const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
@@ -3456,7 +3506,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const parentPreset = findPreset(parentCompDef?.component_id || '')
       const childPreset = findPreset(comp.component_id)
       const attachFace = comp.attach_face || 'top'
-      const childFace = oppositeFace[attachFace] || 'bottom'
+      const childFace = attachFace === 'coaxial' ? 'coaxial' : (oppositeFace[attachFace] || 'bottom')
 
       let parentPort: ReturnType<typeof resolveFaceToPort> = undefined
       let childPort: ReturnType<typeof resolveFaceToPort> = undefined
@@ -3510,13 +3560,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
 
       // Track per-port occupancy: enforce single-use ports
-      const portOccupancyKey = `${comp.attach_to}::${attachFace}`
+      const portOccupancyKey = `${comp.attach_to}::${parentPort?.nodeId ?? attachFace}`
       const currentOccupancy = portOccupancy.get(portOccupancyKey) || 0
       console.log(`[assembly][ports] Occupancy: ${portOccupancyKey} = ${currentOccupancy} → ${currentOccupancy + 1}${parentPort?.single ? ' (single-use)' : ''}`)
       if (parentPort?.single && currentOccupancy > 0 && parentPort.cls === 'shaft') {
         console.warn(`[assembly][ports] WARNING: ${parentPreset!.id}.${parentPort.nodeId} (shaft) already has ${currentOccupancy} child(ren) — multiple children on a shaft output is unusual`)
       }
       portOccupancy.set(portOccupancyKey, currentOccupancy + 1)
+
+      const requestedJointType = normalizeJointType(comp.joint_type)
+      const connectionJoint = parentPort && childPort
+        ? resolveConnectionJoint(parentPort, childPort, {
+          joint_type: requestedJointType,
+          axis_xyz: axisNameToTuple(comp.joint_axis),
+        })
+        : { joint_type: requestedJointType, axis_xyz: axisNameToTuple(comp.joint_axis) }
+      const jointType = connectionJoint.joint_type
+      comp.joint_type = jointType
 
       // Get multi-child placement info
       const faceKey = `${comp.attach_to}:${comp.attach_face || 'top'}`
@@ -3528,8 +3588,19 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
       const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
       const orientation = comp.orientation || 'auto'
-      const isWheelRelated = comp.component_id.includes('wheel') || comp.component_id.includes('caster')
-        || components.some(c => c.attach_to === comp.link_name && (c.component_id.includes('wheel') || c.component_id.includes('caster')))
+      const childContactClass = presetContactClass(preset)
+      const parentContactClass = presetContactClass(parentPreset)
+      const parentIsDrivetrain = parentContactClass === 'drivetrain' || isDrivetrainComponentId(parentPreset?.id ?? '')
+      const childIsTire = childContactClass === 'wheel' || isTireComponentId(preset.id)
+      const childIsDrivetrain = childContactClass === 'drivetrain' || isDrivetrainComponentId(preset.id)
+      const hasTireChild = components.some(c => c.attach_to === comp.link_name && isTireComponentId(c.component_id))
+      const isShaftBoreConnection = !!(
+        parentPort && childPort &&
+        ((parentPort.cls === 'shaft' && childPort.cls === 'bore') ||
+         (parentPort.cls === 'bore' && childPort.cls === 'shaft'))
+      )
+      const childUsesRollingBottomPose = childIsDrivetrain || childIsTire || preset.id.startsWith('mobility_swerve_')
+      const isRollingHardware = childUsesRollingBottomPose || hasTireChild || isShaftBoreConnection
       // Splay is a leg-tilt concept meant for extrusions/tubes standing in for legs. Skip it for
       // passive hardware (brackets, plates, sensor/compute/power blocks) — especially the
       // auto-inserted shaft↔mount_face brackets and servo coupler discs, which represent the
@@ -3541,26 +3612,38 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
-      const noSplay = isWheelRelated || comp.joint_type === 'revolute' || isPassiveHardware
+      const noSplay = isRollingHardware || jointType === 'revolute' || isPassiveHardware
       const elevAngle = comp.elevation_angle ?? 0
 
       // Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
       // so the tire clears the baseplate instead of clipping through it.
       let effectiveCym = cym
-      if (comp.component_id?.startsWith('drivetrain_') && comp.attach_face === 'bottom') {
-        const ml = (preset as Record<string, unknown>).mounting_logic as Record<string, unknown> | undefined
-        const aor = ml?.assembled_outer_radius_mm as number | undefined
-        if (aor) effectiveCym = aor / 1000
+      if (childIsDrivetrain && comp.attach_face === 'bottom') {
+        const aor = preset.mounting_logic.assembled_outer_radius_mm
+        if (typeof aor === 'number') effectiveCym = aor / 1000
       }
 
-      const placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz })
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
+      const placement = computeFacePlacement(
+        doc, parentLinkName,
+        cxm, effectiveCym, czm,
+        comp.attach_face,
+        isElongated,
+        childIdx,
+        totalOnFace,
+        orientation,
+        noSplay,
+        comp.component_id,
+        elevAngle,
+        faceChildSizes.get(faceKey),
+        { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz },
+        { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
+      )
+      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${jointType} axis=${comp.joint_axis}`)
 
       // Override joint type/axis from the topology
-      const axisMap: Record<string, string> = { x: '1 0 0', y: '0 1 0', z: '0 0 1' }
-      let jointAxis = axisMap[comp.joint_axis?.toLowerCase()] || '0 0 1'
+      let jointAxis = axisTupleToUrdf(connectionJoint.axis_xyz)
       // After Rx(-90°) on bottom face, local Z = world Y (rolling axis). Remap "y" → "0 0 1".
-      if (comp.component_id?.startsWith('drivetrain_') && comp.attach_face === 'bottom' && comp.joint_axis?.toLowerCase() === 'y') {
+      if (childIsDrivetrain && comp.attach_face === 'bottom' && comp.joint_axis?.toLowerCase() === 'y') {
         jointAxis = '0 0 1'
       }
 
@@ -3608,7 +3691,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
         const joint = urdfDoc.createElement('joint')
         joint.setAttribute('name', jointName)
-        joint.setAttribute('type', comp.joint_type || 'fixed')
+        joint.setAttribute('type', jointType)
 
         const parentEl = urdfDoc.createElement('parent'); parentEl.setAttribute('link', parentLinkName)
         const childEl = urdfDoc.createElement('child'); childEl.setAttribute('link', childName)
@@ -3617,7 +3700,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         // Apply default arm rest pose: bend revolute-Y joints in vertical chains
         // so arms look like arms (L-shape) instead of straight poles at rest
         let finalRpy = placement.rpy
-        const isArmJoint = comp.joint_type === 'revolute'
+        const isArmJoint = jointType === 'revolute'
           && comp.joint_axis?.toLowerCase() === 'y'
           && comp.attach_face === 'top'
         const parentDepth = armDepth.get(comp.attach_to!) || 0
@@ -3649,7 +3732,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const axis = urdfDoc.createElement('axis'); axis.setAttribute('xyz', jointAxis)
         joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin); joint.appendChild(axis)
 
-        if (comp.joint_type === 'revolute' || comp.joint_type === 'prismatic') {
+        if (jointType === 'revolute' || jointType === 'prismatic') {
           const limit = urdfDoc.createElement('limit')
           limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
           const me = preset.mechanical_electrical || {}
@@ -3978,4 +4061,3 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     },
   }
 }
-

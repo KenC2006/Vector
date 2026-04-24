@@ -9,6 +9,14 @@ import os
 from lxml import etree
 import numpy as np
 
+try:
+    from presets import get_component as _get_preset_component
+except Exception:  # pragma: no cover - depends on import entrypoint
+    try:
+        from core.presets import get_component as _get_preset_component
+    except Exception:  # pragma: no cover
+        _get_preset_component = None
+
 
 def _load_urdf_xml(urdf_path: str) -> etree._Element:
     """Load URDF XML file and return root element."""
@@ -242,18 +250,10 @@ _GRIPPER_KEYWORDS = frozenset(("gripper", "finger", "claw", "thumb", "palm", "gr
 _IMU_KEYWORDS     = frozenset(("imu",))
 _EE_KEYWORDS_MJCF = frozenset(("ee", "end_effector", "end-effector", "tool", "tcp"))
 
-# Preset ID prefixes for tire links (contact surface = wheel).
-# Drivetrain presets (drivetrain_*) own the revolute joint but are not
-# the contact surface — tires are.
-_TIRE_PREFIXES = (
-    "mobility_wheel_",
-    "mobility_mecanum_",
-    "mobility_omni_",
-    "mobility_caster_",
-)
-
 import re as _re
 _TOKEN_SPLIT = _re.compile(r"[_\-\s]+")
+_COMPONENT_INSTANCE_SUFFIX = _re.compile(r"^(.+)_\d+$")
+_PRESET_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
 
 
 def _name_tokens(name: str) -> set:
@@ -275,11 +275,29 @@ def _is_foot_link(link_name: str) -> bool:
     return any(kw in lower for kw in _FOOT_KEYWORDS)
 
 
-def _is_wheel_link(link_name: str) -> bool:
-    """True when this link is a tire (contact surface), not a drivetrain motor.
-    Uses preset-ID prefixes embedded in the link name rather than keyword sniffing."""
-    lower = link_name.lower()
-    return any(lower.startswith(p) for p in _TIRE_PREFIXES)
+def _component_id_from_link_name(link_name: str) -> str:
+    """Strip the UI's trailing instance suffix from preset-backed link names."""
+    match = _COMPONENT_INSTANCE_SUFFIX.match(link_name)
+    return match.group(1) if match else link_name
+
+
+def _preset_for_link(link_name: str) -> Optional[Dict[str, Any]]:
+    if _get_preset_component is None:
+        return None
+    for component_id in (_component_id_from_link_name(link_name), link_name):
+        if component_id not in _PRESET_CACHE:
+            _PRESET_CACHE[component_id] = _get_preset_component(component_id)
+        preset = _PRESET_CACHE[component_id]
+        if preset:
+            return preset
+    return None
+
+
+def _contact_class_for_link(link_name: str) -> str:
+    preset = _preset_for_link(link_name)
+    sim_metadata = preset.get("sim_metadata", {}) if preset else {}
+    contact_class = sim_metadata.get("contact_class")
+    return contact_class if isinstance(contact_class, str) else ""
 
 
 def _is_gripper_link(link_name: str) -> bool:
@@ -572,6 +590,28 @@ def _create_body_element(
                 inertial.set("pos", "0 0 0")
                 inertial.set("diaginertia", f"{d:.6g} {d:.6g} {d:.6g}")
 
+    # ── Wheel simplification ──────────────────────────────────────────────────
+    # The wheel's joint already carries rpy=[-π/2, 0, 0] to orient the axle
+    # laterally. The collision cylinders from the visual shape carry origin_rpy
+    # [π/2, 0, 0]. In MuJoCo these compose as body_quat * geom_quat, so the two
+    # rotations cancel and the cylinder ends up standing upright (flat face on
+    # floor) — that's the "square hitbox" that causes bouncy physics.
+    # Fix: replace all wheel collision geoms with the single outermost (tire)
+    # cylinder at identity orientation so only the body quat acts on it.
+    if is_wheel:
+        tire_coll = None
+        for c in collision_list:
+            g = c["geometry"]
+            if g.get("type") == "cylinder":
+                if tire_coll is None or g.get("radius", 0) > tire_coll["geometry"].get("radius", 0):
+                    tire_coll = c
+        if tire_coll:
+            collision_list = [{
+                "geometry": tire_coll["geometry"],
+                "origin_xyz": tire_coll["origin_xyz"],
+                "origin_rpy": [0.0, 0.0, 0.0],
+            }]
+
     # ── Collision geoms — one <geom> per collision primitive ───────────────────
     for coll in collision_list:
         geom = coll["geometry"]
@@ -845,10 +885,10 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
                 break
 
         # Classify contact role: foot > wheel > gripper > default.
-        # Wheel (tire) detection uses preset-ID prefixes, not joint type or name keywords.
-        # Drivetrain motor links (drivetrain_*) own the revolute/continuous joint but
-        # are NOT the contact surface — their tire child is.
-        is_wheel = _is_wheel_link(link_name)
+        # Wheel/tire contact is data-driven by preset sim_metadata.contact_class.
+        contact_class = _contact_class_for_link(link_name)
+        is_foot = _is_foot_link(link_name)
+        is_wheel = contact_class == "wheel"
         is_gripper = _is_gripper_link(link_name)
         is_imu = _is_imu_link(link_name)
 
@@ -857,9 +897,9 @@ def urdf_to_mjcf(urdf_path: str, free_base: bool = False) -> str:
             link_data,
             incoming_joint["elem"] if incoming_joint else None,
             mesh_assets=mesh_assets,
-            is_foot=_is_foot_link(link_name),
-            is_wheel=is_wheel and not _is_foot_link(link_name),
-            is_gripper=is_gripper and not _is_foot_link(link_name) and not is_wheel,
+            is_foot=is_foot,
+            is_wheel=is_wheel and not is_foot,
+            is_gripper=is_gripper and not is_foot and not is_wheel,
             is_imu=is_imu,
         )
         parent_body_elem.append(body_elem)

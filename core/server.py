@@ -113,6 +113,269 @@ _SCRIPT_NAME_DENY = frozenset({
 })
 
 
+def _sim_xml_child(elem: Any, name: str) -> Optional[Any]:
+    for child in list(elem):
+        tag = str(getattr(child, "tag", "")).rsplit("}", 1)[-1]
+        if tag == name:
+            return child
+    return None
+
+
+def _sim_parse_vec(text: Optional[str], default: list) -> list:
+    if not text:
+        return list(default)
+    try:
+        vals = [float(x) for x in text.split()]
+    except (TypeError, ValueError):
+        return list(default)
+    if len(vals) < 3:
+        return list(default)
+    return vals[:3]
+
+
+def _sim_mat_mul(a: list, b: list) -> list:
+    return [
+        [
+            a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j]
+            for j in range(3)
+        ]
+        for i in range(3)
+    ]
+
+
+def _sim_mat_vec(m: list, v: list) -> list:
+    return [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+
+
+def _sim_rpy_matrix(rpy: list) -> list:
+    roll, pitch, yaw = rpy
+    cr, sr = _math.cos(roll), _math.sin(roll)
+    cp, sp = _math.cos(pitch), _math.sin(pitch)
+    cy, sy = _math.cos(yaw), _math.sin(yaw)
+    rx = [[1, 0, 0], [0, cr, -sr], [0, sr, cr]]
+    ry = [[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]
+    rz = [[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]
+    return _sim_mat_mul(_sim_mat_mul(rz, ry), rx)
+
+
+def _sim_vec_add(a: list, b: list) -> list:
+    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+
+
+def _sim_dot(a: list, b: list) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _sim_cross(a: list, b: list) -> list:
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def _sim_normalize(v: list) -> list:
+    mag = _math.sqrt(max(_sim_dot(v, v), 0.0))
+    if mag < 1e-9:
+        return [0.0, 0.0, 0.0]
+    return [v[0] / mag, v[1] / mag, v[2] / mag]
+
+
+def _sim_round_vec(v: list) -> list:
+    return [round(float(x), 6) for x in v]
+
+
+def _sim_name_has_any(name: str, tokens: tuple) -> bool:
+    lowered = (name or "").lower()
+    return any(token in lowered for token in tokens)
+
+
+def _extract_sim_joint_context(urdf_content: str) -> tuple:
+    import xml.etree.ElementTree as _ET
+
+    root = _ET.fromstring(urdf_content)
+    links = set()
+    child_link_set = set()
+    joints = []
+    joint_names = []
+    joint_limits: Dict[str, tuple] = {}
+    children_by_link: Dict[str, list] = {}
+
+    for elem in root.iter():
+        tag = str(elem.tag).rsplit("}", 1)[-1]
+        if tag == "link":
+            name = elem.get("name")
+            if name:
+                links.add(name)
+
+    for elem in root.iter():
+        tag = str(elem.tag).rsplit("}", 1)[-1]
+        if tag != "joint":
+            continue
+
+        name = elem.get("name")
+        jtype = elem.get("type")
+        parent_el = _sim_xml_child(elem, "parent")
+        child_el = _sim_xml_child(elem, "child")
+        parent = parent_el.get("link") if parent_el is not None else ""
+        child = child_el.get("link") if child_el is not None else ""
+        if not name or not parent or not child:
+            continue
+
+        origin_el = _sim_xml_child(elem, "origin")
+        axis_el = _sim_xml_child(elem, "axis")
+        limit_el = _sim_xml_child(elem, "limit")
+        xyz = _sim_parse_vec(origin_el.get("xyz") if origin_el is not None else None, [0, 0, 0])
+        rpy = _sim_parse_vec(origin_el.get("rpy") if origin_el is not None else None, [0, 0, 0])
+        axis = _sim_normalize(_sim_parse_vec(axis_el.get("xyz") if axis_el is not None else None, [0, 0, 1]))
+
+        limits = {}
+        if limit_el is not None:
+            for key in ("lower", "upper", "effort", "velocity"):
+                raw = limit_el.get(key)
+                if raw is None:
+                    continue
+                try:
+                    limits[key] = float(raw)
+                except ValueError:
+                    pass
+
+        info = {
+            "name": name,
+            "type": jtype or "",
+            "parent": parent,
+            "child": child,
+            "xyz": xyz,
+            "rpy": rpy,
+            "axis": axis,
+            "limits": limits,
+        }
+        joints.append(info)
+        children_by_link.setdefault(parent, []).append(info)
+        links.add(parent)
+        links.add(child)
+        child_link_set.add(child)
+
+        if jtype not in ("fixed", None):
+            joint_names.append(name)
+            if "lower" in limits and "upper" in limits:
+                joint_limits[name] = (limits["lower"], limits["upper"])
+
+    ident = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    link_pose: Dict[str, tuple] = {}
+    joint_pose: Dict[str, dict] = {}
+    roots = sorted(links - child_link_set)
+    primary_root = "base_link" if "base_link" in links else (roots[0] if roots else None)
+
+    def visit(link: str, seen: set) -> None:
+        if link in seen:
+            return
+        seen.add(link)
+        parent_pos, parent_rot = link_pose.get(link, ([0.0, 0.0, 0.0], ident))
+        for joint in children_by_link.get(link, []):
+            origin_rot = _sim_rpy_matrix(joint["rpy"])
+            child_pos = _sim_vec_add(parent_pos, _sim_mat_vec(parent_rot, joint["xyz"]))
+            child_rot = _sim_mat_mul(parent_rot, origin_rot)
+            link_pose[joint["child"]] = (child_pos, child_rot)
+            joint_pose[joint["name"]] = {
+                "center": child_pos,
+                "axis_world": _sim_normalize(_sim_mat_vec(child_rot, joint["axis"])),
+            }
+            visit(joint["child"], seen)
+
+    ordered_roots = []
+    if primary_root:
+        ordered_roots.append(primary_root)
+    ordered_roots.extend(root for root in roots if root != primary_root)
+    for root_link in ordered_roots:
+        link_pose.setdefault(root_link, ([0.0, 0.0, 0.0], ident))
+        visit(root_link, set())
+
+    descendant_cache: Dict[str, set] = {}
+
+    def descendants(link: str, seen: Optional[set] = None) -> set:
+        if link in descendant_cache:
+            return set(descendant_cache[link])
+        if seen is None:
+            seen = set()
+        if link in seen:
+            return set()
+        seen.add(link)
+        found = {link}
+        for child_joint in children_by_link.get(link, []):
+            found.update(descendants(child_joint["child"], seen))
+        descendant_cache[link] = set(found)
+        return found
+
+    wheel_tokens = ("wheel", "tire", "mecanum")
+    drivetrain_tokens = ("drivetrain", "hub_motor", "drive_motor")
+    forward = [1.0, 0.0, 0.0]
+    up = [0.0, 0.0, 1.0]
+    joint_metadata = []
+
+    for joint in joints:
+        if joint["type"] in ("fixed", None):
+            continue
+
+        pose = joint_pose.get(joint["name"], {})
+        center = pose.get("center", [0.0, 0.0, 0.0])
+        axis_world = pose.get("axis_world", joint["axis"])
+        desc = descendants(joint["child"])
+        has_wheel_descendant = any(_sim_name_has_any(link, wheel_tokens) for link in desc)
+        has_drivetrain_name = (
+            _sim_name_has_any(joint["name"], drivetrain_tokens)
+            or _sim_name_has_any(joint["parent"], drivetrain_tokens)
+            or _sim_name_has_any(joint["child"], drivetrain_tokens)
+        )
+        is_wheel_drive = bool(has_wheel_descendant and (joint["type"] == "continuous" or has_drivetrain_name))
+
+        rolling_dir = _sim_cross(axis_world, up)
+        forward_alignment = _sim_dot(rolling_dir, forward)
+        forward_sign = 1 if forward_alignment >= 0 else -1
+        if abs(forward_alignment) < 1e-6:
+            forward_sign = 1
+
+        x, y, _z = center
+        side = "center"
+        side_sign = 0
+        if y > 0.01:
+            side = "left"
+            side_sign = 1
+        elif y < -0.01:
+            side = "right"
+            side_sign = -1
+
+        end = "center"
+        if x > 0.01:
+            end = "front"
+        elif x < -0.01:
+            end = "rear"
+
+        effort = joint["limits"].get("effort", 10.0)
+        joint_metadata.append({
+            "name": joint["name"],
+            "type": joint["type"],
+            "control": "torque_Nm" if joint["type"] == "continuous" else "position",
+            "parent": joint["parent"],
+            "child": joint["child"],
+            "axis_world": _sim_round_vec(axis_world),
+            "center": _sim_round_vec(center),
+            "effort": round(float(effort), 6),
+            "is_wheel_drive": is_wheel_drive,
+            "side": side,
+            "side_sign": side_sign,
+            "end": end,
+            "forward_sign": forward_sign,
+            "forward_alignment": round(float(forward_alignment), 6),
+        })
+
+    return joint_names, joint_limits, joint_metadata
+
+
 class JSONRPCServer:
     """Simple JSON-RPC 2.0 server."""
 
@@ -791,26 +1054,9 @@ class JSONRPCServer:
         if not isinstance(urdf_content, str) or not urdf_content.strip():
             raise ValueError("Parameter 'urdf_content' must be a non-empty string")
 
-        # Extract joint names + limits from the URDF.
-        joint_names: list = []
-        joint_limits: Dict[str, tuple] = {}
+        # Extract joint names, limits, and wheel direction metadata from the URDF.
         try:
-            import xml.etree.ElementTree as _ET
-            root = _ET.fromstring(urdf_content)
-            for j in root.iter("joint"):
-                name = j.get("name")
-                jtype = j.get("type")
-                if not name or jtype in ("fixed", None):
-                    continue
-                joint_names.append(name)
-                lim = j.find("limit")
-                if lim is not None:
-                    try:
-                        lo = float(lim.get("lower", "nan"))
-                        hi = float(lim.get("upper", "nan"))
-                        joint_limits[name] = (lo, hi)
-                    except (TypeError, ValueError):
-                        pass
+            joint_names, joint_limits, joint_metadata = _extract_sim_joint_context(urdf_content)
         except Exception as e:
             return {"status": "error",
                     "message": f"Could not parse URDF joints: {e}"}
@@ -821,7 +1067,7 @@ class JSONRPCServer:
 
         try:
             code = _generate_sim_script(
-                prompt, joint_names, current_script, joint_limits
+                prompt, joint_names, current_script, joint_limits, joint_metadata
             )
         except Exception as e:
             return {"status": "error", "message": f"AI call failed: {e}"}

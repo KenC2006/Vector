@@ -157,18 +157,13 @@
             <div class="sp-title">Simulation</div>
 
             <!-- Empty state (shown when sim not running) -->
-            <div id="sim-not-active" class="sim-empty">
-              <div class="sim-empty-icon">&#9881;</div>
-              <div class="sim-empty-text">
-                Click <strong>Simulate</strong> in the toolbar to start physics.
-              </div>
-            </div>
+            <div id="sim-not-active" class="sim-empty"></div>
 
             <!-- Active sim body -->
             <div id="sim-controls-body" class="hidden">
-
               <!-- Status card: time, RTF, mass/COM -->
               <div class="sim-status-card">
+                <div class="sim-card-title">Runtime</div>
                 <div class="sim-status-row">
                   <span class="sim-status-label">Time</span>
                   <span class="sim-status-val" id="sim-status-time">0.000 s</span>
@@ -188,10 +183,46 @@
                 <div id="sim-mass-info" class="sim-mass-info" style="display:none;"></div>
               </div>
 
-              <!-- Joint Controls -->
-              <div class="sim-section-title">Joint Controls</div>
-              <div id="sim-joint-sliders" class="sim-joint-sliders">
-                <!-- populated by JS -->
+              <!-- Script Runner -->
+              <div class="sim-section-title">Controller</div>
+              <div class="sim-script-upload">
+                <div class="sim-card-title">Controller</div>
+                <input type="file" id="sim-script-file" accept=".py,text/x-python" hidden>
+                <div id="sim-script-status" class="sim-script-status">No controller loaded</div>
+                <div class="sim-action-row sim-script-actions">
+                  <button class="sim-secondary-btn" id="sim-script-upload-btn" title="Upload a Python script defining step(t, state)">
+                    Upload .py
+                  </button>
+                  <button class="sim-secondary-btn" id="sim-script-clear" title="Remove active script" disabled>Clear</button>
+                </div>
+              </div>
+
+              <!-- AI Script Generator -->
+              <div class="sim-section-title">AI Controller</div>
+              <div class="sim-ai-gen">
+                <div class="sim-card-header">
+                  <div class="sim-card-title">Generate From Model</div>
+                  <div id="sim-ai-status" class="sim-script-status">Ready</div>
+                </div>
+                <div class="sim-action-row sim-ai-actions">
+                  <button class="sim-secondary-btn" id="sim-ai-generate" title="Generate a Python controller from the loaded URDF">
+                    Generate
+                  </button>
+                  <button class="sim-secondary-btn" id="sim-ai-modify" disabled
+                    title="Revise the active controller using the current model">Modify Active</button>
+                </div>
+                <div class="sim-preview-card">
+                  <div class="sim-preview-header">
+                    <span>Preview</span>
+                    <span>step(t, state)</span>
+                  </div>
+                  <pre id="sim-ai-preview" class="sim-ai-preview" hidden></pre>
+                  <div class="sim-preview-empty">Generated controller appears here before it is applied.</div>
+                </div>
+                <div class="sim-action-row" id="sim-ai-apply-row" hidden>
+                  <button class="sim-secondary-btn" id="sim-ai-apply">Apply</button>
+                  <button class="sim-secondary-btn" id="sim-ai-discard">Discard</button>
+                </div>
               </div>
 
               <!-- Pose -->
@@ -232,53 +263,6 @@
                   <input type="checkbox" id="sim-free-base">
                   <span>Free Base</span>
                 </label>
-              </div>
-              <div class="sim-field-row">
-                <label class="sim-field-label" for="sim-floor-friction">
-                  Floor friction <span class="sim-field-val" id="sim-floor-friction-val">1.5</span>
-                </label>
-                <input type="range" id="sim-floor-friction" class="sim-range"
-                  min="0" max="3" step="0.05" value="1.5">
-              </div>
-
-              <!-- AI Script Generator -->
-              <div class="sim-section-title">AI Generator</div>
-              <div class="sim-ai-gen">
-                <textarea id="sim-ai-prompt" class="sim-ai-prompt"
-                  rows="2"
-                  placeholder="Optional — describe the robot or desired motion. Leave blank to auto-infer from URDF."></textarea>
-                <div class="sim-pose-row">
-                  <button class="sim-pose-btn" id="sim-ai-generate">Generate</button>
-                  <button class="sim-pose-btn" id="sim-ai-modify" disabled
-                    title="Edit the current script using your prompt">Modify</button>
-                </div>
-                <div id="sim-ai-status" class="sim-script-status">Idle</div>
-                <pre id="sim-ai-preview" class="sim-ai-preview" hidden></pre>
-                <div class="sim-pose-row" id="sim-ai-apply-row" hidden>
-                  <button class="sim-pose-btn" id="sim-ai-apply">Apply to Sim</button>
-                  <button class="sim-pose-btn" id="sim-ai-discard">Discard</button>
-                </div>
-              </div>
-
-              <!-- Script Runner -->
-              <div class="sim-section-title">Script Runner</div>
-              <div class="sim-script-upload">
-                <input type="file" id="sim-script-file" accept=".py,text/x-python" hidden>
-                <button class="sim-pose-btn" id="sim-script-upload-btn" title="Upload a Python script defining step(t, state)">
-                  &#8593; Upload .py
-                </button>
-                <div id="sim-script-status" class="sim-script-status">No script loaded</div>
-              </div>
-              <div class="sim-pose-row">
-                <button class="sim-pose-btn" id="sim-script-clear" title="Remove active script" disabled>Clear</button>
-              </div>
-
-              <div id="sim-scrub-row" class="sim-field-row" style="display:none;">
-                <label class="sim-field-label" for="sim-scrub">
-                  Scrub frame <span class="sim-field-val" id="sim-scrub-val">0</span>
-                </label>
-                <input type="range" id="sim-scrub" class="sim-range"
-                  min="0" max="100" step="1" value="100">
               </div>
 
             </div>

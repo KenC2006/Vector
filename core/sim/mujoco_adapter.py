@@ -173,7 +173,7 @@ class MuJoCoSimulator:
             rbound = float(model.geom_rbound[i])
             return z_cen - (rbound if rbound > 0.0 else float(np.max(np.abs(size[:3]))))
 
-    def _auto_lift_above_floor(self, clearance: float = 0.02) -> None:
+    def _auto_lift_above_floor(self, clearance: float = 0.002) -> None:
         """
         Translate the free-floating root body upward so that the robot's lowest
         geom (at the zero-pose) is `clearance` metres above the floor (z=0).

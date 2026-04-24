@@ -4,7 +4,7 @@
 // driven from a node-based corpus runner as well as from the browser-side
 // urdfAssembly pipeline.
 
-import { componentPortsForPreset, resolveFaceToPort } from './attachmentNodes.ts'
+import { componentPortsForPreset, isDrivetrainComponentId, isTireComponentId, resolveFaceToPort } from './attachmentNodes.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
 
 // Minimal shape of a preset that the validator needs. The real PresetComponent
@@ -32,6 +32,7 @@ export type RepairKind =
   | 'effector_children'
   | 'sensor_on_actuator'
   | 'shaft_fanout'
+  | 'bare_tire_drivetrain'
   | 'port_mismatch_bracket'
 
 export interface RepairLogEntry {
@@ -83,6 +84,7 @@ const OPPOSITE_FACE: Record<string, string> = {
   top: 'bottom', bottom: 'top',
   front: 'back', back: 'front',
   left: 'right', right: 'left',
+  coaxial: 'coaxial',
 }
 
 function portClassAtFace(preset: ValidationPreset, face: string): string | undefined {
@@ -127,9 +129,8 @@ export function validateTopology(
     }
   }
 
-  // Rule 8 — SHAFT_FANOUT: >1 non-mobility child on a single-use shaft port.
-  // Exception: all-mobility groups (differential drive) skipped — plausible intent.
-  const shaftGroups = new Map<string, { children: string[]; componentIds: string[] }>()
+  // Rule 8 — SHAFT_FANOUT: >1 child on a single-use shaft port.
+  const shaftGroups = new Map<string, { children: string[] }>()
   for (const comp of components) {
     if (!comp.attach_to) continue
     const parentDef = components.find(c => c.link_name === comp.attach_to)
@@ -140,20 +141,17 @@ export function validateTopology(
     const port = resolveFaceToPort(face, portsForComponent(pp))
     if (port?.cls === 'shaft' && port.single) {
       const key = `${comp.attach_to}::${face}`
-      const entry = shaftGroups.get(key) || { children: [], componentIds: [] }
+      const entry = shaftGroups.get(key) || { children: [] }
       entry.children.push(comp.link_name)
-      entry.componentIds.push(comp.component_id)
       shaftGroups.set(key, entry)
     }
   }
   for (const [key, entry] of shaftGroups) {
     if (entry.children.length <= 1) continue
-    const allMobility = entry.componentIds.every(id => id.startsWith('mobility_'))
-    if (allMobility) continue
     const [parentName] = key.split('::')
     const extras = entry.children.slice(1).join(', ')
     errors.push(
-      `[SHAFT_FANOUT] ${parentName}: shaft has ${entry.children.length} children (${entry.children.join(', ')}). A servo shaft drives exactly one load; extra children on the same shaft are mechanically invalid. Fix: keep one child on the shaft and reparent the others (${extras}) to the nearest structural extrusion.`,
+      `[SHAFT_FANOUT] ${parentName}: shaft has ${entry.children.length} children (${entry.children.join(', ')}). A shaft drives exactly one load; extra children on the same shaft are mechanically invalid. Fix: keep one child on the shaft and reparent the others (${extras}) to the nearest structural extrusion.`,
     )
   }
 
@@ -197,19 +195,13 @@ export function validateTopology(
   // Rule 13 — BARE_TIRE: tire preset attached directly to a non-drivetrain parent.
   // A tire without a drivetrain axle/motor has no defined contact patch or spin
   // axis, causing it to fall off or clip in simulation.
-  const isTireId = (id: string) =>
-    id.startsWith('mobility_wheel_') ||
-    id.startsWith('mobility_mecanum_') ||
-    id.startsWith('mobility_omni_') ||
-    id.startsWith('mobility_caster_')
-  const isDrivetrainId = (id: string) => id.startsWith('drivetrain_')
   for (const comp of components) {
-    if (!isTireId(comp.component_id)) continue
+    if (!isTireComponentId(comp.component_id)) continue
     if (!comp.attach_to) continue
     const parentComp = components.find(c => c.link_name === comp.attach_to)
     if (!parentComp) continue
-    if (!isDrivetrainId(parentComp.component_id)) {
-      warnings.push(
+    if (!isDrivetrainComponentId(parentComp.component_id)) {
+      errors.push(
         `[BARE_TIRE] ${comp.link_name} (${comp.component_id}) is attached directly to ${parentComp.link_name} (${parentComp.component_id}). Tires must attach to a drivetrain parent (e.g. drivetrain_hub_motor_80). Fix: insert a drivetrain between the chassis and the tire.`,
       )
     }
@@ -289,12 +281,24 @@ export function validateTopology(
 }
 
 // Auto-repairs mutate `graph.components` in place and return a repair log.
-// Order: duplicate names → effector children → sensor-on-actuator → shaft fan-out.
+// Order: duplicate names -> effector children -> sensor-on-actuator ->
+// bare-tire drivetrain insertion -> shaft fan-out.
 export function autoRepairTopology(
   graph: AssemblyGraph,
   ctx: ValidationContext,
 ): RepairResult {
   const repairs: RepairLogEntry[] = []
+
+  const claimUniqueName = (base: string, existing: Set<string>): string => {
+    let candidate = base
+    let suffix = 1
+    while (existing.has(candidate)) {
+      suffix++
+      candidate = `${base}_${suffix}`
+    }
+    existing.add(candidate)
+    return candidate
+  }
 
   // Repair 1: duplicate link_names get incrementing suffix; later children
   // in the array that referenced the old name are rewritten to the new name.
@@ -356,8 +360,47 @@ export function autoRepairTopology(
     })
   }
 
-  // Repair 4: multiple non-mobility children on a single-use shaft → keep the
-  // first, reparent the rest. All-mobility groups (diff-drive) are skipped.
+  // Repair 4: legacy bare tires -> synthesize an intermediate drivetrain.
+  const existingNamesForDrivetrain = new Set(graph.components.map(c => c.link_name))
+  const drivetrainInsertions: Array<{ drivetrain: AssemblyComponent; beforeLinkName: string }> = []
+  let drivetrainSerial = 0
+  for (const tire of graph.components) {
+    if (!isTireComponentId(tire.component_id)) continue
+    if (!tire.attach_to) continue
+    const parent = graph.components.find(c => c.link_name === tire.attach_to)
+    if (!parent || isDrivetrainComponentId(parent.component_id)) continue
+
+    drivetrainSerial++
+    const drivetrainName = claimUniqueName(`drivetrain_auto_${drivetrainSerial}`, existingNamesForDrivetrain)
+    const originalParent = tire.attach_to
+    const originalFace = tire.attach_face || 'bottom'
+    const drivetrain: AssemblyComponent = {
+      link_name: drivetrainName,
+      component_id: 'drivetrain_hub_motor_80',
+      attach_to: originalParent,
+      attach_face: originalFace,
+      joint_type: 'continuous',
+      joint_axis: 'y',
+    }
+    drivetrainInsertions.push({ drivetrain, beforeLinkName: tire.link_name })
+    tire.attach_to = drivetrainName
+    tire.attach_face = 'coaxial'
+    tire.joint_type = 'fixed'
+    tire.joint_axis = 'z'
+    repairs.push({
+      kind: 'bare_tire_drivetrain',
+      message: `inserted "${drivetrainName}" between "${originalParent}" and tire "${tire.link_name}"`,
+    })
+  }
+  for (const ins of drivetrainInsertions) {
+    const tireIdx = graph.components.findIndex(c => c.link_name === ins.beforeLinkName)
+    if (tireIdx >= 0) graph.components.splice(tireIdx, 0, ins.drivetrain)
+    else graph.components.push(ins.drivetrain)
+  }
+
+  // Repair 5: multiple non-tire children on a single-use shaft -> keep the
+  // first, reparent the rest. Tire fanout is a hard topology issue for the AI
+  // to redesign, because reparenting a tire off its drivetrain would be invalid.
   const shaftRepairGroups = new Map<string, AssemblyComponent[]>()
   for (const comp of graph.components) {
     if (!comp.attach_to) continue
@@ -376,7 +419,7 @@ export function autoRepairTopology(
   }
   for (const [key, children] of shaftRepairGroups) {
     if (children.length < 2) continue
-    if (children.every(c => c.component_id.startsWith('mobility_'))) continue
+    if (children.some(c => isTireComponentId(c.component_id))) continue
     const parent = graph.components.find(c => c.link_name === children[0].attach_to)
     if (!parent) continue
     const newParent =
