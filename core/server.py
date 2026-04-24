@@ -1166,7 +1166,12 @@ class JSONRPCServer:
         # Validate: must compile and pass sandbox scan.
         try:
             self._reject_unsafe_script(code)
-            compile(code, "<ai_sim_script>", "exec")
+            compiled = compile(code, "<ai_sim_script>", "exec")
+            validation_globals = dict(_SCRIPT_GLOBALS)
+            exec(compiled, validation_globals)
+            fn = validation_globals.get("step")
+            if fn is None or not callable(fn):
+                raise ValueError("Generated script must define a callable 'step(t, state)' function")
         except SyntaxError as e:
             return {"status": "error",
                     "message": f"Generated script has syntax error: {e}",

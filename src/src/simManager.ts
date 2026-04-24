@@ -859,6 +859,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
         })
       }
       refreshSimPreviewLimits()
+      const freeBaseEl = document.getElementById('sim-free-base') as HTMLInputElement | null
+      if (freeBaseEl) freeBaseEl.checked = true
       try {
         await initializeSimulation()
         enterSimPanel()
