@@ -76,7 +76,7 @@ export interface UrdfAssemblyContext {
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
   isViewport3D: () => boolean
-  /** `build` = place & snap; `inspect` = click mesh to focus & dashboard (no carry). */
+  /** `build` = place & snap; `inspect` = click mesh to inspect in Properties (no carry). */
   getInteractionMode: () => 'build' | 'inspect'
   /** Returns true while simulation is running — carry/edit blocked during sim. */
   isSimActive?: () => boolean
@@ -237,7 +237,7 @@ export interface UrdfAssemblyApi {
   recordUndoExternal(content: string): void
   exitCarryMode(): void
   onInteractionModeChanged(mode: 'build' | 'inspect'): void
-  /** Sync 3D selection / gizmo / inspector (used when opening Properties from Focus panel). */
+  /** Sync 3D selection and Properties panel. Inspect mode keeps build gizmos hidden. */
   setSelectedLink(linkName: string | null): void
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary }
@@ -397,6 +397,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   ctx.scene.add(gizmo.getHelper())
 
   let selectedLink: string | null = null
+  let interactionMode: 'build' | 'inspect' = 'build'
   let gizmoBasePivotWorld = new THREE.Matrix4()
   // Lowest world-Y of the selected link's subtree at drag start. The floor
   // constraint uses this as its floor threshold instead of y=0 so a component
@@ -1149,6 +1150,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       return
     }
     const joints = ctx.getKinematicJoints()
+    const graphNode = ctx.getKinematicGraph()[selectedLink]
+    const mass = graphNode?.mass ?? 0
+    const massLabel = mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`
+    const children = (graphNode?.children ?? []).filter(child => !isMountLinkName(child))
+    const childLabel = children.length ? children.join(', ') : 'No child links'
     const parentJoint = Object.values(joints).find(j => j.childLink === selectedLink) || null
     // Find synthetic face nodes belonging to the currently selected link, plus any
     // child links whose joint origins match those faces (= occupying components).
@@ -1180,6 +1186,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       <div class="bi-section">
         <div class="bi-section-title">Link</div>
         <div class="insp-row"><span class="insp-key">Name</span><span class="insp-val">${selectedLink}</span></div>
+        <div class="insp-row"><span class="insp-key">Mass</span><span class="insp-val">${massLabel}</span></div>
+        <div class="insp-row"><span class="insp-key">Children</span><span class="insp-val">${childLabel}</span></div>
       </div>
       <div class="bi-section">
         <div class="bi-section-title">Attachment Nodes</div>
@@ -1482,7 +1490,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     selectedLink = name
     gizmo.detach()
     rootDragWarned = false
-    if (name) {
+    if (name && interactionMode === 'build') {
       const pivot = getPivotGroupForLink(name)
       if (pivot) {
         gizmo.attach(pivot)
@@ -3857,6 +3865,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function onInteractionModeChanged(mode: 'build' | 'inspect') {
+    interactionMode = mode
     if (mode === 'inspect') {
       exitCarryMode()
       selectLink(null)

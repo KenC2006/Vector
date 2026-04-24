@@ -1320,6 +1320,7 @@ toggleCollisionBtn?.addEventListener('click', () => {
 // Deferred callbacks to break circular init dependency (simManager ↔ vpControls/openSidebarPanel)
 let _resize: () => void = () => {}
 let _openSidebarPanel: (p: string) => void = () => {}
+let _setSimSidebarLocked: (locked: boolean) => void = () => {}
 let _createCheckpoint: (label: string, urdf: string, auto: boolean) => void = () => {}
 
 const simStage = initSimStage({
@@ -1341,7 +1342,6 @@ simApi = initSimManager({
   simPlay: document.getElementById('sim-play') as HTMLButtonElement,
   simPause: document.getElementById('sim-pause') as HTMLButtonElement,
   simReset: document.getElementById('sim-reset') as HTMLButtonElement,
-  simProgress: document.getElementById('sim-progress') as HTMLElement,
   simTimeEl: document.getElementById('sim-time') as HTMLElement,
   viewportLabel: document.querySelector('.vp-tab[data-view="3d"]') as HTMLElement,
   getParsedRobot: () => parsedRobot,
@@ -1360,9 +1360,11 @@ simApi = initSimManager({
     urdfAssemblyApi?.onInteractionModeChanged('inspect')
     clearInspectFocus()
     simStage.enter()
+    _setSimSidebarLocked(true)
   },
   onExitSim: () => {
     simStage.exit()
+    _setSimSidebarLocked(false)
     viewportInteractionMode = 'build'
     syncViewportModeButton()
     urdfAssemblyApi?.onInteractionModeChanged('build')
@@ -1972,7 +1974,6 @@ const { refreshGitStatus } = initGitPanel({ invoke, showToast })
 
 const panels: Record<string, HTMLElement> = {
   explorer: document.getElementById('panel-explorer')!,
-  focus: document.getElementById('panel-focus')!,
   build: document.getElementById('panel-build')!,
   inspector: document.getElementById('panel-inspector')!,
   toolbox: document.getElementById('panel-toolbox')!,
@@ -1982,16 +1983,40 @@ const panels: Record<string, HTMLElement> = {
   settings: document.getElementById('panel-settings')!,
 }
 
+const activityBar = document.getElementById('activity-bar')!
+const simActivityBtn = document.querySelector('.ab-btn[data-panel="sim"]') as HTMLElement | null
+let preSimSidebarPanel = 'explorer'
+
+function setSimSidebarLocked(locked: boolean) {
+  if (locked) {
+    const activeBtn = document.querySelector('.ab-btn.active') as HTMLElement | null
+    const activePanel = activeBtn?.dataset.panel
+    if (activePanel && activePanel !== 'sim') preSimSidebarPanel = activePanel
+  }
+  activityBar.classList.toggle('sim-sidebar-locked', locked)
+  simActivityBtn?.classList.toggle('hidden', !locked)
+  if (locked) {
+    openSidebarPanel('sim')
+  } else {
+    simActivityBtn?.classList.remove('active')
+    openSidebarPanel(panels[preSimSidebarPanel] ? preSimSidebarPanel : 'explorer')
+  }
+}
+
 function openSidebarPanel(panel: string) {
+  if (simApi?.isSimActive() && panel !== 'sim') {
+    showToast('Exit simulation mode before switching panels', 'info')
+    panel = 'sim'
+  }
   if (
-    (panel === 'build' || panel === 'toolbox' || panel === 'inspector' || panel === 'focus') &&
+    (panel === 'build' || panel === 'toolbox' || panel === 'inspector') &&
     !(viewportChatApi?.isViewport3D() ?? true)
   ) {
     viewportChatApi?.switchViewportView('3d')
     showToast('Switched to 3D Preview for URDF editing', 'info')
   }
   if (
-    (panel === 'build' || panel === 'toolbox' || panel === 'inspector' || panel === 'focus') &&
+    (panel === 'build' || panel === 'toolbox' || panel === 'inspector') &&
     nodeGraph.isVisible()
   ) {
     nodeGraph.hide()
@@ -2009,11 +2034,19 @@ function openSidebarPanel(panel: string) {
 }
 // Wire up deferred openSidebarPanel callback for simManager
 _openSidebarPanel = openSidebarPanel
+_setSimSidebarLocked = setSimSidebarLocked
 
 document.querySelectorAll('.ab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const panel = (btn as HTMLElement).dataset.panel!
     if (!panel) return
+    if (simApi.isSimActive()) {
+      if (panel !== 'sim') {
+        showToast('Exit simulation mode before switching panels', 'info')
+      }
+      openSidebarPanel('sim')
+      return
+    }
     const wasActive = btn.classList.contains('active')
     if (wasActive) {
     document.querySelectorAll('.ab-btn').forEach(b => b.classList.remove('active'))
@@ -2026,7 +2059,6 @@ document.querySelectorAll('.ab-btn').forEach(btn => {
 
 // ── Activity bar drag-and-drop reorder ────────────────────────────────────────
 {
-  const activityBar = document.getElementById('activity-bar')!
   const STORAGE_KEY = 'vector_ab_order'
   const spacer = activityBar.querySelector('.ab-spacer')!
 
@@ -2481,42 +2513,6 @@ function syncViewportModeButton() {
   label.textContent = viewportInteractionMode === 'build' ? 'Build' : 'Inspect'
 }
 
-function updateFocusPanelVisibility() {
-  const emptyEl = document.getElementById('focus-empty')
-  const bodyEl = document.getElementById('focus-body')
-  if (!emptyEl || !bodyEl) return
-  const has = Boolean(inspectFocusedLink)
-  emptyEl.classList.toggle('hidden', has)
-  bodyEl.classList.toggle('hidden', !has)
-}
-
-function renderFocusDashboard(linkName: string) {
-  const nameEl = document.getElementById('focus-link-name')
-  const metaEl = document.getElementById('focus-meta')
-  if (!nameEl || !metaEl) return
-  nameEl.textContent = linkName
-  const graph = kinematicGraph[linkName]
-  const m = graph?.mass ?? 0
-  const massStr = m >= 1 ? `${m.toFixed(2)} kg` : `${Math.round(m * 1000)} g`
-  const joint = Object.values(kinematicJoints).find(j => j.childLink === linkName)
-  let parentLine = ''
-  if (joint) {
-    const ax = joint.axis && joint.axis !== '--' ? `, axis ${joint.axis}` : ''
-    parentLine = `Parent: ${joint.parentLink} · ${joint.name} (${joint.type}${ax})`
-} else {
-    parentLine = 'Kinematic root (no parent joint)'
-  }
-  const children = (graph?.children ?? []).filter(c => !c.includes('__mount__'))
-  const childLine = children.length ? `Children: ${children.join(', ')}` : 'No child links'
-  metaEl.replaceChildren()
-  for (const line of [`Mass: ${massStr}`, parentLine, childLine]) {
-    const row = document.createElement('div')
-    row.textContent = line
-    row.style.marginBottom = '6px'
-    metaEl.appendChild(row)
-  }
-}
-
 function startFocusCameraOnLink(linkName: string) {
   const box = computeLinkWorldBox(parsedRobot.group, linkName)
   if (!box || box.isEmpty()) {
@@ -2538,11 +2534,7 @@ function clearInspectFocus() {
   inspectFocusedLink = null
   cancelCameraFocusTween()
   restoreInspectMaterials(parsedRobot.group)
-  const nameEl = document.getElementById('focus-link-name')
-  const metaEl = document.getElementById('focus-meta')
-  if (nameEl) nameEl.textContent = ''
-  if (metaEl) metaEl.replaceChildren()
-  updateFocusPanelVisibility()
+  urdfAssemblyApi?.setSelectedLink(null)
 }
 
 function handleInspectLinkFocused(linkName: string | null) {
@@ -2556,9 +2548,8 @@ function handleInspectLinkFocused(linkName: string | null) {
   restoreInspectMaterials(parsedRobot.group)
   applyInspectDimming(parsedRobot.group, linkName)
   startFocusCameraOnLink(linkName)
-  renderFocusDashboard(linkName)
-  updateFocusPanelVisibility()
-  openSidebarPanel('focus')
+  urdfAssemblyApi?.setSelectedLink(linkName)
+  openSidebarPanel('inspector')
 }
 
 function refreshInspectAfterModelUpdate() {
@@ -2570,7 +2561,7 @@ function refreshInspectAfterModelUpdate() {
   }
   restoreInspectMaterials(parsedRobot.group)
   applyInspectDimming(parsedRobot.group, inspectFocusedLink)
-  renderFocusDashboard(inspectFocusedLink)
+  urdfAssemblyApi?.setSelectedLink(inspectFocusedLink)
 }
 
 document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
@@ -2583,24 +2574,6 @@ document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
   }
 })
 syncViewportModeButton()
-
-document.getElementById('focus-btn-clear')?.addEventListener('click', () => {
-  clearInspectFocus()
-})
-
-document.getElementById('focus-btn-frame')?.addEventListener('click', () => {
-  if (inspectFocusedLink) startFocusCameraOnLink(inspectFocusedLink)
-})
-
-document.getElementById('focus-btn-inspector')?.addEventListener('click', () => {
-  const link = inspectFocusedLink
-  if (!link || !urdfAssemblyApi) return
-  viewportInteractionMode = 'build'
-  syncViewportModeButton()
-  clearInspectFocus()
-  urdfAssemblyApi.setSelectedLink(link)
-  openSidebarPanel('inspector')
-})
 
 // Ensure Monaco always has at least the default robot.urdf open so placement
 // and AI edits always have a valid URDF to read/write (prevents "Cannot edit

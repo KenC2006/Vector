@@ -19,7 +19,6 @@ export interface SimManagerDeps {
   simPlay: HTMLButtonElement
   simPause: HTMLButtonElement
   simReset: HTMLButtonElement
-  simProgress: HTMLElement
   simTimeEl: HTMLElement
   viewportLabel: HTMLElement
   // Reactive getters (values change during session)
@@ -792,7 +791,6 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     deps.simPlay.classList.toggle('active', simRunning)
     deps.simPause.classList.toggle('active', !simRunning && simActive)
     deps.simTimeEl.textContent = simTime.toFixed(3) + 's'
-    deps.simProgress.style.width = `${Math.min((simTime / 10) * 100, 100)}%`
     const rtfEl = document.getElementById('sim-rtf-display')
     if (rtfEl && simRunning) rtfEl.textContent = `RTF ${simRtf.toFixed(1)}×`
     const speedEl = document.getElementById('sim-speed-display')

@@ -23,9 +23,6 @@
           <div class="ab-btn active" data-panel="explorer" draggable="true" title="Explorer (Ctrl+Shift+E)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7V17a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-8l-2-2H5a2 2 0 00-2 2z"/></svg>
           </div>
-          <div class="ab-btn" data-panel="focus" draggable="true" title="Focused component (Inspect mode)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke-linecap="round"/></svg>
-          </div>
           <div class="ab-btn" data-panel="toolbox" draggable="true" title="Components (T)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.77 3.77z" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
@@ -41,7 +38,7 @@
           <div class="ab-btn" data-panel="git" draggable="true" title="Source Control (Ctrl+Shift+G)">
             <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="5" r="2.5"/><circle cx="7" cy="19" r="2.5"/><circle cx="17" cy="12" r="2.5"/><line x1="7" y1="7.5" x2="7" y2="16.5"/><path d="M9.2 6.5 Q12 7 14.5 10" stroke-linecap="round"/></svg>
           </div>
-          <div class="ab-btn" data-panel="sim" draggable="true" title="Simulation Controls">
+          <div class="ab-btn hidden" data-panel="sim" draggable="true" title="Simulation Controls">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5,3 19,12 5,21"/></svg>
           </div>
           <div class="ab-spacer"></div>
@@ -97,20 +94,6 @@
                 <button type="button" class="ba-btn" id="btn-create-checkpoint" style="width:100%">Create Checkpoint</button>
               </div>
               <div id="checkpoints-list"></div>
-            </div>
-          </div>
-
-          <div class="sidebar-panel hidden" id="panel-focus">
-            <div class="sp-title">Focused part</div>
-            <div id="focus-empty" class="insp-empty">In Inspect mode, click a part in 3D to focus it here.</div>
-            <div id="focus-body" class="focus-body hidden">
-              <div class="focus-link-name" id="focus-link-name"></div>
-              <div class="focus-meta" id="focus-meta"></div>
-              <div class="focus-actions">
-                <button type="button" class="ba-btn" id="focus-btn-frame">Frame again</button>
-                <button type="button" class="ba-btn" id="focus-btn-inspector">Open properties</button>
-                <button type="button" class="ba-btn" id="focus-btn-clear">Clear focus</button>
-              </div>
             </div>
           </div>
 
@@ -355,7 +338,7 @@
                 <button class="vp-tab" data-view="chat">AI Chat</button>
               </div>
               <div id="viewport-controls">
-                <button type="button" class="vp-btn vp-mode-toggle active" id="toggle-vp-mode" title="Build: place &amp; snap. Inspect: click part to focus, dim others, open dashboard.">
+                <button type="button" class="vp-btn vp-mode-toggle active" id="toggle-vp-mode" title="Build: place &amp; snap. Inspect: click part to dim others and open Properties.">
                   <span id="vp-mode-label">Build</span>
                 </button>
                 <div class="vp-sep"></div>
@@ -494,7 +477,6 @@
               <span id="sim-speed-display" style="min-width:28px;text-align:center;font-size:11px;color:#aaa;" title="Simulation speed multiplier">1.0×</span>
               <button class="sim-btn" id="sim-speed-up" title="Speed up (2× max)">&#43;</button>
               <span id="sim-rtf-display" style="font-size:10px;color:#aaa;min-width:36px;" title="Real-time factor"></span>
-              <div id="sim-timeline"><div id="sim-progress"></div></div>
               <span id="sim-time">0.000s</span>
               <span id="sim-error-overlay" class="hidden" style="color:#f14c4c;font-size:11px;margin-left:8px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
             </div>
