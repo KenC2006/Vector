@@ -367,14 +367,17 @@ def _trimesh_inertia(
     mesh_file: str,
     mass: float,
     scale: Optional[List[float]] = None,
-) -> Optional[np.ndarray]:
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
-    Compute 3×3 inertia matrix (about mesh COM) from a mesh file using trimesh.
+    Compute (inertia_tensor, com_position) from a mesh file using trimesh.
+
+    Both are expressed in the mesh's local coordinate frame.  The inertia is
+    taken about the mesh COM (not the mesh origin) — callers MUST pass `com`
+    through to MJCF as the body's `inertial pos`, otherwise MuJoCo will treat
+    the tensor as being about the link origin and the resulting spatial inertia
+    will not be physically valid (non-PD when COM is offset).
 
     Returns None if trimesh is not installed or the mesh is degenerate.
-    The result is expressed in the mesh's local coordinate frame; callers are
-    responsible for ensuring the link's visual <origin> is zero (otherwise this
-    cannot be placed at the link origin without a parallel-axis shift).
     """
     try:
         import trimesh
@@ -391,7 +394,17 @@ def _trimesh_inertia(
                 return None
         # Scale inertia to the target mass (trimesh assumes density=1).
         density_scale = mass / (mesh.volume * 1.0)
-        return np.array(mesh.moment_inertia) * density_scale
+        I = np.array(mesh.moment_inertia) * density_scale
+        com = np.array(mesh.center_mass, dtype=float)
+        # Reject anything non-finite or non-PD — degenerate meshes can sneak
+        # through volume>0 and still produce a near-singular tensor that blows
+        # up the composite mass matrix.
+        if not np.all(np.isfinite(I)) or not np.all(np.isfinite(com)):
+            return None
+        eigvals = np.linalg.eigvalsh((I + I.T) * 0.5)
+        if eigvals[0] <= 1e-12:
+            return None
+        return I, com
     except Exception:
         return None
 
@@ -583,23 +596,27 @@ def _create_body_element(
             #   (a) no explicit inertia from URDF, AND
             #   (b) visual geometry is a richer mesh (common for CAD robots).
             # This is the biggest single accuracy win for mesh robots.
-            trimesh_I: Optional[np.ndarray] = None
+            trimesh_result: Optional[Tuple[np.ndarray, np.ndarray]] = None
             for vm in visual_mesh_files:
-                # Skip meshes with non-zero <origin> — trimesh inertia is about the
-                # mesh COM and we can't write it at link origin without a shift.
+                # Skip meshes with non-zero <origin> — the COM trimesh reports
+                # is in the mesh frame; with a non-zero visual origin we'd need
+                # to compose that transform too, which we don't currently track.
                 if any(abs(v) > 1e-9 for v in vm["origin_xyz"]) or any(
                     abs(v) > 1e-9 for v in vm["origin_rpy"]
                 ):
                     continue
-                trimesh_I = _trimesh_inertia(vm["file"], mass, vm["scale"])
-                if trimesh_I is not None:
+                trimesh_result = _trimesh_inertia(vm["file"], mass, vm["scale"])
+                if trimesh_result is not None:
                     break
 
-            if trimesh_I is not None:
-                # Trimesh gives inertia about the mesh's own COM — use it directly.
+            if trimesh_result is not None:
+                # Trimesh inertia is expressed at the mesh COM — write that COM
+                # as the body's inertial pos so the spatial inertia is valid.
+                trimesh_I, trimesh_com = trimesh_result
                 ixx = trimesh_I[0, 0]; iyy = trimesh_I[1, 1]; izz = trimesh_I[2, 2]
                 ixy = trimesh_I[0, 1]; ixz = trimesh_I[0, 2]; iyz = trimesh_I[1, 2]
-                inertial.set("pos", "0 0 0")
+                cx, cy, cz = float(trimesh_com[0]), float(trimesh_com[1]), float(trimesh_com[2])
+                inertial.set("pos", f"{cx:.6g} {cy:.6g} {cz:.6g}")
                 inertial.set("fullinertia",
                              f"{ixx:.6g} {iyy:.6g} {izz:.6g} {ixy:.6g} {ixz:.6g} {iyz:.6g}")
             elif collision_list:
@@ -654,12 +671,21 @@ def _create_body_element(
         geom_elem.set("type", geom_type)
         geom_elem.set("material", "MatGray")
         # Assign contact class based on link role for appropriate friction parameters.
+        # Only role-tagged geoms (feet, wheels, grippers) participate in collision —
+        # frame/electronics/coupler geoms are visualized but excluded from the
+        # broadphase (contype=0 conaffinity=0).  A 40+ link assembly otherwise emits
+        # hundreds of spurious overlapping-frame contacts at t=0 (mounting cylinders
+        # bolted into baseplates, etc.), exploding the constraint count past any
+        # reasonable arena size and producing NaN poses on the first step.
         if is_foot:
             geom_elem.set("class", "foot")
         elif is_wheel:
             geom_elem.set("class", "wheel")
         elif is_gripper:
             geom_elem.set("class", "gripper")
+        else:
+            geom_elem.set("contype", "0")
+            geom_elem.set("conaffinity", "0")
 
         # Geom position offset
         if any(abs(v) > 1e-9 for v in (ox, oy, oz)):
@@ -963,6 +989,13 @@ def urdf_to_mjcf(
     flag_elem = etree.SubElement(option, "flag")
     flag_elem.set("energy", "enable")
 
+    # Quadrupeds with per-mesh convex-hull collision geoms blow past MuJoCo's
+    # default constraint arena on the first step ("Insufficient arena memory…
+    # above 14M bytes"). When that overflows, contacts are dropped and the
+    # integrator produces NaN poses, making the robot vanish from the viewport.
+    size_elem = etree.SubElement(mjcf_root, "size")
+    size_elem.set("memory", "64M")
+
     # Add contact/solver defaults
     # condim=4: tangential + torsional friction (good for most links, avoids sliding)
     # solref/solimp: slightly soft contacts reduce bounce without penetration
@@ -1149,8 +1182,9 @@ def urdf_to_mjcf(
 
     # Self-collision excludes: suppress contacts between every adjacent body pair.
     # Touching neighbors (parent/child across a joint) almost always cause spurious
-    # contact forces that destabilize the sim.  Non-adjacent self-collision is left
-    # ON intentionally — that's what prevents legs from passing through each other.
+    # contact forces that destabilize the sim.  Non-adjacent self-collision among
+    # role-tagged geoms (foot/wheel/gripper) is still on so legs/feet can't tunnel
+    # through each other; frame geoms are filtered upstream via contype=0.
     if joints:
         contact_section = etree.SubElement(mjcf_root, "contact")
         seen_pairs: set = set()
