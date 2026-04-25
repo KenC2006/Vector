@@ -2666,3 +2666,66 @@ urdfAssemblyApi = initUrdfAssembly({
   },
   groundAssembly: () => groundRobot(robot),
 })
+
+// ── B-Rep bake smoke test (Phase 1, dev-only) ──
+// `__bake('actuator_servo_standard')` drops a Replicad-baked mesh next to the
+// existing per-preset GLB for visual comparison. `__bakeClear()` removes them.
+// Not part of the render path — remove once Phase 2 wires fuse+fillet into
+// the viewportChat accept flow.
+void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndShow, clearBakeSmoke }) => {
+  ;(window as unknown as { __bake: (id: string, offsetX?: number) => Promise<void> }).__bake =
+    (id, offsetX) => bakeAndShow({ scene }, id, offsetX)
+  ;(window as unknown as { __fuse: (args: Parameters<typeof fuseAndShow>[1]) => Promise<void> }).__fuse =
+    args => fuseAndShow({ scene }, args)
+  ;(window as unknown as { __fuseParam: (args: Parameters<typeof fuseParamAndShow>[1]) => Promise<void> }).__fuseParam =
+    args => fuseParamAndShow({ scene }, args)
+  ;(window as unknown as { __bakeClear: () => void }).__bakeClear = () => clearBakeSmoke({ scene })
+})
+
+// ── Phase 3: full-scene bake (dev-only, devtools-triggered) ──
+// `__bakeScene()` reads the current AssemblyGraph + scene link groups, plans
+// fixed-joint clusters, bakes each via the worker, and swaps baked meshes in
+// place of per-preset GLBs. `__unbakeScene()` reverses the swap. Phase 5
+// wires this into the accept flow automatically.
+{
+  let lastBakeResult: import('./bake/assemblyBake').BakeSceneResult | null = null
+  void import('./bake/assemblyBake').then(({ bakeScene, clearBakedScene }) => {
+    ;(window as unknown as { __bakeScene: (opts?: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean }) => Promise<unknown> }).__bakeScene =
+      async opts => {
+        if (!urdfAssemblyApi) { console.warn('[bake/scene] urdfAssemblyApi not ready'); return null }
+        const graph = urdfAssemblyApi.getLastAssemblyGraph()
+        if (!graph) { console.warn('[bake/scene] no assembly graph — load a robot first'); return null }
+        const linkGroups = parsedRobot.linkGroups
+        const t0 = performance.now()
+        showToast('Baking assembly…', 'info')
+        const res = await bakeScene({
+          graph, linkGroups,
+          dryRun: opts?.dryRun,
+          bypassCache: opts?.bypassCache,
+          preserveColors: opts?.preserveColors,
+          onProgress: (phase, data) => {
+            if (phase === 'cluster-start' && data) {
+              console.log(`[bake/scene] [${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}] baking ${data.clusterLabel}...`)
+              showToast(`Baking cluster ${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}…`, 'info')
+            } else if (phase === 'done' && data) {
+              console.log(`[bake/scene] finished ${data.totalClusters} cluster(s) in ${(performance.now()-t0).toFixed(0)}ms`)
+            }
+          },
+        })
+        lastBakeResult = res
+        const ok = res.clusters.filter(c => c.outcome.ok).length
+        const fail = res.clusters.length - ok
+        const summary = `Bake: ${ok} ok, ${fail} failed, ${res.hiddenLinks.size} links swapped (${(performance.now()-t0).toFixed(0)}ms)`
+        console.log(`[bake/scene] ${summary}`)
+        showToast(summary, fail === 0 ? 'success' : 'warning')
+        return res
+      }
+    ;(window as unknown as { __unbakeScene: () => void }).__unbakeScene = () => {
+      if (!lastBakeResult) { console.warn('[bake/scene] no prior bake to undo'); return }
+      clearBakedScene({ linkGroups: parsedRobot.linkGroups, hiddenLinks: lastBakeResult.hiddenLinks })
+      lastBakeResult = null
+      console.log('[bake/scene] unbaked — per-preset meshes restored')
+    }
+  })
+}
+
