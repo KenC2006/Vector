@@ -26,6 +26,11 @@ _PACKAGE_MESH_ROOTS = [
     os.path.join(_REPO_ROOT, "src", "public"),
 ]
 
+# Collision bitmask layout — two geoms collide iff (a.contype & b.conaffinity) | (b.contype & a.conaffinity) != 0
+CT_WORLD      = 1  # terrain / static environment
+CT_ROBOT_ROLE = 2  # foot / wheel / gripper
+CT_STRUCTURAL = 4  # chassis, links, sensors, brackets
+
 
 def _resolve_mesh_filename(filename: str, urdf_dir: str) -> str:
     """
@@ -671,12 +676,10 @@ def _create_body_element(
         geom_elem.set("type", geom_type)
         geom_elem.set("material", "MatGray")
         # Assign contact class based on link role for appropriate friction parameters.
-        # Only role-tagged geoms (feet, wheels, grippers) participate in collision —
-        # frame/electronics/coupler geoms are visualized but excluded from the
-        # broadphase (contype=0 conaffinity=0).  A 40+ link assembly otherwise emits
-        # hundreds of spurious overlapping-frame contacts at t=0 (mounting cylinders
-        # bolted into baseplates, etc.), exploding the constraint count past any
-        # reasonable arena size and producing NaN poses on the first step.
+        # Role geoms (foot/wheel/gripper) collide with terrain only (CT_ROBOT_ROLE ↔ CT_WORLD).
+        # Structural geoms collide with terrain only (CT_STRUCTURAL ↔ CT_WORLD) — no
+        # structural-vs-structural pairs, avoiding the constraint-arena explosion that
+        # occurs with 40+ link assemblies at t=0.
         if is_foot:
             geom_elem.set("class", "foot")
         elif is_wheel:
@@ -684,8 +687,8 @@ def _create_body_element(
         elif is_gripper:
             geom_elem.set("class", "gripper")
         else:
-            geom_elem.set("contype", "0")
-            geom_elem.set("conaffinity", "0")
+            geom_elem.set("contype", str(CT_STRUCTURAL))
+            geom_elem.set("conaffinity", str(CT_WORLD))
 
         # Geom position offset
         if any(abs(v) > 1e-9 for v in (ox, oy, oz)):
@@ -766,6 +769,8 @@ def _add_flat_floor(worldbody: etree._Element, friction: float, rgba: str = "0.5
     floor_geom.set("type", "plane")
     floor_geom.set("size", "0 0 0.05")
     floor_geom.set("rgba", rgba)
+    floor_geom.set("contype", str(CT_WORLD))
+    floor_geom.set("conaffinity", str(CT_WORLD | CT_ROBOT_ROLE | CT_STRUCTURAL))
     _set_terrain_friction(floor_geom, friction)
     return floor_geom
 
@@ -815,6 +820,8 @@ def _add_rough_terrain(asset: etree._Element, worldbody: etree._Element, config:
     geom.set("type", "hfield")
     geom.set("hfield", "terrain_hfield")
     geom.set("rgba", "0.24 0.30 0.27 1")
+    geom.set("contype", str(CT_WORLD))
+    geom.set("conaffinity", str(CT_WORLD | CT_ROBOT_ROLE | CT_STRUCTURAL))
     _set_terrain_friction(geom, config["friction"])
 
 
@@ -836,6 +843,8 @@ def _add_stair_terrain(worldbody: etree._Element, config: Dict[str, Any]) -> Non
         step.set("pos", f"{start_x + depth * (i + 0.5):.6g} 0 {step_height / 2.0:.6g}")
         step.set("size", f"{depth / 2.0:.6g} {width / 2.0:.6g} {step_height / 2.0:.6g}")
         step.set("rgba", "0.36 0.35 0.32 1")
+        step.set("contype", str(CT_WORLD))
+        step.set("conaffinity", str(CT_WORLD | CT_ROBOT_ROLE | CT_STRUCTURAL))
         _set_terrain_friction(step, friction)
 
 
@@ -1016,6 +1025,8 @@ def urdf_to_mjcf(
     foot_geom.set("condim", "6")
     foot_geom.set("solref", "0.005 1")
     foot_geom.set("solimp", "0.95 0.99 0.001")
+    foot_geom.set("contype", str(CT_ROBOT_ROLE))
+    foot_geom.set("conaffinity", str(CT_WORLD))
     # Wheel sub-class: high lateral friction, low torsional/rolling — prevents
     # lateral slip but allows rolling with minimal resistance.
     wheel_cls = etree.SubElement(default_block, "default")
@@ -1025,6 +1036,8 @@ def urdf_to_mjcf(
     wheel_geom.set("condim", "6")
     wheel_geom.set("solref", "0.005 1")
     wheel_geom.set("solimp", "0.9 0.95 0.001")
+    wheel_geom.set("contype", str(CT_ROBOT_ROLE))
+    wheel_geom.set("conaffinity", str(CT_WORLD))
     # Gripper/finger sub-class: high friction in all directions for secure grasping.
     gripper_cls = etree.SubElement(default_block, "default")
     gripper_cls.set("class", "gripper")
@@ -1033,6 +1046,8 @@ def urdf_to_mjcf(
     gripper_geom.set("condim", "6")
     gripper_geom.set("solref", "0.005 1")
     gripper_geom.set("solimp", "0.9 0.95 0.001")
+    gripper_geom.set("contype", str(CT_ROBOT_ROLE))
+    gripper_geom.set("conaffinity", str(CT_WORLD))
 
     # Add visual settings
     visual = etree.SubElement(mjcf_root, "visual")
@@ -1187,7 +1202,7 @@ def urdf_to_mjcf(
     # Touching neighbors (parent/child across a joint) almost always cause spurious
     # contact forces that destabilize the sim.  Non-adjacent self-collision among
     # role-tagged geoms (foot/wheel/gripper) is still on so legs/feet can't tunnel
-    # through each other; frame geoms are filtered upstream via contype=0.
+    # through each other; structural geoms use CT_STRUCTURAL contype so they collide with terrain only.
     if joints:
         contact_section = etree.SubElement(mjcf_root, "contact")
         seen_pairs: set = set()
