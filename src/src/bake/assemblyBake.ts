@@ -172,26 +172,41 @@ export function planClusters(graph: AssemblyGraph): ClusterPlan[] {
 // ── Transforms from scene ─────────────────────────────────────────────────
 
 /** Read each cluster member's world matrix from the scene, compute
- *  root-local pose in mm + radians. */
+ *  root-local pose in mm + radians. Filters out members whose linkGroup is
+ *  missing from the scene (e.g. AssemblyGraph holds auto-repair brackets
+ *  that didn't make it into the URDF reparse). Returns both the computed
+ *  transforms AND the corresponding filtered member list so downstream
+ *  callers stay in sync. */
 export function readClusterTransforms(
   cluster: ClusterPlan,
   linkGroups: Map<string, THREE.Group>,
-): { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[] | null {
+): {
+  transforms: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[]
+  members: AssemblyComponent[]
+} | null {
   const rootGroup = linkGroups.get(cluster.rootLinkName)
-  if (!rootGroup) return null
+  if (!rootGroup) return null  // root must exist — no fallback
   rootGroup.updateMatrixWorld(true)
   const rootInv = rootGroup.matrixWorld.clone().invert()
   const rootWorldPos = new THREE.Vector3().setFromMatrixPosition(rootGroup.matrixWorld)
   console.log(`[bake/transforms] ${cluster.rootLinkName} world=(${(rootWorldPos.x*1000).toFixed(1)}, ${(rootWorldPos.y*1000).toFixed(1)}, ${(rootWorldPos.z*1000).toFixed(1)})mm`)
 
-  const out: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[] = []
+  const transforms: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[] = []
+  const outMembers: AssemblyComponent[] = []
   for (let i = 0; i < cluster.members.length; i++) {
     const m = cluster.members[i]
     const g = linkGroups.get(m.link_name)
-    if (!g) return null
+    if (!g) {
+      console.warn(`[bake/transforms]   member[${i}] ${m.link_name} — no linkGroup in scene, skipping (probably an auto-repair insert missing from the current URDF parse)`)
+      continue
+    }
     g.updateMatrixWorld(true)
-    if (i === 0) {
-      out.push({ translateMm: [0, 0, 0], rotateRadXyz: [0, 0, 0] })
+    if (outMembers.length === 0) {
+      // First surviving member becomes the effective root for the cluster.
+      // Normally that's the original root at i=0; if the original root was
+      // missing we'd have returned null above.
+      outMembers.push(m)
+      transforms.push({ translateMm: [0, 0, 0], rotateRadXyz: [0, 0, 0] })
       continue
     }
     const local = new THREE.Matrix4().multiplyMatrices(rootInv, g.matrixWorld)
@@ -202,12 +217,13 @@ export function readClusterTransforms(
     const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ')
     const memberWorld = new THREE.Vector3().setFromMatrixPosition(g.matrixWorld)
     console.log(`[bake/transforms]   member[${i}] ${m.link_name} world=(${(memberWorld.x*1000).toFixed(1)}, ${(memberWorld.y*1000).toFixed(1)}, ${(memberWorld.z*1000).toFixed(1)})mm rootLocal=(${(pos.x*1000).toFixed(1)}, ${(pos.y*1000).toFixed(1)}, ${(pos.z*1000).toFixed(1)})mm`)
-    out.push({
+    outMembers.push(m)
+    transforms.push({
       translateMm: [pos.x * 1000, pos.y * 1000, pos.z * 1000],
       rotateRadXyz: [euler.x, euler.y, euler.z],
     })
   }
-  return out
+  return { transforms, members: outMembers }
 }
 
 // ── Build BakeClusterSpec ─────────────────────────────────────────────────
@@ -509,20 +525,52 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
   const plans = planClusters(graph)
   const result: BakeSceneResult = { clusters: [], hiddenLinks: new Set() }
 
+  // Sanity check: if NONE of the graph's link names exist in linkGroups, the
+  // graph is stale (e.g. old quadruped graph vs currently-loaded arm). Bail
+  // with a clear error instead of silently "skipping" every cluster.
+  const anyMatch = graph.components.some(c => linkGroups.has(c.link_name))
+  if (!anyMatch && graph.components.length > 0) {
+    const exampleGraphLink = graph.components[0]?.link_name ?? '<none>'
+    const exampleSceneLink = linkGroups.keys().next().value ?? '<none>'
+    console.error(
+      `[bake/scene] Stale assembly graph: graph expects "${exampleGraphLink}" but scene has "${exampleSceneLink}". ` +
+      `The AssemblyGraph stored via urdfAssemblyApi doesn't match the currently-loaded URDF. ` +
+      `Fix: regenerate the robot via the AI chat (which calls resolveAssemblyGraph) rather than opening a URDF file directly.`,
+    )
+    progress('done', { totalClusters: 0 })
+    return result
+  }
+
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i]
     const label = `cluster[${i}] root=${plan.rootLinkName} n=${plan.members.length}`
     progress('cluster-start', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
 
-    const transforms = readClusterTransforms(plan, linkGroups)
-    if (!transforms) {
-      console.warn(`[bake/scene] ${label} missing linkGroups — skipping`)
-      result.clusters.push({ plan, outcome: { ok: false, phase: 'transforms', message: 'missing linkGroups' } })
+    const txResult = readClusterTransforms(plan, linkGroups)
+    if (!txResult) {
+      console.warn(`[bake/scene] ${label} root linkGroup missing — skipping`)
+      result.clusters.push({ plan, outcome: { ok: false, phase: 'transforms', message: 'root linkGroup missing' } })
       progress('cluster-fail', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
       continue
     }
+    const transforms = txResult.transforms
+    if (txResult.members.length < 2) {
+      console.warn(`[bake/scene] ${label} only ${txResult.members.length} real members present — needs ≥2 to form a useful cluster, skipping`)
+      result.clusters.push({ plan, outcome: { ok: false, phase: 'transforms', message: 'too few members after linkGroup filter' } })
+      progress('cluster-fail', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
+      continue
+    }
+    // Rebuild the plan with just the members that actually exist in the
+    // scene. attachIndex is dropped here — buildClusterSpec doesn't
+    // currently consume it, and regenerating the right indices across a
+    // filtered member list is fragile.
+    const effectivePlan: ClusterPlan = {
+      rootLinkName: plan.rootLinkName,
+      members: txResult.members,
+      attachIndex: [],
+    }
 
-    const built = await buildClusterSpec(plan, transforms)
+    const built = await buildClusterSpec(effectivePlan, transforms)
     if ('error' in built) {
       console.warn(`[bake/scene] ${label} spec error: ${built.error}`)
       result.clusters.push({ plan, outcome: { ok: false, phase: 'spec', message: built.error } })
@@ -560,7 +608,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
       const rootGroup = linkGroups.get(plan.rootLinkName)
       if (rootGroup) {
         // Hide per-preset meshes on all cluster members.
-        for (const m of plan.members) {
+        for (const m of effectivePlan.members) {
           const g = linkGroups.get(m.link_name)
           if (!g) continue
           hideRichVisualMeshes(g)
@@ -576,7 +624,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
           // possible where parts touch; the 0.3mm embed that fuse relied on
           // is NOT applied here since we're placing at link origins).
           for (const pm of outcome.parts) {
-            const member = plan.members[pm.partIdx]
+            const member = effectivePlan.members[pm.partIdx]
             const compId = member?.component_id ?? ''
             const color = getComponentColor(compId)
             const mat = getTintedMaterial(color.material, ...color.tint, color.strength ?? 0.4)
@@ -591,7 +639,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
         } else {
           // Single-solid path: one material for the whole fused cluster,
           // tinted from the cluster root's color.
-          const rootCompId = plan.members[0]?.component_id ?? ''
+          const rootCompId = effectivePlan.members[0]?.component_id ?? ''
           const rootColor = getComponentColor(rootCompId)
           const bakedMat = getTintedMaterial(rootColor.material, ...rootColor.tint, rootColor.strength ?? 0.4)
           const baked = buildBakedMesh(outcome.mesh, outcome.edges, {
@@ -615,7 +663,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
           if (pBox.isEmpty()) return
           const pCenter = new THREE.Vector3(); pBox.getCenter(pCenter)
           const pSize = new THREE.Vector3(); pBox.getSize(pSize)
-          const memberName = plan.members[idx]?.link_name ?? '?'
+          const memberName = effectivePlan.members[idx]?.link_name ?? '?'
           console.log(`[bake/render]   part[${idx}] ${memberName} world center=(${(pCenter.x*1000).toFixed(1)}, ${(pCenter.y*1000).toFixed(1)}, ${(pCenter.z*1000).toFixed(1)})mm size=(${(pSize.x*1000).toFixed(1)}, ${(pSize.y*1000).toFixed(1)}, ${(pSize.z*1000).toFixed(1)})mm`)
         })
         result.clusters.push({ plan, outcome, bakedGroup })
