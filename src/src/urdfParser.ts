@@ -5,6 +5,7 @@ import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { invoke } from '@tauri-apps/api/core'
 import { rpyToQuat } from './rotationIO'
+import { shouldCastShadow } from './richVisuals/meshOverrides'
 
 // ── Loaders ──────────────────────────────────────────────────────────────────
 
@@ -156,7 +157,12 @@ async function loadMeshFile(
       return
     }
 
-    // Apply shadow and userData to all meshes
+    // Apply shadow and userData to all meshes. The gripper opt-out lives on
+    // the preset-aware path (urdfParser.ts second site below + richVisuals);
+    // here in the generic <mesh filename=> loader we don't have the link
+    // name in scope, so fall through to default-on. Third-party URDFs that
+    // use external mesh files for grippers won't get the opt-out — soft
+    // shadows would be the global fallback if needed.
     loadedObject.traverse(child => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true
@@ -334,10 +340,12 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
       geometryGroup.add(visualGroup)
     }
 
-    // Add shadow properties and tag with link name for raycasting
+    // Add shadow properties and tag with link name for raycasting.
+    // See first call site above for why grippers opt out of casting.
+    const castGeo = shouldCastShadow(linkName)
     geometryGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        child.castShadow = true
+        child.castShadow = castGeo
         child.receiveShadow = true
         child.userData.urdfLinkName = linkName
       }

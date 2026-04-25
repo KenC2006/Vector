@@ -2701,21 +2701,33 @@ void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndSh
     ;(window as unknown as { __bakeScene: (opts?: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean }) => Promise<unknown> }).__bakeScene =
       async opts => {
         if (!urdfAssemblyApi) { console.warn('[bake/scene] urdfAssemblyApi not ready'); return null }
-        const graph = urdfAssemblyApi.getLastAssemblyGraph()
+        let graph = urdfAssemblyApi.getLastAssemblyGraph()
         if (!graph) { console.warn('[bake/scene] no assembly graph — load a robot first'); return null }
         const linkGroups = parsedRobot.linkGroups
         // Validate graph belongs to currently-rendered URDF. Stored graphs
-        // are keyed per-filename in localStorage, but `_lastAssemblyGraph`
-        // only refreshes at module init — so opening a checkpoint or
-        // switching files mid-session leaves the previous robot's graph in
-        // memory. Bake plans against that ghost and every cluster fails
-        // with "root linkGroup missing". Fail fast here with an actionable
-        // message instead.
+        // are keyed per-filename in localStorage; if the user restored a
+        // pre-fix checkpoint (no embedded graph) the localStorage entry
+        // for the current filename can be stale and point at a different
+        // robot. The two robots typically share the baseplate name, so a
+        // "≥1 overlap" guard would still let us through — require majority
+        // overlap of GRAPH components (not scene), then fall back to
+        // reverse-parsing the live URDF if the stored graph fails the bar.
         const sceneNames = new Set(linkGroups.keys())
         const overlap = graph.components.filter(c => sceneNames.has(c.link_name)).length
-        if (overlap === 0) {
-          console.warn(`[bake/scene] stored AssemblyGraph (${graph.components.length} components) has no link names in common with the rendered URDF (${sceneNames.size} links). The graph likely belongs to a different robot — re-run via AI chat to refresh, or load that robot's saved file.`)
-          return null
+        const overlapRatio = graph.components.length > 0 ? overlap / graph.components.length : 0
+        if (overlapRatio < 0.5) {
+          console.warn(`[bake/scene] stored AssemblyGraph (${graph.components.length} components) overlaps only ${overlap} link names with the rendered URDF (${sceneNames.size} links) — likely a different robot. Falling back to reverse-parsing the current URDF.`)
+          const urdfText = monacoEditor.getModel()?.getValue() || ''
+          const reparsed = urdfText.trim().length > 0 ? urdfAssemblyApi.urdfToAssemblyGraph(urdfText) : null
+          if (!reparsed || reparsed.components.length === 0) {
+            console.warn('[bake/scene] reverse-parse failed — cannot bake without a graph that matches the scene')
+            return null
+          }
+          // Install so subsequent bakes don't re-fall-through. Marks graph
+          // source as 'restored' (user-owned), preventing reconcile from
+          // mutating the URDF on the next meshLoaded debounce.
+          urdfAssemblyApi.setLastAssemblyGraph(reparsed)
+          graph = reparsed
         }
         const t0 = performance.now()
         showToast('Baking assembly…', 'info')

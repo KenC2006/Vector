@@ -4874,14 +4874,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (!_lastAssemblyGraph) {
         return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
       }
-      // Skip entirely for user-owned URDFs (file load, checkpoint restore).
-      // The URDF on disk encodes the user's intended placement — for Vector-
-      // emitted files that's already post-reconcile (the AI flow baked the
-      // shifts in via persistReconcileShiftsToUrdf), and for third-party
-      // URDFs reconcile's bbox-driven opinions don't apply. Without this gate,
-      // loading a quadruped triggers 38 shifts up to ±123mm in the live
-      // scene — the file stays untouched, but the rendered robot disagrees
-      // with what the URDF actually says.
+      // Skip entirely for user-owned URDFs (file load, checkpoint restore,
+      // reverse-parse). The user's saved URDF is the source of truth — neither
+      // the visual scene nor the editor text should be second-guessed by the
+      // engine on reload. AI flow keeps reconcile because the engine just
+      // generated the URDF and owns its placement.
       if (_graphSource !== 'ai') {
         return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
       }

@@ -11,7 +11,7 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
+import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES, shouldCastShadow } from './meshOverrides'
 import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
 import { getRenderedMeshDims as _getRenderedMeshDims, setRenderedMeshDims } from '../meshDimsCache'
 
@@ -195,10 +195,13 @@ export function applyRichVisuals(
       continue  // keep primitive visuals
     }
 
-    // Tag all meshes for raycasting (preserve existing contract)
+    // Tag all meshes for raycasting (preserve existing contract).
+    // Grippers opt out of casting (see meshOverrides.shouldCastShadow) to
+    // avoid hard PCF shadows reading as duplicate meshes on adjacent surfaces.
+    const richCast = shouldCastShadow(compId)
     richGroup.traverse(child => {
       if (child instanceof THREE.Mesh) {
-        child.castShadow = true
+        child.castShadow = richCast
         child.receiveShadow = true
         ;(child.userData as Record<string, unknown>).urdfLinkName = linkName
       }
@@ -275,6 +278,9 @@ function applyMeshToLink(
   // black regardless of whatever generic color the STEP converter emitted.
   const forceReplaceMaterials = new Set(['rubber_black'])
   const forceReplace = forceReplaceMaterials.has(compColor.material)
+  // Per-component shadow-cast policy: grippers' detail-rich shadows on the
+  // parent extrusion's flat face read as duplicate meshes — opt out.
+  const appliedCast = shouldCastShadow(compId)
   meshGroup.traverse(child => {
     if (child instanceof THREE.Mesh) {
       const mat = child.material as THREE.MeshStandardMaterial
@@ -295,7 +301,7 @@ function applyMeshToLink(
         }
         child.material = tinted
       }
-      child.castShadow = true
+      child.castShadow = appliedCast
       child.receiveShadow = true
       ;(child.userData as Record<string, unknown>).urdfLinkName = linkName
     }

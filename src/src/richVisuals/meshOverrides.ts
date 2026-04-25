@@ -246,3 +246,37 @@ export function getRotationOverride(componentId: string): [number, number, numbe
   return ROTATION_OVERRIDES[componentId] ?? null
 }
 
+// ── Shadow-cast policy ──────────────────────────────────────────────────────
+// Grippers ship intricate geometry (gears, finger plates, pinion teeth). Hard
+// PCFShadowMap projects every detail onto the parallel face of the parent
+// extrusion or bracket below them — the result reads as a duplicate mesh, not
+// a shadow. Opting these out keeps the user's mental model intact ("there's
+// only one gripper") while still letting them receive shadows from the rest
+// of the scene.
+const NO_SHADOW_CAST_PREFIXES: readonly string[] = [
+  'effector_parallel_gripper_',
+  'effector_3finger_',
+  'effector_soft_gripper',
+  'effector_vacuum_pad_array',
+]
+
+/** Strip trailing _N suffix from a URDF link name to recover the preset id.
+ *  Falls through unchanged if there's no suffix (defensive — link names with
+ *  no numeric suffix won't match any preset prefix anyway). */
+function _linkNameToCompId(linkOrCompId: string): string {
+  const m = linkOrCompId.match(/^(.+?)_(\d+)$/)
+  return m ? m[1] : linkOrCompId
+}
+
+/** True when a mesh from this component should cast shadows. False for
+ *  detail-rich end-effectors whose hard shadow on adjacent surfaces reads
+ *  as a duplicate mesh. Accepts either the bare component id or a URDF
+ *  link name with a numeric suffix. */
+export function shouldCastShadow(linkOrCompId: string): boolean {
+  const id = _linkNameToCompId(linkOrCompId)
+  for (const prefix of NO_SHADOW_CAST_PREFIXES) {
+    if (id === prefix || id.startsWith(prefix)) return false
+  }
+  return true
+}
+
