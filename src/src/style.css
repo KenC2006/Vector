@@ -2672,6 +2672,19 @@ html.theme-tokyo-night {
 .cp-btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border); color: var(--text); }
 .cp-restore:hover { color: var(--accent); border-color: rgba(0,122,204,0.3); }
 .cp-delete:hover { color: var(--red); border-color: rgba(244,67,54,0.3); }
+.cp-rename:hover { color: var(--accent); border-color: rgba(0,122,204,0.3); }
+.cp-name-input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 1px 4px;
+  outline: none;
+  min-width: 0;
+  width: 100%;
+}
 
 /* Chat history header */
 #vc-chat-header {

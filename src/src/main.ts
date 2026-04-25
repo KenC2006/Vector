@@ -590,6 +590,14 @@ function switchToFile(filename: string) {
     if (savedState) monacoEditor.restoreViewState(savedState)
   }
 
+  // Re-bind the in-memory AssemblyGraph to the new file. Without this the
+  // graph from whatever was loaded at module init lingers, so bake/edit
+  // operate on the wrong robot's topology after a file switch or checkpoint
+  // open. MUST run after the Monaco model swap so the reverse-parse fallback
+  // reads the new file's URDF text, not the previous tab's. No-op if
+  // urdfAssemblyApi hasn't initialized yet.
+  urdfAssemblyApi?.refreshAssemblyGraphForActiveFile()
+
   renderTabs()
   renderExplorer()
 
@@ -2696,6 +2704,19 @@ void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndSh
         const graph = urdfAssemblyApi.getLastAssemblyGraph()
         if (!graph) { console.warn('[bake/scene] no assembly graph — load a robot first'); return null }
         const linkGroups = parsedRobot.linkGroups
+        // Validate graph belongs to currently-rendered URDF. Stored graphs
+        // are keyed per-filename in localStorage, but `_lastAssemblyGraph`
+        // only refreshes at module init — so opening a checkpoint or
+        // switching files mid-session leaves the previous robot's graph in
+        // memory. Bake plans against that ghost and every cluster fails
+        // with "root linkGroup missing". Fail fast here with an actionable
+        // message instead.
+        const sceneNames = new Set(linkGroups.keys())
+        const overlap = graph.components.filter(c => sceneNames.has(c.link_name)).length
+        if (overlap === 0) {
+          console.warn(`[bake/scene] stored AssemblyGraph (${graph.components.length} components) has no link names in common with the rendered URDF (${sceneNames.size} links). The graph likely belongs to a different robot — re-run via AI chat to refresh, or load that robot's saved file.`)
+          return null
+        }
         const t0 = performance.now()
         showToast('Baking assembly…', 'info')
         const res = await bakeScene({

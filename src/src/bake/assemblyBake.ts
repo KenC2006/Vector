@@ -174,15 +174,16 @@ export function planClusters(graph: AssemblyGraph): ClusterPlan[] {
 /** Read each cluster member's world matrix from the scene, compute
  *  root-local pose in mm + radians. Filters out members whose linkGroup is
  *  missing from the scene (e.g. AssemblyGraph holds auto-repair brackets
- *  that didn't make it into the URDF reparse). Returns both the computed
- *  transforms AND the corresponding filtered member list so downstream
- *  callers stay in sync. */
+ *  that didn't make it into the URDF reparse). Returns the computed
+ *  transforms, the filtered member list, AND a remapped attachIndex parallel
+ *  to outMembers[1..] so downstream callers can build joints[]. */
 export function readClusterTransforms(
   cluster: ClusterPlan,
   linkGroups: Map<string, THREE.Group>,
 ): {
   transforms: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[]
   members: AssemblyComponent[]
+  attachIndex: number[]
 } | null {
   const rootGroup = linkGroups.get(cluster.rootLinkName)
   if (!rootGroup) return null  // root must exist — no fallback
@@ -193,6 +194,10 @@ export function readClusterTransforms(
 
   const transforms: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[] = []
   const outMembers: AssemblyComponent[] = []
+  // Maps original member index → new index in outMembers, or -1 if dropped.
+  // Used to remap parent pointers so attachIndex stays consistent after filter.
+  const oldToNew: number[] = new Array(cluster.members.length).fill(-1)
+  const outAttachIndex: number[] = []
   for (let i = 0; i < cluster.members.length; i++) {
     const m = cluster.members[i]
     const g = linkGroups.get(m.link_name)
@@ -207,6 +212,7 @@ export function readClusterTransforms(
       // missing we'd have returned null above.
       outMembers.push(m)
       transforms.push({ translateMm: [0, 0, 0], rotateRadXyz: [0, 0, 0] })
+      oldToNew[i] = 0
       continue
     }
     const local = new THREE.Matrix4().multiplyMatrices(rootInv, g.matrixWorld)
@@ -217,13 +223,30 @@ export function readClusterTransforms(
     const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ')
     const memberWorld = new THREE.Vector3().setFromMatrixPosition(g.matrixWorld)
     console.log(`[bake/transforms]   member[${i}] ${m.link_name} world=(${(memberWorld.x*1000).toFixed(1)}, ${(memberWorld.y*1000).toFixed(1)}, ${(memberWorld.z*1000).toFixed(1)})mm rootLocal=(${(pos.x*1000).toFixed(1)}, ${(pos.y*1000).toFixed(1)}, ${(pos.z*1000).toFixed(1)})mm`)
+    // Remap this member's parent into the new index space. attachIndex[i-1]
+    // is the original parent index for original member i (>=1). If that
+    // parent was filtered out we walk up the chain in the original plan
+    // until we find a surviving ancestor — keeps the cluster connected
+    // when an auto-repair bracket in the middle is missing.
+    let parentOldIdx = cluster.attachIndex[i - 1]
+    while (parentOldIdx > 0 && oldToNew[parentOldIdx] === -1) {
+      parentOldIdx = cluster.attachIndex[parentOldIdx - 1]
+    }
+    const parentNewIdx = parentOldIdx >= 0 ? oldToNew[parentOldIdx] : -1
+    if (parentNewIdx === -1) {
+      // No surviving ancestor — would orphan this member. Drop it.
+      console.warn(`[bake/transforms]   member[${i}] ${m.link_name} — no surviving ancestor, dropping`)
+      continue
+    }
+    outAttachIndex.push(parentNewIdx)
+    oldToNew[i] = outMembers.length
     outMembers.push(m)
     transforms.push({
       translateMm: [pos.x * 1000, pos.y * 1000, pos.z * 1000],
       rotateRadXyz: [euler.x, euler.y, euler.z],
     })
   }
-  return { transforms, members: outMembers }
+  return { transforms, members: outMembers, attachIndex: outAttachIndex }
 }
 
 // ── Build BakeClusterSpec ─────────────────────────────────────────────────
@@ -548,7 +571,15 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
 
     const txResult = readClusterTransforms(plan, linkGroups)
     if (!txResult) {
+      // Print scene state so we can see whether the graph is stale (no overlap
+      // with linkGroups at all) or just one rename behind (most overlap, root
+      // mismatched). Most common cause: redesign-then-skip leaves the graph
+      // pointing at the redesigned URDF while the scene reverted to the prior one.
+      const sceneNames = Array.from(linkGroups.keys()).join(', ')
+      const graphMembers = plan.members.map(m => m.link_name).join(', ')
       console.warn(`[bake/scene] ${label} root linkGroup missing — skipping`)
+      console.warn(`[bake/scene]   graph wants root="${plan.rootLinkName}", members=[${graphMembers}]`)
+      console.warn(`[bake/scene]   scene linkGroups=[${sceneNames}]`)
       result.clusters.push({ plan, outcome: { ok: false, phase: 'transforms', message: 'root linkGroup missing' } })
       progress('cluster-fail', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
       continue
@@ -561,13 +592,13 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
       continue
     }
     // Rebuild the plan with just the members that actually exist in the
-    // scene. attachIndex is dropped here — buildClusterSpec doesn't
-    // currently consume it, and regenerating the right indices across a
-    // filtered member list is fragile.
+    // scene, using the remapped attachIndex from readClusterTransforms.
+    // buildClusterSpec relies on attachIndex to emit one joint per non-root
+    // member — without it the worker rejects the cluster shape.
     const effectivePlan: ClusterPlan = {
       rootLinkName: plan.rootLinkName,
       members: txResult.members,
-      attachIndex: [],
+      attachIndex: txResult.attachIndex,
     }
 
     const built = await buildClusterSpec(effectivePlan, transforms)
