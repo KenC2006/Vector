@@ -4227,7 +4227,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_lipo_4s_5000",
@@ -4262,7 +4292,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_lipo_6s_10000",
@@ -4296,7 +4356,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_buck_converter_5v",
@@ -4329,7 +4419,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_buck_converter_12v",
@@ -4362,7 +4482,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_distribution_unit",
@@ -4394,7 +4544,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_18650_cell_holder_1s",
@@ -4424,7 +4604,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_18650_4s2p_pack",
@@ -4456,7 +4666,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_supercapacitor_module",
@@ -4486,7 +4726,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_solar_panel_small",
@@ -4518,7 +4788,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_usbc_pd_trigger",
@@ -4552,7 +4852,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -3
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_estop_switch",
@@ -4583,7 +4913,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
