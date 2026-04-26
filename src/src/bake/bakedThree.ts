@@ -60,7 +60,13 @@ export function buildBakedMesh(
   const group = new THREE.Group()
   group.add(faceMesh)
 
-  if (opts.includeEdges && edges && edges.positions.length >= 6) {
+  // Effector-class components have detail-rich CAD geometry (gears, finger
+  // teeth, linkages) — rendered as semi-transparent line overlays the edges
+  // read as a separate floating wireframe ghost of the part. Skip them for
+  // the same components that opt out of shadow casting; the same intricate-
+  // detail reasoning applies.
+  const includeEdges = opts.includeEdges && (!opts.componentId || shouldCastShadow(opts.componentId))
+  if (includeEdges && edges && edges.positions.length >= 6) {
     const edgeGeom = new THREE.BufferGeometry()
     const edgePositions = new Float32Array(edges.positions.length)
     for (let i = 0; i < edgePositions.length; i++) edgePositions[i] = edges.positions[i] * scale
