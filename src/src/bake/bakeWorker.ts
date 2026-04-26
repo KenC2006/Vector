@@ -551,7 +551,10 @@ async function loadClusterPart(part: ClusterPart): Promise<Shape3D> {
     //      — the ridge extends from the slot floor outward by rH, leaving
     //      (sD − rH) of recess visible on both sides of it
     const [cx, cy] = part.crossSectionMm
-    const L = part.lengthMm
+    // targetLengthMm wins over lengthMm — see ClusterPart docs. Reverse-
+    // parsed URDFs drop length_mm, so the live-scene bbox length is the
+    // only authoritative source on a reload.
+    const L = part.targetLengthMm ?? part.lengthMm
     const sW = part.slotWidthMm
     const sD = part.slotDepthMm
     const rW = part.ridgeWidthMm

@@ -249,11 +249,104 @@ export function readClusterTransforms(
   return { transforms, members: outMembers, attachIndex: outAttachIndex }
 }
 
+// ── Live-scene extrusion length (link-LOCAL Z) ────────────────────────────
+
+/** Compute a link group's rendered length in its own LOCAL +Z (mm), filtered
+ *  to the link's OWN visual meshes only. Used to drive `targetLengthMm` on
+ *  parametric `kind: 'extrusion'` cluster parts: parametric extrusions are
+ *  authored with `lengthMm` per AssemblyComponent, but `urdfToAssemblyGraph`
+ *  drops `length_mm` on reverse-parse so the bake spec ends up with the
+ *  100mm hardcoded fallback regardless of the URDF's actual `<box size>`.
+ *  Reading the live scene side-steps that round-trip entirely.
+ *
+ *  Why the careful traversal:
+ *   - The URDF parser nests child link groups inside parent link groups via
+ *     per-joint pivot groups (urdfParser.ts:419), so a naive
+ *     `linkGroup.traverse()` walks the whole downstream kinematic chain.
+ *     Detect descendants whose ancestor chain carries a different
+ *     `urdfLinkName` userData and skip them.
+ *   - Walks GEOMETRY VERTICES through the composed mesh→link transform
+ *     rather than `Box3.setFromObject` + `applyMatrix4`, which AABB-of-
+ *     rotated-AABB-inflates the bbox whenever the link's matrixWorld
+ *     carries a non-axis-aligned rotation.
+ *   - Skips collision approximations (`userData.isCollision`), connector-
+ *     overlay markers, and the usual helper meshes (attachment nodes, axis
+ *     rings, prior baked groups).
+ *
+ *  Returns null when no real visual meshes exist yet (async GLB load in
+ *  flight, or link only ever held helpers); caller falls back to authored
+ *  `lengthMm`. Scope is intentionally narrow — only the extrusion length
+ *  case has a clean, distortion-free fix via parametric substitution.
+ *  STEP-kind size mismatches (e.g. servo native 58.5mm tall vs URDF 25.84
+ *  mm) are NOT corrected here: scaling the imported STEP destroys the real
+ *  CAD silhouette and the per-axis fix-ups looked visibly worse than
+ *  accepting the dimensional drift. */
+function computeLinkLocalZMm(linkGroup: THREE.Group): number | null {
+  linkGroup.updateMatrixWorld(true)
+  const worldToLocal = linkGroup.matrixWorld.clone().invert()
+  const meshToLink = new THREE.Matrix4()
+  const v = new THREE.Vector3()
+  let minZ = Infinity
+  let maxZ = -Infinity
+  let foundMesh = false
+  const ourLinkName = (linkGroup.userData as Record<string, unknown>)?.urdfLinkName as string | undefined
+  const belongsToOtherLink = (obj: THREE.Object3D): boolean => {
+    let cur: THREE.Object3D | null = obj.parent
+    while (cur && cur !== linkGroup) {
+      const u = cur.userData as Record<string, unknown>
+      const name = u?.urdfLinkName as string | undefined
+      if (name && name !== ourLinkName) return true
+      cur = cur.parent
+    }
+    return false
+  }
+  const isOverlayAncestor = (obj: THREE.Object3D): boolean => {
+    let cur: THREE.Object3D | null = obj
+    while (cur && cur !== linkGroup) {
+      const u = cur.userData as Record<string, unknown>
+      if (u && u['__connectorOverlay']) return true
+      if (cur.name && cur.name.startsWith('__connector_overlay_')) return true
+      cur = cur.parent
+    }
+    return false
+  }
+  linkGroup.traverse(obj => {
+    if (!(obj instanceof THREE.Mesh)) return
+    if (!obj.geometry) return
+    if (belongsToOtherLink(obj)) return
+    const ud = obj.userData as Record<string, unknown>
+    if (ud?.isCollision) return
+    if (obj.name === 'attachment_nodes') return
+    if (obj.name === 'attachment_node_rings') return
+    if (obj.name.startsWith('baked-cluster-')) return
+    if (obj.name.startsWith('baked-part-')) return
+    if (obj.name === 'baked-edges') return
+    const params = (obj.geometry as { parameters?: { width?: number } }).parameters
+    if (params?.width === 0.012) return
+    if (obj.geometry instanceof THREE.TorusGeometry) return
+    if (isOverlayAncestor(obj)) return
+    const positions = obj.geometry.attributes.position as THREE.BufferAttribute | undefined
+    if (!positions || positions.count === 0) return
+    obj.updateMatrixWorld(true)
+    meshToLink.multiplyMatrices(worldToLocal, obj.matrixWorld)
+    for (let i = 0; i < positions.count; i++) {
+      v.fromBufferAttribute(positions, i)
+      v.applyMatrix4(meshToLink)
+      if (v.z < minZ) minZ = v.z
+      if (v.z > maxZ) maxZ = v.z
+    }
+    foundMesh = true
+  })
+  if (!foundMesh) return null
+  return (maxZ - minZ) * 1000
+}
+
 // ── Build BakeClusterSpec ─────────────────────────────────────────────────
 
 async function buildClusterSpec(
   cluster: ClusterPlan,
   transforms: { translateMm: [number, number, number]; rotateRadXyz: [number, number, number] }[],
+  linkGroups: Map<string, THREE.Group>,
 ): Promise<{ spec: BakeClusterSpec; skippedCount: number } | { error: string }> {
   const presetMap = await loadPresetLites()
 
@@ -265,6 +358,9 @@ async function buildClusterSpec(
   for (let i = 0; i < cluster.members.length; i++) {
     const m = cluster.members[i]
     const t = transforms[i]
+    // Live-scene link group, used only by the extrusion branch below to
+    // recover the URDF-authored length (see computeLinkLocalZMm comment).
+    const linkGroup = linkGroups.get(m.link_name) ?? null
     const override = getBakeSourceOverride(m.component_id)
     if (override) {
       if (override.kind === 'disc') {
@@ -276,7 +372,15 @@ async function buildClusterSpec(
         continue
       }
       if (override.kind === 'extrusion') {
-        const len = m.length_mm ?? 100
+        // The extrusion bar is built with length on +Z (see bakeWorker
+        // loadClusterPart kind:'extrusion'). The link-LOCAL Z extent of the
+        // live render is the URDF-authored length — `urdfToAssemblyGraph`
+        // drops `length_mm` on reverse-parse, so reading it from the scene
+        // is the only way to recover it on a reload. Falls back to the
+        // AssemblyComponent's `length_mm` (if it survived) or the 100mm
+        // hardcoded default when the link isn't in the scene yet.
+        const liveLen = linkGroup ? computeLinkLocalZMm(linkGroup) : null
+        const len = liveLen ?? m.length_mm ?? 100
         parts.push({
           kind: 'extrusion',
           crossSectionMm: override.crossSectionMm,
@@ -285,6 +389,7 @@ async function buildClusterSpec(
           slotDepthMm: override.slotDepthMm,
           ridgeWidthMm: override.ridgeWidthMm,
           ridgeHeightMm: override.ridgeHeightMm,
+          targetLengthMm: liveLen ?? undefined,
           translateMm: t.translateMm, rotateRadXyz: t.rotateRadXyz,
         })
         continue
@@ -450,7 +555,8 @@ function hashClusterSpec(spec: BakeClusterSpec): string {
       return ['box', p.sizeMm.map(rounded), t, r]
     }
     if (p.kind === 'extrusion') {
-      return ['extrusion', p.crossSectionMm.map(rounded), p.lengthMm, p.slotWidthMm, p.slotDepthMm, p.ridgeWidthMm, p.ridgeHeightMm, t, r]
+      const tgtL = p.targetLengthMm !== undefined ? rounded(p.targetLengthMm) : null
+      return ['extrusion', p.crossSectionMm.map(rounded), p.lengthMm, p.slotWidthMm, p.slotDepthMm, p.ridgeWidthMm, p.ridgeHeightMm, t, r, tgtL]
     }
     return ['disc', p.odMm, p.idMm, p.thicknessMm, t, r]
   })
@@ -601,7 +707,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
       attachIndex: txResult.attachIndex,
     }
 
-    const built = await buildClusterSpec(effectivePlan, transforms)
+    const built = await buildClusterSpec(effectivePlan, transforms, linkGroups)
     if ('error' in built) {
       console.warn(`[bake/scene] ${label} spec error: ${built.error}`)
       result.clusters.push({ plan, outcome: { ok: false, phase: 'spec', message: built.error } })
@@ -663,6 +769,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
               material: mat,
               includeEdges: true,
               edgeMaterial: new THREE.LineBasicMaterial({ color: 0x1c2436, transparent: true, opacity: 0.5 }),
+              componentId: compId,
             })
             partGroup.name = `baked-part-${member?.link_name ?? pm.partIdx}`
             bakedGroup.add(partGroup)
@@ -677,6 +784,7 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
             material: bakedMat,
             includeEdges: true,
             edgeMaterial: new THREE.LineBasicMaterial({ color: 0x1c2436, transparent: true, opacity: 0.55 }),
+            componentId: rootCompId,
           })
           bakedGroup.add(baked)
         }

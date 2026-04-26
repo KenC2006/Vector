@@ -3,6 +3,7 @@
 // hosts) don't pull in the full three.js graph.
 
 import * as THREE from 'three'
+import { shouldCastShadow } from '../richVisuals/meshOverrides.ts'
 import type { SerializedMesh, SerializedEdges } from './types.ts'
 
 const MM_TO_M = 0.001
@@ -18,6 +19,12 @@ export interface BakedThreeOptions {
   includeEdges?: boolean
   /** Line material for the edge overlay. Default: flat black 1px. */
   edgeMaterial?: THREE.LineBasicMaterial
+  /** Component id (or link name) used to honor the per-preset shadow-cast
+   *  policy in `richVisuals/meshOverrides.shouldCastShadow`. Grippers and
+   *  similar detail-rich end-effectors opt out so their hard shadow on the
+   *  parent extrusion doesn't read as a duplicate mesh. Omitted = always
+   *  cast. */
+  componentId?: string
 }
 
 /** Build a THREE.Mesh (and optional edges overlay group) from the worker's
@@ -47,7 +54,7 @@ export function buildBakedMesh(
     color: 0x888888, roughness: 0.4, metalness: 0.3,
   })
   const faceMesh = new THREE.Mesh(geom, material)
-  faceMesh.castShadow = true
+  faceMesh.castShadow = opts.componentId ? shouldCastShadow(opts.componentId) : true
   faceMesh.receiveShadow = true
 
   const group = new THREE.Group()

@@ -150,6 +150,15 @@ export type ClusterPart =
        *  below the bar's outer face. Reads as the classic T-slot "divider". */
       ridgeWidthMm: number
       ridgeHeightMm: number
+      /** When provided, override `lengthMm` with this value. Cross-section +
+       *  slot + ridge dims stay parametric (preset-authored). Set from the
+       *  live Three.js scene's link-LOCAL Z extent so a URDF whose
+       *  `length_mm` was dropped on reverse-parse still bakes at the right
+       *  length — without it, the spec falls back to `lengthMm` which is
+       *  100mm on a stale graph. Extrusion length is the only STEP-/preset-
+       *  vs-URDF dim mismatch the bake fixes; everything else (servo bbox
+       *  etc.) renders at native CAD dims so the visual stays faithful. */
+      targetLengthMm?: number
       translateMm: [number, number, number]
       rotateRadXyz: [number, number, number]
     }
