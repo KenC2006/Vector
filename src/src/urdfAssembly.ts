@@ -3,12 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
-import { generateVisuals, CATEGORY_COLORS } from './componentMeshes'
+import { generateVisuals, CATEGORY_COLORS, SERVO_HORN_ORIGIN_Z_RATIO, servoBodyShape, servoHornShape, servoSideYokeShape, servoHornBeamAdapterShape } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import {
   isMountLinkName,
   makeMountLinkName,
-  defaultFaceNodesForBoxDims,
   nodesCompatible,
   incompatibleReason,
   componentPortsForPreset,
@@ -18,11 +17,11 @@ import {
   isDrivetrainComponentId,
 } from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
-import { hasMeshOverride } from './richVisuals/meshOverrides'
+import { getShaftOverlay, hasMeshOverride } from './richVisuals/meshOverrides'
 import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
 import { getOrComputeBbox } from './componentDims'
 import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
-import { quatToRpy } from './rotationIO'
+import { quatToRpy, rpyToQuat } from './rotationIO'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
@@ -71,7 +70,7 @@ export interface UrdfAssemblyContext {
   switchPanel: (name: string) => void
   getUrdfText: () => string
   setUrdfText: (content: string) => void
-  reparseUrdf: (xmlOverride?: string, opts?: { skipGround?: boolean }) => void
+  reparseUrdf: (xmlOverride?: string, opts?: { skipGround?: boolean; ground?: boolean }) => void
   getParsedRobot: () => ParsedRobotLike
   getKinematicGraph: () => Record<string, { name: string; mass: number; parent?: string; children: string[] }>
   getKinematicJoints: () => Record<string, { name: string; type: string; axis: string; parentLink: string; childLink: string }>
@@ -137,6 +136,189 @@ type AssemblyJointType = 'fixed' | 'revolute' | 'continuous' | 'prismatic'
 function componentIdFromLinkName(linkName: string): string {
   const match = linkName.match(/^(.+)_\d+$/)
   return match ? match[1] : linkName
+}
+
+function isSplitServoComponentId(componentId: string): boolean {
+  return (
+    componentId.startsWith('actuator_servo') ||
+    componentId.startsWith('actuator_continuous_rotation_servo') ||
+    componentId.startsWith('actuator_high_speed')
+  )
+}
+
+function parseRpyString(rpy: string): [number, number, number] {
+  const parts = rpy.split(/\s+/).map(Number)
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
+}
+
+function formatRpyTuple(rpy: [number, number, number]): string {
+  return rpy.map(v => Number(v).toFixed(4)).join(' ')
+}
+
+function parseXyzString(xyz: string): [number, number, number] {
+  const parts = xyz.split(/\s+/).map(Number)
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
+}
+
+function rpyMatrix(rpy: string): THREE.Matrix4 {
+  return new THREE.Matrix4().makeRotationFromQuaternion(rpyToQuat(parseRpyString(rpy)))
+}
+
+function transformFromXyzRpy(xyz: string, rpy: string): THREE.Matrix4 {
+  const [x, y, z] = parseXyzString(xyz)
+  const rot = rpyMatrix(rpy)
+  rot.setPosition(x, y, z)
+  return rot
+}
+
+function formatRpyFromMatrix(m: THREE.Matrix4): string {
+  const q = new THREE.Quaternion().setFromRotationMatrix(m)
+  return formatRpyTuple(quatToRpy(q))
+}
+
+function axisNameFromUrdf(axis: string): 'x' | 'y' | 'z' {
+  const values = axis.split(/\s+/).map(Number)
+  const ax = Math.abs(values[0] || 0)
+  const ay = Math.abs(values[1] || 0)
+  const az = Math.abs(values[2] || 0)
+  if (ax >= ay && ax >= az) return 'x'
+  if (ay >= ax && ay >= az) return 'y'
+  return 'z'
+}
+
+function axisNameFromComponentAxis(axis?: string): 'x' | 'y' | 'z' {
+  const v = (axis || 'z').trim().toLowerCase()
+  if (v === 'x' || v === 'y' || v === 'z') return v
+  return axisNameFromUrdf(v)
+}
+
+function servoShaftAlignRpy(axisName: 'x' | 'y' | 'z'): string {
+  if (axisName === 'x') return '0 1.5708 0'
+  if (axisName === 'y') return '-1.5708 0 0'
+  return '0 0 0'
+}
+
+function servoDesiredWorldRotation(axisName: 'x' | 'y' | 'z', axisSign = 1): THREE.Matrix4 {
+  // Split servos always rotate about local +Z. The graph's joint_axis is a
+  // robot-frame semantic axis, so do not interpret it in the already-rotated
+  // parent horn frame. These rotations also pick a stable radial zero:
+  // for Y-pitch servos local +Y points down in world space, so limb links hang
+  // below the horn before rest-pose spin is applied.
+  if (axisName === 'y' && axisSign < 0) {
+    const mirrored = new THREE.Matrix4()
+    // local +Z (shaft) -> world -Y, local +Y (radial zero) -> world -Z.
+    mirrored.set(
+      -1,  0,  0, 0,
+       0,  0, -1, 0,
+       0, -1,  0, 0,
+       0,  0,  0, 1,
+    )
+    return mirrored
+  }
+  return rpyMatrix(servoShaftAlignRpy(axisName))
+}
+
+function servoAxisSignFromParentWorld(parentWorld: THREE.Matrix4 | undefined, axisName: 'x' | 'y' | 'z'): number {
+  if (axisName !== 'y' || !parentWorld) return 1
+  const parentPos = new THREE.Vector3().setFromMatrixPosition(parentWorld)
+  return parentPos.y < -1e-6 ? -1 : 1
+}
+
+function servoMountRpyForParentWorld(parentWorld: THREE.Matrix4 | undefined, axisName: 'x' | 'y' | 'z'): string {
+  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
+  parentRot.setPosition(0, 0, 0)
+  const axisSign = servoAxisSignFromParentWorld(parentWorld, axisName)
+  const localRot = new THREE.Matrix4().multiplyMatrices(
+    parentRot.invert(),
+    servoDesiredWorldRotation(axisName, axisSign),
+  )
+  return formatRpyFromMatrix(localRot)
+}
+
+function servoPlanarMountRpyForParentWorld(parentWorld: THREE.Matrix4 | undefined, attachFace: string | null | undefined, fallbackRpy: string): string {
+  if (attachFace !== 'top' && attachFace !== 'bottom') return fallbackRpy
+  const [, , yaw] = parseRpyString(fallbackRpy)
+  const desiredWorld = rpyMatrix(attachFace === 'bottom'
+    ? `${Math.PI} 0 ${yaw || 0}`
+    : `0 0 ${yaw || 0}`)
+  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
+  parentRot.setPosition(0, 0, 0)
+  const localRot = new THREE.Matrix4().multiplyMatrices(parentRot.invert(), desiredWorld)
+  return formatRpyFromMatrix(localRot)
+}
+
+function servoLocalRestRpyFromJointRpy(rpy: [number, number, number], axisName: 'x' | 'y' | 'z', axisSign = 1): string {
+  const axisIndex = axisName === 'x' ? 0 : axisName === 'y' ? 1 : 2
+  return formatRpyTuple([0, 0, (rpy[axisIndex] || 0) * axisSign])
+}
+
+function worldLevelRpyForParent(parentWorld: THREE.Matrix4 | undefined): string {
+  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
+  parentRot.setPosition(0, 0, 0)
+  return formatRpyFromMatrix(parentRot.invert())
+}
+
+function worldOffsetFromParent(parentWorld: THREE.Matrix4 | undefined, localOffset: [number, number, number]): THREE.Vector3 {
+  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
+  parentRot.setPosition(0, 0, 0)
+  return new THREE.Vector3(localOffset[0], localOffset[1], localOffset[2]).applyMatrix4(parentRot)
+}
+
+function servoDrivenChildPlacement(
+  parentAxisName: 'x' | 'y' | 'z',
+  attachFace: string | null | undefined,
+  _childBodyHX: number,
+  _childBodyHY: number,
+  childBodyHZ: number,
+  invertRadialSide = false,
+  childIsServo = false,
+): { xyz: string; rpy: string } | null {
+  const adapterGap = 0.008
+  if (parentAxisName === 'z') {
+    const offset = adapterGap + childBodyHZ
+    return { xyz: `0.0000 0.0000 ${offset.toFixed(4)}`, rpy: '0 0 0' }
+  }
+  const offset = childIsServo ? Math.max(adapterGap + childBodyHZ, 0.060) : adapterGap + childBodyHZ
+  const sign = childIsServo && parentAxisName === 'x' ? 1 : (attachFace === 'top' ? -1 : 1)
+  if (parentAxisName === 'x') {
+    const x = sign * offset
+    const rpy = sign > 0 ? '0 1.5708 0' : '0 -1.5708 0'
+    return { xyz: `${x.toFixed(4)} 0.0000 0.0000`, rpy }
+  }
+  const y = sign * offset
+  const roll = (invertRadialSide ? sign : -sign) * Math.PI / 2
+  const rpy = `${roll.toFixed(4)} 0 0`
+  return { xyz: `0.0000 ${y.toFixed(4)} 0.0000`, rpy }
+}
+
+function servoCompoundCarrierVisuals(xm: number, ym: number, zm: number, reach = 0): UrdfVisualDesc[] {
+  const plateT = Math.max(Math.min(xm, ym) * 0.075, 0.0025)
+  const sideY = ym / 2 + plateT * 4.2
+  const sideSize: [number, number, number] = [xm * 1.18, plateT, zm * 1.18]
+  const tieSize: [number, number, number] = [plateT * 1.2, ym + plateT * 8.4, plateT * 1.2]
+  const color: [number, number, number, number] = [0.42, 0.46, 0.50, 1]
+  const dark: [number, number, number, number] = [0.31, 0.34, 0.38, 1]
+  const visuals: UrdfVisualDesc[] = [
+    { origin_xyz: [0, sideY, 0], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: sideSize }, color_rgba: color },
+    { origin_xyz: [0, -sideY, 0], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: sideSize }, color_rgba: color },
+    { origin_xyz: [-xm * 0.42, 0, -zm * 0.42], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: tieSize }, color_rgba: dark },
+  ]
+  const bridgeLen = Math.max(reach - ym * 0.25, 0)
+  if (bridgeLen > plateT * 2) {
+    visuals.push({
+      origin_xyz: [xm * 0.38, -bridgeLen / 2, 0],
+      origin_rpy: [0, 0, 0],
+      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
+      color_rgba: dark,
+    })
+    visuals.push({
+      origin_xyz: [-xm * 0.38, -bridgeLen / 2, 0],
+      origin_rpy: [0, 0, 0],
+      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
+      color_rgba: dark,
+    })
+  }
+  return visuals
 }
 
 function normalizeJointType(value?: string): AssemblyJointType {
@@ -373,7 +555,7 @@ function clampCarryMatrixAboveFloor(worldMat: THREE.Matrix4, hx: number, hy: num
       }
     }
   }
-  const margin = 0.002
+  const margin = 0
   if (minY >= margin) return m
   const lift = margin - minY
   return new THREE.Matrix4().multiplyMatrices(new THREE.Matrix4().makeTranslation(0, lift, 0), m)
@@ -1330,7 +1512,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function deleteLink(linkName: string) {
     if (!linkName) return
     const graph = ctx.getKinematicGraph()
-    const node = graph[linkName]
+
+    // Resolve _body/_horn suffixes to the merged servo base name in the graph
+    let resolvedName = linkName
+    if (!graph[linkName]) {
+      if (linkName.endsWith('_body') || linkName.endsWith('_horn')) {
+        const suffix = linkName.endsWith('_body') ? '_body' : '_horn'
+        const baseName = linkName.slice(0, -suffix.length)
+        if (graph[baseName]) resolvedName = baseName
+      }
+    }
+
+    const node = graph[resolvedName]
     if (!node) return
 
     // Prevent deleting root link if it's the only one
@@ -1339,34 +1532,42 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       return
     }
 
-    // Collect subtree: the link itself + all descendants
+    // Collect subtree using reconstituted graph names
     const toRemove = new Set<string>()
     const walk = (name: string) => {
       toRemove.add(name)
       const n = graph[name]
       if (n) n.children.forEach(walk)
     }
-    walk(linkName)
+    walk(resolvedName)
 
     const childCount = toRemove.size - 1
-    const label = childCount > 0 ? `"${linkName}" and ${childCount} child link${childCount > 1 ? 's' : ''}` : `"${linkName}"`
+    const label = childCount > 0 ? `"${resolvedName}" and ${childCount} child link${childCount > 1 ? 's' : ''}` : `"${resolvedName}"`
 
     const changed = commitUrdf(doc => {
       const robot = doc.documentElement
       if (!robot || robot.nodeName !== 'robot') return false
 
-      // Remove all links in subtree
+      // Expand split servo names: base name X → also remove X_body and X_horn from URDF
+      const urdfNamesToRemove = new Set<string>()
       for (const name of toRemove) {
+        urdfNamesToRemove.add(name)
+        if (doc.querySelector(`link[name="${name}_body"]`)) urdfNamesToRemove.add(name + '_body')
+        if (doc.querySelector(`link[name="${name}_horn"]`)) urdfNamesToRemove.add(name + '_horn')
+      }
+
+      // Remove all URDF links in subtree (including split servo phantom links)
+      for (const name of urdfNamesToRemove) {
         const linkEl = doc.querySelector(`link[name="${name}"]`)
         if (linkEl) robot.removeChild(linkEl)
       }
 
-      // Remove all joints whose parent or child is in the subtree
+      // Remove all joints whose parent or child is in the removal set
       const joints = doc.querySelectorAll('joint')
       joints.forEach(j => {
         const parentName = j.querySelector('parent')?.getAttribute('link')
         const childName = j.querySelector('child')?.getAttribute('link')
-        if ((parentName && toRemove.has(parentName)) || (childName && toRemove.has(childName))) {
+        if ((parentName && urdfNamesToRemove.has(parentName)) || (childName && urdfNamesToRemove.has(childName))) {
           robot.removeChild(j)
         }
       })
@@ -1487,6 +1688,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       updateParentIndicator()
       return
     }
+    // Resolve split servo _body/_horn mesh clicks to the merged base name
+    if (name) {
+      const graph = ctx.getKinematicGraph()
+      if (!graph[name] && (name.endsWith('_body') || name.endsWith('_horn'))) {
+        const suffix = name.endsWith('_body') ? '_body' : '_horn'
+        const baseName = name.slice(0, -suffix.length)
+        if (graph[baseName]) name = baseName
+      }
+    }
     selectedLink = name
     gizmo.detach()
     rootDragWarned = false
@@ -1604,10 +1814,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
     // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
     // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
-    // Strip trailing _N instance number to recover the component ID (e.g. "servo_micro_2" → "servo_micro").
+    // Use rendered full-component bounds only for logical links, not split servo body/horn links.
+    const isSplitServoLink = /_(horn|body)$/.test(parentLinkName)
     const compIdMatch = parentLinkName.match(/^(.+)_(\d+)$/)
     const compId = compIdMatch?.[1] ?? parentLinkName
-    const renderedDims = getRenderedMeshDims(compId)
+    const renderedDims = isSplitServoLink ? null : getRenderedMeshDims(compId)
     if (renderedDims && renderedDims.x > 0.001) {
       // GLB is re-centered on its AABB in applyMeshToLink, so AABB center sits at the
       // link origin — report cx=cy=cz=0 for the rendered-mesh path.
@@ -2037,6 +2248,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!parentConn || !childConn) {
       const details = `${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
         `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'})`
+      const explicitGraphConnectorMiss =
+        (!!comp.attach_connector && !parentConn) ||
+        (!!comp.mate_connector && !childConn)
+      if (explicitGraphConnectorMiss) {
+        console.warn(
+          `[mate][sanitize] Invalid explicit connector on ${details}. Falling through to legacy bbox path.`,
+        )
+        return null
+      }
       // C1 (docs/ENGINE_EXECUTION_PLAN.md): dev builds hard-error on a
       // connector miss. A silent fall-through is how structural_baseplate_
       // large shipped without authored connectors — the legacy path accepted
@@ -2480,16 +2700,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         { u: inset * extU, v: -inset * extV },
         { u: -inset * extU, v: -inset * extV },
       ]
-    } else if (total === 6) {
-      positions = []
-      for (let i = 0; i < 6; i++) {
-        const col = i % 3
-        const row = Math.floor(i / 3)
-        positions.push({
-          u: (col - 1) * inset * extU,
-          v: (row === 0 ? inset : -inset) * extV,
-        })
-      }
+    } else if (total >= 5) {
+      positions = [
+        { u: inset * extU, v: inset * extV },
+        { u: -inset * extU, v: inset * extV },
+        { u: inset * extU, v: -inset * extV },
+        { u: -inset * extU, v: -inset * extV },
+      ]
+      const extras = [
+        { u: 0, v: 0 },
+        { u: 0, v: inset * extV },
+        { u: 0, v: -inset * extV },
+        { u: inset * extU, v: 0 },
+        { u: -inset * extU, v: 0 },
+      ]
+      for (let i = 4; i < total; i++) positions.push(extras[(i - 4) % extras.length])
     } else {
       positions = []
       const step = (2 * inset * extU) / Math.max(total - 1, 1)
@@ -2560,11 +2785,103 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return 'structural'
   }
 
-  /** Compute the AABB of a component's visual geometry descriptors.
-   *  Prefers actual rendered mesh dims (from loaded GLB) over parametric URDF primitives
-   *  so ghost bounds and node positions derive from the same geometry source.
-   *  Returns half-extents, center offset, and dominant shape for the carry ghost. */
-  function computeCarryGhostBounds(comp: PresetComponent): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' } {
+  type CarryGhostBounds = { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' }
+  type CarryGhostPreview = { bounds: CarryGhostBounds; visuals: UrdfVisualDesc[] }
+
+  function visualBoundsFromDescriptors(visuals: UrdfVisualDesc[]): CarryGhostBounds | null {
+    const box = new THREE.Box3()
+    const tempBox = new THREE.Box3()
+    const tempMatrix = new THREE.Matrix4()
+    let hasGeom = false
+    let allCylinders = visuals.length > 0
+
+    for (const vis of visuals) {
+      const g = vis.geometry
+      if (g.type === 'box') {
+        tempBox.set(
+          new THREE.Vector3(-g.size[0] / 2, -g.size[1] / 2, -g.size[2] / 2),
+          new THREE.Vector3( g.size[0] / 2,  g.size[1] / 2,  g.size[2] / 2),
+        )
+        allCylinders = false
+      } else if (g.type === 'cylinder') {
+        tempBox.set(
+          new THREE.Vector3(-g.radius, -g.radius, -g.length / 2),
+          new THREE.Vector3( g.radius,  g.radius,  g.length / 2),
+        )
+      } else {
+        tempBox.set(
+          new THREE.Vector3(-g.radius, -g.radius, -g.radius),
+          new THREE.Vector3( g.radius,  g.radius,  g.radius),
+        )
+        allCylinders = false
+      }
+
+      const [ox, oy, oz] = vis.origin_xyz
+      tempMatrix.makeRotationFromQuaternion(rpyToQuat(vis.origin_rpy))
+      tempMatrix.setPosition(ox, oy, oz)
+      box.union(tempBox.clone().applyMatrix4(tempMatrix))
+      hasGeom = true
+    }
+
+    if (!hasGeom || box.isEmpty()) return null
+    const center = box.getCenter(new THREE.Vector3())
+    const size = box.getSize(new THREE.Vector3())
+    return {
+      hx: size.x / 2,
+      hy: size.y / 2,
+      hz: size.z / 2,
+      cx: center.x,
+      cy: center.y,
+      cz: center.z,
+      shape: allCylinders ? 'cylinder' : 'box',
+    }
+  }
+
+  function computeCarryGhostPreview(comp: PresetComponent): CarryGhostPreview {
+    const catName = findCategory(comp)
+    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+    const visualBounds = visualBoundsFromDescriptors(visuals)
+    return { bounds: visualBounds ?? computeCarryGhostBounds(comp), visuals }
+  }
+
+  function makeCarryGhostVisualGroup(visuals: UrdfVisualDesc[]): THREE.Group {
+    const group = new THREE.Group()
+    const urdfToSceneQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'XYZ'))
+
+    for (const vis of visuals) {
+      const wrapper = new THREE.Group()
+      const [ox, oy, oz] = vis.origin_xyz
+      wrapper.position.set(ox, oz, -oy)
+      wrapper.quaternion.copy(urdfToSceneQuat.clone().multiply(rpyToQuat(vis.origin_rpy)))
+
+      const g = vis.geometry
+      let geo: THREE.BufferGeometry
+      if (g.type === 'box') {
+        geo = new THREE.BoxGeometry(g.size[0], g.size[1], g.size[2])
+      } else if (g.type === 'cylinder') {
+        geo = new THREE.CylinderGeometry(g.radius, g.radius, g.length, 32)
+      } else {
+        geo = new THREE.SphereGeometry(g.radius, 24, 16)
+      }
+
+      const mesh = new THREE.Mesh(geo, carryGhostMat)
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), carryEdgeMat)
+      if (g.type === 'cylinder') {
+        mesh.rotation.x = Math.PI / 2
+        edges.rotation.x = Math.PI / 2
+      }
+      wrapper.add(mesh, edges)
+      group.add(wrapper)
+    }
+
+    return group
+  }
+
+  /** Compute the AABB of a component in URDF coordinates.
+   *  Placement math still prefers rendered mesh dims when available, but carry
+   *  visualization uses computeCarryGhostPreview() so it preserves per-visual
+   *  rotations and multi-primitive outlines instead of drawing a generic box. */
+  function computeCarryGhostBounds(comp: PresetComponent): CarryGhostBounds {
     // Fix 1+2: use actual rendered mesh size when the GLB has been loaded and cached.
     // This ensures ghost bounds agree with the real visual geometry rather than URDF primitives.
     const renderedDims = getRenderedMeshDims(comp.id)
@@ -2573,6 +2890,28 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         hx: renderedDims.x / 2,
         hy: renderedDims.y / 2,
         hz: renderedDims.z / 2,
+        cx: 0, cy: 0, cz: 0,
+        shape: 'box',
+      }
+    }
+
+    // Preloaded GLBs do not populate meshDimsCache until an instance has been
+    // rendered, but applyMeshToLink will scale most GLBs to the preset bbox.
+    // Use that same target envelope for first-use carry ghosts so the outline
+    // does not change shape when the component is committed and replaced by
+    // the rich mesh.
+    const perAxisBlacklist = ['gripper', 'effector', 'claw', 'suction']
+    const glbScalesToBbox = hasMeshOverride(comp.id)
+      && !SLOW_MESH_BLACKLIST.has(comp.id)
+      && !perAxisBlacklist.some(k => comp.id.includes(k))
+    if (glbScalesToBbox) {
+      const bb = getOrComputeBbox(comp.id, comp)
+      const shaftOverlay = getShaftOverlay(comp.id)
+      const zMm = shaftOverlay ? Math.max(1, (bb[2] ?? 40) - shaftOverlay.shaft_length_mm) : (bb[2] ?? 40)
+      return {
+        hx: (bb[0] ?? 40) / 2000,
+        hy: (bb[1] ?? 40) / 2000,
+        hz: zMm / 2000,
         cx: 0, cy: 0, cz: 0,
         shape: 'box',
       }
@@ -2731,63 +3070,133 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     const catName = findCategory(comp)
-    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+    const category = comp.id.split('_')[0]
+    const isActuated = isSplitServoComponentId(comp.id)
+    const isNonSplitActuated = !isActuated && (category === 'actuator' || category === 'motor')
 
     const changed = commitUrdf(doc => {
       const robot = doc.documentElement
       if (!robot || robot.nodeName !== 'robot') return false
 
-      const link = doc.createElement('link')
-      link.setAttribute('name', childName)
-
-      const inertialEl = doc.createElement('inertial')
-      const massEl = doc.createElement('mass')
-      massEl.setAttribute('value', mass.toFixed(4))
-      const inertiaEl = doc.createElement('inertia')
-      inertiaEl.setAttribute('ixx', inertia.ixx.toFixed(6))
-      inertiaEl.setAttribute('iyy', inertia.iyy.toFixed(6))
-      inertiaEl.setAttribute('izz', inertia.izz.toFixed(6))
-      inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
-      inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
-      link.appendChild(inertialEl)
-
-      visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
-      const collisionMesh = comp.physical.collision_mesh
-      if (collisionMesh) {
-        addMeshCollisionElement(doc, link, collisionMesh)
-      } else {
-        visuals.forEach(vis => addCollisionElement(doc, link, vis))
-      }
-
-      const joint = doc.createElement('joint')
-      joint.setAttribute('name', jointName)
-      const category = comp.id.split('_')[0]
-      const isActuated = category === 'actuator' || category === 'motor'
-      joint.setAttribute('type', isActuated ? 'revolute' : 'fixed')
-
-      const parentEl = doc.createElement('parent'); parentEl.setAttribute('link', parentLink)
-      const childEl = doc.createElement('child'); childEl.setAttribute('link', childName)
-      const origin = doc.createElement('origin')
-      origin.setAttribute('xyz', xyzStr); origin.setAttribute('rpy', rpyStr)
-      joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin)
-
       if (isActuated) {
-        const axis = doc.createElement('axis'); axis.setAttribute('xyz', '0 0 1')
-        joint.appendChild(axis)
-        const limit = doc.createElement('limit')
-        limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+        // Split-servo emit: body link (fixed to parent) + horn link (revolute from body)
+        const bodyLinkName = `${childName}_body`
+        const hornLinkName = `${childName}_horn`
+        const mountJointName = `${jointName}_mount`
+
+        const bodyMass = mass * 0.95
+        const hornMass = mass * 0.05
+        const bodyInertia = computeBoxInertia(bodyMass, xm, ym, zm * 0.88)
+        const hornInertia = computeBoxInertia(hornMass, xm * 0.7, ym * 0.7, zm * 0.12)
+        const hornOriginZ = (zm * SERVO_HORN_ORIGIN_Z_RATIO).toFixed(6)
+
+        const bodyVisuals = servoBodyShape(xm, zm, ym, catName)
+        const hornVisuals = servoHornShape(xm, zm, ym, catName)
+
+        // Body link
+        const bodyLink = doc.createElement('link')
+        bodyLink.setAttribute('name', bodyLinkName)
+        const bodyInertialEl = doc.createElement('inertial')
+        const bodyMassEl = doc.createElement('mass'); bodyMassEl.setAttribute('value', bodyMass.toFixed(4))
+        const bodyInertiaEl = doc.createElement('inertia')
+        bodyInertiaEl.setAttribute('ixx', bodyInertia.ixx.toFixed(6)); bodyInertiaEl.setAttribute('iyy', bodyInertia.iyy.toFixed(6)); bodyInertiaEl.setAttribute('izz', bodyInertia.izz.toFixed(6))
+        bodyInertiaEl.setAttribute('ixy', '0'); bodyInertiaEl.setAttribute('ixz', '0'); bodyInertiaEl.setAttribute('iyz', '0')
+        bodyInertialEl.appendChild(bodyMassEl); bodyInertialEl.appendChild(bodyInertiaEl)
+        bodyLink.appendChild(bodyInertialEl)
+        bodyVisuals.forEach((vis, i) => addVisualElement(doc, bodyLink, vis, i))
+        const collisionMesh = comp.physical.collision_mesh
+        if (collisionMesh) {
+          addMeshCollisionElement(doc, bodyLink, collisionMesh)
+        } else {
+          bodyVisuals.forEach(vis => addCollisionElement(doc, bodyLink, vis))
+        }
+
+        // Mount joint: fixed, parent → body
+        const mountJoint = doc.createElement('joint'); mountJoint.setAttribute('name', mountJointName); mountJoint.setAttribute('type', 'fixed')
+        const mountParentEl = doc.createElement('parent'); mountParentEl.setAttribute('link', parentLink)
+        const mountChildEl = doc.createElement('child'); mountChildEl.setAttribute('link', bodyLinkName)
+        const mountOrigin = doc.createElement('origin'); mountOrigin.setAttribute('xyz', xyzStr); mountOrigin.setAttribute('rpy', rpyStr)
+        mountJoint.appendChild(mountParentEl); mountJoint.appendChild(mountChildEl); mountJoint.appendChild(mountOrigin)
+
+        // Horn link
+        const hornLink = doc.createElement('link')
+        hornLink.setAttribute('name', hornLinkName)
+        const hornInertialEl = doc.createElement('inertial')
+        const hornMassEl = doc.createElement('mass'); hornMassEl.setAttribute('value', hornMass.toFixed(4))
+        const hornInertiaEl = doc.createElement('inertia')
+        hornInertiaEl.setAttribute('ixx', hornInertia.ixx.toFixed(6)); hornInertiaEl.setAttribute('iyy', hornInertia.iyy.toFixed(6)); hornInertiaEl.setAttribute('izz', hornInertia.izz.toFixed(6))
+        hornInertiaEl.setAttribute('ixy', '0'); hornInertiaEl.setAttribute('ixz', '0'); hornInertiaEl.setAttribute('iyz', '0')
+        hornInertialEl.appendChild(hornMassEl); hornInertialEl.appendChild(hornInertiaEl)
+        hornLink.appendChild(hornInertialEl)
+        hornVisuals.forEach((vis, i) => addVisualElement(doc, hornLink, vis, i))
+        hornVisuals.forEach(vis => addCollisionElement(doc, hornLink, vis))
+
+        // Revolute joint: body → horn at horn origin
+        const revJoint = doc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', 'revolute')
+        const revParentEl = doc.createElement('parent'); revParentEl.setAttribute('link', bodyLinkName)
+        const revChildEl = doc.createElement('child'); revChildEl.setAttribute('link', hornLinkName)
+        const revOrigin = doc.createElement('origin'); revOrigin.setAttribute('xyz', `0 0 ${hornOriginZ}`); revOrigin.setAttribute('rpy', '0 0 0')
+        const revAxis = doc.createElement('axis'); revAxis.setAttribute('xyz', '0 0 1')
+        const revLimit = doc.createElement('limit')
+        revLimit.setAttribute('lower', '-3.14159'); revLimit.setAttribute('upper', '3.14159')
         const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
                           (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
-        limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
-        joint.appendChild(limit)
+        revLimit.setAttribute('effort', String(maxTorque)); revLimit.setAttribute('velocity', '3.14')
+        revJoint.appendChild(revParentEl); revJoint.appendChild(revChildEl); revJoint.appendChild(revOrigin); revJoint.appendChild(revAxis); revJoint.appendChild(revLimit)
+
+        robot.appendChild(bodyLink); robot.appendChild(mountJoint)
+        robot.appendChild(hornLink); robot.appendChild(revJoint)
+      } else {
+        const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+        const link = doc.createElement('link')
+        link.setAttribute('name', childName)
+
+        const inertialEl = doc.createElement('inertial')
+        const massEl = doc.createElement('mass')
+        massEl.setAttribute('value', mass.toFixed(4))
+        const inertiaEl = doc.createElement('inertia')
+        inertiaEl.setAttribute('ixx', inertia.ixx.toFixed(6))
+        inertiaEl.setAttribute('iyy', inertia.iyy.toFixed(6))
+        inertiaEl.setAttribute('izz', inertia.izz.toFixed(6))
+        inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
+        inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
+        link.appendChild(inertialEl)
+
+        visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
+        const collisionMesh = comp.physical.collision_mesh
+        if (collisionMesh) {
+          addMeshCollisionElement(doc, link, collisionMesh)
+        } else {
+          visuals.forEach(vis => addCollisionElement(doc, link, vis))
+        }
+
+        const joint = doc.createElement('joint')
+        joint.setAttribute('name', jointName)
+        joint.setAttribute('type', isNonSplitActuated ? 'revolute' : 'fixed')
+        const parentEl = doc.createElement('parent'); parentEl.setAttribute('link', parentLink)
+        const childEl = doc.createElement('child'); childEl.setAttribute('link', childName)
+        const origin = doc.createElement('origin')
+        origin.setAttribute('xyz', xyzStr); origin.setAttribute('rpy', rpyStr)
+        joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin)
+        if (isNonSplitActuated) {
+          const axis = doc.createElement('axis'); axis.setAttribute('xyz', '0 0 1')
+          joint.appendChild(axis)
+          const limit = doc.createElement('limit')
+          limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+          const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
+                            (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
+          limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
+          joint.appendChild(limit)
+        }
+        robot.appendChild(link); robot.appendChild(joint)
       }
-      robot.appendChild(link); robot.appendChild(joint)
       return true
     }, { defer: true })
 
+    const displayName = isActuated ? `${childName}_horn` : childName
     if (changed) {
       ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
-      selectLink(childName)
+      selectLink(displayName)
     }
     return changed
   }
@@ -2796,7 +3205,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   let carryComp: PresetComponent | null = null
   let carryGroup: THREE.Group | null = null
-  let carryGhostBounds: { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' } | null = null
+  let carryGhostBounds: CarryGhostBounds | null = null
   let carryWorldPos = new THREE.Vector3()
   let carryFrozen = false          // true after manual nudge — mouse no longer drives position
   let carryUserAngle = 0           // accumulated user rotation in radians
@@ -2873,7 +3282,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const geo = new THREE.BufferGeometry().setFromPoints(pts)
     carryArcLine = new THREE.Line(geo, carryArcMat)
     carryArcLine.renderOrder = 1000
-    carryArcLine.position.set(cx, cy, cz)
+    carryArcLine.position.set(cx, cz, -cy)
     carryGroup.add(carryArcLine)
   }
 
@@ -2933,22 +3342,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     carrySnapCandidates = []
     carrySnapIdx = 0
 
-    const bounds = computeCarryGhostBounds(comp)
+    const preview = computeCarryGhostPreview(comp)
+    const bounds = preview.bounds
     carryGhostBounds = bounds
-    const { hx, hy, hz, cx, cy, cz, shape } = bounds
-
-    // Fix 4: use geometry that matches the component's dominant shape.
-    // CylinderGeometry axis is along Y in Three.js; radius = max(hx,hy), height = hz*2.
-    const geo: THREE.BufferGeometry = shape === 'cylinder'
-      ? new THREE.CylinderGeometry(Math.max(hx, hy), Math.max(hx, hy), hz * 2, 32)
-      : new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2)
-    const mesh = new THREE.Mesh(geo, carryGhostMat)
-    mesh.position.set(cx, cy, cz)
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), carryEdgeMat)
-    edges.position.set(cx, cy, cz)
     carryGroup = new THREE.Group()
     carryGroup.name = 'carry_ghost'
-    carryGroup.add(mesh, edges)
+    carryGroup.add(makeCarryGhostVisualGroup(preview.visuals))
     ctx.scene.add(carryGroup)
 
     rebuildMountNodes()
@@ -2990,13 +3389,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function getCarrySourceNodes() {
     if (!carryComp || !carryGroup) return []
-    const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
+    const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostPreview(carryComp).bounds
     carryGroup.updateMatrixWorld(true)
-    return defaultFaceNodesForBoxDims(hx, hy, hz).map(f => {
-      // Face positions are relative to carry group origin — include the visual center offset
+    return componentPortsForPreset(
+      carryComp.id,
+      hx, hy, hz,
+      carryComp.mounting_logic,
+    ).map(f => {
+      // f.origin_xyz is in URDF Z-up convention; carryGroup lives in Three.js Y-up world space.
+      // Remap: URDF X→ThreeJS X, URDF Z (height)→ThreeJS Y, URDF Y (depth)→ThreeJS -Z.
       const lx = cx + f.origin_xyz[0]
-      const ly = cy + f.origin_xyz[1]
-      const lz = cz + f.origin_xyz[2]
+      const ly = cz + f.origin_xyz[2]   // URDF Z (height) → Three.js Y
+      const lz = -(cy + f.origin_xyz[1]) // URDF Y (depth) → Three.js -Z
       const localFacePos = new THREE.Vector3(lx, ly, lz)
       const worldPos = localFacePos.clone().applyMatrix4(carryGroup!.matrixWorld)
       const worldQuat = new THREE.Quaternion().setFromRotationMatrix(carryGroup!.matrixWorld)
@@ -3078,8 +3482,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Clamp ghost so its AABB bottom never clips below the floor (Y=0).
       // The hit point is the surface the cursor is over; the ghost center is placed
       // there, so without a lift the lower half always goes underground.
-      const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
-      const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hy, hz, cx, cy, cz)
+      const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostPreview(carryComp).bounds
+      // hz (URDF Z) is the Three.js Y (vertical) half-extent; swap hy↔hz and cy↔cz.
+      const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, hx, hz, hy, cx, cz, -cy)
       carryGroup.position.setFromMatrixPosition(lifted)
       carryGroup.updateMatrixWorld(true)
 
@@ -3094,6 +3499,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (!carryComp) return
     const comp = carryComp
     const mount = carryBestMount
+    const ghostBoundsAtCommit = carryGhostBounds ?? computeCarryGhostPreview(comp).bounds
     // Capture actual ghost world (includes user rotation) before exitCarryMode clears carryGroup.
     const ghostWorldFree = !mount && carryGroup ? carryGroup.matrixWorld.clone() : null
     const ghostWorldSnap = mount && carryGroup ? carryGroup.matrixWorld.clone() : null
@@ -3131,8 +3537,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         )
         return
       }
-      const { hx: ghx, hy: ghy, hz: ghz, cx: gcx, cy: gcy, cz: gcz } = computeCarryGhostBounds(comp)
-      const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, ghx, ghy, ghz, gcx, gcy, gcz)
+      const { hx: ghx, hy: ghy, hz: ghz, cx: gcx, cy: gcy, cz: gcz } = ghostBoundsAtCommit
+      // ghz (URDF Z) is the Three.js Y (vertical) half-extent; swap ghy↔ghz and gcy↔gcz.
+      // The clamp uses gcz as the Three.js Y center offset (non-zero for fallback path) so the
+      // corners sample the actual mesh AABB, and the carryGroup origin (not visual center) becomes
+      // the joint position — which is correct: URDF-primitive visuals sit at origin_xyz=[0,0,hz]
+      // above the link origin, so joint Z=0 places their bottom on the floor.
+      const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, ghx, ghz, ghy, gcx, gcz, -gcy)
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
       const childLocal = parentWorldInv.clone().multiply(ghostAdjusted)
@@ -3759,9 +4170,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (k === 'pagedown') {
           carryGroup.position.y -= step
           // Clamp so the ghost never clips below the floor.
-          const { hx: phx, hy: phy, hz: phz, cx: pcx, cy: pcy, cz: pcz } = carryGhostBounds ?? computeCarryGhostBounds(carryComp)
+          const { hx: phx, hy: phy, hz: phz, cx: pcx, cy: pcy, cz: pcz } = carryGhostBounds ?? computeCarryGhostPreview(carryComp).bounds
           carryGroup.updateMatrixWorld(true)
-          const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, phx, phy, phz, pcx, pcy, pcz)
+          const lifted = clampCarryMatrixAboveFloor(carryGroup.matrixWorld, phx, phz, phy, pcx, pcz, -pcy)
           carryGroup.position.setFromMatrixPosition(lifted)
         }
         carryWorldPos.copy(carryGroup.position)
@@ -4084,7 +4495,26 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     nameMap.set(root.link_name, rootLinkName)
     processed.add(root.link_name)
     placedCount++
+    const linkWorldTransforms = new Map<string, THREE.Matrix4>()
+    linkWorldTransforms.set(rootLinkName, new THREE.Matrix4())
     console.log(`[assembly] Root placed: ${rootLinkName} (${root.component_id})`)
+
+    const componentByName = new Map(components.map(c => [c.link_name, c]))
+    for (const comp of components) {
+      const axis = axisNameFromComponentAxis(comp.joint_axis)
+      const parent = comp.attach_to ? componentByName.get(comp.attach_to) : undefined
+      const hasServoChild = components.some(c => c.attach_to === comp.link_name && isSplitServoComponentId(c.component_id))
+      const isCompoundHipBaseServo = isSplitServoComponentId(comp.component_id)
+        && axis !== 'z'
+        && (comp.attach_face === 'top' || comp.attach_face === 'bottom')
+        && !!parent
+        && parent.component_id.startsWith('structural_baseplate')
+        && hasServoChild
+      if (isCompoundHipBaseServo) {
+        console.log(`[assembly] planar hip servo axis normalized: ${comp.link_name} ${comp.joint_axis || 'z'} -> z so horn faces down/up normal to the baseplate`)
+        comp.joint_axis = 'z'
+      }
+    }
 
     // Pre-compute how many children attach to each parent:face pair
     // so we can distribute them (e.g., 4 wheels on bottom corners)
@@ -4274,7 +4704,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         || comp.component_id.startsWith('power_')
         || comp.component_id.startsWith('sensor_')
         || comp.component_id.startsWith('compute_')
-      const noSplay = isRollingHardware || isPassiveHardware
+      const noSplay = isRollingHardware || isPassiveHardware || isSplitServoComponentId(preset.id)
       const elevAngle = comp.elevation_angle ?? 0
 
       // Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
@@ -4395,99 +4825,324 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const cCatName = findCategory(preset)
       const visualPreset = buildVisPreset(preset, comp)
       const cVisuals = generateVisuals(visualPreset as Parameters<typeof generateVisuals>[0], cCatName)
+      const cIsActuated = isSplitServoComponentId(preset.id)
+      const servoAxisName = axisNameFromUrdf(jointAxis)
+      const servoUsesSideYoke = cIsActuated && servoAxisName !== 'z'
+      const useCompoundServoCarrier = !!(
+        cIsActuated &&
+        parentCompDef &&
+        isSplitServoComponentId(parentCompDef.component_id)
+      )
+      const parentIsServo = !!(
+        parentCompDef &&
+        isSplitServoComponentId(parentCompDef.component_id)
+      )
+      if (parentIsServo) {
+        const parentServoAxis = axisNameFromComponentAxis(parentCompDef!.joint_axis)
+        const grandParentComp = parentCompDef?.attach_to
+          ? components.find(c => c.link_name === parentCompDef.attach_to)
+          : undefined
+        const parentRestRpy = Array.isArray(parentCompDef?.attach_rpy) ? parentCompDef.attach_rpy : undefined
+        const parentRestPitch = parentRestRpy ? Number(parentRestRpy[1]) || 0 : 0
+        const invertRadialSide = parentServoAxis === 'y'
+          && (
+            (
+              !!grandParentComp
+              && isSplitServoComponentId(grandParentComp.component_id)
+              && axisNameFromComponentAxis(grandParentComp.joint_axis) === 'x'
+            )
+            || parentRestPitch < -0.001
+          )
+        const childBodyHX = Math.max(cxm / 2 - Math.abs(childBounds.cx), 0)
+        const childBodyHY = Math.max(cym / 2 - Math.abs(childBounds.cy), 0)
+        const childBodyHZ = Math.max(czm / 2 - Math.abs(childBounds.cz), 0)
+        const drivenPlacement = servoDrivenChildPlacement(
+          parentServoAxis,
+          comp.attach_face,
+          childBodyHX,
+          childBodyHY,
+          childBodyHZ,
+          invertRadialSide,
+          cIsActuated,
+        )
+        if (drivenPlacement) {
+          placement = drivenPlacement
+          viaConnectorMap.set(comp.link_name, true)
+          console.log(`[assembly] servo driven child: ${comp.link_name} parentAxis=${parentServoAxis} placement=${JSON.stringify(placement)}`)
+        }
+      }
+      // For split servos, placement.rpy belongs to the fixed housing mount.
+      // Rest-pose offsets belong to the body -> horn joint origin instead.
+      let finalRpy = placement.rpy
+      let servoHornZeroRpy = '0 0 0'
+      const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
+      if (
+        parentCompDef?.component_id === 'structural_limb_link_slim' &&
+        comp.attach_face === 'bottom'
+      ) {
+        const xyz = parseXyzString(placement.xyz)
+        const normalWorld = worldOffsetFromParent(parentWorldTransform, [0, 0, xyz[2]])
+        if (normalWorld.z > 0.0001) {
+          xyz[2] = -xyz[2]
+          placement = { ...placement, xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' ') }
+          console.log(`[assembly] limb distal bottom corrected: ${comp.link_name} local_z flipped so child moves downward in world`)
+        }
+      }
+      const servoAxisSign = cIsActuated ? servoAxisSignFromParentWorld(parentWorldTransform, servoAxisName) : 1
+      const isArmJoint = jointType === 'revolute'
+        && comp.joint_axis?.toLowerCase() === 'y'
+        && comp.attach_face === 'top'
+      const parentDepth = armDepth.get(comp.attach_to!) || 0
+      const applyRestPitch = (pitch: number) => {
+        if (cIsActuated) {
+          const rpyParts = parseRpyString(servoHornZeroRpy)
+          rpyParts[2] += pitch
+          servoHornZeroRpy = formatRpyTuple(rpyParts)
+          return
+        }
+        const rpyParts = parseRpyString(placement.rpy)
+        rpyParts[1] += pitch
+        finalRpy = formatRpyTuple(rpyParts)
+      }
+      if (isArmJoint) {
+        const depth = parentDepth + 1
+        armDepth.set(comp.link_name, depth)
+        const defaultPitch = depth === 1 ? 0.7854 : depth === 2 ? -1.5708 : 0
+        if (defaultPitch !== 0) {
+          applyRestPitch(defaultPitch)
+          console.log(`[assembly] Arm rest pose: ${comp.link_name} depth=${depth}, ${cIsActuated ? 'horn zero' : 'mount'} pitch += ${defaultPitch.toFixed(2)} rad`)
+        }
+      } else {
+        armDepth.set(comp.link_name, comp.attach_face === 'top' ? parentDepth : 0)
+      }
+      const explicitRpy = comp.attach_rpy
+      if (Array.isArray(explicitRpy) && explicitRpy.length === 3
+          && explicitRpy.some(v => Math.abs(v) > 0.001)) {
+        const explicitRpyStr = formatRpyTuple([
+          Number(explicitRpy[0]) || 0,
+          Number(explicitRpy[1]) || 0,
+          Number(explicitRpy[2]) || 0,
+        ])
+        if (cIsActuated) {
+          const explicitTuple = parseRpyString(explicitRpyStr)
+          servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, servoAxisSign)
+          console.log(`[assembly] servo horn zero rpy: ${comp.link_name} axis=${servoAxisName} sign=${servoAxisSign} joint_rpy=[${explicitRpy.join(', ')}] local=${servoHornZeroRpy}`)
+        } else {
+          finalRpy = explicitRpyStr
+          console.log(`[assembly] attach_rpy override: ${comp.link_name} rpy=[${explicitRpy.join(', ')}]`)
+        }
+      }
+      const explicitRpyApplied = Array.isArray(explicitRpy) && explicitRpy.length === 3
+        && explicitRpy.some(v => Math.abs(v) > 0.001)
+      if (!cIsActuated && preset.id === 'mobility_rubber_foot_pad' && !explicitRpyApplied) {
+        finalRpy = worldLevelRpyForParent(parentWorldTransform)
+        console.log(`[assembly] level foot pad: ${comp.link_name} rpy=${finalRpy}`)
+      }
+      const servoBodyMountRpy = cIsActuated
+        ? (servoAxisName === 'z'
+          ? servoPlanarMountRpyForParentWorld(parentWorldTransform, comp.attach_face, finalRpy)
+          : servoMountRpyForParentWorld(parentWorldTransform, servoAxisName))
+        : finalRpy
+      if (cIsActuated && servoAxisName !== 'z' && (comp.attach_face === 'top' || comp.attach_face === 'bottom')) {
+        const xyz = placement.xyz.split(/\s+/).map(Number)
+        const baseHalfZ = Math.max(czm / 2 - Math.abs(childBounds.cz), 0)
+        const rotatedHalfZ = servoAxisName === 'x'
+          ? Math.max(cxm / 2 - Math.abs(childBounds.cx), 0)
+          : Math.max(cym / 2 - Math.abs(childBounds.cy), 0)
+        const dz = rotatedHalfZ - baseHalfZ
+        if (Math.abs(dz) > 1e-6) {
+          xyz[2] += comp.attach_face === 'top' ? dz : -dz
+          placement = { ...placement, xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' ') }
+          console.log(`[assembly] side-axis servo clearance: ${comp.link_name} axis=${servoAxisName} z ${dz >= 0 ? '+' : ''}${dz.toFixed(4)}m`)
+        }
+      }
+      const servoHornOriginZ = cIsActuated ? czm * SERVO_HORN_ORIGIN_Z_RATIO : 0
 
       const changed = commitUrdf(urdfDoc => {
         const robot = urdfDoc.querySelector('robot')
         if (!robot) return false
 
-        const link = urdfDoc.createElement('link')
-        link.setAttribute('name', childName)
+        if (cIsActuated) {
+          // Split-servo emit: body link (fixed to parent) + horn link (revolute from body)
+          const bodyLinkName = `${childName}_body`
+          const hornLinkName = `${childName}_horn`
+          const carrierLinkName = `${childName}_compound_carrier`
+          const carrierJointName = `${jointName}_compound_carrier`
+          const mountJointName = `${jointName}_mount`
 
-        const inertialEl = urdfDoc.createElement('inertial')
-        const massEl = urdfDoc.createElement('mass')
-        massEl.setAttribute('value', cMass.toFixed(4))
-        const inertiaEl = urdfDoc.createElement('inertia')
-        inertiaEl.setAttribute('ixx', cInertia.ixx.toFixed(6))
-        inertiaEl.setAttribute('iyy', cInertia.iyy.toFixed(6))
-        inertiaEl.setAttribute('izz', cInertia.izz.toFixed(6))
-        inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
-        inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
-        link.appendChild(inertialEl)
+          const bodyMass = cMass * 0.95
+          const hornMass = cMass * 0.05
+          const carrierMass = useCompoundServoCarrier ? Math.max(cMass * 0.18, 0.025) : 0
+          const bodyInertia = computeBoxInertia(bodyMass, cxm, cym, czm * 0.88)
+          const hornInertia = computeBoxInertia(hornMass, cxm * 0.7, cym * 0.7, czm * 0.12)
+          const carrierInertia = computeBoxInertia(carrierMass || 0.001, cxm * 1.2, cym * 1.4, czm * 1.2)
+          const hornOriginZ = servoHornOriginZ.toFixed(6)
 
-        cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
-        const cCollisionMesh = preset.physical.collision_mesh
-        if (cCollisionMesh) {
-          addMeshCollisionElement(urdfDoc, link, cCollisionMesh)
-        } else {
-          cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
-        }
+          const bodyVisuals = servoUsesSideYoke
+            ? [...servoBodyShape(cxm, czm, cym, cCatName), ...servoSideYokeShape(cxm, czm, cym, cCatName)]
+            : servoBodyShape(cxm, czm, cym, cCatName)
+          const hornVisuals = servoUsesSideYoke
+            ? [...servoHornShape(cxm, czm, cym, cCatName), ...servoHornBeamAdapterShape(cxm, czm, cym, cCatName)]
+            : servoHornShape(cxm, czm, cym, cCatName)
 
-        const joint = urdfDoc.createElement('joint')
-        joint.setAttribute('name', jointName)
-        joint.setAttribute('type', jointType)
-
-        const parentEl = urdfDoc.createElement('parent'); parentEl.setAttribute('link', parentLinkName)
-        const childEl = urdfDoc.createElement('child'); childEl.setAttribute('link', childName)
-        const origin = urdfDoc.createElement('origin')
-        origin.setAttribute('xyz', placement.xyz)
-        // Apply default arm rest pose: bend revolute-Y joints in vertical chains
-        // so arms look like arms (L-shape) instead of straight poles at rest
-        let finalRpy = placement.rpy
-        const isArmJoint = jointType === 'revolute'
-          && comp.joint_axis?.toLowerCase() === 'y'
-          && comp.attach_face === 'top'
-        const parentDepth = armDepth.get(comp.attach_to!) || 0
-        if (isArmJoint) {
-          const depth = parentDepth + 1
-          armDepth.set(comp.link_name, depth)
-          // Shoulder (depth 1): pitch forward 45°, Elbow (depth 2): bend back -90°
-          const defaultPitch = depth === 1 ? 0.7854 : depth === 2 ? -1.5708 : 0
-          if (defaultPitch !== 0) {
-            const rpyParts = placement.rpy.split(' ').map(Number)
-            rpyParts[1] = (rpyParts[1] || 0) + defaultPitch
-            finalRpy = rpyParts.map(v => v.toFixed(4)).join(' ')
-            console.log(`[assembly] Arm rest pose: ${comp.link_name} depth=${depth}, added pitch=${defaultPitch.toFixed(2)} rad`)
+          // Body link
+          const bodyLink = urdfDoc.createElement('link'); bodyLink.setAttribute('name', bodyLinkName)
+          const bodyInertialEl = urdfDoc.createElement('inertial')
+          const bodyMassEl = urdfDoc.createElement('mass'); bodyMassEl.setAttribute('value', bodyMass.toFixed(4))
+          const bodyInertiaEl = urdfDoc.createElement('inertia')
+          bodyInertiaEl.setAttribute('ixx', bodyInertia.ixx.toFixed(6)); bodyInertiaEl.setAttribute('iyy', bodyInertia.iyy.toFixed(6)); bodyInertiaEl.setAttribute('izz', bodyInertia.izz.toFixed(6))
+          bodyInertiaEl.setAttribute('ixy', '0'); bodyInertiaEl.setAttribute('ixz', '0'); bodyInertiaEl.setAttribute('iyz', '0')
+          bodyInertialEl.appendChild(bodyMassEl); bodyInertialEl.appendChild(bodyInertiaEl)
+          bodyLink.appendChild(bodyInertialEl)
+          bodyVisuals.forEach((vis, i) => addVisualElement(urdfDoc, bodyLink, vis, i))
+          const cCollisionMesh = preset.physical.collision_mesh
+          if (cCollisionMesh) {
+            addMeshCollisionElement(urdfDoc, bodyLink, cCollisionMesh)
+          } else {
+            bodyVisuals.forEach(vis => addCollisionElement(urdfDoc, bodyLink, vis))
           }
-        } else {
-          // Propagate arm depth through non-revolute components (extrusions, grippers)
-          // so the next revolute-Y joint gets the correct depth
-          armDepth.set(comp.link_name, comp.attach_face === 'top' ? parentDepth : 0)
-        }
-        // Explicit attach_rpy from AI overrides all auto-computed rpy (placement + arm rest-pose).
-        // Mirrors claude_client.py:583-587. Threshold matches Python's 0.001 rad (~0.057°).
-        const explicitRpy = comp.attach_rpy
-        if (Array.isArray(explicitRpy) && explicitRpy.length === 3
-            && explicitRpy.some(v => Math.abs(v) > 0.001)) {
-          finalRpy = explicitRpy.map(v => Number(v).toFixed(4)).join(' ')
-          console.log(`[assembly] attach_rpy override: ${comp.link_name} rpy=[${explicitRpy.join(', ')}]`)
-        }
-        origin.setAttribute('rpy', finalRpy)
-        const axis = urdfDoc.createElement('axis'); axis.setAttribute('xyz', jointAxis)
-        joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin); joint.appendChild(axis)
 
-        if (jointType === 'revolute' || jointType === 'prismatic') {
-          const limit = urdfDoc.createElement('limit')
-          limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+          // Mount joint: fixed, parent → body
+          if (useCompoundServoCarrier) {
+            const carrierLink = urdfDoc.createElement('link')
+            carrierLink.setAttribute('name', carrierLinkName)
+            const carrierInertialEl = urdfDoc.createElement('inertial')
+            const carrierMassEl = urdfDoc.createElement('mass'); carrierMassEl.setAttribute('value', carrierMass.toFixed(4))
+            const carrierInertiaEl = urdfDoc.createElement('inertia')
+            carrierInertiaEl.setAttribute('ixx', carrierInertia.ixx.toFixed(6)); carrierInertiaEl.setAttribute('iyy', carrierInertia.iyy.toFixed(6)); carrierInertiaEl.setAttribute('izz', carrierInertia.izz.toFixed(6))
+            carrierInertiaEl.setAttribute('ixy', '0'); carrierInertiaEl.setAttribute('ixz', '0'); carrierInertiaEl.setAttribute('iyz', '0')
+            carrierInertialEl.appendChild(carrierMassEl); carrierInertialEl.appendChild(carrierInertiaEl)
+            carrierLink.appendChild(carrierInertialEl)
+            const carrierReach = Math.hypot(...parseXyzString(placement.xyz))
+            const carrierVisuals = servoCompoundCarrierVisuals(cxm, cym, czm, carrierReach)
+            carrierVisuals.forEach((vis, i) => addVisualElement(urdfDoc, carrierLink, vis, i))
+            carrierVisuals.forEach(vis => addCollisionElement(urdfDoc, carrierLink, vis))
+
+            const carrierJoint = urdfDoc.createElement('joint'); carrierJoint.setAttribute('name', carrierJointName); carrierJoint.setAttribute('type', 'fixed')
+            const carrierParentEl = urdfDoc.createElement('parent'); carrierParentEl.setAttribute('link', parentLinkName)
+            const carrierChildEl = urdfDoc.createElement('child'); carrierChildEl.setAttribute('link', carrierLinkName)
+            const carrierOrigin = urdfDoc.createElement('origin'); carrierOrigin.setAttribute('xyz', placement.xyz); carrierOrigin.setAttribute('rpy', servoBodyMountRpy)
+            carrierJoint.appendChild(carrierParentEl); carrierJoint.appendChild(carrierChildEl); carrierJoint.appendChild(carrierOrigin)
+            robot.appendChild(carrierLink); robot.appendChild(carrierJoint)
+          }
+
+          const mountJoint = urdfDoc.createElement('joint'); mountJoint.setAttribute('name', mountJointName); mountJoint.setAttribute('type', 'fixed')
+          const mountParentEl = urdfDoc.createElement('parent'); mountParentEl.setAttribute('link', useCompoundServoCarrier ? carrierLinkName : parentLinkName)
+          const mountChildEl = urdfDoc.createElement('child'); mountChildEl.setAttribute('link', bodyLinkName)
+          const mountOrigin = urdfDoc.createElement('origin')
+          mountOrigin.setAttribute('xyz', useCompoundServoCarrier ? '0 0 0' : placement.xyz)
+          mountOrigin.setAttribute('rpy', useCompoundServoCarrier ? '0 0 0' : servoBodyMountRpy)
+          mountJoint.appendChild(mountParentEl); mountJoint.appendChild(mountChildEl); mountJoint.appendChild(mountOrigin)
+
+          // Horn link
+          const hornLink = urdfDoc.createElement('link'); hornLink.setAttribute('name', hornLinkName)
+          const hornInertialEl = urdfDoc.createElement('inertial')
+          const hornMassEl = urdfDoc.createElement('mass'); hornMassEl.setAttribute('value', hornMass.toFixed(4))
+          const hornInertiaEl2 = urdfDoc.createElement('inertia')
+          hornInertiaEl2.setAttribute('ixx', hornInertia.ixx.toFixed(6)); hornInertiaEl2.setAttribute('iyy', hornInertia.iyy.toFixed(6)); hornInertiaEl2.setAttribute('izz', hornInertia.izz.toFixed(6))
+          hornInertiaEl2.setAttribute('ixy', '0'); hornInertiaEl2.setAttribute('ixz', '0'); hornInertiaEl2.setAttribute('iyz', '0')
+          hornInertialEl.appendChild(hornMassEl); hornInertialEl.appendChild(hornInertiaEl2)
+          hornLink.appendChild(hornInertialEl)
+          hornVisuals.forEach((vis, i) => addVisualElement(urdfDoc, hornLink, vis, i))
+          hornVisuals.forEach(vis => addCollisionElement(urdfDoc, hornLink, vis))
+
+          // Revolute joint: body → horn at horn origin
+          const revJoint = urdfDoc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', 'revolute')
+          const revParentEl = urdfDoc.createElement('parent'); revParentEl.setAttribute('link', bodyLinkName)
+          const revChildEl = urdfDoc.createElement('child'); revChildEl.setAttribute('link', hornLinkName)
+          const revOrigin = urdfDoc.createElement('origin'); revOrigin.setAttribute('xyz', `0 0 ${hornOriginZ}`); revOrigin.setAttribute('rpy', servoHornZeroRpy)
+          const revAxis = urdfDoc.createElement('axis'); revAxis.setAttribute('xyz', '0 0 1')
+          const revLimit = urdfDoc.createElement('limit')
+          revLimit.setAttribute('lower', '-3.14159'); revLimit.setAttribute('upper', '3.14159')
           const me = preset.mechanical_electrical || {}
           const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
-          limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
-          joint.appendChild(limit)
-        }
+          revLimit.setAttribute('effort', String(maxTorque)); revLimit.setAttribute('velocity', '3.14')
+          revJoint.appendChild(revParentEl); revJoint.appendChild(revChildEl); revJoint.appendChild(revOrigin); revJoint.appendChild(revAxis); revJoint.appendChild(revLimit)
 
-        robot.appendChild(link); robot.appendChild(joint)
+          robot.appendChild(bodyLink); robot.appendChild(mountJoint)
+          robot.appendChild(hornLink); robot.appendChild(revJoint)
+        } else {
+          const link = urdfDoc.createElement('link')
+          link.setAttribute('name', childName)
+
+          const inertialEl = urdfDoc.createElement('inertial')
+          const massEl = urdfDoc.createElement('mass')
+          massEl.setAttribute('value', cMass.toFixed(4))
+          const inertiaEl = urdfDoc.createElement('inertia')
+          inertiaEl.setAttribute('ixx', cInertia.ixx.toFixed(6))
+          inertiaEl.setAttribute('iyy', cInertia.iyy.toFixed(6))
+          inertiaEl.setAttribute('izz', cInertia.izz.toFixed(6))
+          inertiaEl.setAttribute('ixy', '0'); inertiaEl.setAttribute('ixz', '0'); inertiaEl.setAttribute('iyz', '0')
+          inertialEl.appendChild(massEl); inertialEl.appendChild(inertiaEl)
+          link.appendChild(inertialEl)
+
+          cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
+          const cCollisionMesh = preset.physical.collision_mesh
+          if (cCollisionMesh) {
+            addMeshCollisionElement(urdfDoc, link, cCollisionMesh)
+          } else {
+            cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
+          }
+
+          const joint = urdfDoc.createElement('joint')
+          joint.setAttribute('name', jointName)
+          joint.setAttribute('type', jointType)
+
+          const parentEl = urdfDoc.createElement('parent'); parentEl.setAttribute('link', parentLinkName)
+          const childEl = urdfDoc.createElement('child'); childEl.setAttribute('link', childName)
+          const origin = urdfDoc.createElement('origin')
+          origin.setAttribute('xyz', placement.xyz)
+          origin.setAttribute('rpy', finalRpy)
+          const axis = urdfDoc.createElement('axis'); axis.setAttribute('xyz', jointAxis)
+          joint.appendChild(parentEl); joint.appendChild(childEl); joint.appendChild(origin); joint.appendChild(axis)
+
+          if (jointType === 'revolute' || jointType === 'prismatic') {
+            const limit = urdfDoc.createElement('limit')
+            limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+            const me = preset.mechanical_electrical || {}
+            const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
+            limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
+            joint.appendChild(limit)
+          }
+
+          robot.appendChild(link); robot.appendChild(joint)
+        }
         return true
       })
 
       if (changed) {
-        nameMap.set(comp.link_name, childName)
+        // Route children to the horn link for actuated components
+        nameMap.set(comp.link_name, cIsActuated ? `${childName}_horn` : childName)
+        const parentWorld = parentWorldTransform ?? new THREE.Matrix4()
+        if (cIsActuated) {
+          const bodyWorld = new THREE.Matrix4().multiplyMatrices(
+            parentWorld,
+            transformFromXyzRpy(placement.xyz, servoBodyMountRpy),
+          )
+          if (useCompoundServoCarrier) {
+            linkWorldTransforms.set(`${childName}_compound_carrier`, bodyWorld)
+          }
+          const hornWorld = new THREE.Matrix4().multiplyMatrices(
+            bodyWorld,
+            transformFromXyzRpy(`0 0 ${servoHornOriginZ.toFixed(6)}`, servoHornZeroRpy),
+          )
+          linkWorldTransforms.set(`${childName}_body`, bodyWorld)
+          linkWorldTransforms.set(`${childName}_horn`, hornWorld)
+        } else {
+          const childWorld = new THREE.Matrix4().multiplyMatrices(
+            parentWorld,
+            transformFromXyzRpy(placement.xyz, finalRpy),
+          )
+          linkWorldTransforms.set(childName, childWorld)
+        }
         placedCount++
         placementEntries.push({
           linkName: childName,
           parentLinkName,
           xyz: placement.xyz,
-          rpy: placement.rpy,
+          rpy: cIsActuated ? servoBodyMountRpy : finalRpy,
         })
-        console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${placement.rpy}`)
+        console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${cIsActuated ? servoBodyMountRpy : finalRpy}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
         // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
         // to URDF-visual dims when the rendered-mesh cache is stale).

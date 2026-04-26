@@ -36,6 +36,7 @@ from typing import Any, Iterable, Optional
 CORE_FLOOR_IDS: frozenset[str] = frozenset({
     "structural_baseplate",
     "structural_baseplate_large",
+    "structural_limb_link_slim",
     "structural_extrusion_2020",
     "structural_bracket_l",
     "actuator_servo_standard",
@@ -72,6 +73,7 @@ _PROMPT_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "structural": (
         "bracket", "brackets", "extrusion", "frame", "plate", "baseplate",
         "rail", "body", "torso", "chassis", "beam", "strut", "shaft",
+        "limb", "thigh", "shin", "forearm",
     ),
     "compute": (
         "mcu", "sbc", "microcontroller", "pi", "raspberry", "arduino",

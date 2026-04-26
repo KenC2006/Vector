@@ -160,6 +160,129 @@ def _matrix_to_rpy(matrix: Any) -> Tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
 
 
+def _axis_in_parent_frame(
+    axis: Tuple[float, float, float],
+    rpy: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    """Rotate a URDF joint-frame axis into the parent frame using origin RPY."""
+    try:
+        roll, pitch, yaw = rpy
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=float)
+        ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=float)
+        rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=float)
+        out = (rz @ ry @ rx) @ np.array(axis, dtype=float)
+        norm = float(np.linalg.norm(out))
+        if norm > 1e-9:
+            out = out / norm
+        return (float(out[0]), float(out[1]), float(out[2]))
+    except (ValueError, TypeError, IndexError):
+        return axis
+
+
+def _reconstitute_servo_splits(kg: KinematicGraph) -> None:
+    """
+    Merge split servo pairs back into single logical nodes.
+
+    The URDF emitter writes each servo as:
+      real_parent --(fixed, X_mount)--> X_body --(revolute, X)--> X_horn --> downstream
+
+    This post-pass detects those patterns and collapses them into:
+      real_parent --(revolute, X)--> X --> downstream
+
+    Operates in-place on the KinematicGraph's underlying networkx DiGraph.
+    """
+    g = kg.graph
+
+    # Collect mount joints: fixed joints whose name ends with '_mount'
+    mount_edges = [
+        (u, v, data)
+        for u, v in list(g.edges())
+        for data in [g[u][v]["data"]]
+        if data.joint_type == "fixed" and data.name.endswith("_mount")
+    ]
+
+    for real_parent, body_link_name, mount_joint in mount_edges:
+        if not body_link_name.endswith("_body"):
+            continue
+
+        base_link_name = body_link_name[: -len("_body")]
+        horn_link_name = base_link_name + "_horn"
+
+        if body_link_name not in g or horn_link_name not in g:
+            continue
+
+        # Find the revolute joint: body_link → horn_link
+        if not g.has_edge(body_link_name, horn_link_name):
+            continue
+        revolute_joint: JointData = g[body_link_name][horn_link_name]["data"]
+        if revolute_joint.joint_type == "fixed":
+            continue
+
+        body_data: LinkData = g.nodes[body_link_name]["data"]
+        horn_data: LinkData = g.nodes[horn_link_name]["data"]
+
+        # Merged link: sum mass, keep body inertia (horn is ~5%)
+        merged_link = LinkData(
+            name=base_link_name,
+            mass=body_data.mass + horn_data.mass,
+            inertia=body_data.inertia,
+            visual_mesh=body_data.visual_mesh,
+            visual_geometry=body_data.visual_geometry,
+            visual_origin=body_data.visual_origin,
+            material=body_data.material,
+            collision_geometry=body_data.collision_geometry,
+            collision_origin=body_data.collision_origin,
+        )
+
+        # Merged joint: revolute properties, but placement from the mount joint
+        merged_joint = JointData(
+            name=revolute_joint.name,
+            joint_type=revolute_joint.joint_type,
+            parent_link=real_parent,
+            child_link=base_link_name,
+            axis=_axis_in_parent_frame(revolute_joint.axis, mount_joint.origin_rpy),
+            origin_xyz=mount_joint.origin_xyz,
+            origin_rpy=mount_joint.origin_rpy,
+            limits=revolute_joint.limits,
+            dynamics=revolute_joint.dynamics,
+        )
+
+        # Preserve downstream edges (horn → children)
+        downstream = [
+            (child, g[horn_link_name][child]["data"])
+            for child in list(g.successors(horn_link_name))
+        ]
+
+        # Patch graph: add merged node + edges, remove phantom nodes
+        g.add_node(base_link_name, data=merged_link)
+        g.add_edge(real_parent, base_link_name, data=merged_joint)
+        for child_name, child_joint_data in downstream:
+            # Update child joint's parent_link to point at base_link_name
+            child_joint_data = JointData(
+                name=child_joint_data.name,
+                joint_type=child_joint_data.joint_type,
+                parent_link=base_link_name,
+                child_link=child_joint_data.child_link,
+                axis=child_joint_data.axis,
+                origin_xyz=child_joint_data.origin_xyz,
+                origin_rpy=child_joint_data.origin_rpy,
+                limits=child_joint_data.limits,
+                dynamics=child_joint_data.dynamics,
+            )
+            g.add_edge(base_link_name, child_name, data=child_joint_data)
+
+        # Remove body and horn (also removes all their edges)
+        g.remove_node(body_link_name)
+        g.remove_node(horn_link_name)
+
+        # Update root if it somehow pointed at body (shouldn't happen, but guard)
+        if kg.root_link == body_link_name:
+            kg.root_link = base_link_name
+
+
 def parse_urdf(file_path: str) -> KinematicGraph:
     """
     Parse a URDF file and build a kinematic graph.
@@ -330,6 +453,7 @@ def parse_urdf(file_path: str) -> KinematicGraph:
         )
         kg.add_joint(joint_data)
 
+    _reconstitute_servo_splits(kg)
     return kg
 
 

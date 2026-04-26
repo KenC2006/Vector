@@ -360,3 +360,301 @@ def test_actuator_settling():
     assert qdot_final < 0.01, (
         f"Arm still moving at t=5 s: qdot={qdot_final:.5f} rad/s > 0.01 rad/s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Split-servo MJCF fixtures
+#
+# Body indices (worldbody depth-first):
+#   0 = world  1 = base  2 = servo_body  3 = servo_horn  4 = arm
+# Joint 0 = servo_1 (the hinge)
+# ---------------------------------------------------------------------------
+
+# Tests 6-8: Z-axis hinge.  Arm placed 0.15 m off the Z rotation axis so
+# its XY world position is a direct readout of horn angle.
+#
+# The heavier, further-out arm raises the effective rotational inertia to
+# ~0.011 kg·m², which keeps both system poles well above the 2 ms timestep
+# Nyquist limit and eliminates the numerical steady-state error that occurs
+# with high joint damping + small armature.
+_SPLIT_Z_XML = """
+<mujoco model="split_servo_z">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.1">
+      <geom type="box" size="0.05 0.05 0.005" mass="1.0"/>
+      <body name="servo_body" pos="0 0 0.02">
+        <geom type="box" size="0.02 0.015 0.018" mass="0.190"/>
+        <body name="servo_horn" pos="0 0 0.008">
+          <joint name="servo_1" type="hinge" axis="0 0 1"
+                 range="-3.14159 3.14159"/>
+          <geom type="cylinder" size="0.01 0.002" mass="0.010"/>
+          <body name="arm" pos="0.15 0 0.03">
+            <geom type="box" size="0.01 0.01 0.01" mass="0.5"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="servo_1_pos" joint="servo_1"
+              kp="100.0" kv="5.0"
+              ctrllimited="true" ctrlrange="-3.14159 3.14159"
+              forcerange="-1000 1000"/>
+  </actuator>
+</mujoco>
+"""
+
+# Test 9: Y-axis pitch.  Split servo where servo_body CoM is 0.03 m BELOW
+# the hinge and arm CoM is 0.10 m ABOVE the hinge.  Both contribute to X-CoM
+# when pitching, so old (full-housing-rotates) and new (horn-only) models
+# produce measurably different CoM traces.
+#
+# Body indices: 0=world 1=base 2=servo_body 3=servo_horn 4=arm
+_SPLIT_Y_XML = """
+<mujoco model="split_servo_pitch">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.2">
+      <geom type="box" size="0.08 0.08 0.01" mass="0.5"/>
+      <body name="servo_body" pos="0 0 0.04">
+        <geom type="box" size="0.02 0.015 0.03" mass="2.0"/>
+        <body name="servo_horn" pos="0 0 0.03">
+          <joint name="servo_1" type="hinge" axis="0 1 0"
+                 damping="0.2" armature="1e-3" range="-3.14159 3.14159"/>
+          <geom type="cylinder" size="0.01 0.003" mass="0.1"/>
+          <body name="arm" pos="0 0 0.1">
+            <geom type="capsule" fromto="0 0 -0.05 0 0 0.05"
+                  size="0.008" mass="0.1"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="servo_1_pos" joint="servo_1"
+              kp="50.0" kv="5.0"
+              ctrllimited="true" ctrlrange="-3.14159 3.14159"
+              forcerange="-20 20"/>
+  </actuator>
+</mujoco>
+"""
+
+# Single-link equivalent of _SPLIT_Y_XML: full 2.1 kg servo rotates as one body.
+# Geom is offset +0.03 m above the hinge so the housing CoM is off-axis and
+# contributes measurably to the CoM trace when pitching.
+# Body indices: 0=world 1=base 2=servo 3=arm
+_OLD_Y_XML = """
+<mujoco model="old_servo_pitch">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.2">
+      <geom type="box" size="0.08 0.08 0.01" mass="0.5"/>
+      <body name="servo" pos="0 0 0.04">
+        <joint name="servo_1" type="hinge" axis="0 1 0"
+               damping="0.2" armature="1e-3" range="-3.14159 3.14159"/>
+        <!-- Geom center at +0.03 m above joint so housing CoM has a moment arm -->
+        <geom type="box" size="0.02 0.015 0.03" pos="0 0 0.03" mass="2.1"/>
+        <body name="arm" pos="0 0 0.1">
+          <geom type="capsule" fromto="0 0 -0.05 0 0 0.05"
+                size="0.008" mass="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="servo_1_pos" joint="servo_1"
+              kp="50.0" kv="5.0"
+              ctrllimited="true" ctrlrange="-3.14159 3.14159"
+              forcerange="-20 20"/>
+  </actuator>
+</mujoco>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — Split servo: zero command, no drift
+# ---------------------------------------------------------------------------
+
+def test_split_servo_zero_command():
+    """
+    With ctrl=0 the split servo must remain motionless for 5 s.
+
+    Validates:
+    - servo_body world position stable to < 0.01 mm (housing rigid)
+    - horn joint angle stays at 0 ± 0.001 rad (no gravity-induced creep)
+    """
+    model, data = _load(_SPLIT_Z_XML)
+    mujoco.mj_forward(model, data)   # populate xpos/xquat before recording baseline
+
+    # Body 2 = servo_body (see fixture comment above)
+    body_pos_0 = data.xpos[2].copy()
+
+    data.ctrl[0] = 0.0
+    _step(model, data, round(5.0 / float(model.opt.timestep)))
+    mujoco.mj_forward(model, data)
+
+    drift_mm = np.abs(data.xpos[2] - body_pos_0) * 1000.0
+    assert np.all(drift_mm < 0.01), (
+        f"servo_body drifted {drift_mm} mm under zero command — housing not rigid"
+    )
+
+    q_final = float(data.qpos[0])
+    assert abs(q_final) < 0.001, (
+        f"Horn drifted to {q_final:.4f} rad with zero command"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — Split servo: body orientation fixed while horn rotates
+# ---------------------------------------------------------------------------
+
+def test_split_servo_body_stays_fixed():
+    """
+    Commanding a 1.0 rad target must rotate only the horn.
+
+    Validates:
+    - servo_body orientation (xquat) unchanged to within 1e-5 norm
+    - horn joint angle reaches target within 5 %
+    - arm world position has moved (downstream chain driven by horn)
+    """
+    model, data = _load(_SPLIT_Z_XML)
+    mujoco.mj_forward(model, data)   # populate xpos/xquat before recording baseline
+
+    # Body 2 = servo_body, body 4 = arm
+    body_quat_0 = data.xquat[2].copy()
+    arm_pos_0 = data.xpos[4].copy()
+
+    data.ctrl[0] = 1.0
+    _step(model, data, round(5.0 / float(model.opt.timestep)))
+    mujoco.mj_forward(model, data)
+
+    # Housing orientation must be unchanged
+    quat_diff = np.linalg.norm(data.xquat[2] - body_quat_0)
+    assert quat_diff < 1e-5, (
+        f"servo_body quaternion changed by {quat_diff:.2e} — "
+        "housing is rotating with horn (split not working)"
+    )
+
+    # Horn must have reached target
+    q_final = float(data.qpos[0])
+    err_pct = abs(q_final - 1.0) / 1.0 * 100.0
+    assert err_pct < 5.0, (
+        f"Horn settled to {q_final:.4f} rad, target 1.0 rad (error {err_pct:.1f} %)"
+    )
+
+    # Arm must have moved (driven by horn)
+    arm_displacement_mm = np.linalg.norm(data.xpos[4] - arm_pos_0) * 1000.0
+    assert arm_displacement_mm > 5.0, (
+        f"Arm barely moved ({arm_displacement_mm:.1f} mm) — horn may not be driving chain"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — Split servo: housing static under sine command
+# ---------------------------------------------------------------------------
+
+def test_split_servo_sine_housing_static():
+    """
+    Under a 0.5 Hz sine command over 3 s the housing body must stay
+    completely static while the horn oscillates.
+
+    Validates the split behaviour across a dynamic trajectory, not just
+    at a settled end-point.
+    """
+    model, data = _load(_SPLIT_Z_XML)
+    mujoco.mj_forward(model, data)   # populate xpos/xquat before recording baseline
+    dt = float(model.opt.timestep)
+    body_pos_0 = data.xpos[2].copy()
+    body_quat_0 = data.xquat[2].copy()
+
+    max_body_drift_mm = 0.0
+    max_body_quat_diff = 0.0
+    q_values: list[float] = []
+
+    freq = 0.5   # Hz
+    amp  = 1.0   # rad
+
+    n_steps = round(3.0 / dt)
+    for i in range(n_steps):
+        t = i * dt
+        data.ctrl[0] = amp * math.sin(2.0 * math.pi * freq * t)
+        mujoco.mj_step(model, data)
+        if i % 50 == 0:   # sample at 10 Hz
+            mujoco.mj_forward(model, data)
+            drift_mm = float(np.linalg.norm(data.xpos[2] - body_pos_0)) * 1000.0
+            quat_diff = float(np.linalg.norm(data.xquat[2] - body_quat_0))
+            max_body_drift_mm = max(max_body_drift_mm, drift_mm)
+            max_body_quat_diff = max(max_body_quat_diff, quat_diff)
+            q_values.append(float(data.qpos[0]))
+
+    assert max_body_drift_mm < 0.05, (
+        f"servo_body translated {max_body_drift_mm:.3f} mm during sine — housing not rigid"
+    )
+    assert max_body_quat_diff < 1e-5, (
+        f"servo_body rotated (quat diff {max_body_quat_diff:.2e}) during sine — "
+        "housing is co-rotating with horn"
+    )
+
+    # Horn must have actually oscillated — peak angle should exceed 0.5 rad
+    q_peak = max(abs(q) for q in q_values)
+    assert q_peak > 0.5, (
+        f"Horn peak angle only {q_peak:.3f} rad during 1.0-rad-amp sine — "
+        "actuator may not be driving the joint"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — Split servo: CoM amplitude < single-link model
+# ---------------------------------------------------------------------------
+
+def test_split_servo_com_vs_single_link():
+    """
+    Under identical sine commands the split model's base-subtree CoM must
+    oscillate less than the single-link (old) model.
+
+    Physics: in the old model the 2.1 kg housing rotates, sweeping its CoM
+    through the XZ plane.  In the split model only the 0.1 kg horn + 0.1 kg
+    arm rotate; the 2.0 kg housing stays fixed.
+
+    Expected ratio of CoM amplitudes: ≈ 0.1–0.25 × old model.
+    The test requires new amplitude < 0.5 × old amplitude (conservative bound).
+    """
+    dt_split = float(_load(_SPLIT_Y_XML)[0].opt.timestep)
+    dt_old   = float(_load(_OLD_Y_XML)[0].opt.timestep)
+    assert abs(dt_split - dt_old) < 1e-9, "timestep mismatch between fixtures"
+
+    freq = 0.3   # Hz — slow enough for both models to track the command
+    amp  = 0.8   # rad
+
+    def _run_com(xml: str, body_subtree_idx: int = 1) -> float:
+        """Simulate 5 s and return peak subtree CoM displacement in X from initial."""
+        m, d = _load(xml)
+        dt = float(m.opt.timestep)
+        mujoco.mj_forward(m, d)
+        com_x_0 = float(d.subtree_com[body_subtree_idx, 0])
+        peak = 0.0
+        n = round(5.0 / dt)
+        for i in range(n):
+            t = i * dt
+            d.ctrl[0] = amp * math.sin(2.0 * math.pi * freq * t)
+            mujoco.mj_step(m, d)
+            if i % 20 == 0:
+                mujoco.mj_forward(m, d)
+                disp = abs(float(d.subtree_com[body_subtree_idx, 0]) - com_x_0)
+                peak = max(peak, disp)
+        return peak
+
+    peak_split = _run_com(_SPLIT_Y_XML, body_subtree_idx=1)
+    peak_old   = _run_com(_OLD_Y_XML,   body_subtree_idx=1)
+
+    assert peak_old > 1e-4, (
+        f"Old model CoM barely moved ({peak_old*1000:.2f} mm) — "
+        "check fixture geometry: servo body should be off-axis from hinge"
+    )
+    assert peak_split < peak_old * 0.5, (
+        f"Split servo CoM amplitude ({peak_split*1000:.2f} mm) is not significantly "
+        f"smaller than single-link ({peak_old*1000:.2f} mm).  "
+        f"Ratio = {peak_split/peak_old:.2f}, expected < 0.50.  "
+        "The servo body may still be rotating with the horn."
+    )

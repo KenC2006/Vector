@@ -509,11 +509,15 @@ function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
 function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.06
+  // bounding_box_mm is in URDF Z-up convention: x,y = horizontal diameter, z = disc height.
+  // In GeneratorDims: w=x=diameter, h=y=diameter, d=z=height.
+  const discR = Math.min(w, h) * 0.5   // horizontal radius from x/y (both = diameter)
+  const discH = d                       // vertical thickness from z
+  const chamfer = discH * 0.08
 
   // Rubber body — chamferedCylinder (rubber_black)
-  const bodyR = Math.min(w, d) * 0.35
-  const bodyH = h * 0.45
+  const bodyR = discR * 0.7
+  const bodyH = discH * 0.45
   const body = new THREE.Mesh(
     nurbsCylinder(bodyR, bodyH, chamfer, 28),
     getMaterial('rubber_black'),
@@ -521,8 +525,8 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
   g.add(body)
 
   // Wider base flange — nurbsCylinder (rubber_black)
-  const baseR = bodyR * 1.35
-  const baseH = h * 0.15
+  const baseR = discR * 0.95
+  const baseH = discH * 0.15
   const base = new THREE.Mesh(
     nurbsCylinder(baseR, baseH, chamfer * 0.5, 28),
     getMaterial('rubber_black'),
@@ -553,7 +557,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
 
   // Washer on top
   const washerR = bodyR * 0.5
-  const washerH = h * 0.04
+  const washerH = discH * 0.06
   const washer = new THREE.Mesh(
     nurbsCylinder(washerR, washerH, washerH * 0.2, 16),
     getMaterial('brushed_steel'),

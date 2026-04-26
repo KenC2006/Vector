@@ -629,8 +629,7 @@ function switchToFile(filename: string) {
     } else {
       // First visit or content changed — full reparse
       robot.position.set(0, 0, 0)
-      reparseURDF()
-      groundRobot(robot)
+      reparseURDF(undefined, { ground: true })
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
     }
@@ -1033,11 +1032,11 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       _rebuildNodesTimer = null
       if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
       if (simApi.isSimActive()) return          // don't disturb sim joint state
-      // Re-fire alignment BEFORE groundRobot so the ground-level calc sees
-      // post-reconcile world extents. Idempotent — already-aligned links no-op.
+      // Re-fire alignment after async meshes settle. Do not auto-ground here:
+      // grounding on every mesh load makes existing components jump when the
+      // newly loaded mesh becomes the assembly's lowest point.
       try { urdfAssemblyApi?.reconcileNodePlacement() }
       catch (e) { console.warn('[reconcile] post-mesh-load pass failed:', e) }
-      groundRobot(robot)
       urdfAssemblyApi?.rebuildMountNodes()
       // STEP/GLB meshes load async — re-run edges so late arrivals get the
       // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
@@ -1657,7 +1656,7 @@ function rebuildJointAxisVisuals() {
 // reparse (user typed again while xacro was processing) is silently discarded.
 let xacroGeneration = 0
 
-function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
+function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground?: boolean }) {
   try {
     let urdfContent: string
     if (xmlOverride !== undefined) {
@@ -1711,7 +1710,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
           if (!skipHeavy) rebuildCollisionVisuals(processed)
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
-          if (!opts?.skipGround) groundRobot(robot)
+          if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
           robot.updateMatrixWorld(true)
           urdfAssemblyApi?.refreshMountNodeTransforms()
           // Wireframes must rebuild AFTER groundRobot so world-space capture
@@ -1766,7 +1765,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean }) {
 
     urdfAssemblyApi?.onModelUpdated()
 
-    if (!opts?.skipGround) groundRobot(robot)
+    if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
     robot.updateMatrixWorld(true)
     urdfAssemblyApi?.refreshMountNodeTransforms()
 
@@ -2651,7 +2650,7 @@ urdfAssemblyApi = initUrdfAssembly({
       }
     }
   },
-  reparseUrdf: (xml?: string, opts?: { skipGround?: boolean }) => reparseURDF(xml, opts),
+  reparseUrdf: (xml?: string, opts?: { skipGround?: boolean; ground?: boolean }) => reparseURDF(xml, opts),
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,

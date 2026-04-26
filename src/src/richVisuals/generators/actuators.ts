@@ -29,13 +29,27 @@ function catBody(base: string = 'matte_plastic', strength = 0.5) {
 
 // ── Servo ─────────────────────────────────────────────────────────────────────
 
-function generateServo(id: string, dims: GeneratorDims): THREE.Group {
+export interface SplitVisual {
+  body: THREE.Group
+  horn: THREE.Group
+  hornOriginLocal: THREE.Vector3  // body-frame position where the horn group's origin sits
+}
+
+/** Merge a SplitVisual into one Group for carry-mode preview and non-physics rendering. */
+export function combineSplitVisual(s: SplitVisual): THREE.Group {
+  const g = new THREE.Group()
+  g.add(s.body)
+  const hornWrapper = s.horn.clone()
+  hornWrapper.position.copy(s.hornOriginLocal)
+  g.add(hornWrapper)
+  return g
+}
+
+function generateServoBody(id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h, y: d } = dims
 
-  const isHeavy = id.includes('heavy') || id.includes('high_torque')
-
-  // Servo housing — NURBS filleted box (smooth mathematically exact edges)
+  // Servo housing — NURBS filleted box
   const housing = new THREE.Mesh(
     nurbsFilletBox(w, h * 0.72, d, Math.min(w, d) * 0.06, 16),
     catBody(),
@@ -62,36 +76,8 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
     }
   }
 
-  // Output horn — NURBS smooth disc with lip profile
-  const hornR = Math.min(w, d) * 0.3
-  const hornH = h * 0.07
-  const horn = new THREE.Mesh(
-    nurbsServoHorn(hornR, hornH, Math.min(w, d) * 0.04, 48),
-    getMaterial('glossy_plastic', 0xeeeeee),
-  )
-  horn.position.y = h * 0.42
-  g.add(horn)
-
-  // Horn bolt circle
-  const hornBolts = boltCircle(hornR * 0.68, holeR * 0.55, isHeavy ? 6 : 4, hornH * 1.1)
-  hornBolts.position.y = h * 0.42
-  g.add(hornBolts)
-
-  // Center screw
-  const screw = screwHead(holeR * 1.3, hornH * 0.6)
-  screw.position.y = h * 0.46
-  g.add(screw)
-
-  // Output shaft — NURBS smooth cylinder
+  // Shaft bearing ring stays with body (bearing is press-fit into housing)
   const shaftR = Math.min(w, d) * 0.055
-  const shaft = new THREE.Mesh(
-    nurbsCylinder(shaftR, hornH * 1.8, shaftR * 0.15, 32),
-    getMaterial('brushed_steel'),
-  )
-  shaft.position.y = h * 0.48
-  g.add(shaft)
-
-  // Shaft bearing ring — NURBS torus
   const bearingRing = new THREE.Mesh(
     nurbsTorus(shaftR * 2.2, shaftR * 0.4, 48, 16),
     getMaterial('brushed_steel'),
@@ -141,6 +127,56 @@ function generateServo(id: string, dims: GeneratorDims): THREE.Group {
   }
 
   return g
+}
+
+/**
+ * Horn group with origin at the joint — children sit at y=0 relative to joint center.
+ * Caller must position this group at hornOriginLocal in the body frame.
+ */
+function generateServoOutput(id: string, dims: GeneratorDims): THREE.Group {
+  const g = new THREE.Group()
+  const { x: w, z: h, y: d } = dims
+  const isHeavy = id.includes('heavy') || id.includes('high_torque')
+
+  const hornR = Math.min(w, d) * 0.3
+  const hornH = h * 0.07
+  const holeR = Math.min(w, d) * 0.03
+  const shaftR = Math.min(w, d) * 0.055
+
+  // Output horn — origin is at joint, so y=0 here
+  const horn = new THREE.Mesh(
+    nurbsServoHorn(hornR, hornH, Math.min(w, d) * 0.04, 48),
+    getMaterial('glossy_plastic', 0xeeeeee),
+  )
+  g.add(horn)
+
+  // Horn bolt circle at y=0
+  const hornBolts = boltCircle(hornR * 0.68, holeR * 0.55, isHeavy ? 6 : 4, hornH * 1.1)
+  g.add(hornBolts)
+
+  // Center screw slightly above horn center
+  const screw = screwHead(holeR * 1.3, hornH * 0.6)
+  screw.position.y = h * 0.04
+  g.add(screw)
+
+  // Output shaft
+  const shaft = new THREE.Mesh(
+    nurbsCylinder(shaftR, hornH * 1.8, shaftR * 0.15, 32),
+    getMaterial('brushed_steel'),
+  )
+  shaft.position.y = h * 0.06
+  g.add(shaft)
+
+  return g
+}
+
+function generateServo(id: string, dims: GeneratorDims): SplitVisual {
+  const { z: h } = dims
+  return {
+    body: generateServoBody(id, dims),
+    horn: generateServoOutput(id, dims),
+    hornOriginLocal: new THREE.Vector3(0, h * 0.42, 0),
+  }
 }
 
 // ── BLDC Outrunner ───────────────────────────────────────────────────────────
@@ -451,6 +487,15 @@ export function generateRichActuator(id: string, dims: GeneratorDims, color?: [n
   if (id.includes('bldc')) return generateBLDC(id, dims)
   if (id.includes('stepper') || id.includes('nema')) return generateStepper(id, dims)
   if (id.includes('linear')) return generateLinearActuator(id, dims)
-  // Default: servo (covers servo_micro, servo_standard, servo_high_torque, etc.)
-  return generateServo(id, dims)
+  // Default: servo — combine body+horn for carry-mode preview and non-physics rendering
+  return combineSplitVisual(generateServo(id, dims))
+}
+
+/** Split version of generateRichActuator for callers that need body and horn separately. */
+export function generateRichActuatorSplit(id: string, dims: GeneratorDims, color?: [number, number, number]): SplitVisual | null {
+  CAT_COLOR = color ?? DEFAULT_COLOR
+  if (!id.includes('bldc') && !id.includes('stepper') && !id.includes('nema') && !id.includes('linear')) {
+    return generateServo(id, dims)
+  }
+  return null
 }

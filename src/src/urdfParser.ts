@@ -60,6 +60,29 @@ export interface KinematicJoint {
   axis: string
   parentLink: string
   childLink: string
+  axisVector?: [number, number, number]
+  originRpy?: [number, number, number]
+}
+
+function axisLabelFromVector(xyz: [number, number, number]): string {
+  const ax = Math.abs(xyz[0])
+  const ay = Math.abs(xyz[1])
+  const az = Math.abs(xyz[2])
+  if (ax > 0.5 && ax >= ay && ax >= az) return 'X'
+  if (ay > 0.5 && ay >= ax && ay >= az) return 'Y'
+  if (az > 0.5 && az >= ax && az >= ay) return 'Z'
+  return '--'
+}
+
+function parseRpyAttr(value: string | null): [number, number, number] {
+  const parts = (value || '0 0 0').split(/\s+/).map(Number)
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
+}
+
+function rotateAxisByRpy(axis: [number, number, number], rpy: [number, number, number]): [number, number, number] {
+  const rot = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rpy[0], rpy[1], rpy[2], 'XYZ'))
+  const v = new THREE.Vector3(axis[0], axis[1], axis[2]).transformDirection(rot)
+  return [v.x, v.y, v.z]
 }
 
 // ── Path resolver callback type ──────────────────────────────────────────────
@@ -495,14 +518,15 @@ export function buildKinematicGraphFromURDF(urdfXml: string): {
     if (parentLink && childLink) {
       childLinkSet.add(childLink)
 
-      let axis = '--'
+      let axisVector: [number, number, number] = [0, 0, 1]
       const axisEl = jointEl.querySelector('axis')
       if (axisEl) {
         const xyz = (axisEl.getAttribute('xyz') || '0 0 1').split(/\s+/).map(parseFloat)
-        if (Math.abs(xyz[0]) > 0.5) axis = 'X'
-        else if (Math.abs(xyz[1]) > 0.5) axis = 'Y'
-        else if (Math.abs(xyz[2]) > 0.5) axis = 'Z'
+        axisVector = [xyz[0] || 0, xyz[1] || 0, xyz[2] || 0]
       }
+      const originEl = jointEl.querySelector('origin')
+      const originRpy = parseRpyAttr(originEl?.getAttribute('rpy') || null)
+      const axis = axisLabelFromVector(axisVector)
 
       kinematicJoints[jointName] = {
         name: jointName,
@@ -510,6 +534,8 @@ export function buildKinematicGraphFromURDF(urdfXml: string): {
         axis,
         parentLink,
         childLink,
+        axisVector,
+        originRpy,
       }
 
       // Add child to parent's children list
@@ -529,6 +555,60 @@ export function buildKinematicGraphFromURDF(urdfXml: string): {
           break
         }
       }
+    }
+  }
+
+  // Reconstitute split servo pairs: merge X_body + X_horn back into X
+  for (const [mountJointName, mountJoint] of Object.entries(kinematicJoints)) {
+    if (mountJoint.type !== 'fixed' || !mountJointName.endsWith('_mount')) continue
+
+    const bodyLinkName = mountJoint.childLink
+    if (!bodyLinkName.endsWith('_body')) continue
+
+    const baseLinkName = bodyLinkName.slice(0, -'_body'.length)
+    const hornLinkName = baseLinkName + '_horn'
+    const baseJointName = mountJointName.slice(0, -'_mount'.length)
+    const revolute = kinematicJoints[baseJointName]
+
+    if (!revolute || revolute.type === 'fixed' || revolute.childLink !== hornLinkName) continue
+
+    const bodyLink = kinematicGraph[bodyLinkName]
+    const hornLink = kinematicGraph[hornLinkName]
+    if (!bodyLink || !hornLink) continue
+
+    // Create merged servo node
+    kinematicGraph[baseLinkName] = {
+      name: baseLinkName,
+      mass: bodyLink.mass + hornLink.mass,
+      parent: mountJoint.parentLink,
+      children: [...hornLink.children],
+    }
+
+    // Reparent: replace _body in the parent's children list with baseLinkName
+    const parentNode = kinematicGraph[mountJoint.parentLink]
+    if (parentNode) {
+      parentNode.children = parentNode.children.map(c => c === bodyLinkName ? baseLinkName : c)
+    }
+
+    // Update downstream children to point at baseLinkName
+    for (const childName of hornLink.children) {
+      const childNode = kinematicGraph[childName]
+      if (childNode) childNode.parent = baseLinkName
+    }
+
+    // Remove phantom links
+    delete kinematicGraph[bodyLinkName]
+    delete kinematicGraph[hornLinkName]
+
+    // Remove mount joint; update revolute to span real parent → baseLinkName
+    delete kinematicJoints[mountJointName]
+    revolute.parentLink = mountJoint.parentLink
+    revolute.childLink = baseLinkName
+    if (revolute.axisVector && mountJoint.originRpy) {
+      const logicalAxis = rotateAxisByRpy(revolute.axisVector, mountJoint.originRpy)
+      revolute.axisVector = logicalAxis
+      revolute.axis = axisLabelFromVector(logicalAxis)
+      revolute.originRpy = mountJoint.originRpy
     }
   }
 

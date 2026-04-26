@@ -115,6 +115,14 @@ const OPPOSITE_FACE: Record<string, string> = {
   left: 'right', right: 'left',
 }
 
+function isSplitServoComponentId(componentId: string): boolean {
+  return (
+    componentId.startsWith('actuator_servo') ||
+    componentId.startsWith('actuator_continuous_rotation_servo') ||
+    componentId.startsWith('actuator_high_speed')
+  )
+}
+
 function _portClassAtFace(
   ctx: ValidationContext,
   componentId: string,
@@ -150,6 +158,7 @@ function _checkPortCompatibility(
   if (!parent) return null
   const isActuator = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
   if (!isActuator(child.component_id)) return null
+  if (isSplitServoComponentId(child.component_id)) return null
   // Brackets and coupler discs exist precisely to mate shaft↔mount_face — skip.
   if (
     parent.component_id.startsWith('structural_bracket_') ||

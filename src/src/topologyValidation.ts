@@ -17,6 +17,7 @@ export interface ValidationPreset {
     cross_section_mm?: number[]
   }
   mounting_logic: Record<string, unknown>
+  connectors?: Array<{ id: string }>
 }
 
 export interface ValidationContext {
@@ -31,9 +32,12 @@ export interface ValidationResult {
 export type RepairKind =
   | 'duplicate_name'
   | 'effector_children'
+  | 'foot_pad_children'
   | 'sensor_on_actuator'
   | 'shaft_fanout'
   | 'bare_tire_drivetrain'
+  | 'invalid_connector_removed'
+  | 'servo_coupler_removed'
   | 'port_mismatch_bracket'
 
 export interface RepairLogEntry {
@@ -44,6 +48,18 @@ export interface RepairLogEntry {
 export interface RepairResult {
   graph: AssemblyGraph
   repairs: RepairLogEntry[]
+}
+
+function isSplitServoComponentId(componentId: string): boolean {
+  return (
+    componentId.startsWith('actuator_servo') ||
+    componentId.startsWith('actuator_continuous_rotation_servo') ||
+    componentId.startsWith('actuator_high_speed')
+  )
+}
+
+function isFootPadComponentId(componentId: string): boolean {
+  return componentId === 'mobility_rubber_foot_pad'
 }
 
 // Walk up from `start` to the nearest component whose id begins with `structural_`.
@@ -63,6 +79,10 @@ export function findStructuralAncestor(
     anc = components.find(c => c.link_name === nextName)
   }
   return undefined
+}
+
+function directChildren(components: AssemblyComponent[], parentName: string): AssemblyComponent[] {
+  return components.filter(c => c.attach_to === parentName)
 }
 
 function portsForComponent(
@@ -86,6 +106,16 @@ const OPPOSITE_FACE: Record<string, string> = {
   front: 'back', back: 'front',
   left: 'right', right: 'left',
   coaxial: 'coaxial',
+}
+
+const DEFAULT_CONNECTOR_IDS = new Set(['top', 'bottom', 'front', 'back', 'left', 'right'])
+
+function connectorIdsForPreset(preset: ValidationPreset): Set<string> {
+  const ids = new Set(DEFAULT_CONNECTOR_IDS)
+  for (const conn of preset.connectors ?? []) {
+    if (typeof conn?.id === 'string' && conn.id.trim()) ids.add(conn.id)
+  }
+  return ids
 }
 
 function portClassAtFace(preset: ValidationPreset, face: string): string | undefined {
@@ -121,6 +151,13 @@ export function validateTopology(
       const hasChildren = components.some(c => c.attach_to === comp.link_name)
       if (hasChildren) {
         errors.push(`End effector ${comp.link_name} has children — effectors should be terminal nodes`)
+      }
+    }
+    // Rule 4b: rubber foot pads must be terminal leaf nodes.
+    if (isFootPadComponentId(comp.component_id)) {
+      const hasChildren = components.some(c => c.attach_to === comp.link_name)
+      if (hasChildren) {
+        errors.push(`[FOOT_PAD_CHILDREN] ${comp.link_name} (mobility_rubber_foot_pad) has children — foot pads are terminal leaf nodes with no children. Reparent the children to the shin/extrusion above the foot pad.`)
       }
     }
     // Rule 5: link names must be unique.
@@ -325,7 +362,74 @@ export function autoRepairTopology(
     repairs.push({ kind: 'duplicate_name', message: `"${oldName}" → "${newName}"` })
   }
 
-  // Repair 2: an effector with children → reparent those children to the
+  // Repair 1a: remove named mate connectors that do not exist on the actual
+  // parent/child presets. Claude sometimes copies child-side L-bracket names
+  // like "plate_top" into attach_connector on a servo/baseplate joint. If left
+  // intact, the connector engine correctly hard-errors in dev; dropping the
+  // bad override lets attach_face use the six default face connectors.
+  for (const comp of graph.components) {
+    if (!comp.attach_to) continue
+    const parent = graph.components.find(c => c.link_name === comp.attach_to)
+    if (!parent) continue
+    const parentPreset = ctx.findPreset(parent.component_id)
+    const childPreset = ctx.findPreset(comp.component_id)
+    if (!parentPreset || !childPreset) continue
+
+    const removed: string[] = []
+    if (comp.attach_connector) {
+      const parentIds = connectorIdsForPreset(parentPreset)
+      if (!parentIds.has(comp.attach_connector)) {
+        removed.push(`attach_connector="${comp.attach_connector}"`)
+        delete comp.attach_connector
+      }
+    }
+    if (comp.mate_connector) {
+      const childIds = connectorIdsForPreset(childPreset)
+      if (!childIds.has(comp.mate_connector)) {
+        removed.push(`mate_connector="${comp.mate_connector}"`)
+        delete comp.mate_connector
+      }
+    }
+    if (removed.length > 0) {
+      if (!comp.attach_connector && !comp.mate_connector) delete comp.mate_type
+      repairs.push({
+        kind: 'invalid_connector_removed',
+        message: `${comp.link_name}: removed invalid ${removed.join(', ')}`,
+      })
+    }
+  }
+
+  // Repair 1b: remove explicit coupler/bracket spacers from servo chains.
+  // Side-axis split servos own their yoke + horn-link adapter internally.
+  // Leaving a separate spacer in the graph rotates/translates the next servo
+  // frame again, which sends pitch limbs upward or coaxial with the shaft.
+  for (let i = graph.components.length - 1; i >= 0; i--) {
+    const comp = graph.components[i]
+    const parent = graph.components.find(c => c.link_name === comp.attach_to)
+    const children = directChildren(graph.components, comp.link_name)
+    const isServoCoupler = comp.component_id === 'structural_servo_coupler_disc'
+    const isServoToServoBracket = comp.component_id.startsWith('structural_bracket_')
+      && !!parent
+      && isSplitServoComponentId(parent.component_id)
+      && children.some(c => isSplitServoComponentId(c.component_id))
+    if (!isServoCoupler && !isServoToServoBracket) continue
+    const touchesServo = !!(
+      (parent && isSplitServoComponentId(parent.component_id)) ||
+      children.some(c => isSplitServoComponentId(c.component_id))
+    )
+    if (!touchesServo) continue
+    for (const child of children) {
+      child.attach_to = comp.attach_to ?? null
+      if (!child.attach_face && comp.attach_face) child.attach_face = comp.attach_face
+    }
+    graph.components.splice(i, 1)
+    repairs.push({
+      kind: 'servo_coupler_removed',
+      message: `removed servo spacer "${comp.link_name}" and reparented ${children.length} child link(s)`,
+    })
+  }
+
+  // Repair 2: an effector with children reparents those children to the
   // effector's own parent (effectors must be terminal).
   for (const comp of graph.components) {
     if (!comp.component_id.startsWith('effector_')) continue
@@ -337,6 +441,22 @@ export function autoRepairTopology(
       repairs.push({
         kind: 'effector_children',
         message: `"${child.link_name}" reparented from effector "${oldParent}" to "${child.attach_to}"`,
+      })
+    }
+  }
+
+  // Repair 2b: a foot pad with children reparents those children to the
+  // foot pad's own parent (foot pads must be terminal leaf nodes).
+  for (const comp of graph.components) {
+    if (!isFootPadComponentId(comp.component_id)) continue
+    const footChildren = graph.components.filter(c => c.attach_to === comp.link_name)
+    if (footChildren.length === 0) continue
+    for (const child of footChildren) {
+      const oldParent = child.attach_to
+      child.attach_to = comp.attach_to
+      repairs.push({
+        kind: 'foot_pad_children',
+        message: `"${child.link_name}" reparented from foot pad "${oldParent}" to "${child.attach_to}"`,
       })
     }
   }
@@ -458,6 +578,10 @@ export function autoRepairTopology(
   for (const comp of graph.components) {
     if (!comp.attach_to) continue
     if (!isRepairableChild(comp.component_id)) continue
+    // Split servos now carry their own body holder + horn adapter. Inserting
+    // a coupler disc here puts the next limb coaxial with the shaft again,
+    // which prevents pitch joints from bending the leg.
+    if (isSplitServoComponentId(comp.component_id)) continue
     const parent = graph.components.find(c => c.link_name === comp.attach_to)
     if (!parent) continue
     // Idempotency: skip when parent is already a coupler-type structural.

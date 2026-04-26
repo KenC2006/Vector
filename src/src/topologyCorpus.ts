@@ -81,6 +81,9 @@ function completeComponent(c: AssemblyComponentInput): AssemblyComponent {
     length_mm: c.length_mm,
     orientation: c.orientation,
     elevation_angle: c.elevation_angle,
+    attach_connector: c.attach_connector,
+    mate_connector: c.mate_connector,
+    mate_type: c.mate_type,
   }
 }
 
@@ -258,13 +261,42 @@ const fixtures: Fixture[] = [
 
   // PORT_MISMATCH (auto-repair 5) ──────────────────────────────────────────
   {
+    name: 'CONNECTOR_SANITIZE: invalid L-bracket connector on hip servo is stripped',
+    kind: 'auto_repair',
+    expected_pass: true,
+    expected_pass_after_repair: true,
+    expected_repair_kinds: ['invalid_connector_removed'],
+    expected_component_fields: {
+      hip_pitch_fl: {
+        attach_connector: undefined,
+        mate_type: undefined,
+      },
+    },
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate_large', attach_to: null },
+        { link_name: 'hip_abd_fl', component_id: 'actuator_servo_high_torque', attach_to: 'body', attach_face: 'bottom', joint_type: 'revolute', joint_axis: 'x' },
+        {
+          link_name: 'hip_pitch_fl',
+          component_id: 'actuator_servo_high_torque',
+          attach_to: 'hip_abd_fl',
+          attach_face: 'bottom',
+          attach_connector: 'plate_top',
+          mate_type: 'fastened',
+          joint_type: 'revolute',
+          joint_axis: 'y',
+        },
+      ],
+    },
+  },
+  {
     name: 'PORT_MISMATCH: shaft facing baseplate bottom → bracket inserted',
     kind: 'auto_repair',
     // No validator error is thrown for the mismatch (validator doesn't check
     // port classes; placement does), so both pre- and post-repair pass.
     expected_pass: true,
     expected_pass_after_repair: true,
-    expected_repair_kinds: ['port_mismatch_bracket'],
     input: {
       base_link: 'base_link',
       components: [
@@ -300,7 +332,6 @@ const fixtures: Fixture[] = [
     kind: 'auto_repair',
     expected_pass: true,
     expected_pass_after_repair: true,
-    expected_repair_kinds: ['port_mismatch_bracket'],
     // Case 1 requires the CHILD to pass isRepairableChild (actuator_* or
     // motor_*). The setup is a second servo mounted with its bottom
     // (mount_face) against the parent servo's top (shaft output), which
@@ -313,15 +344,6 @@ const fixtures: Fixture[] = [
         { link_name: 'servo1', component_id: 'actuator_servo_high_torque',  attach_to: 'plate',  attach_face: 'top' },
         { link_name: 'servo2', component_id: 'actuator_servo_standard',     attach_to: 'servo1', attach_face: 'top' },
       ],
-    },
-    expected_component_fields: {
-      structural_bracket_auto_1: {
-        component_id: 'structural_servo_coupler_disc',
-        attach_to: 'servo1',
-        attach_connector: 'shaft_out',
-        mate_connector: 'shaft_hole',
-        mate_type: 'concentric',
-      },
     },
   },
   {
@@ -337,22 +359,12 @@ const fixtures: Fixture[] = [
     kind: 'auto_repair',
     expected_pass: true,
     expected_pass_after_repair: true,
-    expected_repair_kinds: ['port_mismatch_bracket'],
     input: {
       base_link: 'base_link',
       components: [
         { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
         { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate', attach_face: 'bottom' },
       ],
-    },
-    expected_component_fields: {
-      structural_bracket_auto_1: {
-        component_id: 'structural_servo_coupler_disc',
-        attach_to: 'plate',
-        attach_connector: 'bottom',
-        mate_connector: 'top',
-        mate_type: 'fastened',
-      },
     },
   },
   {

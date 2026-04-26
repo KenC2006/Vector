@@ -132,9 +132,9 @@ const fixtures: Fixture[] = [
     expect: { ok: false, code: 'DUPLICATE_LINK' },
   },
   {
-    name: 'add_link: servo-on-servo-top stack — PORT_MISMATCH rejects (shaft↔mount_face)',
-    // Parent servo's top face is a 'shaft' port; child servo's bottom face is
-    // 'mount_face'. _checkPortCompatibility fires before the graph is pushed.
+    name: 'add_link: servo-on-servo-top stack — accepted for split-servo joint stack',
+    // Split servos own their body mount + horn adapter internally, so the old
+    // shaft-to-mount-face coupler-disc repair is no longer required here.
     // The bracket-parent bypass (structural_bracket_*, servo_coupler_disc) is
     // specifically NOT triggered here — those are the intended escape hatch.
     graph: GRAPH_WITH_EXTRUSION_AND_SERVO,
@@ -145,7 +145,7 @@ const fixtures: Fixture[] = [
         component_id: 'actuator_servo_standard', attach_face: 'top',
       },
     },
-    expect: { ok: false, code: 'PORT_MISMATCH' },
+    expect: { ok: true },
   },
   {
     name: 'add_link: servo on bracket (the PORT_MISMATCH escape hatch) — accepted',

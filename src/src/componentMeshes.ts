@@ -101,6 +101,90 @@ function mm(v: number): number { return v / 1000 }
 // ── Shape generators by component class ──────────────────────────────────────
 
 // Servo: rectangular body + mounting ears + circular horn on output face
+/** Z-ratio of the horn joint origin above the servo body frame (URDF Z-up). */
+export const SERVO_HORN_ORIGIN_Z_RATIO = 0.44
+
+export function servoBodyShape(
+  w: number, h: number, d: number,
+  cat: string,
+): UrdfVisualDesc[] {
+  const c = catColor(cat)
+  const c2 = catColor(cat, 1)
+  const earH = h * 0.12
+  const earW = w * 1.15
+  return [
+    box(w, d, h * 0.76, 0, 0, 0, c),
+    box(earW, d, earH, 0, 0, h * 0.32, c2),
+  ]
+}
+
+/**
+ * Visual primitives for the servo horn link.
+ * All Z positions are relative to the joint origin (at SERVO_HORN_ORIGIN_Z_RATIO * h
+ * above the body frame), so they are already in the horn link's local frame.
+ */
+export function servoHornShape(
+  w: number, h: number, d: number,
+  cat: string,
+): UrdfVisualDesc[] {
+  const c2 = catColor(cat, 1)
+  const c3 = catColor(cat, 2)
+  const hornR = Math.min(w, d) * 0.35
+  const hornH = h * 0.12
+  return [
+    cyl(hornR, hornH, 0, 0, 0, c3),
+    cyl(hornR * 0.25, hornH * 0.8, 0, 0, h * 0.08, c2),
+  ]
+}
+
+export function servoSideYokeShape(
+  w: number, h: number, d: number,
+  cat: string,
+): UrdfVisualDesc[] {
+  const c = catColor(cat, 1)
+  const c2 = catColor(cat, 2)
+  const plateT = Math.max(Math.min(w, d) * 0.08, mm(2))
+  const sideGap = d / 2 + plateT * 1.4
+  return [
+    box(w * 1.18, plateT, h * 1.08, 0, sideGap, 0, c),
+    box(w * 1.18, plateT, h * 1.08, 0, -sideGap, 0, c),
+    box(w * 1.18, d + plateT * 3, plateT, 0, 0, -h * 0.54, c2),
+  ]
+}
+
+export function servoHornBeamAdapterShape(
+  w: number, h: number, d: number,
+  cat: string,
+): UrdfVisualDesc[] {
+  const c = catColor(cat, 1)
+  const c2 = catColor(cat, 2)
+  const plateT = Math.max(Math.min(w, d) * 0.08, mm(2.5))
+  return [
+    box(w * 0.74, d * 0.46, plateT, 0, 0, plateT * 0.45, c),
+    box(w * 0.28, d * 0.92, plateT * 0.75, 0, 0, plateT * 1.15, c2),
+  ]
+}
+
+export function limbLinkSlimShape(
+  w: number, h: number, d: number,
+  cat: string,
+): UrdfVisualDesc[] {
+  const c = catColor(cat)
+  const c2 = catColor(cat, 1)
+  const dark: [number, number, number, number] = [0.08, 0.08, 0.08, 1]
+  const padR = Math.max(w * 0.52, mm(5))
+  const padZ = Math.max(h / 2 - padR, 0)
+  const webW = Math.max(w * 0.48, mm(5))
+  const webLen = Math.max(h - padR * 1.7, mm(8))
+  return [
+    box(webW, d, webLen, 0, 0, 0, c),
+    cyl(padR, d, 0, 0, padZ, c2, Math.PI / 2, 0, 0),
+    cyl(padR, d, 0, 0, -padZ, c2, Math.PI / 2, 0, 0),
+    cyl(padR * 0.32, d * 1.05, 0, 0, padZ, dark, Math.PI / 2, 0, 0),
+    cyl(padR * 0.32, d * 1.05, 0, 0, -padZ, dark, Math.PI / 2, 0, 0),
+  ]
+}
+
 function servoShape(
   w: number, h: number, d: number,      // bounding box in m
   cat: string,
@@ -1250,6 +1334,7 @@ export function generateVisuals(comp: {
   if (id.includes('buck') || id.includes('pdu') || id.includes('usb_c_pd')) return pcbShape(xm, ym, zm, category)
 
   // ── Structural ─────────────────────────────────────────────────────────────
+  if (id.includes('limb_link_slim')) return limbLinkSlimShape(xm, zm, ym, category)
   if (id.includes('extrusion')) {
     const profile = bb[0] ?? 20
     return extrusionShape(mm(profile), zm, category)
@@ -1265,6 +1350,8 @@ export function generateVisuals(comp: {
   if (id.includes('angle_stock') || id.includes('angle_al') || id.includes('angle_steel')) {
     return angleShape(xm, ym, zm, Math.min(xm, ym) * 0.12, category)
   }
+  if (id.includes('servo_side_yoke')) return servoSideYokeShape(xm, zm, ym, category)
+  if (id.includes('servo_horn_beam_adapter')) return servoHornBeamAdapterShape(xm, zm, ym, category)
   if (id.includes('bracket_l')) return bracketLShape(xm, xm * 0.08, category)
   if (id.includes('bracket_u')) return bracketUShape(xm, ym, zm, xm * 0.06, category)
   if (id.includes('bracket_t') || id.includes('t_bracket')) {

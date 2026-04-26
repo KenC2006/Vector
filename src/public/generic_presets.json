@@ -2974,6 +2974,43 @@
       "description": "Structural members, extrusions, tubes, brackets, beams, plates, and joint hardware.",
       "components": [
         {
+          "id": "structural_limb_link_slim",
+          "name": "Slim Robot Limb Link (14x6mm, per 100mm)",
+          "description": "Thin dog-bone style aluminum limb link for robot thighs, shins, forearms, and compact joint-to-joint spans. Use this instead of bulky T-slot extrusion when building quadruped legs or sleek articulated limbs.",
+          "physical": {
+            "mass_kg_per_100mm": 0.023,
+            "cross_section_mm": [
+              14,
+              6
+            ],
+            "inertia_primitive": "box",
+            "material": "aluminum_7075_t6",
+            "density_kg_per_m3": 2810
+          },
+          "mechanical_electrical": {
+            "width_mm": 14,
+            "thickness_mm": 6,
+            "end_bore_mm": 4,
+            "hole_pattern": "dual_M4_end_bores",
+            "yield_strength_mpa": 500
+          },
+          "mounting_logic": {
+            "primary": "bolt_through",
+            "connection_method": "M4_shoulder_bolt",
+            "parametric": true,
+            "length_param": "length_mm"
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "box",
+            "mechanical_role": "limb_bone",
+            "parametric_size": [
+              "0.014",
+              "0.006",
+              "length_m"
+            ]
+          }
+        },
+        {
           "id": "structural_extrusion_2020",
           "name": "20x20mm Aluminum Extrusion (per 100mm)",
           "description": "2020-series T-slot aluminum extrusion profile. Mass given per 100mm length. Infinitely extendable.",
@@ -3306,6 +3343,66 @@
               "type": "planar"
             }
           ]
+        },
+        {
+          "id": "structural_servo_side_yoke_mount",
+          "name": "Servo Side Yoke Mount",
+          "description": "Rigid U/yoke cradle that holds a rotary servo sideways so its output shaft points along a red/blue horizontal axis instead of up. Use for hip, knee, elbow, and shoulder pitch/roll joints where the driven beam must swing up and down.",
+          "physical": {
+            "mass_kg": 0.04,
+            "bounding_box_mm": [
+              56,
+              34,
+              44
+            ],
+            "inertia_primitive": "box",
+            "material": "aluminum_6061_t6",
+            "legacy_override": true
+          },
+          "mechanical_electrical": {
+            "thickness_mm": 3,
+            "hole_pattern": "servo_side_flange_M3",
+            "max_load_n": 350
+          },
+          "mounting_logic": {
+            "primary": "bracket_mount",
+            "accepts": "face_mount",
+            "output": "servo_body_side_mount"
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "box",
+            "mechanical_role": "servo_body_holder"
+          }
+        },
+        {
+          "id": "structural_servo_horn_beam_adapter",
+          "name": "Servo Horn Beam Adapter",
+          "description": "Rotating horn plate with a beam clamp face. Bolts to the servo horn/output spline and gives an extrusion or limb beam a real driven mounting surface.",
+          "physical": {
+            "mass_kg": 0.022,
+            "bounding_box_mm": [
+              42,
+              28,
+              12
+            ],
+            "inertia_primitive": "box",
+            "material": "aluminum_6061_t6",
+            "legacy_override": true
+          },
+          "mechanical_electrical": {
+            "thickness_mm": 4,
+            "hole_pattern": "25T_horn_to_M3_beam",
+            "max_load_n": 300
+          },
+          "mounting_logic": {
+            "primary": "bracket_mount",
+            "accepts": "axial_shaft",
+            "output": "beam_mount"
+          },
+          "sim_metadata": {
+            "mjcf_geom_type": "box",
+            "mechanical_role": "servo_driven_beam_adapter"
+          }
         },
         {
           "id": "structural_hip_housing_2dof",

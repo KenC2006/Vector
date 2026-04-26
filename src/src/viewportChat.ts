@@ -127,7 +127,9 @@ function buildPortOccupancyContext(graph: AssemblyGraph): string {
   }
   if (lines.length === 0) return ''
   return `\n\nPort occupancy (existing children per face). Rules:
-- Servos/motors have a shaft output on TOP; attach exactly ONE child to a servo's top face.
+- Rotary servos drive exactly ONE child. For joint_axis="x" or "y", the assembler automatically adds side-yoke plus slim horn-link adapter hardware and turns the physical shaft onto that red/blue hinge axis; do not add extra coupler-disc stacks.
+- For sleek robot legs/arms, use structural_limb_link_slim for thighs, shins, and forearms instead of bulky 2020/4040 extrusions. Set length_mm for the limb segment length.
+- Never put structural_servo_coupler_disc between a servo and a leg/arm limb; it makes the limb coaxial with the shaft instead of radial to the horn.
 - Do NOT attach a second child to an already-taken face of an actuator — reparent to a structural link (extrusion, bracket) instead.
 ${lines.join('\n')}`
 }
