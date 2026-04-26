@@ -6671,7 +6671,37 @@
             "joint_type": "slide",
             "contact_friction": 0.8,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_parallel_gripper_large",
@@ -6712,7 +6742,37 @@
             "joint_type": "slide",
             "contact_friction": 0.8,
             "damping": 1
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_3finger_adaptive",
@@ -6758,7 +6818,37 @@
             "num_joints": 9,
             "contact_friction": 1,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_suction_cup",
@@ -6792,7 +6882,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 40,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -25
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "suction_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                25
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_magnetic_tool",
@@ -6823,7 +6943,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 80,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_tool_changer",
@@ -6854,7 +7004,37 @@
           "sim_metadata": {
             "mjcf_joint_type": "fixed_detachable",
             "lock_constraint": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_soft_gripper",
@@ -6893,7 +7073,37 @@
             "contact_friction": 1.2,
             "damping": 2,
             "soft_contact": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_vacuum_pad_array",
@@ -6925,7 +7135,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 160,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "suction_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_welding_torch_holder",
@@ -6956,7 +7196,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "effector_pen_marker_holder",
@@ -6990,7 +7260,37 @@
           "sim_metadata": {
             "mjcf_geom_type": "cylinder",
             "contact_friction": 0.3
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "effector_screwdriver_holder",
@@ -7023,7 +7323,37 @@
             "mjcf_actuator_type": "motor",
             "damping": 0.1,
             "friction": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -50
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                50
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         }
       ]
     },
