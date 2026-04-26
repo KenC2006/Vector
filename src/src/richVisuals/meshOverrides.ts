@@ -247,17 +247,14 @@ export function getRotationOverride(componentId: string): [number, number, numbe
 }
 
 // ── Shadow-cast policy ──────────────────────────────────────────────────────
-// Grippers ship intricate geometry (gears, finger plates, pinion teeth). Hard
-// PCFShadowMap projects every detail onto the parallel face of the parent
-// extrusion or bracket below them — the result reads as a duplicate mesh, not
-// a shadow. Opting these out keeps the user's mental model intact ("there's
-// only one gripper") while still letting them receive shadows from the rest
-// of the scene.
+// End-effectors ship intricate geometry (gears, finger plates, pinion teeth,
+// suction cups, finger linkages). Hard PCFShadowMap projects every detail onto
+// the parallel face of the parent extrusion/bracket below them — the result
+// reads as a duplicate mesh, not a shadow. Catch all `effector_*` presets so
+// the policy stays consistent across catalog additions; effectors still
+// RECEIVE shadows from the rest of the scene.
 const NO_SHADOW_CAST_PREFIXES: readonly string[] = [
-  'effector_parallel_gripper_',
-  'effector_3finger_',
-  'effector_soft_gripper',
-  'effector_vacuum_pad_array',
+  'effector_',
 ]
 
 /** Strip trailing _N suffix from a URDF link name to recover the preset id.
