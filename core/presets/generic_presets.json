@@ -5523,7 +5523,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -25,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                25,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                15,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -15,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_servo_coupler_disc",
@@ -5646,7 +5732,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -33,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                33,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                29,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -29,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_joint_plate",
@@ -6350,7 +6522,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_standoff_m4",
@@ -6394,7 +6596,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_gusset_plate",
@@ -6488,7 +6720,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_corner_cube",
@@ -6516,7 +6778,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                10,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -10,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_cross_plate",
@@ -6611,7 +6959,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.002,
             "friction": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                15,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_shaft_collar",
@@ -6642,7 +7035,52 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_linear_rail_mgn12",
@@ -6707,7 +7145,37 @@
             "mjcf_joint_type": "slide",
             "damping": 0.005,
             "friction": 0.003
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_din_rail_35mm",
