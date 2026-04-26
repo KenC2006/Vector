@@ -17,11 +17,13 @@ import {
   isDrivetrainComponentId,
 } from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
-import { getShaftOverlay, hasMeshOverride } from './richVisuals/meshOverrides'
-import { SLOW_MESH_BLACKLIST, getRenderedMeshDims } from './richVisuals/index'
+import { hasMeshOverride, SLOW_MESH_BLACKLIST } from './richVisuals/meshOverrides'
+import { getRenderedMeshDims } from './richVisuals/index'
 import { getOrComputeBbox } from './componentDims'
 import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
 import { quatToRpy, rpyToQuat } from './rotationIO'
+import { resolveComponentVisual } from './componentVisualResolver'
+import type { ComponentVisualBounds } from './componentVisualResolver'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
@@ -2785,63 +2787,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return 'structural'
   }
 
-  type CarryGhostBounds = { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number; shape: 'box' | 'cylinder' }
-  type CarryGhostPreview = { bounds: CarryGhostBounds; visuals: UrdfVisualDesc[] }
-
-  function visualBoundsFromDescriptors(visuals: UrdfVisualDesc[]): CarryGhostBounds | null {
-    const box = new THREE.Box3()
-    const tempBox = new THREE.Box3()
-    const tempMatrix = new THREE.Matrix4()
-    let hasGeom = false
-    let allCylinders = visuals.length > 0
-
-    for (const vis of visuals) {
-      const g = vis.geometry
-      if (g.type === 'box') {
-        tempBox.set(
-          new THREE.Vector3(-g.size[0] / 2, -g.size[1] / 2, -g.size[2] / 2),
-          new THREE.Vector3( g.size[0] / 2,  g.size[1] / 2,  g.size[2] / 2),
-        )
-        allCylinders = false
-      } else if (g.type === 'cylinder') {
-        tempBox.set(
-          new THREE.Vector3(-g.radius, -g.radius, -g.length / 2),
-          new THREE.Vector3( g.radius,  g.radius,  g.length / 2),
-        )
-      } else {
-        tempBox.set(
-          new THREE.Vector3(-g.radius, -g.radius, -g.radius),
-          new THREE.Vector3( g.radius,  g.radius,  g.radius),
-        )
-        allCylinders = false
-      }
-
-      const [ox, oy, oz] = vis.origin_xyz
-      tempMatrix.makeRotationFromQuaternion(rpyToQuat(vis.origin_rpy))
-      tempMatrix.setPosition(ox, oy, oz)
-      box.union(tempBox.clone().applyMatrix4(tempMatrix))
-      hasGeom = true
-    }
-
-    if (!hasGeom || box.isEmpty()) return null
-    const center = box.getCenter(new THREE.Vector3())
-    const size = box.getSize(new THREE.Vector3())
-    return {
-      hx: size.x / 2,
-      hy: size.y / 2,
-      hz: size.z / 2,
-      cx: center.x,
-      cy: center.y,
-      cz: center.z,
-      shape: allCylinders ? 'cylinder' : 'box',
-    }
-  }
+  type CarryGhostBounds = ComponentVisualBounds
+  type CarryGhostPreview = { bounds: CarryGhostBounds; visuals: UrdfVisualDesc[]; previewGroup?: THREE.Group }
 
   function computeCarryGhostPreview(comp: PresetComponent): CarryGhostPreview {
     const catName = findCategory(comp)
-    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
-    const visualBounds = visualBoundsFromDescriptors(visuals)
-    return { bounds: visualBounds ?? computeCarryGhostBounds(comp), visuals }
+    const resolved = resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' })
+    const bounds = resolved.previewGroup ? resolved.bounds : (resolved.visualBounds ?? resolved.bounds)
+    return { bounds, visuals: resolved.visuals, previewGroup: resolved.previewGroup }
   }
 
   function makeCarryGhostVisualGroup(visuals: UrdfVisualDesc[]): THREE.Group {
@@ -2877,87 +2830,34 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return group
   }
 
+  function makeCarryGhostPreviewGroup(group: THREE.Group): THREE.Group {
+    const ghost = group.clone(true)
+    const edgeItems: Array<{ parent: THREE.Object3D; mesh: THREE.Mesh }> = []
+    ghost.traverse(child => {
+      if (child instanceof THREE.Mesh) {
+        child.material = carryGhostMat
+        child.castShadow = false
+        child.receiveShadow = false
+        edgeItems.push({ parent: child.parent ?? ghost, mesh: child })
+      }
+    })
+    for (const { parent, mesh } of edgeItems) {
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), carryEdgeMat)
+      edges.position.copy(mesh.position)
+      edges.quaternion.copy(mesh.quaternion)
+      edges.scale.copy(mesh.scale)
+      parent.add(edges)
+    }
+    return ghost
+  }
+
   /** Compute the AABB of a component in URDF coordinates.
    *  Placement math still prefers rendered mesh dims when available, but carry
    *  visualization uses computeCarryGhostPreview() so it preserves per-visual
    *  rotations and multi-primitive outlines instead of drawing a generic box. */
   function computeCarryGhostBounds(comp: PresetComponent): CarryGhostBounds {
-    // Fix 1+2: use actual rendered mesh size when the GLB has been loaded and cached.
-    // This ensures ghost bounds agree with the real visual geometry rather than URDF primitives.
-    const renderedDims = getRenderedMeshDims(comp.id)
-    if (renderedDims && renderedDims.x > 0.001) {
-      return {
-        hx: renderedDims.x / 2,
-        hy: renderedDims.y / 2,
-        hz: renderedDims.z / 2,
-        cx: 0, cy: 0, cz: 0,
-        shape: 'box',
-      }
-    }
-
-    // Preloaded GLBs do not populate meshDimsCache until an instance has been
-    // rendered, but applyMeshToLink will scale most GLBs to the preset bbox.
-    // Use that same target envelope for first-use carry ghosts so the outline
-    // does not change shape when the component is committed and replaced by
-    // the rich mesh.
-    const perAxisBlacklist = ['gripper', 'effector', 'claw', 'suction']
-    const glbScalesToBbox = hasMeshOverride(comp.id)
-      && !SLOW_MESH_BLACKLIST.has(comp.id)
-      && !perAxisBlacklist.some(k => comp.id.includes(k))
-    if (glbScalesToBbox) {
-      const bb = getOrComputeBbox(comp.id, comp)
-      const shaftOverlay = getShaftOverlay(comp.id)
-      const zMm = shaftOverlay ? Math.max(1, (bb[2] ?? 40) - shaftOverlay.shaft_length_mm) : (bb[2] ?? 40)
-      return {
-        hx: (bb[0] ?? 40) / 2000,
-        hy: (bb[1] ?? 40) / 2000,
-        hz: zMm / 2000,
-        cx: 0, cy: 0, cz: 0,
-        shape: 'box',
-      }
-    }
-
-    // Fallback: derive from parametric URDF primitive definitions
     const catName = findCategory(comp)
-    const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
-    let minX = Infinity, maxX = -Infinity
-    let minY = Infinity, maxY = -Infinity
-    let minZ = Infinity, maxZ = -Infinity
-    let allCylinders = visuals.length > 0
-    for (const vis of visuals) {
-      const [ox, oy, oz] = vis.origin_xyz
-      const g = vis.geometry
-      let ex = 0, ey = 0, ez = 0
-      if (g.type === 'box') { ex = g.size[0] / 2; ey = g.size[1] / 2; ez = g.size[2] / 2; allCylinders = false }
-      else if (g.type === 'cylinder') { ex = g.radius; ey = g.radius; ez = g.length / 2 }
-      else if (g.type === 'sphere') { ex = g.radius; ey = g.radius; ez = g.radius; allCylinders = false }
-      // Any primitive with a non-zero origin_rpy (wheels, mecanum rollers, caster
-      // cylinders) breaks the single-axis-cylinder assumption — fall back to a
-      // box ghost so the fallback path matches the post-cache path (which always
-      // returns shape='box'). Without this, first-time wheel ghosts render as
-      // CylinderGeometry along Y, producing a hockey-puck-on-floor silhouette,
-      // while second-time ghosts use BoxGeometry and look correct.
-      if (vis.origin_rpy[0] !== 0 || vis.origin_rpy[1] !== 0 || vis.origin_rpy[2] !== 0) {
-        allCylinders = false
-      }
-      minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
-      minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
-      minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
-    }
-    const shape: 'box' | 'cylinder' = allCylinders ? 'cylinder' : 'box'
-    if (!isFinite(minX)) {
-      const bb = getOrComputeBbox(comp.id, comp)
-      return { hx: bb[0] / 2000, hy: bb[1] / 2000, hz: bb[2] / 2000, cx: 0, cy: 0, cz: 0, shape }
-    }
-    return {
-      hx: (maxX - minX) / 2,
-      hy: (maxY - minY) / 2,
-      hz: (maxZ - minZ) / 2,
-      cx: (maxX + minX) / 2,
-      cy: (maxY + minY) / 2,
-      cz: (maxZ + minZ) / 2,
-      shape,
-    }
+    return resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' }).bounds
   }
 
   function addVisualElement(doc: Document, link: Element, vis: UrdfVisualDesc, matIdx: number) {
@@ -3347,7 +3247,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     carryGhostBounds = bounds
     carryGroup = new THREE.Group()
     carryGroup.name = 'carry_ghost'
-    carryGroup.add(makeCarryGhostVisualGroup(preview.visuals))
+    carryGroup.add(preview.previewGroup ? makeCarryGhostPreviewGroup(preview.previewGroup) : makeCarryGhostVisualGroup(preview.visuals))
     ctx.scene.add(carryGroup)
 
     rebuildMountNodes()

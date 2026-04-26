@@ -11,7 +11,8 @@
     "test:graph-preservation": "node --experimental-strip-types src/graphPreservationCorpus.ts",
     "test:tool-dispatch": "node --experimental-strip-types src/toolDispatchCorpus.ts",
     "test:alignment-corpus": "node --experimental-strip-types src/alignmentCorpus.ts",
-    "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts"
+    "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts",
+    "diagnose:visuals": "node ../scripts/component-visual-diagnostics.js"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

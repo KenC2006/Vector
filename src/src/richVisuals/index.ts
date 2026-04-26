@@ -11,9 +11,18 @@
 import * as THREE from 'three'
 import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getRotationOverride, getShaftOverlay, getStepFallbackUrl, MESH_OVERRIDES } from './meshOverrides'
-import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
+import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES, SLOW_MESH_BLACKLIST } from './meshOverrides'
+import { getComponentColor } from './materials'
 import { getRenderedMeshDims as _getRenderedMeshDims, setRenderedMeshDims } from '../meshDimsCache'
+import {
+  clearMeshLoadInProgress,
+  getCachedMeshGroup,
+  hasCachedMeshGroup,
+  isMeshLoadInProgress,
+  markMeshLoadInProgress,
+  setCachedMeshGroup,
+} from './meshCache'
+import { prepareMeshVisualGroup } from './meshVisual'
 
 
 interface ParsedRobotLike {
@@ -94,9 +103,6 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
  * Apply rich visuals to all preset-derived links in the parsed robot.
  * Call this after parseURDFToScene() and after adding the group to the scene.
  */
-// Cache loaded STEP meshes so they survive reparse cycles
-const meshCache = new Map<string, THREE.Group>()  // compId → cloneable mesh group
-const loadingInProgress = new Set<string>()  // prevent duplicate loads
 // Rendered mesh AABB cache is owned by ../meshDimsCache so pure/node-runnable
 // modules can read it through componentDims without pulling in this module's
 // directory-import dependency tree. Re-exported here for source-compat with
@@ -111,27 +117,7 @@ export const getRenderedMeshDims = _getRenderedMeshDims
  *  (new-component adds). The group is in its raw authored units (GLBs from
  *  our STEP converter are mm; scale before raycasting against meter-space
  *  origins). */
-export function getCachedMeshGroup(compId: string): THREE.Group | null {
-  return meshCache.get(compId) ?? null
-}
-// Component IDs whose meshes are too large/slow to load at runtime — use parametric instead.
-// Includes: no GLB available (STEP >25MB skipped), or GLB >10MB.
-export const SLOW_MESH_BLACKLIST = new Set([
-  // No GLB (STEP files blacklisted from conversion: >25MB)
-  'compute_sbc_gpu',                   // sbc_gpu.stp — 71MB STEP
-  'mobility_track_tread_system',       // mobility_track.step — 50MB STEP
-  // GLB still >10MB (too slow to fetch+parse at runtime)
-  'actuator_bldc_small',               // bldc_outrunner.glb — 15MB
-  'actuator_bldc_large',               // bldc_outrunner.glb — 15MB
-  'motor_hub_80mm',                    // motor_hub.glb — 11MB
-  'motor_hub_120mm',                   // motor_hub.glb — 11MB
-  'compute_foc_controller',            // compute_foc_controller.glb — 11MB
-  // Wrong STEP file or broken geometry
-  'transmission_rack_pinion_set',      // STEP is industrial-scale (2.4m), not robotics
-  'motor_harmonic_drive_compact',      // STEP is a disc servo, not a harmonic drive
-  'motor_harmonic_drive_large',        // same mislabeled STEP
-])
-
+export { getCachedMeshGroup } from './meshCache'
 // Cache tinted GLB materials per (compId, sourceMaterialUUID) to avoid
 // re-cloning identical materials for repeated instances (e.g., 8 servos).
 // Cleared on each applyRichVisuals call to prevent stale material leaks.
@@ -170,16 +156,16 @@ export function applyRichVisuals(
     const meshUrl = getMeshOverrideUrl(compId)
     if (meshUrl && !SLOW_MESH_BLACKLIST.has(compId)) {
       // Check cache first — reuse previously loaded STEP mesh
-      if (meshCache.has(compId)) {
-        const cached = meshCache.get(compId)!
+      if (hasCachedMeshGroup(compId)) {
+        const cached = getCachedMeshGroup(compId)!
         const clone = cached.clone(true)
         applyMeshToLink(clone, linkName, linkGroup, dims, compId)
         onMeshLoaded?.(linkName)
         continue
       }
       // Async load — use parametric until GLB is ready
-      if (!loadingInProgress.has(compId)) {
-        loadingInProgress.add(compId)
+      if (!isMeshLoadInProgress(compId)) {
+        markMeshLoadInProgress(compId)
         loadMeshOverride(meshUrl, linkName, linkGroup, dims, compId, onMeshLoaded)
       }
       // Fall through to parametric generation as placeholder
@@ -264,172 +250,34 @@ function applyMeshToLink(
   dims: GeneratorDims,
   compId: string,
 ) {
-  // Apply per-component color tint to GLB meshes.
-  // Default-gray meshes get full material replacement; others get a cached tint blend.
-  const compColor = getComponentColor(compId)
-  const catMat = getTintedMaterial(compColor.material, ...compColor.tint, compColor.strength ?? 0.4)
-  const tintColor = new THREE.Color(compColor.tint[0], compColor.tint[1], compColor.tint[2])
-  const tintStrength = compColor.strength ?? 0.4
-  // Materials where the real-world color dominates the PBR look and should
-  // never be softened by a source-material blend. Rubber parts are physically
-  // black regardless of whatever generic color the STEP converter emitted.
-  const forceReplaceMaterials = new Set(['rubber_black'])
-  const forceReplace = forceReplaceMaterials.has(compColor.material)
-  meshGroup.traverse(child => {
-    if (child instanceof THREE.Mesh) {
-      const mat = child.material as THREE.MeshStandardMaterial
-      const isDefaultGray = mat?.color &&
-        Math.abs(mat.color.r - 0.533) < 0.05 &&
-        Math.abs(mat.color.g - 0.533) < 0.05 &&
-        Math.abs(mat.color.b - 0.533) < 0.05
-      if (forceReplace || isDefaultGray) {
-        child.material = catMat
-      } else if (mat?.color) {
-        // Cache tinted materials per (compId, sourceMaterial) to share across instances
-        const cacheKey = `${compId}_${mat.uuid}`
-        let tinted = _tintedMatCache.get(cacheKey)
-        if (!tinted) {
-          tinted = mat.clone()
-          tinted.color.lerp(tintColor, tintStrength)
-          _tintedMatCache.set(cacheKey, tinted)
-        }
-        child.material = tinted
-      }
-      child.castShadow = true
-      child.receiveShadow = true
-      ;(child.userData as Record<string, unknown>).urdfLinkName = linkName
-    }
+  const prepared = prepareMeshVisualGroup(meshGroup, dims, compId, {
+    linkName,
+    materialCache: _tintedMatCache,
+    includeShaftOverlay: true,
+    castShadow: true,
+    receiveShadow: true,
   })
 
-  // Normalize units: GLB files from our STEP converter are in mm.
-  // Detect by comparing raw mesh size to expected size (in meters).
-  // If mesh is >10x larger than expected, assume mm → convert to m.
-  const meshBox = new THREE.Box3().setFromObject(meshGroup)
-  const meshSize = new THREE.Vector3()
-  meshBox.getSize(meshSize)
-  const maxMeshDim = Math.max(meshSize.x, meshSize.y, meshSize.z)
-  const maxExpectedDim = Math.max(dims.x, dims.y, dims.z)
-
-  if (maxMeshDim > 0.0001) {
-    if (maxMeshDim > maxExpectedDim * 10) {
-      meshGroup.scale.setScalar(0.001) // mm → m
-    }
-
-    // Apply per-component rotation override by baking it into the geometry
-    // vertices BEFORE per-axis scaling. Setting meshGroup.rotation alone
-    // would not work: Three.js composes T*R*S, so a non-uniform scale.[xyz]
-    // applied after rotation acts on the original local axes — the per-axis
-    // scaling below would modify the wrong axis. Baking the rotation into
-    // the geometry realigns local axes with the desired world axes, so
-    // scale.x correctly controls the world X extent, etc.
-    // We clone the geometry first so the shared cached mesh isn't mutated.
-    const rotation = getRotationOverride(compId)
-    if (rotation) {
-      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
-        new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'),
-      )
-      meshGroup.traverse(child => {
-        if (child instanceof THREE.Mesh && child.geometry) {
-          child.geometry = child.geometry.clone()
-          child.geometry.applyMatrix4(rotMatrix)
-        }
-      })
-      meshGroup.updateMatrixWorld(true)
-    }
-
-    // Per-axis scaling: scale GLB to match the component's declared bounding_box_mm.
-    // Skip odd-shaped components (grippers, end effectors) whose GLB meshes don't
-    // scale cleanly along independent axes.
-    const PERAXIS_BLACKLIST = ['gripper', 'effector', 'claw', 'suction']
-    const skipPerAxis = PERAXIS_BLACKLIST.some(k => compId.includes(k))
-    // Shaft overlay: when this component has an entry in SHAFT_OVERLAYS, the GLB
-    // body is scaled to (bbox.z - shaft_length) and a procedural cylinder fills
-    // the remaining shaft_length region above. This lets the placement engine
-    // align the body face to a coupler bottom (Layer 4 child connector path)
-    // while keeping the shaft visible inside the coupler bore.
-    const shaftOverlay = getShaftOverlay(compId)
-    const shaftLenM = shaftOverlay ? shaftOverlay.shaft_length_mm / 1000 : 0
-    const targetZ = shaftOverlay ? Math.max(0.001, dims.z - shaftLenM) : dims.z
-    if (!skipPerAxis) {
-      meshBox.setFromObject(meshGroup)
-      meshBox.getSize(meshSize)
-      if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
-        const scaleX = dims.x / meshSize.x
-        const scaleY = dims.y / meshSize.y
-        const scaleZ = targetZ / meshSize.z
-        meshGroup.scale.x *= scaleX
-        meshGroup.scale.y *= scaleY
-        meshGroup.scale.z *= scaleZ
-      }
-    }
-
-    // Center the mesh on origin so it sits properly in the link frame
-    meshBox.setFromObject(meshGroup)
-    const center = new THREE.Vector3()
-    meshBox.getCenter(center)
-    meshGroup.position.sub(center)
-
-    // Shaft overlay: shift the now-centered body DOWN by shaft_length/2 so its
-    // top face sits at z = (bbox.z/2 - shaft_length) = body_top, and the upper
-    // shaft_length region is empty for the procedural cylinder added below.
-    if (shaftOverlay) {
-      meshGroup.position.z -= shaftLenM / 2
-    }
-
-    // Cache the actual rendered size (full extents in meters) as the authoritative
-    // dimension source for ghost bounds and node placement. For shaft-overlay
-    // components, measure the BODY mesh only (the procedural shaft cylinder is
-    // added to `geometryChild` below, AFTER this measurement; it doesn't appear
-    // in `finalBox`). Previously we overwrote `finalSize.z = dims.z` here to
-    // report the full body+shaft envelope, but that meant getParentBounds →
-    // getRenderedMeshDims returned 34mm for high_torque when the actual mating
-    // face sits at ±14.5mm; placement stacked children 2.5-4mm beyond the real
-    // body surface, and the post-reconcile ICP saw a `p90 ≈ 4mm` gap that
-    // exceeded the 3mm cap (clamp → visible under-engage). Reporting body-only
-    // dims lets placement math land the child against the real body extent
-    // instead of the cosmetic envelope. Ghost bounds lose a few mm of "shaft"
-    // visualization but gain correctness — acceptable tradeoff.
-    const finalBox = new THREE.Box3().setFromObject(meshGroup)
-    const finalSize = new THREE.Vector3()
-    finalBox.getSize(finalSize)
-    if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
-      setRenderedMeshDims(compId, finalSize)
-    }
+  if (
+    prepared.renderedBodySize &&
+    (prepared.renderedBodySize.x > 0.001 || prepared.renderedBodySize.y > 0.001 || prepared.renderedBodySize.z > 0.001)
+  ) {
+    setRenderedMeshDims(compId, prepared.renderedBodySize)
   }
 
-  // Replace geometry in link group
-  const geometryChild = linkGroup.children.find(c => {
+  const preparedGeometryChild = linkGroup.children.find(c => {
     if (!(c instanceof THREE.Group)) return false
     let hasMesh = false
     c.traverse(gc => { if (gc instanceof THREE.Mesh) hasMesh = true })
     return hasMesh
   }) as THREE.Group | undefined
 
-  if (geometryChild) {
-    while (geometryChild.children.length > 0) {
-      geometryChild.remove(geometryChild.children[0])
+  if (preparedGeometryChild) {
+    while (preparedGeometryChild.children.length > 0) {
+      preparedGeometryChild.remove(preparedGeometryChild.children[0])
     }
-    geometryChild.add(meshGroup)
-
-    // Shaft overlay: add a procedural shaft cylinder above the body. Sibling to
-    // meshGroup (not its child) so meshGroup's per-axis scale doesn't deform it.
-    // Cylinder is along URDF +Z, centered in the upper shaft_length region of
-    // the bbox, with brushed-steel material to match catalog shaft features
-    // (shaft_collar, hex_standoff stubs, etc.).
-    const overlay = getShaftOverlay(compId)
-    if (overlay) {
-      const shaftLength = overlay.shaft_length_mm / 1000
-      const shaftRadius = overlay.shaft_radius_mm / 1000
-      const shaftMat = getMaterial('brushed_steel')
-      const shaftGeo = new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 24)
-      const shaftMesh = new THREE.Mesh(shaftGeo, shaftMat)
-      shaftMesh.rotation.x = Math.PI / 2 // align cylinder Y axis with URDF +Z
-      shaftMesh.position.z = dims.z / 2 - shaftLength / 2
-      shaftMesh.castShadow = true
-      shaftMesh.receiveShadow = true
-      ;(shaftMesh.userData as Record<string, unknown>).urdfLinkName = linkName
-      geometryChild.add(shaftMesh)
-    }
+    preparedGeometryChild.add(prepared.group)
+    if (prepared.shaftOverlayMesh) preparedGeometryChild.add(prepared.shaftOverlayMesh)
   }
 }
 
@@ -459,8 +307,8 @@ async function loadMeshOverride(
     }
 
     // Cache the raw parsed mesh (before material/scaling)
-    meshCache.set(compId, meshGroup)
-    loadingInProgress.delete(compId)
+    setCachedMeshGroup(compId, meshGroup)
+    clearMeshLoadInProgress(compId)
 
     // Apply to the current link
     const clone = meshGroup.clone(true)
@@ -476,8 +324,8 @@ async function loadMeshOverride(
         console.warn(`[richVisuals] GLB failed for ${compId}, trying STEP fallback...`)
         try {
           const meshGroup = await loadSTEP(stepUrl)
-          meshCache.set(compId, meshGroup)
-          loadingInProgress.delete(compId)
+          setCachedMeshGroup(compId, meshGroup)
+          clearMeshLoadInProgress(compId)
           const clone = meshGroup.clone(true)
           applyMeshToLink(clone, linkName, linkGroup, dims, compId)
           onMeshLoaded?.(linkName)
@@ -489,7 +337,7 @@ async function loadMeshOverride(
       }
     }
     console.warn(`[richVisuals] Mesh failed for ${compId}, parametric fallback:`, e)
-    loadingInProgress.delete(compId)
+    clearMeshLoadInProgress(compId)
   }
 }
 
@@ -556,8 +404,8 @@ export async function preloadMeshCache(): Promise<void> {
       // sets meshDimsCache after per-axis scaling to bounding_box_mm on first placement.
       // computeCarryGhostBounds falls back to bounding_box_mm directly when no dims cached.
       for (const compId of compIds) {
-        meshCache.set(compId, meshGroup)
-        loadingInProgress.delete(compId)
+        setCachedMeshGroup(compId, meshGroup)
+        clearMeshLoadInProgress(compId)
       }
       return compIds.length
     }),

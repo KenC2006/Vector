@@ -151,6 +151,25 @@ export function hasMeshOverride(componentId: string): boolean {
   return componentId in MESH_OVERRIDES
 }
 
+// Component IDs whose meshes are too large/slow to load at runtime - use
+// parametric instead. Includes no GLB available, very large GLBs, or known bad
+// source geometry.
+export const SLOW_MESH_BLACKLIST = new Set([
+  // No GLB (STEP files blacklisted from conversion: >25MB)
+  'compute_sbc_gpu',                   // sbc_gpu.stp - 71MB STEP
+  'mobility_track_tread_system',       // mobility_track.step - 50MB STEP
+  // GLB still >10MB (too slow to fetch+parse at runtime)
+  'actuator_bldc_small',               // bldc_outrunner.glb - 15MB
+  'actuator_bldc_large',               // bldc_outrunner.glb - 15MB
+  'motor_hub_80mm',                    // motor_hub.glb - 11MB
+  'motor_hub_120mm',                   // motor_hub.glb - 11MB
+  'compute_foc_controller',            // compute_foc_controller.glb - 11MB
+  // Wrong STEP file or broken geometry
+  'transmission_rack_pinion_set',      // STEP is industrial-scale (2.4m), not robotics
+  'motor_harmonic_drive_compact',      // STEP is a disc servo, not a harmonic drive
+  'motor_harmonic_drive_large',        // same mislabeled STEP
+])
+
 /**
  * Per-component Euler rotations (XYZ order, radians) applied to the loaded mesh
  * BEFORE per-axis scaling in applyMeshToLink. Use when the STEP/GLB axes don't
