@@ -2759,6 +2759,76 @@ void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndSh
       lastBakeResult = null
       console.log('[bake/scene] unbaked — per-preset meshes restored')
     }
+    // Diagnostic: report global debug-overlay state. Confirms whether
+    // wireframeGroup, comGroup, etc. are actually visible (independent of
+    // their button state) and whether they hold any clones.
+    ;(window as unknown as { __inspectOverlays: () => void }).__inspectOverlays = () => {
+      console.log('[overlays] wireframeGroup', {
+        visible: wireframeGroup.visible,
+        cloneCount: wireframeGroup.children.length,
+        someClonesVisible: wireframeGroup.children.some(c => c.visible),
+      })
+      console.log('[overlays] comGroup', {
+        visible: comGroup.visible,
+        childCount: comGroup.children.length,
+      })
+      console.log('[overlays] axisVisuals (joint axes)', {
+        count: axisVisuals.length,
+        anyVisible: axisVisuals.some(o => o.visible),
+      })
+      // Walk robot for any Line/LineSegments/wireframe-material meshes that
+      // ARE rendering (visible up the chain). If wireframe is "off" but
+      // something gripper-shaped renders, this surfaces it.
+      const renderingLines: Array<Record<string, unknown>> = []
+      const isRenderingChain = (o: THREE.Object3D | null): boolean => {
+        let cur = o
+        while (cur) { if (!cur.visible) return false; cur = cur.parent }
+        return true
+      }
+      robot.traverse(o => {
+        const any = o as THREE.Mesh & { isLine?: boolean; isLineSegments?: boolean; material?: THREE.Material & { wireframe?: boolean } }
+        const isLineish = any.isLine || any.isLineSegments
+        const isWireMesh = any.isMesh && any.material && (any.material as { wireframe?: boolean }).wireframe === true
+        if (!isLineish && !isWireMesh) return
+        if (!isRenderingChain(o)) return
+        renderingLines.push({
+          kind: any.isLineSegments ? 'LineSegments' : any.isLine ? 'Line' : 'WireMesh',
+          name: o.name || '<unnamed>',
+          parent: o.parent?.name || '<no name>',
+          parentChainOK: true,
+          urdfLinkName: (o.userData as Record<string, unknown>)?.urdfLinkName,
+          materialColor: (any.material as { color?: { getHexString(): string } } | undefined)?.color?.getHexString?.(),
+        })
+      })
+      console.log(`[overlays] ${renderingLines.length} Line/LineSegments/wireframe meshes ACTUALLY RENDERING under robot:`)
+      console.table(renderingLines)
+    }
+    // Diagnostic: dump every mesh under a given link name with its shadow +
+    // visibility state. Use to confirm whether a stray mesh is still casting.
+    ;(window as unknown as { __inspectLink: (name: string) => void }).__inspectLink = (name: string) => {
+      const g = parsedRobot.linkGroups.get(name)
+      if (!g) { console.warn(`[inspect] no linkGroup for ${name}`); return }
+      const rows: Array<Record<string, unknown>> = []
+      g.traverse(o => {
+        const m = o as THREE.Mesh & { isLine?: boolean; isLineSegments?: boolean }
+        if (!m.isMesh && !m.isLine && !m.isLineSegments) return
+        const matAny = m.material as { transparent?: boolean; opacity?: number; color?: { getHexString(): string } } | undefined
+        rows.push({
+          kind: m.isLineSegments ? 'LineSegments' : m.isLine ? 'Line' : 'Mesh',
+          name: m.name || '<unnamed>',
+          geom: m.geometry?.type ?? '?',
+          castShadow: m.castShadow,
+          visible: m.visible,
+          opacity: matAny?.transparent ? matAny.opacity : 1,
+          color: matAny?.color ? '#' + matAny.color.getHexString() : undefined,
+          parent: m.parent?.name || '<no name>',
+          parentVisible: m.parent?.visible,
+          urdfLinkName: (m.userData as Record<string, unknown>)?.urdfLinkName,
+          isCollision: (m.userData as Record<string, unknown>)?.isCollision,
+        })
+      })
+      console.table(rows)
+    }
   })
 }
 
