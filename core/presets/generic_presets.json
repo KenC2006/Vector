@@ -5624,7 +5624,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.001,
             "friction": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bearing_large",
@@ -5659,7 +5704,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.003,
             "friction": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 25
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bushing_flanged",
@@ -5693,7 +5783,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.01,
             "friction": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_planetary_gearbox",
@@ -5733,7 +5868,52 @@
           "sim_metadata": {
             "mjcf_role": "gear_ratio_element",
             "reflected_inertia_factor": "gear_ratio_squared"
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_spur_gear_pair",
@@ -5768,7 +5948,37 @@
           "sim_metadata": {
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 2
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bevel_gear_pair",
@@ -5803,7 +6013,37 @@
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 1,
             "axis_change": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_worm_gear_set",
@@ -5839,7 +6079,37 @@
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 30,
             "axis_change": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_chain_sprocket_set",
@@ -5908,7 +6178,67 @@
             "mjcf_joint_type": "ball",
             "damping": 0.01,
             "friction": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_flexible_coupling_jaw",
@@ -5944,7 +6274,67 @@
             "mjcf_role": "coupling",
             "stiffness": 200,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_rigid_shaft_coupling",
@@ -5978,7 +6368,67 @@
             "mjcf_role": "coupling",
             "stiffness": 50000,
             "damping": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_rack_pinion_set",
@@ -6048,7 +6498,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.01,
             "friction": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 50
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_slewing_ring_bearing",
@@ -6085,7 +6580,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.05,
             "friction": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 130
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
