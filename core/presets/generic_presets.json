@@ -2569,7 +2569,37 @@
             ],
             "near_clip": 0.3,
             "far_clip": 15
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -62,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "optical_front",
+              "origin_xyz_mm": [
+                62,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "sensor_lidar_2d",
@@ -2607,7 +2637,37 @@
             "num_rays": 1000,
             "fov_deg": 360,
             "max_range": 12
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_lidar_3d",
@@ -2650,7 +2710,37 @@
             "num_channels": 16,
             "rays_per_channel": 1000,
             "max_range": 100
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -35.85
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35.85
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_imu_6dof",
@@ -2686,7 +2776,37 @@
             "mjcf_sensor_type": "accelerometer_gyro",
             "noise_accel": 0.01,
             "noise_gyro": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_imu_9dof",
@@ -2723,7 +2843,37 @@
             "noise_accel": 0.01,
             "noise_gyro": 0.005,
             "noise_mag": 0.02
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_ultrasonic",
@@ -2761,7 +2911,37 @@
             "mjcf_sensor_type": "rangefinder",
             "max_range": 4,
             "fov_deg": 15
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -22.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                22.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_tof",
@@ -2799,7 +2979,37 @@
             "mjcf_sensor_type": "rangefinder",
             "max_range": 4,
             "fov_deg": 25
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_force_torque_6axis",
@@ -2838,7 +3048,37 @@
             "mjcf_sensor_type": "force_torque",
             "noise_force": 0.1,
             "noise_torque": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_joint_encoder_absolute",
@@ -2872,7 +3112,52 @@
           "sim_metadata": {
             "mjcf_sensor_type": "jointpos",
             "noise": 0.0001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_thermal_ir_camera",
@@ -2915,7 +3200,37 @@
             ],
             "near_clip": 0.1,
             "far_clip": 5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_contact_bumper",
@@ -2947,7 +3262,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "touch",
             "threshold_force_n": 1.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -14,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                14,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_limit_switch",
@@ -2981,7 +3326,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "touch",
             "threshold_force_n": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_rotary_potentiometer",
@@ -3012,7 +3387,52 @@
           "sim_metadata": {
             "mjcf_sensor_type": "jointpos",
             "noise": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_load_cell",
@@ -3050,7 +3470,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "force",
             "noise_force": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -27.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "payload_face",
+              "origin_xyz_mm": [
+                27.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_current",
@@ -3085,7 +3535,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "actuatorfrc",
             "noise": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_voltage_divider",
@@ -3113,7 +3593,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_sensor"
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_color_light",
@@ -3160,7 +3670,37 @@
               1
             ],
             "fovy_deg": 20
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_barometric_pressure",
@@ -3195,7 +3735,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "framepos",
             "noise": 0.1
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
