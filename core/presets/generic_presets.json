@@ -414,7 +414,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 10
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_bldc_large",
@@ -456,7 +501,52 @@
             "damping": 0.08,
             "friction": 0.03,
             "armature": 0.08
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 14
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_stepper_nema17",
@@ -497,7 +587,52 @@
             "damping": 0.1,
             "friction": 0.05,
             "armature": 0.008
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_stepper_nema23",
@@ -538,7 +673,52 @@
             "damping": 0.15,
             "friction": 0.08,
             "armature": 0.015
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6.35
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_linear_small",
@@ -577,7 +757,51 @@
             "damping": 0.3,
             "friction": 0.1,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_linear_heavy",
@@ -616,7 +840,51 @@
             "damping": 1,
             "friction": 0.3,
             "armature": 0.02
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_micro_linear_servo",
@@ -655,7 +923,51 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_continuous_rotation_servo",
@@ -694,7 +1006,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5.9
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_high_speed_mini_servo",
@@ -734,7 +1091,52 @@
             "damping": 0.02,
             "friction": 0.01,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 4.6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
