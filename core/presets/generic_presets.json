@@ -782,7 +782,52 @@
             "damping": 0.001,
             "friction": 0.001,
             "armature": 0.0005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 2
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_dc_medium_540",
@@ -825,7 +870,52 @@
             "damping": 0.005,
             "friction": 0.003,
             "armature": 0.003
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3.17
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_dc_large_775",
@@ -869,7 +959,52 @@
             "damping": 0.01,
             "friction": 0.005,
             "armature": 0.008
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_small_n20",
@@ -912,7 +1047,52 @@
             "damping": 0.005,
             "friction": 0.003,
             "armature": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_medium_37mm",
@@ -955,7 +1135,52 @@
             "damping": 0.02,
             "friction": 0.01,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_heavy_50mm",
@@ -998,7 +1223,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.015
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_coreless_dc",
@@ -1041,7 +1311,52 @@
             "damping": 0.0002,
             "friction": 0.0001,
             "armature": 0.0001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 1
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_worm_gear",
@@ -1085,7 +1400,52 @@
             "damping": 0.1,
             "friction": 0.08,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_hub_80mm",
@@ -1134,7 +1494,52 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 10
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_hub_120mm",
@@ -1184,7 +1589,52 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 14
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_harmonic_drive_compact",
@@ -1228,7 +1678,37 @@
             "damping": 0.3,
             "friction": 0.05,
             "armature": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_harmonic_drive_large",
@@ -1272,7 +1752,37 @@
             "damping": 0.8,
             "friction": 0.1,
             "armature": 0.03
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_pancake_dc",
@@ -1313,7 +1823,52 @@
             "damping": 0.003,
             "friction": 0.002,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 4
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_brushless_inrunner_micro",
@@ -1354,7 +1909,52 @@
             "damping": 0.0005,
             "friction": 0.0003,
             "armature": 0.0003
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 2
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_brushless_inrunner_medium",
@@ -1395,7 +1995,52 @@
             "damping": 0.002,
             "friction": 0.001,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3.17
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
