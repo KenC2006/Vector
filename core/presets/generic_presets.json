@@ -7970,7 +7970,65 @@
               0.02,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -50,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_caster_wheel",
@@ -8005,7 +8063,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_mecanum_wheel",
@@ -8044,7 +8132,65 @@
               0.0001
             ],
             "anisotropic_friction": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -50,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_omni_wheel",
@@ -8085,7 +8231,65 @@
               0.0001
             ],
             "anisotropic_friction": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -30,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_track_tread_system",
@@ -8127,7 +8331,37 @@
               0.02,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_swerve_drive_module",
@@ -8171,7 +8405,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                55
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -55
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_ball_transfer_unit",
@@ -8205,7 +8469,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                11
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -11
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_rubber_foot_pad",
@@ -8246,7 +8540,37 @@
               0.05,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
