@@ -12,6 +12,7 @@
     "test:tool-dispatch": "node --experimental-strip-types src/toolDispatchCorpus.ts",
     "test:alignment-corpus": "node --experimental-strip-types src/alignmentCorpus.ts",
     "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts",
+    "test:visual-parity": "node scripts/run-vite-module.mjs src/componentVisualParityCorpus.ts",
     "diagnose:visuals": "node ../scripts/component-visual-diagnostics.js"
   },
   "devDependencies": {

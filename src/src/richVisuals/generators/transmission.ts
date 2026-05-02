@@ -4,7 +4,7 @@
  * flangePlate bolt circles, chamferedCylinder shafts.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   mountingHole, screwHead,
@@ -22,7 +22,7 @@ function catMetal(base: string = 'anodized_aluminum', strength = 0.3) {
 
 // ── Bearing ─────────────────────────────────────────────────────────────────
 
-function generateBearing(id: string, dims: GeneratorDims): THREE.Group {
+function generateBearing(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const outerR = w / 2
@@ -55,7 +55,7 @@ function generateBearing(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Flanged Bushing ─────────────────────────────────────────────────────────
 
-function generateBushing(id: string, dims: GeneratorDims): THREE.Group {
+function generateBushing(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -90,16 +90,16 @@ function generateBushing(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Spur/Bevel Gear Pair ────────────────────────────────────────────────────
 
-function generateGearPair(id: string, dims: GeneratorDims): THREE.Group {
+function generateGearPair(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const isBevel = id.includes('bevel')
 
-  const gear1RootR = Math.min(w, d) * 0.3
+  const gear1RootR = Math.min(w, d) * (isBevel ? 0.2 : 0.3)
   const gear1TipR = gear1RootR * 1.15
-  const gear2RootR = gear1RootR * 0.6
+  const gear2RootR = gear1RootR * (isBevel ? 0.75 : 0.6)
   const gear2TipR = gear2RootR * 1.15
-  const gearH = h * 0.25
+  const gearH = h * 0.8
   const toothCount1 = 20
   const toothCount2 = 14
 
@@ -119,7 +119,7 @@ function generateGearPair(id: string, dims: GeneratorDims): THREE.Group {
 
   if (isBevel) {
     gear2Group.rotation.x = Math.PI / 2
-    gear2Group.position.set(gear1TipR + gear2TipR * 0.7, 0, 0)
+    gear2Group.position.set(gear1TipR + gear2TipR * 0.45, 0, 0)
   } else {
     gear2Group.position.set(gear1TipR + gear2TipR * 0.9, 0, 0)
   }
@@ -139,7 +139,7 @@ function generateGearPair(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Planetary Gearbox ───────────────────────────────────────────────────────
 
-function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group {
+function generatePlanetaryGearbox(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -151,13 +151,15 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
     nurbsCylinder(r, bodyH, chamfer, 48),
     catMetal(),
   )
+  body.rotation.x = Math.PI / 2
   g.add(body)
 
   // Output flange plate with bolt circle
   const flangeR = r * 1.05
   const flangeH = h * 0.1
   const flange = flangePlate(flangeR, flangeH, 6, r * 0.75, r * 0.05)
-  flange.position.y = (bodyH + flangeH) / 2
+  flange.rotation.x = Math.PI / 2
+  flange.position.z = (bodyH + flangeH) / 2
   g.add(flange)
 
   // Output shaft
@@ -167,7 +169,8 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
     nurbsCylinder(shaftR, shaftH, shaftR * 0.15, 24),
     getMaterial('brushed_steel'),
   )
-  shaft.position.y = (bodyH + flangeH * 2 + shaftH) / 2
+  shaft.rotation.x = Math.PI / 2
+  shaft.position.z = (bodyH + flangeH * 2 + shaftH) / 2
   g.add(shaft)
 
   // Rear input boss
@@ -177,7 +180,8 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
     nurbsCylinder(bossR, bossH, chamfer * 0.5, 32),
     catMetal(),
   )
-  boss.position.y = -(bodyH + bossH) / 2
+  boss.rotation.x = Math.PI / 2
+  boss.position.z = -(bodyH + bossH) / 2
   g.add(boss)
 
   // Body rings (decorative separation lines)
@@ -187,8 +191,7 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
       nurbsTorus(r * 1.01, r * 0.015, 48, 8),
       ringMat,
     )
-    ring.rotation.x = Math.PI / 2
-    ring.position.y = bodyH * sy
+    ring.position.z = bodyH * sy
     g.add(ring)
   }
 
@@ -197,56 +200,59 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
 
 // ── Timing Belt GT2 ─────────────────────────────────────────────────────────
 
-function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
+function generateTimingBelt(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: beltWidth, y: length, z: height } = dims
 
-  const pulleyR = Math.min(w, d) * 0.2
-  const pulleyH = h * 0.3
-  const spacing = w * 0.35
+  const pulleyR = height * 0.35
+  const pulleyW = beltWidth * 0.8
+  const spacing = length * 0.35
 
-  // Two chamferedCylinder pulleys
-  for (const sx of [-1, 1]) {
+  // Two pulleys: shaft axis across belt width (X), belt run along depth (Z).
+  for (const sz of [-1, 1]) {
     const pulley = new THREE.Mesh(
-      nurbsCylinder(pulleyR, pulleyH, pulleyR * 0.08, 32),
+      nurbsCylinder(pulleyR, pulleyW, pulleyR * 0.08, 32),
       catMetal(),
     )
-    pulley.position.set(sx * spacing, 0, 0)
+    pulley.rotation.z = Math.PI / 2
+    pulley.position.set(0, 0, sz * spacing)
     g.add(pulley)
 
     // Pulley flanges
-    for (const sy of [-1, 1]) {
+    for (const sx of [-1, 1]) {
       const flange = new THREE.Mesh(
-        nurbsCylinder(pulleyR * 1.15, pulleyH * 0.08, pulleyR * 0.04, 32),
+        nurbsCylinder(pulleyR * 1.15, pulleyW * 0.08, pulleyR * 0.04, 32),
         getMaterial('brushed_steel'),
       )
-      flange.position.set(sx * spacing, sy * pulleyH * 0.45, 0)
+      flange.rotation.z = Math.PI / 2
+      flange.position.set(sx * pulleyW * 0.45, 0, sz * spacing)
       g.add(flange)
     }
 
     // Shaft bore
     const bore = new THREE.Mesh(
-      new THREE.CylinderGeometry(pulleyR * 0.25, pulleyR * 0.25, pulleyH * 1.2, 16),
+      new THREE.CylinderGeometry(pulleyR * 0.25, pulleyR * 0.25, pulleyW * 1.2, 16),
       getMaterial('dark_chrome'),
     )
-    bore.position.set(sx * spacing, 0, 0)
+    bore.rotation.z = Math.PI / 2
+    bore.position.set(0, 0, sz * spacing)
     g.add(bore)
   }
 
   // Thin belt box connecting pulleys
-  const beltW = spacing * 2 + pulleyR * 2
-  const beltThick = pulleyH * 0.06
+  const beltRun = spacing * 2 + pulleyR * 2
+  const beltThick = height * 0.08
   const beltMat = getMaterial('rubber_black')
 
   const topBelt = new THREE.Mesh(
-    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
+    nurbsFilletBox(beltWidth, beltThick, beltRun, beltThick * 0.2, 12),
     beltMat,
   )
   topBelt.position.y = pulleyR
   g.add(topBelt)
 
   const botBelt = new THREE.Mesh(
-    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
+    nurbsFilletBox(beltWidth, beltThick, beltRun, beltThick * 0.2, 12),
     beltMat,
   )
   botBelt.position.y = -pulleyR
@@ -257,7 +263,7 @@ function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Leadscrew ───────────────────────────────────────────────────────────────
 
-function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
+function generateLeadscrew(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const isBall = id.includes('ballscrew')
@@ -326,15 +332,15 @@ function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Worm Gear Set ───────────────────────────────────────────────────────────
 
-function generateWormGearSet(id: string, dims: GeneratorDims): THREE.Group {
+function generateWormGearSet(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: _h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
 
   const wormR = Math.min(w, d) * 0.1
   const wormLen = Math.max(w, d) * 0.6
   const wheelRootR = Math.min(w, d) * 0.25
   const wheelTipR = wheelRootR * 1.15
-  const gearH = dims.y * 0.2
+  const gearH = h * 0.35
 
   // Worm shaft
   const wormShaft = new THREE.Mesh(
@@ -381,19 +387,19 @@ function generateWormGearSet(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Chain & Sprocket Set ────────────────────────────────────────────────────
 
-function generateChainSprocket(id: string, dims: GeneratorDims): THREE.Group {
+function generateChainSprocket(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: length, z: h } = dims
 
-  const sprocketRootR = Math.min(w, d) * 0.22
-  const sprocketTipR = Math.min(w, d) * 0.27
-  const sprocketH = h * 0.15
-  const spacing = w * 0.3
+  const sprocketRootR = Math.min(w, length) * 0.22
+  const sprocketTipR = Math.min(w, length) * 0.27
+  const sprocketH = h * 0.65
+  const spacing = length * 0.35
 
   // Two sprockets using gearCylinder for tooth profiles
-  for (const sx of [-1, 1]) {
+  for (const sz of [-1, 1]) {
     const sprocket = gearCylinder(sprocketRootR, sprocketTipR, sprocketH, 14)
-    sprocket.position.set(sx * spacing, 0, 0)
+    sprocket.position.set(0, 0, sz * spacing)
     g.add(sprocket)
 
     // Shaft bore
@@ -401,7 +407,7 @@ function generateChainSprocket(id: string, dims: GeneratorDims): THREE.Group {
       new THREE.CylinderGeometry(sprocketRootR * 0.2, sprocketRootR * 0.2, sprocketH * 1.2, 16),
       getMaterial('dark_chrome'),
     )
-    bore.position.set(sx * spacing, 0, 0)
+    bore.position.set(0, 0, sz * spacing)
     g.add(bore)
   }
 
@@ -410,12 +416,12 @@ function generateChainSprocket(id: string, dims: GeneratorDims): THREE.Group {
   const chainThick = sprocketH * 0.15
   const chainMat = getMaterial('dark_chrome')
 
-  for (const sz of [-1, 1]) {
+  for (const sx of [-1, 1]) {
     const chain = new THREE.Mesh(
-      new THREE.BoxGeometry(chainLen, chainThick, sprocketH * 0.4),
+      new THREE.BoxGeometry(chainThick, chainThick, chainLen),
       chainMat,
     )
-    chain.position.z = sz * sprocketRootR
+    chain.position.x = sx * sprocketRootR
     g.add(chain)
   }
 
@@ -424,13 +430,14 @@ function generateChainSprocket(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Universal Joint ─────────────────────────────────────────────────────────
 
-function generateUniversalJoint(id: string, dims: GeneratorDims): THREE.Group {
+function generateUniversalJoint(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: _h, z: d } = dims
+  const { x: w, y: d, z: length } = dims
 
-  const yokeW = Math.min(w, d) * 0.3
-  const yokeH = Math.min(w, d) * 0.5
-  const yokeThick = Math.min(w, d) * 0.08
+  const diameter = Math.min(w, d)
+  const yokeW = diameter * 0.3
+  const yokeH = length * 0.65
+  const yokeThick = diameter * 0.08
   const chamfer = yokeThick * 0.3
   const mat = catMetal('brushed_steel', 0.25)
 
@@ -504,7 +511,7 @@ function generateUniversalJoint(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Flexible / Rigid Coupling ───────────────────────────────────────────────
 
-function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
+function generateCoupling(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -516,6 +523,7 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
     nurbsCylinder(r, h, chamfer, 32),
     isRigid ? getMaterial('brushed_steel') : catMetal(),
   )
+  body.rotation.x = Math.PI / 2
   g.add(body)
 
   // Split line detail
@@ -523,19 +531,18 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
   if (!isRigid) {
     // Flexible: helical split pattern (ring grooves)
     for (let i = 0; i < 3; i++) {
-      const y = -h * 0.3 + i * h * 0.3
+      const z = -h * 0.3 + i * h * 0.3
       const split = new THREE.Mesh(
         nurbsTorus(r * 1.01, r * 0.015, 32, 6),
         splitMat,
       )
-      split.rotation.x = Math.PI / 2
-      split.position.y = y
+      split.position.z = z
       g.add(split)
     }
   } else {
     // Rigid: single split line
     const split = new THREE.Mesh(
-      new THREE.BoxGeometry(r * 0.02, h * 1.01, r * 2.1),
+      new THREE.BoxGeometry(r * 0.02, r * 2.1, h * 1.01),
       splitMat,
     )
     g.add(split)
@@ -543,18 +550,19 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
 
   // Clamping screw
   const screw = screwHead(r * 0.1, h * 0.15)
-  screw.position.set(r * 0.95, h * 0.2, 0)
+  screw.position.set(r * 0.95, 0, h * 0.2)
   screw.rotation.z = Math.PI / 2
   g.add(screw)
 
   // Bore hints at each end
   const boreR = r * 0.35
-  for (const sy of [-1, 1]) {
+  for (const sz of [-1, 1]) {
     const bore = new THREE.Mesh(
       new THREE.CylinderGeometry(boreR, boreR, h * 0.1, 16),
       getMaterial('dark_chrome'),
     )
-    bore.position.y = sy * h * 0.5
+    bore.rotation.x = Math.PI / 2
+    bore.position.z = sz * h * 0.5
     g.add(bore)
   }
 
@@ -563,50 +571,50 @@ function generateCoupling(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Rack & Pinion ───────────────────────────────────────────────────────────
 
-function generateRackPinion(id: string, dims: GeneratorDims): THREE.Group {
+function generateRackPinion(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: width, y: length, z: height } = dims
 
-  const rackW = w * 0.8
-  const rackH = h * 0.2
-  const rackD = d * 0.3
+  const rackLength = length * 0.8
+  const rackH = height * 0.22
+  const rackD = width * 0.7
   const chamfer = Math.min(rackH, rackD) * 0.06
 
   // Rack bar
-  const rack = new THREE.Mesh(nurbsFilletBox(rackW, rackD, rackH, chamfer, 16), getMaterial('brushed_steel'))
-  rack.position.y = -h * 0.25
+  const rack = new THREE.Mesh(nurbsFilletBox(rackD, rackH, rackLength, chamfer, 16), getMaterial('brushed_steel'))
+  rack.position.y = -height * 0.25
   g.add(rack)
 
   // Tooth strip on top of rack
   const toothStripH = rackH * 0.25
   const toothStrip = new THREE.Mesh(
-    nurbsFilletBox(rackW * 0.95, rackD * 0.6, toothStripH, chamfer * 0.3, 12),
+    nurbsFilletBox(rackD * 0.8, toothStripH, rackLength * 0.95, chamfer * 0.3, 12),
     catMetal('brushed_steel', 0.2),
   )
-  toothStrip.position.y = -h * 0.25 + (rackH + toothStripH) / 2
+  toothStrip.position.y = -height * 0.25 + (rackH + toothStripH) / 2
   g.add(toothStrip)
 
   // Individual tooth bumps
-  const toothCount = Math.max(8, Math.round(rackW / (rackH * 0.5)))
+  const toothCount = Math.max(8, Math.round(rackLength / (rackH * 0.5)))
   const toothMat = catMetal('brushed_steel', 0.15)
   for (let i = 0; i < toothCount; i++) {
-    const toothW = rackW * 0.7 / toothCount
-    const px = -rackW * 0.35 + (i + 0.5) * (rackW * 0.7 / toothCount)
+    const toothD = rackLength * 0.7 / toothCount
+    const pz = -rackLength * 0.35 + (i + 0.5) * (rackLength * 0.7 / toothCount)
     const tooth = new THREE.Mesh(
-      new THREE.BoxGeometry(toothW * 0.5, rackD * 0.4, toothStripH * 0.8),
+      new THREE.BoxGeometry(rackD * 0.5, toothStripH * 0.8, toothD * 0.5),
       toothMat,
     )
-    tooth.position.set(px, -h * 0.25 + rackH / 2 + toothStripH, 0)
+    tooth.position.set(0, -height * 0.25 + rackH / 2 + toothStripH, pz)
     g.add(tooth)
   }
 
   // Pinion gear — gearCylinder with actual teeth
-  const pinionRootR = h * 0.18
+  const pinionRootR = height * 0.6
   const pinionTipR = pinionRootR * 1.15
   const pinionH = rackD * 0.8
 
   const pinion = gearCylinder(pinionRootR, pinionTipR, pinionH, 12)
-  pinion.position.set(0, -h * 0.25 + rackH / 2 + toothStripH + pinionRootR * 0.85, 0)
+  pinion.position.set(0, -height * 0.25 + rackH / 2 + toothStripH + pinionRootR * 0.85, 0)
   g.add(pinion)
 
   // Pinion bore
@@ -622,7 +630,7 @@ function generateRackPinion(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Crossed Roller Bearing / Slewing Ring ───────────────────────────────────
 
-function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
+function generateSlewingRing(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const outerR = w / 2
@@ -649,7 +657,6 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
     nurbsTorus(trackR, h * 0.15, 48, 8),
     getMaterial('dark_chrome'),
   )
-  track.rotation.x = Math.PI / 2
   g.add(track)
 
   // Bore
@@ -670,7 +677,7 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichTransmission(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichTransmission(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('timing_belt'))
     return generateTimingBelt(id, dims)

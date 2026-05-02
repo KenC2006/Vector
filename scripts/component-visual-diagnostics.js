@@ -128,6 +128,8 @@ function analyzePreset({ category, component }) {
   const rotation = getRotationOverride(id)
   const shaftOverlay = getShaftOverlay(id)
   const perAxisBlacklisted = ['gripper', 'effector', 'claw', 'suction'].some(k => id.includes(k))
+  const collisionMesh = component.physical?.collision_mesh || null
+  const collisionSource = collisionMesh ? 'authored_mesh' : 'urdf_primitives'
 
   const urdfBoundsMm = measureUrdfVisualBoundsMm(component, category)
   const rich = measureRichBoundsMm(id, bboxMm)
@@ -175,6 +177,8 @@ function analyzePreset({ category, component }) {
     glbExists,
     stepExists,
     blacklisted,
+    collisionSource,
+    collisionMesh,
     currentSource: source,
     resolvedBoundsMm,
     glb,
@@ -432,9 +436,19 @@ function summarize(rows, findings, publicMirrorMatches) {
     glbPresent: rows.filter(r => r.glbExists).length,
     sourceStepPresent: rows.filter(r => r.stepExists).length,
     blacklisted: rows.filter(r => r.blacklisted).length,
+    collisionSources: countBy(rows, r => r.collisionSource),
     publicPresetMirrorMatches: publicMirrorMatches,
     findings: byCode,
   }
+}
+
+function countBy(items, keyFn) {
+  const out = {}
+  for (const item of items) {
+    const key = keyFn(item)
+    out[key] = (out[key] || 0) + 1
+  }
+  return out
 }
 
 function printTextReport(rows, findings, publicMirrorMatches) {
@@ -446,6 +460,8 @@ function printTextReport(rows, findings, publicMirrorMatches) {
   console.log(`GLB files present:          ${summary.glbPresent}`)
   console.log(`source STEP/STP present:    ${summary.sourceStepPresent}`)
   console.log(`blacklisted mesh overrides: ${summary.blacklisted}`)
+  console.log(`collision authored meshes:  ${summary.collisionSources.authored_mesh || 0}`)
+  console.log(`collision primitive fallback:${summary.collisionSources.urdf_primitives || 0}`)
   console.log(`preset mirror matches:      ${summary.publicPresetMirrorMatches ? 'yes' : 'no'}`)
   console.log(`bounds tolerance:           ${BOUNDS_TOLERANCE_MM}mm`)
   console.log(`non-uniform warn ratio:     ${NON_UNIFORM_WARN_RATIO}`)

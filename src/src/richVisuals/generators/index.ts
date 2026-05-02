@@ -12,17 +12,53 @@ import { generateRichTransmission } from './transmission'
 import { generateRichEndEffector } from './endEffectors'
 import { generateRichMobility } from './mobility'
 
+export interface ComponentVisualDims {
+  x: number  // width in meters
+  y: number  // depth in meters
+  z: number  // height in meters
+}
+
 export interface GeneratorDims {
   x: number  // width in meters
   y: number  // height in meters
   z: number  // depth in meters
 }
 
-export type RichGenerator = (id: string, dims: GeneratorDims, color?: [number, number, number]) => THREE.Group
+export type RichGenerator = (id: string, dims: ComponentVisualDims, color?: [number, number, number]) => THREE.Group
+export type LegacyRichGenerator = (id: string, dims: GeneratorDims, color?: [number, number, number]) => THREE.Group
+export type LegacyZUpRichGenerator = (id: string, dims: ComponentVisualDims, color?: [number, number, number]) => THREE.Group
 
 interface RegistryEntry {
   pattern: RegExp
   generator: RichGenerator
+}
+
+function urdfDimsToLegacyGeneratorDims(dims: ComponentVisualDims): GeneratorDims {
+  return { x: dims.x, y: dims.z, z: dims.y }
+}
+
+function adaptLegacyGenerator(generator: LegacyRichGenerator): RichGenerator {
+  return (id, dims, color) => generator(id, urdfDimsToLegacyGeneratorDims(dims), color)
+}
+
+function centeredWrapper(child: THREE.Group): THREE.Group {
+  const wrapper = new THREE.Group()
+  wrapper.add(child)
+  child.updateMatrixWorld(true)
+  const box = new THREE.Box3().setFromObject(child)
+  if (!box.isEmpty()) {
+    const center = box.getCenter(new THREE.Vector3())
+    child.position.sub(center)
+  }
+  return wrapper
+}
+
+function adaptLegacyZUpGenerator(generator: LegacyZUpRichGenerator): RichGenerator {
+  return (id, dims, color) => {
+    const child = generator(id, dims, color)
+    child.rotation.x = Math.PI / 2
+    return centeredWrapper(child)
+  }
 }
 
 const registry: RegistryEntry[] = [
@@ -39,10 +75,10 @@ const registry: RegistryEntry[] = [
   { pattern: /^sensor_/, generator: generateRichSensor },
 
   // Compute
-  { pattern: /^compute_/, generator: generateRichCompute },
+  { pattern: /^compute_/, generator: adaptLegacyZUpGenerator(generateRichCompute) },
 
   // Power
-  { pattern: /^power_/, generator: generateRichPower },
+  { pattern: /^power_/, generator: adaptLegacyGenerator(generateRichPower) },
 
   // Structural
   { pattern: /^structural_/, generator: generateRichStructural },

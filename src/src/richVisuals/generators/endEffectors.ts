@@ -4,7 +4,7 @@
  * Grippers, suction tools, tool changers, soft grippers, holders.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   boltCircle, screwHead,
@@ -21,9 +21,9 @@ function catMetal(strength = 0.3) {
 
 // ── Parallel Gripper ────────────────────────────────────────────────────────
 
-function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
+function generateParallelGripper(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const isLarge = id.includes('large')
   const chamfer = Math.min(w, d) * 0.06
 
@@ -31,7 +31,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
   const bodyW = w * 0.7
   const bodyH = h * 0.4
   const bodyD = d * 0.75
-  const body = new THREE.Mesh(nurbsFilletBox(bodyW, bodyD, bodyH, chamfer, 16), catMetal(0.35))
+  const body = new THREE.Mesh(nurbsFilletBox(bodyW, bodyH, bodyD, chamfer, 16), catMetal(0.35))
   g.add(body)
 
   // Rail detail — thin raised chamferedBox across front face (fingers slide on this)
@@ -39,7 +39,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
   const railThick = h * 0.035
   const railDepth = bodyD * 0.1
   const rail = new THREE.Mesh(
-    nurbsFilletBox(railW, railDepth, railThick, chamfer * 0.2, 12),
+    nurbsFilletBox(railW, railThick, railDepth, chamfer * 0.2, 12),
     getMaterial('brushed_steel'),
   )
   rail.position.set(0, -bodyH * 0.22, bodyD * 0.43)
@@ -47,7 +47,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
 
   // Second rail line (parallel guide)
   const rail2 = new THREE.Mesh(
-    nurbsFilletBox(railW, railDepth * 0.6, railThick * 0.7, chamfer * 0.15, 12),
+    nurbsFilletBox(railW, railThick * 0.7, railDepth * 0.6, chamfer * 0.15, 12),
     getMaterial('brushed_steel'),
   )
   rail2.position.set(0, -bodyH * 0.08, bodyD * 0.43)
@@ -64,7 +64,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
     const sliderH = bodyH * 0.25
     const sliderD = bodyD * 0.2
     const slider = new THREE.Mesh(
-      nurbsFilletBox(sliderW, sliderD, sliderH, chamfer * 0.2, 12),
+      nurbsFilletBox(sliderW, sliderH, sliderD, chamfer * 0.2, 12),
       catMetal(0.2),
     )
     slider.position.set(sx * fingerSpacing, -bodyH * 0.15, bodyD * 0.42)
@@ -72,7 +72,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
 
     // Finger body
     const finger = new THREE.Mesh(
-      nurbsFilletBox(fingerW, fingerD, fingerH, chamfer * 0.4, 16),
+      nurbsFilletBox(fingerW, fingerH, fingerD, chamfer * 0.4, 16),
       catMetal(0.25),
     )
     finger.position.set(sx * fingerSpacing, -bodyH * 0.5 - fingerH * 0.5 + fingerH * 0.05, 0)
@@ -83,7 +83,7 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
     const padH = fingerH * 0.75
     const padD = fingerD * 0.88
     const pad = new THREE.Mesh(
-      nurbsFilletBox(padW, padD, padH, chamfer * 0.1, 12),
+      nurbsFilletBox(padW, padH, padD, chamfer * 0.1, 12),
       getMaterial('rubber_black'),
     )
     pad.position.set(
@@ -117,9 +117,9 @@ function generateParallelGripper(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── 3-Finger Adaptive ───────────────────────────────────────────────────────
 
-function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
+function generate3FingerAdaptive(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Cylindrical base
@@ -145,7 +145,7 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
 
     // Finger body — chamferedBox
     const finger = new THREE.Mesh(
-      nurbsFilletBox(fingerW, fingerD, fingerH, chamfer * 0.3, 16),
+      nurbsFilletBox(fingerW, fingerH, fingerD, chamfer * 0.3, 16),
       catMetal(0.25),
     )
     finger.position.set(fx, -baseH * 0.5 - fingerH * 0.5 + fingerH * 0.05, fz)
@@ -175,9 +175,9 @@ function generate3FingerAdaptive(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Suction Cup ─────────────────────────────────────────────────────────────
 
-function generateSuctionCup(id: string, dims: GeneratorDims): THREE.Group {
+function generateSuctionCup(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   // Revolved bell shape via LatheGeometry (narrow tube -> wide bell -> thin lip)
   const tubeR = Math.min(w, d) * 0.12
   const bellR = Math.min(w, d) * 0.38
@@ -239,14 +239,14 @@ function generateSuctionCup(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Vacuum Pad Array ────────────────────────────────────────────────────────
 
-function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
+function generateVacuumPadArray(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Flat plate
   const plateH = h * 0.25
-  const plate = new THREE.Mesh(nurbsFilletBox(w * 0.85, d * 0.85, plateH, chamfer, 16), catMetal(0.3))
+  const plate = new THREE.Mesh(nurbsFilletBox(w * 0.85, plateH, d * 0.85, chamfer, 16), catMetal(0.3))
   g.add(plate)
 
   // 6 suction pad cylinders (3x2 grid)
@@ -288,9 +288,9 @@ function generateVacuumPadArray(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Magnetic Tool ───────────────────────────────────────────────────────────
 
-function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
+function generateMagneticTool(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Cylindrical body
@@ -343,9 +343,9 @@ function generateMagneticTool(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Tool Changer ────────────────────────────────────────────────────────────
 
-function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
+function generateToolChanger(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
 
   // Flat cylindrical plate
@@ -401,9 +401,9 @@ function generateToolChanger(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Soft Gripper ────────────────────────────────────────────────────────────
 
-function generateSoftGripper(id: string, dims: GeneratorDims): THREE.Group {
+function generateSoftGripper(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Cylindrical base
@@ -455,9 +455,9 @@ function generateSoftGripper(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Tool Holder (welding torch, pen marker, screwdriver bit) ────────────────
 
-function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
+function generateToolHolder(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Clamp ring — chamferedCylinder
@@ -522,7 +522,7 @@ function generateToolHolder(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichEndEffector(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichEndEffector(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('parallel_gripper')) return generateParallelGripper(id, dims)
   if (id.includes('3finger') || id.includes('three_finger')) return generate3FingerAdaptive(id, dims)

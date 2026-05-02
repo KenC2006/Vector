@@ -4,7 +4,7 @@
  * Wheels, casters, mecanum, omni, tracks, swerve drives, ball transfers, feet.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   flangePlate, labelRecess,
@@ -20,12 +20,12 @@ function catMetal(strength = 0.3) {
 
 // ── Driven Wheel ────────────────────────────────────────────────────────────
 
-function generateDrivenWheel(id: string, dims: GeneratorDims): THREE.Group {
+function generateDrivenWheel(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: axleWidth } = dims
 
   const tireR = Math.max(w, d) * 0.45
-  const tireWidth = h * 0.35
+  const tireWidth = axleWidth
   const hubR = tireR * 0.52
 
   // Tire — LatheGeometry revolved profile (hub -> sidewall curve -> tread flat -> other sidewall)
@@ -108,16 +108,16 @@ function generateDrivenWheel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Mecanum Wheel ───────────────────────────────────────────────────────────
 
-function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
+function generateMecanumWheel(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: axleWidth } = dims
   const chamfer = Math.min(w, d) * 0.03
 
   const plateR = Math.max(w, d) * 0.42
-  const hubH = h * 0.35
+  const hubH = axleWidth
 
   // 2 side plates
-  const plateH = h * 0.055
+  const plateH = axleWidth * 0.1
   for (const s of [-1, 1]) {
     const plate = new THREE.Mesh(
       nurbsCylinder(plateR, plateH, chamfer * 0.3, 36),
@@ -140,7 +140,7 @@ function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
   // Axle bore
   const axleR = hubR * 0.35
   const axle = new THREE.Mesh(
-    nurbsCylinder(axleR, hubH * 1.2, axleR * 0.1, 12),
+    nurbsCylinder(axleR, axleWidth * 0.95, axleR * 0.1, 12),
     getMaterial('dark_chrome'),
   )
   axle.rotation.x = Math.PI / 2
@@ -148,7 +148,7 @@ function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
 
   // 9 angled rollers at 45 degrees (rubber_black chamferedCylinders)
   const rollerR = plateR * 0.09
-  const rollerH = h * 0.24
+  const rollerH = axleWidth * 0.5
   const rollerCircleR = plateR * 0.72
   for (let i = 0; i < 9; i++) {
     const angle = (i / 9) * Math.PI * 2
@@ -170,9 +170,9 @@ function generateMecanumWheel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Caster Wheel ────────────────────────────────────────────────────────────
 
-function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
+function generateCasterWheel(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
 
   // Top mounting plate — chamferedCylinder
@@ -202,7 +202,7 @@ function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
   const forkSpacing = d * 0.2
   for (const sz of [-1, 1]) {
     const fork = new THREE.Mesh(
-      nurbsFilletBox(forkW, forkD, forkH, chamfer * 0.3, 16),
+      nurbsFilletBox(forkW, forkH, forkD, chamfer * 0.3, 16),
       catMetal(0.25),
     )
     fork.position.set(0, h * 0.05, sz * forkSpacing)
@@ -211,7 +211,7 @@ function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
 
   // Fork top bridge
   const bridge = new THREE.Mesh(
-    nurbsFilletBox(forkW, forkSpacing * 2.2, h * 0.06, chamfer * 0.2, 12),
+    nurbsFilletBox(forkW, h * 0.06, forkSpacing * 2.2, chamfer * 0.2, 12),
     catMetal(0.25),
   )
   bridge.position.y = h * 0.15
@@ -260,51 +260,51 @@ function generateCasterWheel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Track/Tread System ──────────────────────────────────────────────────────
 
-function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
+function generateTrackSystem(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const chamfer = Math.min(w, d) * 0.04
+  const { x: length, y: depth, z: height } = dims
+  const chamfer = Math.min(length, depth, height) * 0.04
 
-  const sprocketR = Math.min(h, d) * 0.3
-  const sprocketH = w * 0.12
-  const trackLen = d * 0.8
+  const sprocketR = height * 0.32
+  const sprocketDepth = depth * 0.72
+  const trackLen = length * 0.78
   const halfLen = trackLen * 0.5
 
   // 2 sprocket wheels with gear teeth
   for (const sx of [-1, 1]) {
     const sprocket = new THREE.Mesh(
-      nurbsCylinder(sprocketR, sprocketH, chamfer * 0.3, 24),
+      nurbsCylinder(sprocketR, sprocketDepth, chamfer * 0.3, 24),
       catMetal(0.35),
     )
     sprocket.rotation.x = Math.PI / 2
-    sprocket.position.set(0, 0, sx * halfLen)
+    sprocket.position.set(sx * halfLen, 0, 0)
     g.add(sprocket)
 
     // Gear teeth around sprocket circumference
     const toothCount = 12
     const toothW = sprocketR * 0.1
     const toothH2 = sprocketR * 0.12
-    const toothD = sprocketH * 0.8
+    const toothD = sprocketDepth * 0.8
     for (let i = 0; i < toothCount; i++) {
       const angle = (i / toothCount) * Math.PI * 2
-      const tx = Math.cos(angle) * sprocketR * 1.05
+      const tx = sx * halfLen + Math.cos(angle) * sprocketR * 1.05
       const ty = Math.sin(angle) * sprocketR * 1.05
       const tooth = new THREE.Mesh(
         nurbsFilletBox(toothD, toothW, toothH2, chamfer * 0.1, 12),
         catMetal(0.3),
       )
-      tooth.position.set(tx, ty, sx * halfLen)
+      tooth.position.set(tx, ty, 0)
       tooth.rotation.z = angle
       g.add(tooth)
     }
   }
 
   // Flat belt — top and bottom runs (chamferedBoxes)
-  const beltW = w * 0.25
-  const beltH = h * 0.06
+  const beltH = height * 0.08
+  const beltD = depth * 0.85
   for (const sy of [-1, 1]) {
     const belt = new THREE.Mesh(
-      nurbsFilletBox(beltW, trackLen * 1.1, beltH, chamfer * 0.2, 16),
+      nurbsFilletBox(trackLen * 1.1, beltH, beltD, chamfer * 0.2, 16),
       getMaterial('rubber_black'),
     )
     belt.position.y = sy * sprocketR
@@ -312,15 +312,15 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
   }
 
   // Side armor plates
-  const armorW = w * 0.04
+  const armorW = trackLen * 1.05
   const armorH = sprocketR * 2.4
-  const armorD = trackLen * 1.15
-  for (const sx2 of [-1, 1]) {
+  const armorD = depth * 0.08
+  for (const sz of [-1, 1]) {
     const armor = new THREE.Mesh(
-      nurbsFilletBox(armorW, armorD, armorH, chamfer * 0.3, 16),
+      nurbsFilletBox(armorW, armorH, armorD, chamfer * 0.3, 16),
       catMetal(0.2),
     )
-    armor.position.x = sx2 * beltW * 0.55
+    armor.position.z = sz * depth * 0.45
     g.add(armor)
   }
 
@@ -329,9 +329,9 @@ function generateTrackSystem(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Swerve Drive Module ─────────────────────────────────────────────────────
 
-function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
+function generateSwerveDrive(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
 
   // Housing — chamferedBox
@@ -339,7 +339,7 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
   const housingH = h * 0.35
   const housingD = d * 0.5
   const housing = new THREE.Mesh(
-    nurbsFilletBox(housingW, housingD, housingH, chamfer, 16),
+    nurbsFilletBox(housingW, housingH, housingD, chamfer, 16),
     catMetal(0.35),
   )
   housing.position.y = h * 0.15
@@ -362,7 +362,7 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
   const forkSpacing = d * 0.2
   for (const sz of [-1, 1]) {
     const fork = new THREE.Mesh(
-      nurbsFilletBox(forkW, forkD, forkH, chamfer * 0.3, 16),
+      nurbsFilletBox(forkW, forkH, forkD, chamfer * 0.3, 16),
       catMetal(0.25),
     )
     fork.position.set(0, -h * 0.1, sz * forkSpacing)
@@ -395,16 +395,16 @@ function generateSwerveDrive(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Omni Wheel ──────────────────────────────────────────────────────────────
 
-function generateOmniWheel(id: string, dims: GeneratorDims): THREE.Group {
+function generateOmniWheel(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: axleWidth } = dims
   const chamfer = Math.min(w, d) * 0.03
 
   const wheelR = Math.max(w, d) * 0.42
 
   // Hub
   const hubR = wheelR * 0.48
-  const hubH = h * 0.3
+  const hubH = axleWidth * 0.8
   const hub = new THREE.Mesh(
     nurbsCylinder(hubR, hubH, chamfer * 0.4, 24),
     catMetal(0.35),
@@ -423,7 +423,7 @@ function generateOmniWheel(id: string, dims: GeneratorDims): THREE.Group {
 
   // 10 small perpendicular chamferedCylinder rollers around circumference
   const rollerR = wheelR * 0.1
-  const rollerH = h * 0.26
+  const rollerH = axleWidth * 0.65
   for (let i = 0; i < 10; i++) {
     const angle = (i / 10) * Math.PI * 2
     const rx = Math.cos(angle) * wheelR
@@ -453,9 +453,9 @@ function generateOmniWheel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Ball Transfer Unit ──────────────────────────────────────────────────────
 
-function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
+function generateBallTransfer(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
 
   // Housing cylinder — chamferedCylinder
@@ -506,13 +506,16 @@ function generateBallTransfer(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Rubber Foot Pad ─────────────────────────────────────────────────────────
 
-function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
+function generateRubberFoot(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  // bounding_box_mm is in URDF Z-up convention: x,y = horizontal diameter, z = disc height.
-  // In GeneratorDims: w=x=diameter, h=y=diameter, d=z=height.
-  const discR = Math.min(w, h) * 0.5   // horizontal radius from x/y (both = diameter)
-  const discH = d                       // vertical thickness from z
+  const { x: w, y: d, z: h } = dims
+  // Authored URDF-Z-up: cylinder axes along world Z so the puck stands
+  // upright in both the carry-ghost path (which keeps the group's local
+  // rotation) and the assembled path (where applyRichVisuals overwrites
+  // the group rotation with the URDF primitive's origin_rpy = identity).
+  // nurbsCylinder revolves around local Y; Rx(π/2) per-mesh swings Y→Z.
+  const discR = Math.min(w, d) * 0.5
+  const discH = h
   const chamfer = discH * 0.08
 
   // Rubber body — chamferedCylinder (rubber_black)
@@ -522,6 +525,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
     nurbsCylinder(bodyR, bodyH, chamfer, 28),
     getMaterial('rubber_black'),
   )
+  body.rotation.x = Math.PI / 2
   g.add(body)
 
   // Wider base flange — nurbsCylinder (rubber_black)
@@ -531,18 +535,21 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
     nurbsCylinder(baseR, baseH, chamfer * 0.5, 28),
     getMaterial('rubber_black'),
   )
-  base.position.y = -bodyH * 0.5 - baseH * 0.3
+  base.rotation.x = Math.PI / 2
+  base.position.z = -bodyH * 0.5 - baseH * 0.3
   g.add(base)
 
-  // Center mounting bolt
+  // Center mounting bolt — pierces the body along Z
   const boltR = bodyR * 0.15
   const bolt = new THREE.Mesh(
     nurbsCylinder(boltR, bodyH * 1.2, boltR * 0.1, 12),
     getMaterial('brushed_steel'),
   )
+  bolt.rotation.x = Math.PI / 2
   g.add(bolt)
 
-  // Tread pattern on bottom (concentric rings)
+  // Tread pattern on bottom (concentric rings) — torus rings live in XY plane
+  // by virtue of nurbsTorus revolving around Y; Rx(π/2) lays them flat in XY.
   const treadMat = getMaterial('matte_plastic', 0x0a0a0a)
   for (let i = 1; i <= 3; i++) {
     const ringR = baseR * (i / 4)
@@ -551,18 +558,19 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
       treadMat,
     )
     tread.rotation.x = Math.PI / 2
-    tread.position.y = -bodyH * 0.5 - baseH * 0.5
+    tread.position.z = -bodyH * 0.5 - baseH * 0.5
     g.add(tread)
   }
 
-  // Washer on top
+  // Washer on top of the body
   const washerR = bodyR * 0.5
   const washerH = discH * 0.06
   const washer = new THREE.Mesh(
     nurbsCylinder(washerR, washerH, washerH * 0.2, 16),
     getMaterial('brushed_steel'),
   )
-  washer.position.y = bodyH * 0.5 + washerH * 0.5
+  washer.rotation.x = Math.PI / 2
+  washer.position.z = bodyH * 0.5 + washerH * 0.5
   g.add(washer)
 
   return g
@@ -570,7 +578,7 @@ function generateRubberFoot(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichMobility(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichMobility(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('caster')) return generateCasterWheel(id, dims)
   if (id.includes('mecanum')) return generateMecanumWheel(id, dims)

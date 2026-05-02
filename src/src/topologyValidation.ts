@@ -6,7 +6,7 @@
 
 import { componentPortsForPreset, isDrivetrainComponentId, isTireComponentId, resolveFaceToPort } from './attachmentNodes.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
-import { getOrComputeBbox } from './componentDims.ts'
+import { getAuthoredHalfBoundsMm } from './componentDims.ts'
 
 // Minimal shape of a preset that the validator needs. The real PresetComponent
 // in urdfAssembly.ts is a superset of this; pass anything structurally compatible.
@@ -88,14 +88,21 @@ function directChildren(components: AssemblyComponent[], parentName: string): As
 function portsForComponent(
   preset: ValidationPreset,
 ) {
-  const bb = getOrComputeBbox(preset.id, preset)
+  const bounds = resolvePresetBoundsMm(preset)
   return componentPortsForPreset(
     preset.id,
-    bb[0] / 2000,
-    bb[1] / 2000,
-    bb[2] / 2000,
+    bounds.hxMm / 1000,
+    bounds.hyMm / 1000,
+    bounds.hzMm / 1000,
     preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
   )
+}
+
+function resolvePresetBoundsMm(
+  preset: ValidationPreset,
+  instance?: { length_mm?: number },
+): { hxMm: number; hyMm: number; hzMm: number } {
+  return getAuthoredHalfBoundsMm(preset, instance)
 }
 
 // Mirrors the oppositeFace table in urdfAssembly.ts — the child's contact face
@@ -224,6 +231,14 @@ export function validateTopology(
     const parentComp = components.find(c => c.link_name === comp.attach_to)
     if (!parentComp) continue
     if (isActuatorId(parentComp.component_id)) {
+      // Split servos own their yoke + horn-link adapter internally, and
+      // Repair 1b intentionally collapses any spacer between two split
+      // servos. Warning here would contradict the auto-repair and feed
+      // back into the AI redesign prompt as bad guidance.
+      if (
+        isSplitServoComponentId(comp.component_id) &&
+        isSplitServoComponentId(parentComp.component_id)
+      ) continue
       warnings.push(
         `[DIRECT_SERVO_STACK] ${comp.link_name} (${comp.component_id}) mounts directly on ${parentComp.link_name} (${parentComp.component_id}). Insert a bracket or extrusion between them for a realistic assembly.`,
       )
@@ -256,7 +271,10 @@ export function validateTopology(
   const remaining = components.filter(c => c.attach_to)
   let maxIter = remaining.length * 2
   const toProcess = [...remaining]
-  if (roots.length > 0) visited.add(roots[0].link_name)
+  // Seed every root so that a multi-root graph (already flagged by Rule 6)
+  // doesn't produce a redundant "cycle or disconnected" error for components
+  // hanging off roots[1..n].
+  for (const r of roots) visited.add(r.link_name)
   while (toProcess.length > 0 && maxIter-- > 0) {
     const idx = toProcess.findIndex(c => visited.has(c.attach_to!))
     if (idx === -1) break
@@ -281,16 +299,13 @@ export function validateTopology(
   if (rootComp && rootComp.component_id.startsWith('structural_baseplate')) {
     const rootPreset = ctx.findPreset(rootComp.component_id)
     if (rootPreset) {
-      const rootBb = getOrComputeBbox(rootPreset.id, rootPreset)
-      const baseW = Math.min(rootBb[0], rootBb[1])
+      const rootBounds = resolvePresetBoundsMm(rootPreset, rootComp)
+      const baseW = Math.min(rootBounds.hxMm * 2, rootBounds.hyMm * 2)
 
       const heightOf = (comp: AssemblyComponent): number => {
         const p = ctx.findPreset(comp.component_id)
         if (!p) return 0
-        const bb = getOrComputeBbox(p.id, p)
-        let h = bb[2]
-        if (comp.length_mm && p.physical.cross_section_mm) h = comp.length_mm
-        return h
+        return resolvePresetBoundsMm(p, comp).hzMm * 2
       }
       const stacksVertically = (child: AssemblyComponent): boolean => {
         const f = child.attach_face ?? 'top'

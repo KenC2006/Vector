@@ -165,7 +165,9 @@ def _sim_rpy_matrix(rpy: list) -> list:
     rx = [[1, 0, 0], [0, cr, -sr], [0, sr, cr]]
     ry = [[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]
     rz = [[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]
-    return _sim_mat_mul(_sim_mat_mul(rz, ry), rx)
+    # Match the frontend assembler's Three.js Euler XYZ convention used for
+    # generated URDF RPY values.
+    return _sim_mat_mul(_sim_mat_mul(rx, ry), rz)
 
 
 def _sim_vec_add(a: list, b: list) -> list:
@@ -961,11 +963,16 @@ class JSONRPCServer:
                     images=images,
                 )
                 self._emit_progress("done", "Complete")
-                return {
+                response = {
                     "explanation": result.get("explanation", "Assembly complete"),
-                    "new_urdf": result.get("new_urdf", urdf_content),
+                    "new_urdf": result.get("new_urdf") or urdf_content,
                     "stats": result.get("stats", "Assembly complete"),
                 }
+                if "assembly_graph" in result:
+                    response["assembly_graph"] = result["assembly_graph"]
+                if "topology_ops" in result:
+                    response["topology_ops"] = result["topology_ops"]
+                return response
 
             # Standard edit path
             kg_json = {}

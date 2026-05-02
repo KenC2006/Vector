@@ -30,6 +30,11 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
   let pendingNewText: string | null = null
   let activeChatActionsId: string | null = null
 
+  function releaseAiBusyLock(editor?: monaco.editor.IStandaloneCodeEditor) {
+    document.body.classList.remove('ai-busy')
+    editor?.updateOptions({ readOnly: false })
+  }
+
   function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
     const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
     if (!editor) return
@@ -137,6 +142,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
 
   function acceptInlineDiff() {
     const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+    releaseAiBusyLock(editor)
     const newText = pendingNewText
     const urdfApi = deps.getUrdfAssemblyApi()
     if (pendingOldText && urdfApi) {
@@ -173,6 +179,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
 
   function dismissInlineDiff() {
     const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
+    releaseAiBusyLock(editor)
     const oldText = pendingOldText
 
     clearInlineDiff()

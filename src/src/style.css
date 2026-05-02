@@ -2731,3 +2731,52 @@ html.theme-tokyo-night {
 }
 .vc-dd-item:hover .vc-dd-delete { opacity: 1; }
 .vc-dd-delete:hover { color: var(--red); background: rgba(244,67,54,0.1); }
+
+/* AI-busy lockout — applied while a generation is in flight; cleared as soon as
+   the apply/dismiss prompt is on screen so the user can't fight the model.
+   Viewport (3D camera + sim controls) stays interactive on purpose. */
+body.ai-busy #activity-bar,
+body.ai-busy #sidebar,
+body.ai-busy #editor-panel,
+body.ai-busy #tab-bar,
+body.ai-busy #statusbar {
+  pointer-events: none;
+  opacity: 0.55;
+  filter: saturate(0.7);
+}
+body.ai-busy #viewport-chat #vc-input,
+body.ai-busy #viewport-chat #vc-attach-btn { pointer-events: none; opacity: 0.5; }
+body.ai-busy::after {
+  content: 'AI generating — click ✕ in chat to cancel';
+  position: fixed;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 6px 14px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #e5c07b;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  pointer-events: none;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+}
+
+/* Cancel button inside the AI "thinking" bubble */
+.ai-thinking-cancel {
+  margin-left: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dimmer, #aaa);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ai-thinking-cancel:hover {
+  background: rgba(244, 67, 54, 0.15);
+  color: #f85149;
+  border-color: #f85149;
+}

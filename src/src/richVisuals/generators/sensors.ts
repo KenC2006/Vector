@@ -6,7 +6,7 @@
  * for Fusion-quality mechanical part visuals.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims, GeneratorDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   boltCircle, mountingHole,
@@ -30,11 +30,28 @@ function catPcb(strength = 0.4) {
   return getTintedMaterial('pcb_green', ...CAT_COLOR, strength)
 }
 
+function centeredWrapper(child: THREE.Group): THREE.Group {
+  const wrapper = new THREE.Group()
+  wrapper.add(child)
+  child.updateMatrixWorld(true)
+  const box = new THREE.Box3().setFromObject(child)
+  if (!box.isEmpty()) {
+    const center = box.getCenter(new THREE.Vector3())
+    child.position.sub(center)
+  }
+  return wrapper
+}
+
+function wrapLegacyZUpSensor(child: THREE.Group): THREE.Group {
+  child.rotation.x = Math.PI / 2
+  return centeredWrapper(child)
+}
+
 // ── Depth Camera ────────────────────────────────────────────────────────────
 
-function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
+function generateDepthCamera(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h) * 0.05
   void id
 
@@ -147,7 +164,7 @@ function generateDepthCamera(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── LiDAR 2D ────────────────────────────────────────────────────────────────
 
-function generateLidar2D(id: string, dims: GeneratorDims): THREE.Group {
+function generateLidar2D(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -244,7 +261,7 @@ function generateLidar2D(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── LiDAR 3D ────────────────────────────────────────────────────────────────
 
-function generateLidar3D(id: string, dims: GeneratorDims): THREE.Group {
+function generateLidar3D(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -423,9 +440,9 @@ function generateIMU(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Ultrasonic ──────────────────────────────────────────────────────────────
 
-function generateUltrasonic(id: string, dims: GeneratorDims): THREE.Group {
+function generateUltrasonic(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h) * 0.06
   void id
 
@@ -588,7 +605,7 @@ function generateToF(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Force Torque 6-axis ─────────────────────────────────────────────────────
 
-function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
+function generateForceTorque(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -680,7 +697,7 @@ function generateForceTorque(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Joint Encoder ───────────────────────────────────────────────────────────
 
-function generateEncoder(id: string, dims: GeneratorDims): THREE.Group {
+function generateEncoder(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -734,9 +751,9 @@ function generateEncoder(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Thermal Camera ──────────────────────────────────────────────────────────
 
-function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
+function generateThermalCamera(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h) * 0.06
   void id
 
@@ -820,9 +837,9 @@ function generateThermalCamera(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Contact / Limit Switch ──────────────────────────────────────────────────
 
-function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
+function generateSwitch(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h) * 0.05
   void id
 
@@ -838,7 +855,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
   const leverH = h * 0.06
   const leverD = d * 0.3
   const lever = new THREE.Mesh(
-    nurbsFilletBox(leverW, leverD, leverH, leverH * 0.15, 12),
+    nurbsFilletBox(leverW, leverH, leverD, leverH * 0.15, 12),
     getMaterial('brushed_steel'),
   )
   lever.position.set(w * 0.3, h * 0.35, 0)
@@ -888,7 +905,7 @@ function generateSwitch(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Rotary Potentiometer ────────────────────────────────────────────────────
 
-function generatePotentiometer(id: string, dims: GeneratorDims): THREE.Group {
+function generatePotentiometer(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -1165,23 +1182,23 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichSensor(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichSensor(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('depth_camera')) return generateDepthCamera(id, dims)
   if (id.includes('lidar_3d')) return generateLidar3D(id, dims)
   if (id.includes('lidar_2d') || id.includes('lidar')) return generateLidar2D(id, dims)
-  if (id.includes('imu')) return generateIMU(id, dims)
+  if (id.includes('imu')) return wrapLegacyZUpSensor(generateIMU(id, dims))
   if (id.includes('ultrasonic')) return generateUltrasonic(id, dims)
-  if (id.includes('tof')) return generateToF(id, dims)
+  if (id.includes('tof')) return wrapLegacyZUpSensor(generateToF(id, dims))
   if (id.includes('force_torque')) return generateForceTorque(id, dims)
   if (id.includes('encoder')) return generateEncoder(id, dims)
-  if (id.includes('thermal_camera')) return generateThermalCamera(id, dims)
-  if (id.includes('contact_switch') || id.includes('limit_switch')) return generateSwitch(id, dims)
+  if (id.includes('thermal')) return generateThermalCamera(id, dims)
+  if (id.includes('contact_switch') || id.includes('contact_bumper') || id.includes('limit_switch')) return generateSwitch(id, dims)
   if (id.includes('potentiometer')) return generatePotentiometer(id, dims)
-  if (id.includes('load_cell')) return generateLoadCell(id, dims)
-  if (id.includes('current') || id.includes('voltage')) return generateCurrentVoltage(id, dims)
-  if (id.includes('color') || id.includes('light')) return generateColorLight(id, dims)
-  if (id.includes('barometer')) return generateBarometer(id, dims)
+  if (id.includes('load_cell')) return wrapLegacyZUpSensor(generateLoadCell(id, dims))
+  if (id.includes('current') || id.includes('voltage')) return wrapLegacyZUpSensor(generateCurrentVoltage(id, dims))
+  if (id.includes('color') || id.includes('light')) return wrapLegacyZUpSensor(generateColorLight(id, dims))
+  if (id.includes('barometer') || id.includes('barometric')) return wrapLegacyZUpSensor(generateBarometer(id, dims))
   // Fallback: generic small sensor box
-  return generateIMU(id, dims)
+  return wrapLegacyZUpSensor(generateIMU(id, dims))
 }

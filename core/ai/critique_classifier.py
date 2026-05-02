@@ -89,9 +89,6 @@ INFEASIBLE_PATTERNS: List[Tuple[str, str]] = [
 # names a missing component wins over aesthetic language in the same sentence.
 INFEASIBLE_AESTHETIC_PATTERNS: List[Tuple[str, str]] = [
     (r"\b(boxy|integrated body|mammal(?:-|\s)like|spot(?:-|\s)style|dachshund)\b", "aesthetic/anatomical critique (no preset action available)"),
-    (r"\bknees?\s+(?:point|bend|face|angle)\w*", "knee-angle critique (not a preset-selectable property)"),
-    (r"\bmirror(?:ed)?\s+\w*\s*(?:pitch|leg|knee|hip|limb|orient|front|rear)\b", "leg-mirror critique (same-sign rpy is the Spot look; reshuffling regresses design)"),
-    (r"\b(?:leg|knee|hip|limb)s?\s+\w*\s*mirror(?:ed)?\b", "leg-mirror critique (same-sign rpy is the Spot look; reshuffling regresses design)"),
     (r"\b(?:wrong|off|bad|incorrect)\s+(?:proportions?|ratio|aspect)\b", "proportion critique (no preset reshapes existing components)"),
     (r"\b(?:too\s+(?:thin|thick|narrow|wide)|thin(?:ness)?|thick(?:ness)?)\s+(?:chassis|torso|baseplate|body)\b", "dimension critique on structural preset (fixed dimensions)"),
 ]
@@ -484,16 +481,17 @@ if __name__ == "__main__":  # pragma: no cover
          "detail": "the camera mount structural_bracket_l_6 is floating ~20mm in front of the chassis; the bracket is too small to bridge the gap, requiring a structural_extrusion or longer mount",
          "expect_drop": False},
         # Aesthetic-pattern regression coverage (from old TS regex, commits
-        # df74d83 / 5f82e8a). These must drop even without the Sonnet stage.
+        # df74d83 / 5f82e8a). Vague body/proportion asks still drop, but
+        # concrete knee/mirror critiques are actionable through attach_rpy.
         {"check": "proportions", "pass": False,
          "detail": "the chassis looks too boxy for a quadruped, should be more mammal-like",
          "expect_drop": True},
         {"check": "shape_match", "pass": False,
          "detail": "the rear knees point forward instead of backward like a dog",
-         "expect_drop": True},
+         "expect_drop": False},
         {"check": "shape_match", "pass": False,
          "detail": "front legs should be mirrored pitch vs rear legs",
-         "expect_drop": True},
+         "expect_drop": False},
         # GATE_KEEP bypass: aesthetic language wrapped around an actionable ask.
         {"check": "completeness", "pass": False,
          "detail": "the legs are mirrored but missing a servo on the front-left hip",

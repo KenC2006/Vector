@@ -6,7 +6,7 @@
  * for Fusion-quality mechanical part visuals.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   boltCircle, mountingHole, labelRecess, flangePlate, cablePort,
@@ -26,7 +26,7 @@ function catPlastic(strength = 0.25) {
 
 // ── DC Motor ────────────────────────────────────────────────────────────────
 
-function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
+function generateDCMotor(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -49,7 +49,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
   const termD = r * 0.08
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      nurbsFilletBox(termW, termD, termH, termW * 0.08, 12),
+      nurbsFilletBox(termW, termH, termD, termW * 0.08, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * r * 0.35, -(d * 0.36 + d * 0.05 + termH / 2), 0)
@@ -121,7 +121,7 @@ function generateDCMotor(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Gear Motor ──────────────────────────────────────────────────────────────
 
-function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
+function generateGearMotor(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const motorR = w * 0.38
@@ -141,7 +141,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal bumps on motor rear
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      nurbsFilletBox(w * 0.04, w * 0.03, d * 0.028, w * 0.005, 12),
+      nurbsFilletBox(w * 0.04, d * 0.028, w * 0.03, w * 0.005, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * motorR * 0.4, -d * 0.15 - d * 0.225 - d * 0.06, 0)
@@ -162,7 +162,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
   const gbH = h * 0.85
   const gbD = d * 0.35
   const gearbox = new THREE.Mesh(
-    nurbsFilletBox(gbW, gbH, gbD, chamfer * 1.8, 16),
+    nurbsFilletBox(gbW, gbD, gbH, chamfer * 1.8, 16),
     catMetal(0.35),
   )
   gearbox.position.y = d * 0.2
@@ -223,7 +223,7 @@ function generateGearMotor(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Coreless Motor ──────────────────────────────────────────────────────────
 
-function generateCoreless(id: string, dims: GeneratorDims): THREE.Group {
+function generateCoreless(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -265,7 +265,7 @@ function generateCoreless(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Worm Gear Motor ─────────────────────────────────────────────────────────
 
-function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
+function generateWormGear(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const motorR = w * 0.35
@@ -281,7 +281,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal bumps
   for (const sx of [-1, 1]) {
     const term = new THREE.Mesh(
-      nurbsFilletBox(w * 0.03, w * 0.025, d * 0.025, w * 0.004, 12),
+      nurbsFilletBox(w * 0.03, d * 0.025, w * 0.025, w * 0.004, 12),
       getMaterial('copper_trace'),
     )
     term.position.set(sx * motorR * 0.35, -(d * 0.25 + d * 0.04 + d * 0.012), 0)
@@ -293,7 +293,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
   const gbH = h * 0.5
   const gbD = d * 0.4
   const gearbox = new THREE.Mesh(
-    nurbsFilletBox(gbW, gbH, gbD, chamfer * 1.2, 16),
+    nurbsFilletBox(gbW, gbD, gbH, chamfer * 1.2, 16),
     catMetal(0.35),
   )
   gearbox.position.set(w * 0.3, d * 0.275 * 0.55, 0)
@@ -330,7 +330,7 @@ function generateWormGear(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Hub Motor ───────────────────────────────────────────────────────────────
 
-function generateHubMotor(id: string, dims: GeneratorDims): THREE.Group {
+function generateHubMotor(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const outerR = w / 2
@@ -430,7 +430,7 @@ function generateHubMotor(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Harmonic Drive ──────────────────────────────────────────────────────────
 
-function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
+function generateHarmonicDrive(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -526,7 +526,7 @@ function generateHarmonicDrive(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Pancake Motor ───────────────────────────────────────────────────────────
 
-function generatePancake(id: string, dims: GeneratorDims): THREE.Group {
+function generatePancake(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -578,7 +578,7 @@ function generatePancake(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Brushless Inrunner ──────────────────────────────────────────────────────
 
-function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group {
+function generateBrushlessInrunner(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -633,7 +633,7 @@ function generateBrushlessInrunner(id: string, dims: GeneratorDims): THREE.Group
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichMotor(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichMotor(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('hub')) return generateHubMotor(id, dims)
   if (id.includes('harmonic')) return generateHarmonicDrive(id, dims)

@@ -4,7 +4,7 @@
  * Fusion-quality visuals instead of composing primitive boxes with dark grooves.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   mountingHole, screwHead,
@@ -30,18 +30,18 @@ function baseMat(id: string) {
 
 // ── T-Slot Extrusion 2020/4040 ─────────────────────────────────────────────
 
-function generateExtrusion(id: string, dims: GeneratorDims): THREE.Group {
+function generateExtrusion(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: _h, z: d } = dims
+  const { x: w, y: d, z: length } = dims
   const is4040 = id.includes('4040')
   const size = is4040 ? Math.min(w, d) : Math.min(w, d)
-  const length = dims.y
 
   // Single extruded T-slot profile — the biggest visual upgrade
   const body = new THREE.Mesh(
     tSlotExtrusion(size, length),
     catMetal('anodized_aluminum', 0.2),
   )
+  body.rotation.x = -Math.PI / 2
   g.add(body)
 
   // For 4040: four T-slot extrusions in a 2x2 grid
@@ -56,6 +56,7 @@ function generateExtrusion(id: string, dims: GeneratorDims): THREE.Group {
           tSlotExtrusion(halfSize, length),
           catMetal('anodized_aluminum', 0.2),
         )
+        quad.rotation.x = -Math.PI / 2
         quad.position.set(sx * offset, 0, sz * offset)
         g.add(quad)
       }
@@ -67,7 +68,7 @@ function generateExtrusion(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── I-Beam ──────────────────────────────────────────────────────────────────
 
-function generateIBeam(id: string, dims: GeneratorDims): THREE.Group {
+function generateIBeam(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const mat = baseMat(id)
@@ -80,6 +81,7 @@ function generateIBeam(id: string, dims: GeneratorDims): THREE.Group {
     iBeamExtrusion(w, h, webT, flangeT, length),
     mat,
   )
+  beam.rotation.x = -Math.PI / 2
   g.add(beam)
 
   return g
@@ -87,7 +89,7 @@ function generateIBeam(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── C-Channel ───────────────────────────────────────────────────────────────
 
-function generateCChannel(id: string, dims: GeneratorDims): THREE.Group {
+function generateCChannel(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const mat = baseMat(id)
@@ -99,6 +101,7 @@ function generateCChannel(id: string, dims: GeneratorDims): THREE.Group {
     cChannelExtrusion(w, h, thickness, length),
     mat,
   )
+  channel.rotation.x = -Math.PI / 2
   g.add(channel)
 
   return g
@@ -106,7 +109,7 @@ function generateCChannel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Angle Stock (L-profile) ─────────────────────────────────────────────────
 
-function generateAngle(id: string, dims: GeneratorDims): THREE.Group {
+function generateAngle(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const mat = baseMat(id)
@@ -117,7 +120,6 @@ function generateAngle(id: string, dims: GeneratorDims): THREE.Group {
     lBracketExtrusion(h, w, thick, length),
     mat,
   )
-  angle.rotation.x = Math.PI / 2
   g.add(angle)
 
   return g
@@ -125,15 +127,15 @@ function generateAngle(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── L-Bracket ───────────────────────────────────────────────────────────────
 
-function generateLBracket(id: string, dims: GeneratorDims): THREE.Group {
+function generateLBracket(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const mat = catMetal()
   const thick = Math.min(w, h, d) * 0.18
 
   // Extruded L-bracket profile
   const bracket = new THREE.Mesh(
-    lBracketExtrusion(h * 0.7, d, thick, w),
+    lBracketExtrusion(h, w, thick, d),
     mat,
   )
   g.add(bracket)
@@ -150,7 +152,7 @@ function generateLBracket(id: string, dims: GeneratorDims): THREE.Group {
   for (const sx of [-1, 1]) {
     const hole = mountingHole(holeR, thick * 1.1)
     hole.rotation.x = Math.PI / 2
-    hole.position.set(sx * w * 0.28, -d / 2 + thick / 2, h * 0.25)
+    hole.position.set(sx * w * 0.28, h * 0.25, -d / 2 + thick / 2)
     g.add(hole)
   }
 
@@ -159,21 +161,21 @@ function generateLBracket(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── U-Bracket ───────────────────────────────────────────────────────────────
 
-function generateUBracket(id: string, dims: GeneratorDims): THREE.Group {
+function generateUBracket(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
   const mat = catMetal()
   const thick = Math.min(w, h, d) * 0.15
 
   // Base plate
-  const base = new THREE.Mesh(nurbsFilletBox(w, d, thick, chamfer, 16), mat)
+  const base = new THREE.Mesh(nurbsFilletBox(w, thick, d, chamfer, 16), mat)
   base.position.y = -h / 2 + thick / 2
   g.add(base)
 
   // Two side walls
   for (const sx of [-1, 1]) {
-    const wall = new THREE.Mesh(nurbsFilletBox(thick, d * 0.8, h - thick, chamfer, 12), mat)
+    const wall = new THREE.Mesh(nurbsFilletBox(thick, h - thick, d * 0.8, chamfer, 12), mat)
     wall.position.set(sx * (w / 2 - thick / 2), thick / 2, 0)
     g.add(wall)
 
@@ -197,20 +199,20 @@ function generateUBracket(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── T-Bracket ───────────────────────────────────────────────────────────────
 
-function generateTBracket(id: string, dims: GeneratorDims): THREE.Group {
+function generateTBracket(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
   const mat = catMetal()
   const thick = Math.min(w, h, d) * 0.15
 
   // Horizontal bar
-  const hBar = new THREE.Mesh(nurbsFilletBox(w, d, thick, chamfer, 16), mat)
+  const hBar = new THREE.Mesh(nurbsFilletBox(w, thick, d, chamfer, 16), mat)
   hBar.position.y = -h / 2 + thick / 2
   g.add(hBar)
 
   // Vertical stem
-  const stem = new THREE.Mesh(nurbsFilletBox(thick * 1.5, d * 0.8, h - thick, chamfer, 12), mat)
+  const stem = new THREE.Mesh(nurbsFilletBox(thick * 1.5, h - thick, d * 0.8, chamfer, 12), mat)
   stem.position.y = thick / 2
   g.add(stem)
 
@@ -231,27 +233,26 @@ function generateTBracket(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Joint Plate ─────────────────────────────────────────────────────────────
 
-function generateJointPlate(id: string, dims: GeneratorDims): THREE.Group {
+function generateJointPlate(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const thick = d
-  const chamfer = Math.min(Math.min(w, h) * 0.03, thick * 0.4)
+  const { x: w, y: d, z: h } = dims
+  const thick = h
+  const chamfer = Math.min(Math.min(w, d) * 0.03, thick * 0.4)
   const mat = catMetal()
 
-  const plate = new THREE.Mesh(nurbsFilletBox(w, h, thick, chamfer, 16), mat)
+  const plate = new THREE.Mesh(nurbsFilletBox(w, thick, d, chamfer, 16), mat)
   g.add(plate)
 
   // Grid of mounting holes
-  const holeR = Math.min(w, h) * 0.03
-  const cols = Math.max(2, Math.round(w / (Math.min(w, h) * 0.3)))
-  const rows = Math.max(2, Math.round(h / (Math.min(w, h) * 0.3)))
+  const holeR = Math.min(w, d) * 0.03
+  const cols = Math.max(2, Math.round(w / (Math.min(w, d) * 0.3)))
+  const rows = Math.max(2, Math.round(d / (Math.min(w, d) * 0.3)))
   for (let ix = 0; ix < cols; ix++) {
     for (let iy = 0; iy < rows; iy++) {
       const px = -w * 0.4 + (ix / (cols - 1)) * w * 0.8
-      const py = -h * 0.4 + (iy / (rows - 1)) * h * 0.8
+      const pz = -d * 0.4 + (iy / (rows - 1)) * d * 0.8
       const hole = mountingHole(holeR, thick * 1.1)
-      hole.position.set(px, py, 0)
-      hole.rotation.x = Math.PI / 2
+      hole.position.set(px, 0, pz)
       g.add(hole)
     }
   }
@@ -261,33 +262,31 @@ function generateJointPlate(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Baseplate ───────────────────────────────────────────────────────────────
 
-function generateBaseplate(id: string, dims: GeneratorDims): THREE.Group {
+function generateBaseplate(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const thick = d
-  const chamfer = Math.min(Math.min(w, h) * 0.04, thick * 0.4)
+  const { x: w, y: d, z: h } = dims
+  const thick = h
+  const chamfer = Math.min(Math.min(w, d) * 0.04, thick * 0.4)
   const mat = catMetal('anodized_aluminum', 0.2)
 
-  const plate = new THREE.Mesh(nurbsFilletBox(w, h, thick, chamfer, 16), mat)
+  const plate = new THREE.Mesh(nurbsFilletBox(w, thick, d, chamfer, 16), mat)
   g.add(plate)
 
   // Mounting hole grid pattern
-  const holeR = Math.min(w, h) * 0.035
+  const holeR = Math.min(w, d) * 0.035
   for (const sx of [-1, 1]) {
     for (const sy of [-1, 1]) {
       const hole = mountingHole(holeR, thick * 1.1)
-      hole.position.set(sx * w * 0.38, sy * h * 0.38, 0)
-      hole.rotation.x = Math.PI / 2
+      hole.position.set(sx * w * 0.38, 0, sy * d * 0.38)
       g.add(hole)
     }
   }
   const centerHole = mountingHole(holeR * 1.2, thick * 1.1)
-  centerHole.rotation.x = Math.PI / 2
   g.add(centerHole)
 
-  // Label
-  const label = labelRecess(w * 0.4, h * 0.15, chamfer * 0.3)
-  label.position.set(0, -h * 0.25, thick * 0.51)
+  // Label sits on the top face (+Y) without changing the plate footprint.
+  const label = labelRecess(w * 0.4, chamfer * 0.3, d * 0.15)
+  label.position.set(0, thick * 0.51, -d * 0.25)
   g.add(label)
 
   return g
@@ -295,25 +294,27 @@ function generateBaseplate(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Carbon Fiber Round Tube ─────────────────────────────────────────────────
 
-function generateCFTubeRound(id: string, dims: GeneratorDims): THREE.Group {
+function generateCFTubeRound(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, z: h } = dims
+  const { x: w, z: length } = dims
   const r = w / 2
   const chamfer = r * 0.05
 
   // Dark matte plastic material for carbon fiber look
   const tube = new THREE.Mesh(
-    nurbsCylinder(r, h, chamfer, 32),
+    nurbsCylinder(r, length, chamfer, 32),
     getMaterial('matte_plastic', 0x1a1a1a),
   )
+  tube.rotation.x = Math.PI / 2
   g.add(tube)
 
   // Inner bore (visible at ends)
   const boreR = r * 0.75
   const bore = new THREE.Mesh(
-    new THREE.CylinderGeometry(boreR, boreR, h * 1.01, 24),
+    new THREE.CylinderGeometry(boreR, boreR, length * 1.01, 24),
     getMaterial('dark_chrome'),
   )
+  bore.rotation.x = Math.PI / 2
   g.add(bore)
 
   return g
@@ -321,7 +322,7 @@ function generateCFTubeRound(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Carbon Fiber Square Tube ────────────────────────────────────────────────
 
-function generateCFTubeSquare(id: string, dims: GeneratorDims): THREE.Group {
+function generateCFTubeSquare(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.06
@@ -350,7 +351,7 @@ function generateCFTubeSquare(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Flat / Round Bar / Threaded Rod ─────────────────────────────────────────
 
-function generateBar(id: string, dims: GeneratorDims): THREE.Group {
+function generateBar(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.06
@@ -380,14 +381,14 @@ function generateBar(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Sheet Metal ─────────────────────────────────────────────────────────────
 
-function generateSheetMetal(id: string, dims: GeneratorDims): THREE.Group {
+function generateSheetMetal(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const thick = Math.max(d, Math.min(w, h) * 0.02)
+  const { x: w, y: d, z: h } = dims
+  const thick = Math.max(h, Math.min(w, d) * 0.02)
   const chamfer = thick * 0.3
 
   const sheet = new THREE.Mesh(
-    nurbsFilletBox(w, h, thick, chamfer, 12),
+    nurbsFilletBox(w, thick, d, chamfer, 12),
     baseMat(id),
   )
   g.add(sheet)
@@ -397,7 +398,7 @@ function generateSheetMetal(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Hex Standoff ────────────────────────────────────────────────────────────
 
-function generateHexStandoff(id: string, dims: GeneratorDims): THREE.Group {
+function generateHexStandoff(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: length } = dims
   const r = w / 2
@@ -428,15 +429,15 @@ function generateHexStandoff(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Gusset (Triangular Plate) ───────────────────────────────────────────────
 
-function generateGusset(id: string, dims: GeneratorDims): THREE.Group {
+function generateGusset(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const thick = d
+  const { x: w, y: d, z: h } = dims
+  const thick = h
 
   const shape = new THREE.Shape()
-  shape.moveTo(-w / 2, -h / 2)
-  shape.lineTo(w / 2, -h / 2)
-  shape.lineTo(-w / 2, h / 2)
+  shape.moveTo(-w / 2, -d / 2)
+  shape.lineTo(w / 2, -d / 2)
+  shape.lineTo(-w / 2, d / 2)
   shape.closePath()
 
   const geom = new THREE.ExtrudeGeometry(shape, {
@@ -447,24 +448,25 @@ function generateGusset(id: string, dims: GeneratorDims): THREE.Group {
     bevelSegments: 2,
   })
   geom.translate(0, 0, -thick / 2)
+  geom.rotateX(Math.PI / 2)
 
   const mesh = new THREE.Mesh(geom, catMetal())
   g.add(mesh)
 
   // Mounting holes at each corner
-  const holeR = Math.min(w, h) * 0.035
+  const holeR = Math.min(w, d) * 0.035
   const hole1 = mountingHole(holeR, thick * 1.1)
-  hole1.position.set(-w * 0.35, -h * 0.35, 0)
+  hole1.position.set(-w * 0.35, 0, -d * 0.35)
   hole1.rotation.x = Math.PI / 2
   g.add(hole1)
 
   const hole2 = mountingHole(holeR, thick * 1.1)
-  hole2.position.set(w * 0.35, -h * 0.35, 0)
+  hole2.position.set(w * 0.35, 0, -d * 0.35)
   hole2.rotation.x = Math.PI / 2
   g.add(hole2)
 
   const hole3 = mountingHole(holeR, thick * 1.1)
-  hole3.position.set(-w * 0.35, h * 0.2, 0)
+  hole3.position.set(-w * 0.35, 0, d * 0.2)
   hole3.rotation.x = Math.PI / 2
   g.add(hole3)
 
@@ -473,7 +475,7 @@ function generateGusset(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Corner Cube ─────────────────────────────────────────────────────────────
 
-function generateCornerCube(id: string, dims: GeneratorDims): THREE.Group {
+function generateCornerCube(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const s = Math.min(w, h, d)
@@ -503,25 +505,24 @@ function generateCornerCube(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Cross Plate ─────────────────────────────────────────────────────────────
 
-function generateCrossPlate(id: string, dims: GeneratorDims): THREE.Group {
+function generateCrossPlate(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-  const thick = d
+  const { x: w, y: d, z: h } = dims
+  const thick = h
   const chamfer = thick * 0.3
-  const armW = Math.min(w, h) * 0.35
+  const armW = Math.min(w, d) * 0.35
   const mat = catMetal()
 
-  const hArm = new THREE.Mesh(nurbsFilletBox(w, armW, thick, chamfer, 16), mat)
+  const hArm = new THREE.Mesh(nurbsFilletBox(w, thick, armW, chamfer, 16), mat)
   g.add(hArm)
 
-  const vArm = new THREE.Mesh(nurbsFilletBox(armW, h, thick, chamfer, 16), mat)
+  const vArm = new THREE.Mesh(nurbsFilletBox(armW, thick, d, chamfer, 16), mat)
   g.add(vArm)
 
   const holeR = armW * 0.12
-  for (const [px, py] of [[w * 0.4, 0], [-w * 0.4, 0], [0, h * 0.4], [0, -h * 0.4]] as [number, number][]) {
+  for (const [px, pz] of [[w * 0.4, 0], [-w * 0.4, 0], [0, d * 0.4], [0, -d * 0.4]] as [number, number][]) {
     const hole = mountingHole(holeR, thick * 1.1)
-    hole.rotation.x = Math.PI / 2
-    hole.position.set(px, py, 0)
+    hole.position.set(px, 0, pz)
     g.add(hole)
   }
 
@@ -530,14 +531,14 @@ function generateCrossPlate(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Pillow Block ────────────────────────────────────────────────────────────
 
-function generatePillowBlock(id: string, dims: GeneratorDims): THREE.Group {
+function generatePillowBlock(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
   const mat = catMetal()
 
   const baseH = h * 0.35
-  const base = new THREE.Mesh(nurbsFilletBox(w, d, baseH, chamfer, 16), mat)
+  const base = new THREE.Mesh(nurbsFilletBox(w, baseH, d, chamfer, 16), mat)
   base.position.y = -h / 2 + baseH / 2
   g.add(base)
 
@@ -572,7 +573,7 @@ function generatePillowBlock(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Shaft Collar ────────────────────────────────────────────────────────────
 
-function generateShaftCollar(id: string, dims: GeneratorDims): THREE.Group {
+function generateShaftCollar(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -607,7 +608,7 @@ function generateShaftCollar(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Linear Rail ─────────────────────────────────────────────────────────────
 
-function generateLinearRail(id: string, dims: GeneratorDims): THREE.Group {
+function generateLinearRail(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.03
@@ -615,7 +616,7 @@ function generateLinearRail(id: string, dims: GeneratorDims): THREE.Group {
 
   // Rail base
   const railH = h * 0.35
-  const rail = new THREE.Mesh(nurbsFilletBox(w, length, railH, chamfer, 16), mat)
+  const rail = new THREE.Mesh(nurbsFilletBox(w, railH, length, chamfer, 16), mat)
   rail.position.y = -h / 2 + railH / 2
   g.add(rail)
 
@@ -623,7 +624,7 @@ function generateLinearRail(id: string, dims: GeneratorDims): THREE.Group {
   const guideW = w * 0.4
   const guideH = h * 0.2
   const guide = new THREE.Mesh(
-    nurbsFilletBox(guideW, length * 0.98, guideH, chamfer * 0.5, 12),
+    nurbsFilletBox(guideW, guideH, length * 0.98, chamfer * 0.5, 12),
     mat,
   )
   guide.position.y = -h / 2 + railH + guideH / 2
@@ -645,7 +646,7 @@ function generateLinearRail(id: string, dims: GeneratorDims): THREE.Group {
   const carrH = h * 0.45
   const carrD = length * 0.2
   const carriage = new THREE.Mesh(
-    nurbsFilletBox(carrW, carrD, carrH, chamfer, 16),
+    nurbsFilletBox(carrW, carrH, carrD, chamfer, 16),
     catMetal(),
   )
   carriage.position.y = -h / 2 + railH + guideH + carrH / 2
@@ -669,29 +670,29 @@ function generateLinearRail(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Linear Rail Carriage (standalone) ───────────────────────────────────────
 
-function generateLinearRailCarriage(id: string, dims: GeneratorDims): THREE.Group {
+function generateLinearRailCarriage(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
+  const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
 
-  const body = new THREE.Mesh(nurbsFilletBox(w, d, h, chamfer, 16), catMetal())
+  const body = new THREE.Mesh(nurbsFilletBox(w, h, d, chamfer, 16), catMetal())
   g.add(body)
 
   const holeR = Math.min(w, d) * 0.05
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       const hole = mountingHole(holeR, h * 1.1)
-      hole.position.set(sx * w * 0.3, sz * d * 0.3, 0)
+      hole.position.set(sx * w * 0.3, 0, sz * d * 0.3)
       hole.rotation.x = Math.PI / 2
       g.add(hole)
     }
   }
 
   const groove = new THREE.Mesh(
-    new THREE.BoxGeometry(w * 0.35, d * 0.95, h * 0.3),
+    new THREE.BoxGeometry(w * 0.35, h * 0.3, d * 0.95),
     getMaterial('dark_chrome'),
   )
-  groove.position.z = -h * 0.4
+  groove.position.y = -h * 0.4
   g.add(groove)
 
   return g
@@ -699,25 +700,25 @@ function generateLinearRailCarriage(id: string, dims: GeneratorDims): THREE.Grou
 
 // ── DIN Rail ────────────────────────────────────────────────────────────────
 
-function generateDINRail(id: string, dims: GeneratorDims): THREE.Group {
+function generateDINRail(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.02
   const mat = getMaterial('brushed_steel')
 
   const bodyH = h * 0.6
-  const body = new THREE.Mesh(nurbsFilletBox(w, length, bodyH, chamfer, 16), mat)
+  const body = new THREE.Mesh(nurbsFilletBox(w, bodyH, length, chamfer, 16), mat)
   g.add(body)
 
   const lipW = w * 1.3
   const lipH = h * 0.15
-  const lip = new THREE.Mesh(nurbsFilletBox(lipW, length, lipH, chamfer * 0.5, 12), mat)
+  const lip = new THREE.Mesh(nurbsFilletBox(lipW, lipH, length, chamfer * 0.5, 12), mat)
   lip.position.y = -(bodyH + lipH) / 2
   g.add(lip)
 
   for (const sx of [-1, 1]) {
     const returnEdge = new THREE.Mesh(
-      nurbsFilletBox(w * 0.08, length * 0.98, lipH * 1.5, chamfer * 0.3, 12),
+      nurbsFilletBox(w * 0.08, lipH * 1.5, length * 0.98, chamfer * 0.3, 12),
       mat,
     )
     returnEdge.position.set(sx * lipW * 0.45, -(bodyH / 2 + lipH + lipH * 0.25), 0)
@@ -729,8 +730,47 @@ function generateDINRail(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
-export function generateRichStructural(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+function generateSlimLimbLink(id: string, dims: ComponentVisualDims): THREE.Group {
+  const g = new THREE.Group()
+  const w = Math.max(dims.x, 0.010)
+  const t = Math.max(dims.y, 0.004)
+  const length = Math.max(dims.z, w * 2.2)
+  const mat = baseMat(id)
+  const dark = getMaterial('dark_chrome')
+  const lugRadius = w * 0.5
+  const lugY = Math.max(0, length / 2 - lugRadius)
+
+  const spine = new THREE.Mesh(
+    nurbsFilletBox(w * 0.46, length, t, Math.min(w, t) * 0.18, 14),
+    mat,
+  )
+  g.add(spine)
+
+  for (const sy of [-1, 1]) {
+    const lug = new THREE.Mesh(
+      nurbsCylinder(lugRadius, t, Math.min(w, t) * 0.08, 32),
+      mat,
+    )
+    lug.rotation.x = Math.PI / 2
+    lug.position.y = sy * lugY
+    g.add(lug)
+
+    const bore = new THREE.Mesh(
+      nurbsCylinder(Math.max(w * 0.15, 0.0018), t * 1.08, 0, 24),
+      dark,
+    )
+    bore.rotation.x = Math.PI / 2
+    bore.position.y = sy * lugY
+    g.add(bore)
+  }
+
+  return g
+}
+
+export function generateRichStructural(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
+  if (id.includes('limb_link_slim'))
+    return generateSlimLimbLink(id, dims)
   if (id.includes('extrusion') || id.includes('2020') || id.includes('4040'))
     return generateExtrusion(id, dims)
   if (id.includes('ibeam') || id.includes('i_beam'))
@@ -757,7 +797,7 @@ export function generateRichStructural(id: string, dims: GeneratorDims, color?: 
     return generateBar(id, dims)
   if (id.includes('sheet_metal'))
     return generateSheetMetal(id, dims)
-  if (id.includes('hex_standoff'))
+  if (id.includes('hex_standoff') || id.includes('standoff'))
     return generateHexStandoff(id, dims)
   if (id.includes('gusset'))
     return generateGusset(id, dims)

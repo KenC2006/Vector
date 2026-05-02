@@ -123,15 +123,28 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'mobility_rubber_foot_pad': 'mobility_rubber_foot.step',
 }
 
+export type MeshVisualScalePolicy = 'none' | 'uniform' | 'per-axis'
+export type MeshVisualUnits = 'm' | 'mm' | 'auto'
+
+export interface MeshVisualMetadata {
+  file: string
+  rotation?: [number, number, number]
+  units: MeshVisualUnits
+  scalePolicy: MeshVisualScalePolicy
+  targetFrame: 'urdf-z-up'
+  shaftOverlay?: { shaft_length_mm: number; shaft_radius_mm: number }
+  blacklisted?: boolean
+}
+
 /**
  * Get the mesh override URL for a component ID, or null if none.
  * Prefers pre-converted GLB files over raw STEP for fast loading.
  */
 export function getMeshOverrideUrl(componentId: string): string | null {
-  const filename = MESH_OVERRIDES[componentId]
-  if (!filename) return null
+  const metadata = getMeshVisualMetadata(componentId)
+  if (!metadata) return null
   // Prefer GLB (pre-converted at build time) — falls back to STEP at runtime
-  const baseName = filename.replace(/\.(step|stp)$/i, '')
+  const baseName = metadata.file.replace(/\.(step|stp)$/i, '')
   return `/meshes/glb/${baseName}.glb`
 }
 
@@ -139,16 +152,16 @@ export function getMeshOverrideUrl(componentId: string): string | null {
  * Get the raw STEP file URL (fallback when GLB is missing).
  */
 export function getStepFallbackUrl(componentId: string): string | null {
-  const filename = MESH_OVERRIDES[componentId]
-  if (!filename) return null
-  return `/meshes/components/${filename}`
+  const metadata = getMeshVisualMetadata(componentId)
+  if (!metadata) return null
+  return `/meshes/components/${metadata.file}`
 }
 
 /**
  * Check if a component ID has a real mesh override available.
  */
 export function hasMeshOverride(componentId: string): boolean {
-  return componentId in MESH_OVERRIDES
+  return !!getMeshVisualMetadata(componentId)
 }
 
 // Component IDs whose meshes are too large/slow to load at runtime - use
@@ -222,6 +235,10 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   'power_lipo_3s_2200': [Math.PI / 2, 0, Math.PI / 2],
   'power_lipo_4s_5000': [Math.PI / 2, 0, Math.PI / 2],
   'power_lipo_6s_10000': [Math.PI / 2, 0, Math.PI / 2],
+
+  // Authored GLB axes already match the preset envelope exactly.
+  // preset [66,58,40] vs GLB [66,58,40]
+  'structural_hip_housing_2dof': [0, 0, 0],
 }
 
 /**
@@ -256,12 +273,36 @@ export const SHAFT_OVERLAYS: Record<string, { shaft_length_mm: number; shaft_rad
   'actuator_servo_heavy_duty':  { shaft_length_mm: 5, shaft_radius_mm: 6 },
 }
 
+function scalePolicyForComponent(componentId: string): MeshVisualScalePolicy {
+  const perAxisBlacklist = ['gripper', 'effector', 'claw', 'suction']
+  return perAxisBlacklist.some(k => componentId.includes(k)) ? 'none' : 'per-axis'
+}
+
+export const MESH_VISUAL_METADATA: Record<string, MeshVisualMetadata> = Object.fromEntries(
+  Object.entries(MESH_OVERRIDES).map(([componentId, file]) => [
+    componentId,
+    {
+      file,
+      rotation: ROTATION_OVERRIDES[componentId],
+      units: 'auto',
+      scalePolicy: scalePolicyForComponent(componentId),
+      targetFrame: 'urdf-z-up',
+      shaftOverlay: SHAFT_OVERLAYS[componentId],
+      blacklisted: SLOW_MESH_BLACKLIST.has(componentId),
+    } satisfies MeshVisualMetadata,
+  ]),
+)
+
+export function getMeshVisualMetadata(componentId: string): MeshVisualMetadata | null {
+  return MESH_VISUAL_METADATA[componentId] ?? null
+}
+
 export function getShaftOverlay(componentId: string): { shaft_length_mm: number; shaft_radius_mm: number } | null {
-  return SHAFT_OVERLAYS[componentId] ?? null
+  return getMeshVisualMetadata(componentId)?.shaftOverlay ?? null
 }
 
 /** Get the per-component rotation override (XYZ Euler radians), or null if none. */
 export function getRotationOverride(componentId: string): [number, number, number] | null {
-  return ROTATION_OVERRIDES[componentId] ?? null
+  return getMeshVisualMetadata(componentId)?.rotation ?? null
 }
 

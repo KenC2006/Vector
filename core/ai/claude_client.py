@@ -423,7 +423,7 @@ Controls how an elongated or directable component is rotated within its face:
 **Optional 3-element [roll, pitch, yaw] in RADIANS** applied verbatim to the joint origin relative to the parent. Overrides the engine's default rotation — use for rest-pose joint angles (quadruped crouch, forward-splayed shoulder, etc.).
 - Omit (or pass [0, 0, 0]) to let the engine auto-rotate. That's the default for almost every component.
 - Example (Z-crouch hip pitch ≈ +30°): `attach_rpy=[0, 0.52, 0]` on the thigh-to-hip-pitch-servo link.
-- Example (Z-crouch knee ≈ -60°): `attach_rpy=[0, -1.05, 0]` on the shin-to-knee-servo link.
+- Example (Z-crouch knee ≈ 60° magnitude): `attach_rpy=[0, 1.05, 0]` on the shin-to-knee-servo link. The assembler maps this magnitude onto the mirrored servo horn sign.
 - Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
 - **For rotary servos specifically:** `attach_rpy` is the horn's initial/rest offset, not a housing tilt. The servo housing stays bolted flat to its parent face; the horn and everything below it start at this offset and the controller drives relative to that zero. `attach_rpy=[0, 0.52, 0]` on hip_pitch means the thigh chain starts 30° forward while the servo body remains properly mounted.
 - For rotary servos with `joint_axis="z"` mounted on a top/bottom face, the assembler keeps the horn shaft normal to the plate; bottom-mounted planar servos have the horn facing downward so the child sweeps in the XY plane.
@@ -474,7 +474,7 @@ Examples (note which side each named connector belongs to):
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
-9. length_mm overrides parametric structural links (default 100mm). For sleek robot limbs, prefer `structural_limb_link_slim` over T-slot extrusion: use 80–120mm for leg segments, 150–300mm for arm links, and 50–80mm for short connectors. Use `structural_extrusion_2020/4040` for frames and chassis rails, not dog thighs/shins unless the user asks for bulky extrusion.
+9. length_mm overrides parametric structural links (default 100mm). For sleek robot limbs, prefer `structural_limb_link_slim` over T-slot extrusion: use 80–120mm for leg segments, 150–300mm for arm links, and 50–80mm for short connectors. Use `structural_extrusion_2020/4040` for frames and chassis rails, not dog thighs/shins unless the user asks for bulky extrusion. For robot dogs/quadrupeds specifically, `structural_extrusion_2020` and `structural_extrusion_4040` are FORBIDDEN as thigh/shin/leg bones; use `structural_limb_link_slim`.
 10. **Rotary servos drive exactly ONE child.** The backend splits each rotary servo into a fixed body (bolted to its parent) and a rotating horn (the output). For `joint_axis="x"` or `"y"`, it also inserts effective side-yoke plus slim horn-link adapter hardware so the physical horn shaft is on the red/blue hinge axis. Children you attach to a servo link are automatically routed to the horn/adapter — you do not need to name `_body` or `_horn` links yourself; just use the servo's `link_name` as `attach_to`. Attach exactly ONE child per servo; never fan out multiple children from the same servo.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
 12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face. NEVER route them through an intermediate structural_extrusion, regardless of count.** All three of these shapes are FORBIDDEN:
@@ -495,6 +495,7 @@ Examples (note which side each named connector belongs to):
     - ❌ `hip_pitch_servo → knee_servo` — zero-length thigh, robot collapses
     - ❌ `elbow_servo → wrist_servo` — zero-length forearm, arm folds flat
     The ONE exception: the compound 2-DOF hip/shoulder (two perpendicular-axis servos stacked directly). The engine auto-inserts a short bracket between them; you do not emit it.
+16. `structural_limb_link_slim` mounts to servo horns on its broad flat face. Do NOT add `attach_rpy` or custom `orientation` to slim limb links to make them look flush; that rotates the bone itself and can make it attach edge-on. Emit slim links as fixed children on the correct face, with only `length_mm`. Put crouch/rest angles on the driving servo's `attach_rpy`, not on the passive limb link.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
@@ -528,18 +529,18 @@ Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not a
     -> 4x hip_yaw_servo (bottom, revolute z)                             — horn faces downward; swings the whole leg in the XY plane (compound hip axis 1)
       -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2). PAIRED WITH KNEE attach_rpy — see crouch rule below.
         -> 4x thigh_link_slim (bottom, fixed, 100mm, vertical)            — sleek structural thigh bone (`structural_limb_link_slim`)
-          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, -1.05, 0]) — pitches SHIN back ≈-60° for crouch. PAIRED WITH HIP_PITCH attach_rpy — see crouch rule below.
+          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, 1.05, 0]) — pitches SHIN into the crouch using assembler-side mirrored horn signs. PAIRED WITH HIP_PITCH attach_rpy — see crouch rule below.
             -> 4x shin_link_slim (bottom, fixed, 120mm, vertical)         — sleek structural shin bone (`structural_limb_link_slim`)
               -> 4x mobility_rubber_foot_pad (bottom, fixed)               — ONE node, no attach_rpy, no children; auto-leveled by engine
 
 - Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_yaw and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
 - The hip (yaw + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
 - Structural limb links MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). Use `structural_limb_link_slim` for dog legs; reserve T-slot extrusions for chassis/frame rails.
-- For a rest "Z-shape crouch" / Spot-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) AND knee (≈-1.05 rad / -60°) **as a pair — both or neither, never one without the other.** This is the #1 crouch-emission bug: emitting knee.attach_rpy=[0, -1.05, 0] while leaving hip_pitch.attach_rpy unset (or [0,0,0]) leaves thighs hanging vertical while shins rotate −60° off them, producing a broken horizontal-splay pose where shins stick out sideways from the body instead of folding under it. If you set knee attach_rpy, you MUST also set hip_pitch attach_rpy with the matching crouch sign. If you're not sure whether to emit them, emit BOTH — a full crouch is always better than a half-crouch. All 4 legs MUST use the SAME sign (same posture). **If a validator says "legs should be mirrored front-to-rear" or "front knees should point opposite direction from rear" or "configuration isn't mammal-like" — IGNORE IT.** Boston Dynamics Spot's real hardware uses identical-geometry front and rear legs by design (that's its signature look); mirroring front legs produces a horse/cow stance with thighs angled backward and feet trailing the front hips, which is not what the user asked for. Only emit mirrored rpy signs when the user EXPLICITLY asks for a sit, lie-down, or asymmetric pose.
+- For a rest "Z-shape crouch" / dog-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) AND knee (≈+1.05 rad / 60° magnitude) **as a pair — both or neither, never one without the other.** Do not hand-mirror knee signs per side; the assembler converts knee bend magnitude into the correct local horn sign for mirrored left/right hardware. This is the #1 crouch-emission bug: emitting knee.attach_rpy while leaving hip_pitch.attach_rpy unset (or [0,0,0]) leaves thighs hanging vertical while shins rotate off them, producing a broken horizontal-splay pose where shins stick out sideways from the body instead of folding under it. If you set knee attach_rpy, you MUST also set hip_pitch attach_rpy with the matching crouch value. If you're not sure whether to emit them, emit BOTH — a full crouch is always better than a half-crouch.
 - For a straight stance (neutral), omit attach_rpy from BOTH hip_pitch AND knee servos — never just one. If you find yourself setting attach_rpy on only one of the two, stop: that always produces a broken pose. The two values travel together.
-- A simpler 8-DOF variant (no planar hip sweep) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_extrusion -> knee_servo -> shin_extrusion -> mobility_rubber_foot_pad(bottom, fixed).
+- A simpler 8-DOF variant (no planar hip sweep) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_link_slim -> knee_servo -> shin_link_slim -> mobility_rubber_foot_pad(bottom, fixed). Do not substitute `structural_extrusion_2020` for these dog leg links.
 
-Head/neck (for dogs, humanoids): baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed). Keep it simple — one servo, one bracket as the head, camera on front. Do NOT chain multiple brackets or extrusions for the neck.
+Head/camera for robot dogs: attach a fixed depth camera directly to the baseplate front face. Do NOT add a neck servo, head servo, head bracket, or head limb unless the user explicitly asks for an articulated head/neck. For humanoids or explicitly articulated heads only: baseplate -> neck_servo(front, revolute y) -> head_bracket(top, fixed) -> camera(front, fixed).
 
 Do NOT add a tail to quadrupeds unless the user explicitly asks for one. A default robot dog should spend parts/mass on legs, body electronics, and an optional head/camera, not a cosmetic tail.
 
@@ -556,6 +557,7 @@ Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45�
 - ❌ Multiple root components — exactly one component has attach_to=null (the baseplate)
 - ❌ Cycles in the topology — A→B→C→A is invalid; the topology must be a tree
 - ❌ Extrusion as root — root is always structural_baseplate
+- ❌ `structural_extrusion_2020` / `structural_extrusion_4040` as dog or quadruped thigh/shin bones — use `structural_limb_link_slim` for every leg segment.
 - ❌ Electronics on an extrusion standoff above the baseplate — any of these shapes:
     · `baseplate → 4x vertical structural_extrusion_4040 → each hosts one of (battery, PDU, SBC, IMU)` (the 4-standoff case)
     · `baseplate → 1x vertical structural_extrusion_4040 → [battery, PDU, SBC, IMU all on its top face]` (the central-tower case — also wrong, don't interpret "no 4 standoffs" as "1 standoff is fine")
@@ -1004,6 +1006,98 @@ def _assemble_from_graph(assembly: dict) -> str:
         components.remove(comp)
         print(f"[assembly] removed obsolete servo spacer {comp.get('link_name')}", file=sys.stderr)
 
+    # Claude occasionally backslides to 2020/4040 T-slot for dog thigh/shin
+    # bones even though the canonical quadruped pattern uses slim limb links.
+    # Coerce only bottom-mounted actuator/foot chains so normal chassis rails
+    # and frames still keep their extrusion presets.
+    for comp in components:
+        cid = comp.get("component_id", "")
+        if not isinstance(cid, str) or not cid.startswith("structural_extrusion_"):
+            continue
+        parent = next((c for c in components if c.get("link_name") == comp.get("attach_to")), None)
+        children = [c for c in components if c.get("attach_to") == comp.get("link_name")]
+        parent_is_pitch_servo_leg = (
+            parent is not None
+            and _component_is_split_servo_id(parent.get("component_id", ""))
+            and comp.get("attach_face") == "bottom"
+        )
+        child_is_leg_terminal = any(
+            _component_is_split_servo_id(c.get("component_id", "")) or c.get("component_id") == "mobility_rubber_foot_pad"
+            for c in children
+        )
+        if parent_is_pitch_servo_leg and child_is_leg_terminal:
+            comp["component_id"] = "structural_limb_link_slim"
+            print(f"[assembly] coerced dog leg beam {comp.get('link_name')} from {cid} to structural_limb_link_slim", file=sys.stderr)
+
+    # The prompt forbids default cosmetic tails on quadrupeds, but the model can
+    # still emit a small rear servo + limb chain. Strip non-functional rear
+    # chains deterministically while preserving real legs, sensors, and payloads.
+    def _remove_subtree(root_name: str) -> None:
+        pending = [root_name]
+        remove_names = set()
+        while pending:
+            name = pending.pop()
+            if name in remove_names:
+                continue
+            remove_names.add(name)
+            pending.extend(
+                c.get("link_name")
+                for c in components
+                if c.get("attach_to") == name and c.get("link_name")
+            )
+        components[:] = [c for c in components if c.get("link_name") not in remove_names]
+
+    def _subtree_component_ids(root_name: str) -> set:
+        pending = [root_name]
+        seen = set()
+        ids = set()
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            comp = next((c for c in components if c.get("link_name") == name), None)
+            if comp is not None:
+                ids.add(comp.get("component_id", ""))
+            pending.extend(
+                c.get("link_name")
+                for c in components
+                if c.get("attach_to") == name and c.get("link_name")
+            )
+        return ids
+
+    is_quadruped = sum(1 for c in components if c.get("component_id") == "mobility_rubber_foot_pad") >= 4
+    if is_quadruped:
+        base_names = {
+            c.get("link_name")
+            for c in components
+            if c.get("component_id", "").startswith("structural_baseplate")
+        }
+        for comp in list(components):
+            link_name = comp.get("link_name", "")
+            cid = comp.get("component_id", "")
+            if comp.get("attach_to") not in base_names:
+                continue
+            if comp.get("attach_face") != "back" and "tail" not in link_name.lower():
+                continue
+            subtree_ids = _subtree_component_ids(link_name)
+            has_functional_terminal = any(
+                sid == "mobility_rubber_foot_pad"
+                or sid.startswith("sensor_")
+                or sid.startswith("compute_")
+                or sid.startswith("power_")
+                for sid in subtree_ids
+            )
+            tail_like = (
+                cid.startswith("actuator_servo")
+                or cid.startswith("actuator_high_speed")
+                or cid == "structural_limb_link_slim"
+                or "tail" in link_name.lower()
+            )
+            if tail_like and not has_functional_terminal:
+                _remove_subtree(link_name)
+                print(f"[assembly] removed default quadruped tail chain {link_name}", file=sys.stderr)
+
     # Build a lookup: link_name -> component definition
     comp_lookup = {}
     for comp in components:
@@ -1044,6 +1138,12 @@ def _assemble_from_graph(assembly: dict) -> str:
         is_long = sorted_dims[2] > sorted_dims[0] * 2.5
         short_dims_similar = sorted_dims[1] < sorted_dims[0] * 2.0
         return is_long and short_dims_similar
+
+    def _is_distal_beam_component_id(component_id):
+        return (
+            component_id == "structural_limb_link_slim" or
+            (isinstance(component_id, str) and component_id.startswith("structural_extrusion_"))
+        )
 
     def _compute_origin_and_rpy(parent_preset, child_preset, attach_face, explicit_rpy=None, parent_comp=None, child_comp=None):
         """Compute joint origin xyz AND rpy based on parent/child bounding boxes and face.
@@ -1152,6 +1252,29 @@ def _assemble_from_graph(assembly: dict) -> str:
     import math
 
     SERVO_HORN_Z_RATIO = 0.44  # horn joint sits 44% up the servo height (URDF Z-up)
+    DEFAULT_REVOLUTE_LIMIT_RAD = math.pi / 2  # ±90° fallback for hobby servos when preset omits limits
+
+    def _resolve_joint_limits_rad(preset: dict) -> tuple:
+        """Return (lower, upper) in radians for a revolute/prismatic joint.
+
+        Order of precedence:
+        1. sim_metadata.mjcf_joint_limits_deg (authoring source of truth, in degrees)
+        2. mechanical_electrical.angle_range_deg (legacy/alt name)
+        3. ±DEFAULT_REVOLUTE_LIMIT_RAD fallback
+        Robot-agnostic: any preset can opt in by adding the field; nothing else changes.
+        """
+        sim = preset.get("sim_metadata", {}) or {}
+        me = preset.get("mechanical_electrical", {}) or {}
+        deg = sim.get("mjcf_joint_limits_deg") or me.get("angle_range_deg")
+        if isinstance(deg, list) and len(deg) == 2:
+            try:
+                lo = math.radians(float(deg[0]))
+                hi = math.radians(float(deg[1]))
+                if hi > lo:
+                    return lo, hi
+            except (TypeError, ValueError):
+                pass
+        return -DEFAULT_REVOLUTE_LIMIT_RAD, DEFAULT_REVOLUTE_LIMIT_RAD
 
     def _is_split_servo_component_id(component_id: str) -> bool:
         return (
@@ -1235,26 +1358,28 @@ def _assemble_from_graph(assembly: dict) -> str:
         cr, sr = math.cos(roll), math.sin(roll)
         cp, sp = math.cos(pitch), math.sin(pitch)
         cy, sy = math.cos(yaw), math.sin(yaw)
+        # Match the frontend assembler's Three.js Euler XYZ convention.
         return [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
+            [cp * cy, -cp * sy, sp],
+            [sr * sp * cy + cr * sy, -sr * sp * sy + cr * cy, -sr * cp],
+            [-cr * sp * cy + sr * sy, cr * sp * sy + sr * cy, cr * cp],
         ]
 
     def _mat_to_rpy(m: list) -> list:
-        pitch = math.asin(max(-1.0, min(1.0, -m[2][0])))
+        pitch = math.asin(max(-1.0, min(1.0, m[0][2])))
         cp = math.cos(pitch)
         if abs(cp) > 1e-8:
-            roll = math.atan2(m[2][1], m[2][2])
-            yaw = math.atan2(m[1][0], m[0][0])
+            roll = math.atan2(-m[1][2], m[2][2])
+            yaw = math.atan2(-m[0][1], m[0][0])
         else:
-            roll = 0.0
-            yaw = math.atan2(-m[0][1], m[1][1])
+            roll = math.atan2(m[2][1], m[1][1])
+            yaw = 0.0
         return [roll, pitch, yaw]
 
     def _servo_desired_world_rot(axis_name: str, axis_sign: int = 1) -> list:
         if axis_name == "y" and axis_sign < 0:
-            # local +Z (shaft) -> world -Y, local +Y (radial zero) -> world -Z.
+            # Mirror the physical shaft onto world -Y while keeping local +Y as
+            # the radial-down zero for leg chains.
             return [
                 [-1, 0, 0],
                 [0, 0, -1],
@@ -1279,18 +1404,48 @@ def _assemble_from_graph(assembly: dict) -> str:
         parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
         return _mat_to_rpy(_matmul3(_transpose3(parent_rot), desired_world))
 
+    def _world_level_rpy_for_parent(parent_link_name: str) -> list:
+        parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
+        return _mat_to_rpy(_transpose3(parent_rot))
+
     def _servo_axis_sign_for_parent(parent_link_name: str, axis_name: str) -> int:
         parent_pos = link_world_pos.get(parent_link_name, [0, 0, 0])
         return -1 if axis_name == "y" and parent_pos[1] < -1e-6 else 1
 
     def _servo_rest_rpy(explicit_rpy: list, axis_name: str, axis_sign: int = 1) -> list:
         axis_idx = {"x": 0, "y": 1, "z": 2}.get(axis_name, 2)
-        return [0, 0, float(explicit_rpy[axis_idx] or 0) * axis_sign]
+        return [0, 0, -float(explicit_rpy[axis_idx] or 0) * axis_sign]
 
-    def _servo_driven_child_origin_rpy(parent_axis_name: str, attach_face: str, child_bbox: list, invert_radial_side: bool = False, child_is_servo: bool = False):
+    def _servo_driven_child_origin_rpy(parent_axis_name: str, attach_face: str, child_bbox: list, invert_radial_side: bool = False, child_is_servo: bool = False, parent_link_name=None, child_component_id: str = ""):
         """Place a child relative to the servo horn output, not the housing face."""
         adapter_gap = 0.008
         child_half_len = child_bbox[2] / 2
+        if child_component_id == "structural_limb_link_slim":
+            radial_offset = adapter_gap + child_half_len
+            side_clearance = child_bbox[1] / 2
+            sign = -1 if attach_face == "top" else 1
+            desired_world_z = 1 if attach_face == "top" else -1
+            parent_rot_for_sign = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0])) if parent_link_name else _rpy_to_mat([0, 0, 0])
+            if parent_axis_name == "x":
+                radial_world = _matvec3(parent_rot_for_sign, [sign, 0, 0])
+                if radial_world[2] * desired_world_z < 0:
+                    sign = -sign
+                # Slim links are thin plates: length is local Z, broad face
+                # normal is local Y.  Map local Z to the radial direction and
+                # local Y onto the horn shaft normal so the plate seats on its
+                # broad face instead of edge-on.
+                pitch = math.pi / 2 if sign > 0 else -math.pi / 2
+                return [sign * radial_offset, 0, side_clearance], [math.pi / 2, pitch, 0]
+            if parent_axis_name == "y":
+                radial_world = _matvec3(parent_rot_for_sign, [0, sign, 0])
+                if radial_world[2] * desired_world_z < 0:
+                    sign = -sign
+                roll = -math.pi / 2 if sign > 0 else math.pi / 2
+                return [0, sign * radial_offset, side_clearance], [roll, 0, 0]
+            radial_world = _matvec3(parent_rot_for_sign, [0, 0, sign])
+            if radial_world[2] * desired_world_z < 0:
+                sign = -sign
+            return [0, 0, sign * radial_offset], [0, 0, 0]
         if parent_axis_name == "z":
             radial_offset = adapter_gap + child_half_len
             return [0, 0, radial_offset], [0, 0, 0]
@@ -1434,6 +1589,7 @@ def _assemble_from_graph(assembly: dict) -> str:
                     rotated_half_z = bbox_m[0] / 2 if axis_name == "x" else bbox_m[1] / 2
                     dz = rotated_half_z - base_half_z
                     origin_xyz[2] += dz if attach_face == "top" else -dz
+                parent_link_name = _effective_parent(attach_to)
                 if attach_to in servo_link_names:
                     parent_axis_name = servo_axis_names.get(attach_to, "z")
                     parent_comp_for_axis = comp_lookup.get(attach_to)
@@ -1450,21 +1606,23 @@ def _assemble_from_graph(assembly: dict) -> str:
                         (grand_parent_name in servo_link_names and grand_parent_axis == "x") or
                         parent_rest_pitch < -0.001
                     )
-                    driven_pose = _servo_driven_child_origin_rpy(parent_axis_name, attach_face, bbox_m, invert_radial, is_actuated)
+                    driven_pose = _servo_driven_child_origin_rpy(
+                        parent_axis_name, attach_face, bbox_m, invert_radial, is_actuated,
+                        parent_link_name, preset.get("id", ""),
+                    )
                     if driven_pose:
                         origin_xyz, computed_rpy = driven_pose
                     else:
                         parent_horn_z = _get_bbox_m(comp_lookup[attach_to]["preset"], comp_lookup.get(attach_to))[2] * SERVO_HORN_Z_RATIO
                         origin_xyz = [origin_xyz[0], origin_xyz[1], origin_xyz[2] - parent_horn_z]
                 align_rpy = _servo_shaft_align_rpy(axis_name)
-                parent_link_name = _effective_parent(attach_to)
                 parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
                 parent_cid = parent_preset.get("id", "") if parent_preset else ""
-                if parent_cid == "structural_limb_link_slim" and attach_face == "bottom":
+                if _is_distal_beam_component_id(parent_cid) and attach_face == "bottom":
                     normal_world = _matvec3(parent_rot, [0, 0, origin_xyz[2]])
                     if normal_world[2] > 0.0001:
                         origin_xyz[2] = -origin_xyz[2]
-                        print(f"[assembly] limb distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
+                        print(f"[assembly] beam distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
                 mounted_rpy = (
                     _servo_planar_mount_rpy_for_parent(parent_link_name, attach_face, computed_rpy)
                     if axis_name == "z"
@@ -1474,7 +1632,17 @@ def _assemble_from_graph(assembly: dict) -> str:
                 )
                 rpy_str = f"{mounted_rpy[0]:.4f} {mounted_rpy[1]:.4f} {mounted_rpy[2]:.4f}"
                 axis_sign = _servo_axis_sign_for_parent(parent_link_name, axis_name)
-                horn_zero = _servo_rest_rpy(explicit_rpy, axis_name, axis_sign)
+                if (
+                    axis_name == "y"
+                    and _is_distal_beam_component_id(parent_cid)
+                    and attach_face == "bottom"
+                ):
+                    bend = abs(float(explicit_rpy[1] or 0))
+                    # Mirrored Y-axis knee carriers need opposite local horn
+                    # signs so both sides fold toward world -X in dog stance.
+                    horn_zero = [0, 0, bend * axis_sign]
+                else:
+                    horn_zero = _servo_rest_rpy(explicit_rpy, axis_name, axis_sign)
                 horn_zero_rpy = f"{horn_zero[0]:.4f} {horn_zero[1]:.4f} {horn_zero[2]:.4f}"
                 use_compound_carrier = attach_to in servo_link_names
                 if use_compound_carrier:
@@ -1555,7 +1723,8 @@ def _assemble_from_graph(assembly: dict) -> str:
             ET.SubElement(rev_joint, "child", link=horn_name)
             ET.SubElement(rev_joint, "origin", xyz=f"0 0 {horn_z:.4f}", rpy=horn_zero_rpy)
             ET.SubElement(rev_joint, "axis", xyz=f"{joint_axis_vec[0]} {joint_axis_vec[1]} {joint_axis_vec[2]}")
-            ET.SubElement(rev_joint, "limit", lower="-3.14159", upper="3.14159",
+            lo_rad, hi_rad = _resolve_joint_limits_rad(preset)
+            ET.SubElement(rev_joint, "limit", lower=f"{lo_rad:.5f}", upper=f"{hi_rad:.5f}",
                          effort=f"{effort}", velocity="1.0")
             print(f"[assembly] servo split: {link_name} body+horn, requested_axis={axis_name}, local_axis={joint_axis_vec}, side_yoke={use_side_yoke}, horn_z={horn_z:.4f}", file=sys.stderr)
 
@@ -1618,6 +1787,7 @@ def _assemble_from_graph(assembly: dict) -> str:
                 origin_xyz, computed_rpy = _compute_origin_and_rpy(
                     parent_preset, child_preset, attach_face, explicit_rpy, comp_lookup.get(attach_to), comp
                 )
+                parent_link_name = _effective_parent(attach_to)
                 # If parent is a servo, xyz is in body frame — correct to horn frame
                 if attach_to in servo_link_names:
                     parent_axis_name = servo_axis_names.get(attach_to, "z")
@@ -1635,25 +1805,28 @@ def _assemble_from_graph(assembly: dict) -> str:
                         (grand_parent_name in servo_link_names and grand_parent_axis == "x") or
                         parent_rest_pitch < -0.001
                     )
-                    driven_pose = _servo_driven_child_origin_rpy(parent_axis_name, attach_face, bbox_m, invert_radial, False)
+                    driven_pose = _servo_driven_child_origin_rpy(
+                        parent_axis_name, attach_face, bbox_m, invert_radial, False,
+                        parent_link_name, child_preset.get("id", ""),
+                    )
                     if driven_pose:
                         origin_xyz, computed_rpy = driven_pose
                     else:
                         parent_horn_z = _get_bbox_m(comp_lookup[attach_to]["preset"], comp_lookup.get(attach_to))[2] * SERVO_HORN_Z_RATIO
                         origin_xyz = [origin_xyz[0], origin_xyz[1], origin_xyz[2] - parent_horn_z]
 
-                parent_link_name = _effective_parent(attach_to)
                 parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
                 parent_cid = parent_preset.get("id", "") if parent_preset else ""
-                if parent_cid == "structural_limb_link_slim" and attach_face == "bottom":
+                if _is_distal_beam_component_id(parent_cid) and attach_face == "bottom":
                     normal_world = _matvec3(parent_rot, [0, 0, origin_xyz[2]])
                     if normal_world[2] > 0.0001:
                         origin_xyz[2] = -origin_xyz[2]
-                        print(f"[assembly] limb distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
+                        print(f"[assembly] beam distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
                 explicit_nonzero = any(abs(float(v or 0)) > 0.001 for v in explicit_rpy)
                 child_cid = child_preset.get("id", "") if child_preset else ""
                 if child_cid == "mobility_rubber_foot_pad" and not explicit_nonzero:
-                    computed_rpy = _mat_to_rpy(_transpose3(parent_rot))
+                    computed_rpy = _world_level_rpy_for_parent(parent_link_name)
+                    print(f"[assembly] level foot pad: {link_name} rpy={computed_rpy}", file=sys.stderr)
 
                 rpy_str = f"{computed_rpy[0]:.4f} {computed_rpy[1]:.4f} {computed_rpy[2]:.4f}"
 
@@ -1686,7 +1859,8 @@ def _assemble_from_graph(assembly: dict) -> str:
                 if joint_type in ("revolute", "prismatic"):
                     me = preset.get("mechanical_electrical", {})
                     effort = me.get("max_torque_nm", 10.0)
-                    ET.SubElement(joint_el, "limit", lower="-3.14159", upper="3.14159",
+                    lo_rad, hi_rad = _resolve_joint_limits_rad(preset)
+                    ET.SubElement(joint_el, "limit", lower=f"{lo_rad:.5f}", upper=f"{hi_rad:.5f}",
                                  effort=f"{effort}", velocity="1.0")
                 elif joint_type == "continuous":
                     # No angle limits, but carry effort so urdf_to_mjcf gets correct ctrlrange.
@@ -1808,6 +1982,7 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 - joint_axis: "z" for yaw/spin, "y" for pitch, "x" for roll
 - For arms: servo(revolute z) -> extrusion(horizontal) -> servo(revolute y) -> extrusion(horizontal) -> gripper
 - For legs: servo(revolute y) on bottom -> structural_limb_link_slim(vertical) -> servo(revolute y) -> structural_limb_link_slim(vertical)
+- For slim limb links: do not set attach_rpy/orientation to make the link look flush. The engine mounts `structural_limb_link_slim` on its broad flat face; rest/crouch angles belong on the servo that drives the link.
 - For wheels: NEVER attach a tire directly to the baseplate. Use a drivetrain assembly:
   baseplate -> drivetrain_hub_motor_80 (attach_face="bottom", continuous y) -> mobility_wheel_driven (attach_face="coaxial", fixed).
   The drivetrain IS the motor; the tire mounts coaxially on the hub (attach_face="coaxial"). The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner.
@@ -1968,12 +2143,17 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
         "attach_face": attach_face,
         "joint_type": joint_type,
         "joint_axis": joint_axis,
+        "joint_axis_name": joint_axis_str,
         "origin_xyz": [round(v, 4) for v in origin_xyz],
         "origin_rpy": [round(v, 4) for v in origin_rpy],
         "bbox_m": [round(v, 4) for v in bbox_m],
         "world_xyz": [round(v, 4) for v in world_xyz],
         "mass_kg": mass,
     }
+    if length_mm is not None:
+        links[link_name]["length_mm"] = length_mm
+    if orientation:
+        links[link_name]["orientation"] = orientation
     assembly_state["links"] = links
 
     # Update face counts
@@ -1994,6 +2174,53 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
         "placed_at": {"xyz": origin_xyz, "rpy": origin_rpy, "world_xyz": world_xyz},
         "total_links": len(links),
         "assembly_state": "\n".join(state_lines),
+    }
+
+
+def _axis_name_from_vector(axis) -> str:
+    """Best-effort conversion for legacy add_component state."""
+    try:
+        vals = [float(v) for v in axis]
+    except Exception:
+        return "z"
+    if len(vals) < 3:
+        return "z"
+    best_i = max(range(3), key=lambda i: abs(vals[i]))
+    return ("x", "y", "z")[best_i]
+
+
+def _assembly_graph_from_state(assembly_state: dict) -> dict:
+    """
+    Convert the legacy step-by-step tool-agent state into the canonical
+    AssemblyGraph shape consumed by the TypeScript resolver.
+    """
+    links = assembly_state.get("links", {})
+    components = []
+    base_link = None
+
+    for link_name, info in links.items():
+        parent = info.get("parent")
+        if parent is None and base_link is None:
+            base_link = link_name
+
+        comp = {
+            "link_name": link_name,
+            "component_id": info.get("component_id", ""),
+            "attach_to": parent,
+            "attach_face": info.get("attach_face"),
+            "joint_type": info.get("joint_type", "fixed"),
+            "joint_axis": info.get("joint_axis_name") or _axis_name_from_vector(info.get("joint_axis")),
+        }
+        if info.get("length_mm") is not None:
+            comp["length_mm"] = info["length_mm"]
+        if info.get("orientation"):
+            comp["orientation"] = info["orientation"]
+        components.append(comp)
+
+    return {
+        "base_link": base_link or (components[0]["link_name"] if components else "structural_baseplate_1"),
+        "ground_offset": True,
+        "components": components,
     }
 
 
@@ -2092,7 +2319,7 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
     """
     Use Claude's tool-use API to build a robot iteratively.
     Claude calls add_component one at a time, seeing the state after each placement.
-    Returns the final URDF when Claude calls finish.
+    Returns a canonical AssemblyGraph; the frontend resolver builds the URDF.
     """
     client = _get_client()
 
@@ -2166,7 +2393,6 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
 
             elif tool_name == "finish":
                 result = {"success": True, "summary": tool_input.get("summary", "Complete")}
-                # Build final URDF
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,
@@ -2193,8 +2419,7 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
         # Send tool results back to Claude
         messages.append({"role": "user", "content": tool_results})
 
-    # Generate URDF from final state
-    new_urdf = _build_urdf_from_state(assembly_state)
+    assembly_graph = _assembly_graph_from_state(assembly_state)
     n_links = len(assembly_state["links"])
     n_joints = sum(1 for l in assembly_state["links"].values() if l.get("parent"))
 
@@ -2205,7 +2430,8 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
 
     return {
         "explanation": explanation if 'explanation' in dir() else "Assembly complete",
-        "new_urdf": new_urdf,
+        "assembly_graph": assembly_graph,
+        "new_urdf": "",
         "stats": f"{n_links} components, {n_joints} joints, {round_num} rounds",
     }
 

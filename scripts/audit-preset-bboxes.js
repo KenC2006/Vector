@@ -3,10 +3,9 @@
  *
  * Enforces Step 3 of docs/ENGINE_NEXT_STEPS.md: on any mesh-override
  * preset (STEP → GLB pipeline), `physical.bounding_box_mm` is demoted to
- * a legacy backward-compat field. Runtime reads go through
- * getOrComputeBbox(), which prefers the rendered AABB, so an authored
- * bbox no longer drives placement — it only fills in for the pre-load
- * placeholder phase. To keep new presets honest, the audit hard-fails
+ * a legacy backward-compat field. Runtime reads use authored component
+ * dimensions, so observed rendered AABBs no longer drive placement.
+ * To keep new presets honest, the audit hard-fails
  * whenever a mesh-override preset declares bounding_box_mm without
  * `physical.legacy_override: true`.
  *

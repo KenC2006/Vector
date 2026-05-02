@@ -79,6 +79,10 @@ export function isDrivetrainComponentId(componentId: string): boolean {
   return componentId.startsWith('drivetrain_')
 }
 
+export function isFootPadComponentId(componentId: string): boolean {
+  return componentId === 'mobility_rubber_foot_pad'
+}
+
 /**
  * Generate component-specific ports based on component ID and mounting_logic.
  * Servos get a shaft_output port on top, mounting ports on bottom/sides.
@@ -101,6 +105,19 @@ export function componentPortsForPreset(
       origin_xyz: [0, 0, 0],
       origin_rpy: [0, 0, 0],
       kinematic: { joint_type: 'fixed', axis_xyz: [0, 0, 1] },
+      single: true,
+    }]
+  }
+
+  // Foot pads: single top mount node. The bottom is the ground-contact face,
+  // and side faces are physically meaningless on a vibration-isolation puck.
+  if (isFootPadComponentId(componentId)) {
+    return [{
+      nodeId: 'top',
+      label: 'Top',
+      cls: 'mount_face',
+      origin_xyz: [0, 0, hz],
+      origin_rpy: [0, 0, 0],
       single: true,
     }]
   }

@@ -37,6 +37,9 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..')
 const GLB_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'glb')
 const OUT_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'collision')
+const CORE_PRESETS = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
+const PUBLIC_PRESETS = path.join(repoRoot, 'src', 'public', 'generic_presets.json')
+const MESH_OVERRIDES_TS = path.join(repoRoot, 'src', 'src', 'richVisuals', 'meshOverrides.ts')
 
 // ─────────────────────────── GLB binary helpers ──────────────────────────────
 
@@ -135,6 +138,58 @@ function transformPoint(m, p) {
   ]
 }
 
+function rotationMatrixXyz(r) {
+  const [x, y, z] = r
+  const cx = Math.cos(x), sx = Math.sin(x)
+  const cy = Math.cos(y), sy = Math.sin(y)
+  const cz = Math.cos(z), sz = Math.sin(z)
+  const rX = [
+    1, 0, 0, 0,
+    0, cx, sx, 0,
+    0, -sx, cx, 0,
+    0, 0, 0, 1,
+  ]
+  const rY = [
+    cy, 0, -sy, 0,
+    0, 1, 0, 0,
+    sy, 0, cy, 0,
+    0, 0, 0, 1,
+  ]
+  const rZ = [
+    cz, sz, 0, 0,
+    -sz, cz, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]
+  return mat4Multiply(mat4Multiply(rX, rY), rZ)
+}
+
+function emptyBounds() {
+  return {
+    min: [Infinity, Infinity, Infinity],
+    max: [-Infinity, -Infinity, -Infinity],
+  }
+}
+
+function boundsOf(points) {
+  const b = emptyBounds()
+  for (const p of points) {
+    for (let i = 0; i < 3; i++) {
+      if (p[i] < b.min[i]) b.min[i] = p[i]
+      if (p[i] > b.max[i]) b.max[i] = p[i]
+    }
+  }
+  return b
+}
+
+function sizeOfBounds(b) {
+  return [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]]
+}
+
+function centerOfBounds(b) {
+  return [(b.max[0] + b.min[0]) / 2, (b.max[1] + b.min[1]) / 2, (b.max[2] + b.min[2]) / 2]
+}
+
 function collectVertices(json, bin) {
   const scene = json.scenes[json.scene ?? 0]
   const identity = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
@@ -159,6 +214,102 @@ function collectVertices(json, bin) {
 
   for (const root of scene.nodes) walk(root, identity)
   return { vertices, primitiveCount }
+}
+
+function stripLineComments(s) {
+  return s.replace(/\/\/[^\n]*/g, '')
+}
+
+function extractRecordBody(src, name) {
+  const header = new RegExp(`export\\s+const\\s+${name}\\s*:[^=]+?=\\s*\\{`)
+  const match = src.match(header)
+  if (!match) throw new Error(`could not locate ${name}`)
+  let i = match.index + match[0].length
+  let depth = 1
+  while (i < src.length && depth > 0) {
+    const ch = src[i]
+    if (ch === '{') depth++
+    else if (ch === '}') depth--
+    i++
+  }
+  if (depth !== 0) throw new Error(`unbalanced braces parsing ${name}`)
+  return src.slice(match.index + match[0].length, i - 1)
+}
+
+function parseStringRecord(src, name) {
+  const body = stripLineComments(extractRecordBody(src, name))
+  const out = new Map()
+  const entry = /'([^']+)'\s*:\s*'([^']+)'/g
+  let m
+  while ((m = entry.exec(body)) !== null) out.set(m[1], m[2])
+  return out
+}
+
+function parseRotationRecord(src, name) {
+  const body = stripLineComments(extractRecordBody(src, name))
+  const out = new Map()
+  const entry = /'([^']+)'\s*:\s*\[\s*([^,\]]+)\s*,\s*([^,\]]+)\s*,\s*([^,\]]+)\s*\]/g
+  let m
+  while ((m = entry.exec(body)) !== null) out.set(m[1], [evalAngle(m[2]), evalAngle(m[3]), evalAngle(m[4])])
+  return out
+}
+
+function parseShaftOverlays(src) {
+  const body = stripLineComments(extractRecordBody(src, 'SHAFT_OVERLAYS'))
+  const out = new Map()
+  const entry = /'([^']+)'\s*:\s*\{\s*shaft_length_mm:\s*([0-9.]+)\s*,\s*shaft_radius_mm:\s*([0-9.]+)\s*\}/g
+  let m
+  while ((m = entry.exec(body)) !== null) out.set(m[1], { shaft_length_mm: Number(m[2]), shaft_radius_mm: Number(m[3]) })
+  return out
+}
+
+function evalAngle(expr) {
+  const trimmed = String(expr).trim()
+  if (!/^[0-9.\s+\-*/()MathPI]+$/.test(trimmed)) throw new Error(`unexpected angle expression: ${trimmed}`)
+  return Function(`"use strict"; return (${trimmed});`)()
+}
+
+function flattenPresets(data) {
+  const out = []
+  for (const [category, cat] of Object.entries(data.categories || {})) {
+    for (const component of cat.components || []) out.push({ category, component })
+  }
+  return out
+}
+
+function effectiveBboxMm(component) {
+  const phys = component.physical || {}
+  const bb = phys.bounding_box_mm || phys.cross_section_mm || [40, 40, 40]
+  return [bb[0] || 40, bb[1] || 40, bb[2] || 40]
+}
+
+function normalizeVerticesToComponentFrame(rawVertices, component, rotationOverrides, shaftOverlays) {
+  const componentId = component.id
+  const bboxMm = effectiveBboxMm(component)
+  const targetMeters = bboxMm.map(v => v / 1000)
+  const rawBounds = boundsOf(rawVertices)
+  const rawSize = sizeOfBounds(rawBounds)
+  const unitScale = Math.max(...rawSize) > Math.max(...targetMeters) * 10 ? 0.001 : 1
+  const rot = rotationOverrides.get(componentId) || [0, 0, 0]
+  const rotMatrix = rotationMatrixXyz(rot)
+
+  let points = rawVertices.map(p => transformPoint(rotMatrix, [p[0] * unitScale, p[1] * unitScale, p[2] * unitScale]))
+  const rotatedBounds = boundsOf(points)
+  const rotatedSize = sizeOfBounds(rotatedBounds)
+  const shaftOverlay = shaftOverlays.get(componentId)
+  const shaftLenM = shaftOverlay ? shaftOverlay.shaft_length_mm / 1000 : 0
+  const targetZ = shaftOverlay ? Math.max(0.001, targetMeters[2] - shaftLenM) : targetMeters[2]
+  const targetForScale = [targetMeters[0], targetMeters[1], targetZ]
+
+  // Collision meshes are a physics/debug envelope, not the final shaded CAD
+  // visual, so always normalize to the component envelope even for visual
+  // components whose render mesh intentionally skips per-axis scaling.
+  const scale = targetForScale.map((v, i) => rotatedSize[i] > 0.0001 ? v / rotatedSize[i] : 1)
+  points = points.map(p => [p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]])
+
+  const finalCenter = centerOfBounds(boundsOf(points))
+  points = points.map(p => [p[0] - finalCenter[0], p[1] - finalCenter[1], p[2] - finalCenter[2] - shaftLenM / 2])
+  return points
 }
 
 // ─────────────────────────── Convex hull → OBJ ───────────────────────────────
@@ -207,15 +358,11 @@ function computeHullObj(vertices) {
     }
   }
 
-  // GLBs in this project are authored in millimeters and the frontend converts
-  // to meters at load time (richVisuals/index.ts: meshGroup.scale.setScalar(0.001)).
-  // The OBJs are consumed by urdf_to_mjcf at scale=1, so write them in meters
-  // here. Without this scale, MuJoCo loads a foot pad as a 16-meter sphere and
-  // the auto-lift logic launches the robot ~165 m above the floor.
-  const MM_TO_M = 0.001
-  let obj = '# Convex hull collision mesh — generated by scripts/generate-collision-meshes.mjs (units: meters)\n'
+  // Vertices have already been normalized to component-local meters.
+  // The OBJs are consumed by urdf_to_mjcf at scale=1.
+  let obj = '# Normalized convex hull collision mesh - generated by scripts/generate-collision-meshes.mjs (units: meters)\n'
   for (const v of outVerts) {
-    obj += `v ${(v[0] * MM_TO_M).toFixed(6)} ${(v[1] * MM_TO_M).toFixed(6)} ${(v[2] * MM_TO_M).toFixed(6)}\n`
+    obj += `v ${v[0].toFixed(6)} ${v[1].toFixed(6)} ${v[2].toFixed(6)}\n`
   }
   for (const f of faceTris) {
     obj += `f ${f[0]} ${f[1]} ${f[2]}\n`
@@ -226,17 +373,34 @@ function computeHullObj(vertices) {
 
 // ──────────────────────────────── Main ───────────────────────────────────────
 
-async function processGlb(glbPath) {
-  const base = path.basename(glbPath, '.glb')
-  const start = Date.now()
+const glbCache = new Map()
+
+async function loadGlbVertices(glbPath) {
+  const cached = glbCache.get(glbPath)
+  if (cached) return cached
   const { json, bin } = await loadGlb(glbPath)
-  const { vertices, primitiveCount } = collectVertices(json, bin)
+  const collected = collectVertices(json, bin)
+  glbCache.set(glbPath, collected)
+  return collected
+}
+
+async function processComponent(component, meshFile, rotationOverrides, shaftOverlays) {
+  const componentId = component.id
+  const base = meshFile.replace(/\.(step|stp)$/i, '')
+  const glbPath = path.join(GLB_DIR, `${base}.glb`)
+  const start = Date.now()
+  const { vertices, primitiveCount } = await loadGlbVertices(glbPath)
   if (vertices.length === 0) throw new Error('no vertices')
-  const { obj, vertexCount, faceCount } = computeHullObj(vertices)
-  const outPath = path.join(OUT_DIR, `${base}_collision.obj`)
+  const normalized = normalizeVerticesToComponentFrame(vertices, component, rotationOverrides, shaftOverlays)
+  const { obj, vertexCount, faceCount } = computeHullObj(normalized)
+  const collisionMesh = `${componentId}_collision.obj`
+  const outPath = path.join(OUT_DIR, collisionMesh)
   await fs.writeFile(outPath, obj, 'utf8')
+  component.physical.collision_mesh = collisionMesh
   return {
+    componentId,
     base,
+    collisionMesh,
     inputVerts: vertices.length,
     primitives: primitiveCount,
     hullVerts: vertexCount,
@@ -247,22 +411,37 @@ async function processGlb(glbPath) {
 
 async function main() {
   await fs.mkdir(OUT_DIR, { recursive: true })
-  const entries = (await fs.readdir(GLB_DIR))
-    .filter(n => n.toLowerCase().endsWith('.glb'))
-    .sort()
+  const meshOverridesText = await fs.readFile(MESH_OVERRIDES_TS, 'utf8')
+  const meshOverrides = parseStringRecord(meshOverridesText, 'MESH_OVERRIDES')
+  const rotationOverrides = parseRotationRecord(meshOverridesText, 'ROTATION_OVERRIDES')
+  const shaftOverlays = parseShaftOverlays(meshOverridesText)
+  const presetData = JSON.parse(await fs.readFile(CORE_PRESETS, 'utf8'))
+  const processable = []
 
-  console.log(`Processing ${entries.length} GLB files from ${path.relative(repoRoot, GLB_DIR)}`)
+  for (const { component } of flattenPresets(presetData)) {
+    const meshFile = meshOverrides.get(component.id)
+    if (!meshFile || !component.physical?.bounding_box_mm) continue
+    const glbPath = path.join(GLB_DIR, `${meshFile.replace(/\.(step|stp)$/i, '')}.glb`)
+    try {
+      await fs.access(glbPath)
+      processable.push({ component, meshFile })
+    } catch {
+      // Leave existing collision_mesh alone when a component only has a STEP
+      // fallback or is intentionally blacklisted from GLB conversion.
+    }
+  }
+
+  console.log(`Processing ${processable.length} mesh-backed preset components from ${path.relative(repoRoot, GLB_DIR)}`)
   console.log(`Writing to ${path.relative(repoRoot, OUT_DIR)}/`)
   console.log('')
 
   let ok = 0
   const failures = []
-  for (const name of entries) {
-    const full = path.join(GLB_DIR, name)
+  for (const { component, meshFile } of processable) {
     try {
-      const r = await processGlb(full)
+      const r = await processComponent(component, meshFile, rotationOverrides, shaftOverlays)
       console.log(
-        `  ${r.base.padEnd(36)}  ` +
+        `  ${r.componentId.padEnd(38)}  ` +
         `${String(r.primitives).padStart(3)} prim  ` +
         `${String(r.inputVerts).padStart(6)} in →  ` +
         `${String(r.hullVerts).padStart(4)} v / ${String(r.hullFaces).padStart(4)} f  ` +
@@ -270,18 +449,23 @@ async function main() {
       )
       ok++
     } catch (e) {
-      console.error(`  ${name.padEnd(36)}  FAIL: ${e.message}`)
-      failures.push({ name, error: e.message })
+      console.error(`  ${component.id.padEnd(38)}  FAIL: ${e.message}`)
+      failures.push({ name: component.id, error: e.message })
     }
   }
 
   console.log('')
-  console.log(`OK: ${ok} / ${entries.length}`)
+  console.log(`OK: ${ok} / ${processable.length}`)
   if (failures.length) {
     console.log(`FAILURES: ${failures.length}`)
     for (const f of failures) console.log(`  ${f.name}: ${f.error}`)
     process.exit(1)
   }
+
+  const serialized = JSON.stringify(presetData, null, 2) + '\n'
+  await fs.writeFile(CORE_PRESETS, serialized, 'utf8')
+  await fs.writeFile(PUBLIC_PRESETS, serialized, 'utf8')
+  console.log(`Updated ${path.relative(repoRoot, CORE_PRESETS)} and ${path.relative(repoRoot, PUBLIC_PRESETS)}`)
 }
 
 main().catch(e => {

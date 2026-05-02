@@ -6,7 +6,7 @@
  * for Fusion-quality mechanical part visuals.
  */
 import * as THREE from 'three'
-import type { GeneratorDims } from './index'
+import type { ComponentVisualDims } from './index'
 import { getMaterial, getTintedMaterial } from '../materials'
 import {
   revolvedMotor, chamferedBox, chamferedCylinder,
@@ -45,7 +45,7 @@ export function combineSplitVisual(s: SplitVisual): THREE.Group {
   return g
 }
 
-function generateServoBody(id: string, dims: GeneratorDims): THREE.Group {
+function generateServoBody(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h, y: d } = dims
 
@@ -133,7 +133,7 @@ function generateServoBody(id: string, dims: GeneratorDims): THREE.Group {
  * Horn group with origin at the joint — children sit at y=0 relative to joint center.
  * Caller must position this group at hornOriginLocal in the body frame.
  */
-function generateServoOutput(id: string, dims: GeneratorDims): THREE.Group {
+function generateServoOutput(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h, y: d } = dims
   const isHeavy = id.includes('heavy') || id.includes('high_torque')
@@ -170,7 +170,7 @@ function generateServoOutput(id: string, dims: GeneratorDims): THREE.Group {
   return g
 }
 
-function generateServo(id: string, dims: GeneratorDims): SplitVisual {
+function generateServo(id: string, dims: ComponentVisualDims): SplitVisual {
   const { z: h } = dims
   return {
     body: generateServoBody(id, dims),
@@ -181,7 +181,7 @@ function generateServo(id: string, dims: GeneratorDims): SplitVisual {
 
 // ── BLDC Outrunner ───────────────────────────────────────────────────────────
 
-function generateBLDC(id: string, dims: GeneratorDims): THREE.Group {
+function generateBLDC(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -270,7 +270,7 @@ function generateBLDC(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── NEMA Stepper ─────────────────────────────────────────────────────────────
 
-function generateStepper(id: string, dims: GeneratorDims): THREE.Group {
+function generateStepper(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: faceW, z: h } = dims
 
@@ -375,7 +375,7 @@ function generateStepper(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Linear Actuator ──────────────────────────────────────────────────────────
 
-function generateLinearActuator(id: string, dims: GeneratorDims): THREE.Group {
+function generateLinearActuator(id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
 
@@ -482,7 +482,7 @@ function generateLinearActuator(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
-export function generateRichActuator(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
+export function generateRichActuator(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (id.includes('bldc')) return generateBLDC(id, dims)
   if (id.includes('stepper') || id.includes('nema')) return generateStepper(id, dims)
@@ -492,7 +492,7 @@ export function generateRichActuator(id: string, dims: GeneratorDims, color?: [n
 }
 
 /** Split version of generateRichActuator for callers that need body and horn separately. */
-export function generateRichActuatorSplit(id: string, dims: GeneratorDims, color?: [number, number, number]): SplitVisual | null {
+export function generateRichActuatorSplit(id: string, dims: ComponentVisualDims, color?: [number, number, number]): SplitVisual | null {
   CAT_COLOR = color ?? DEFAULT_COLOR
   if (!id.includes('bldc') && !id.includes('stepper') && !id.includes('nema') && !id.includes('linear')) {
     return generateServo(id, dims)

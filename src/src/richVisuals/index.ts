@@ -9,20 +9,22 @@
  * rich visuals. Falls back gracefully for non-preset links.
  */
 import * as THREE from 'three'
-import { findRichGenerator } from './generators'
 import type { GeneratorDims } from './generators'
 import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES, SLOW_MESH_BLACKLIST } from './meshOverrides'
-import { getComponentColor } from './materials'
-import { getRenderedMeshDims as _getRenderedMeshDims, setRenderedMeshDims } from '../meshDimsCache'
+import { setRenderedMeshDims } from '../meshDimsCache'
+import { resolveComponentVisual } from '../componentVisualResolver'
+import type {
+  ComponentVisualAuthoredFrame,
+  ComponentVisualPresetLike,
+  ComponentVisualSource,
+  ResolvedComponentVisual,
+} from '../componentVisualResolver'
 import {
   clearMeshLoadInProgress,
-  getCachedMeshGroup,
-  hasCachedMeshGroup,
   isMeshLoadInProgress,
   markMeshLoadInProgress,
   setCachedMeshGroup,
 } from './meshCache'
-import { prepareMeshVisualGroup } from './meshVisual'
 
 
 interface ParsedRobotLike {
@@ -103,12 +105,6 @@ function measureLinkDims(linkGroup: THREE.Group): GeneratorDims {
  * Apply rich visuals to all preset-derived links in the parsed robot.
  * Call this after parseURDFToScene() and after adding the group to the scene.
  */
-// Rendered mesh AABB cache is owned by ../meshDimsCache so pure/node-runnable
-// modules can read it through componentDims without pulling in this module's
-// directory-import dependency tree. Re-exported here for source-compat with
-// existing urdfAssembly imports.
-export const getRenderedMeshDims = _getRenderedMeshDims
-
 /** Return the raw parsed GLB/STEP mesh group for a component, or null if
  *  the cache hasn't been populated yet. Caller should treat the returned
  *  group as READ-ONLY (shared across every instance of that component).
@@ -122,6 +118,51 @@ export { getCachedMeshGroup } from './meshCache'
 // re-cloning identical materials for repeated instances (e.g., 8 servos).
 // Cleared on each applyRichVisuals call to prevent stale material leaks.
 const _tintedMatCache = new Map<string, THREE.MeshStandardMaterial>()
+
+const RICH_Y_UP_TO_URDF_Z_UP = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ'),
+)
+const URDF_Z_UP_TO_SCENE_Y_UP = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(-Math.PI / 2, 0, 0, 'XYZ'),
+)
+
+export type ComponentVisualTargetFrame = 'urdf_z_up' | 'scene_y_up'
+
+/**
+ * Compute the local-quaternion to apply to a resolved component's
+ * `previewGroup` so it lands oriented in the requested target frame.
+ *
+ * Carry and render paths share this single adapter — the only difference is
+ * which target they pick (carry parents into the scene Y-up world, render
+ * parents into the URDF Z-up link group). Together with the resolver's
+ * `authoredFrame` declaration, this guarantees both paths produce identical
+ * world orientations by construction, so a generator can no longer drift one
+ * path against the other.
+ */
+export function componentVisualWorldQuat(
+  authoredFrame: ComponentVisualAuthoredFrame,
+  target: ComponentVisualTargetFrame,
+): THREE.Quaternion {
+  if (authoredFrame === 'y_up') {
+    if (target === 'urdf_z_up') return RICH_Y_UP_TO_URDF_Z_UP.clone()
+    return new THREE.Quaternion()
+  }
+  if (target === 'urdf_z_up') return new THREE.Quaternion()
+  return URDF_Z_UP_TO_SCENE_Y_UP.clone()
+}
+
+/**
+ * Backwards-compatible alias used by the parity corpus and any caller that
+ * still thinks in source-rather-than-frame terms. New code should call
+ * `componentVisualWorldQuat(resolved.authoredFrame, target)` directly.
+ */
+export function renderVisualQuaternionForSource(
+  source: ComponentVisualSource,
+  _visualQuat?: THREE.Quaternion,
+): THREE.Quaternion {
+  void _visualQuat
+  return componentVisualWorldQuat(source === 'rich' ? 'y_up' : 'z_up', 'urdf_z_up')
+}
 
 export function applyRichVisuals(
   parsedRobot: ParsedRobotLike,
@@ -141,9 +182,6 @@ export function applyRichVisuals(
     const compId = extractComponentId(linkName)
     if (!compId) continue
 
-    const generator = findRichGenerator(compId)
-    if (!generator) continue
-
     // Prefer the preset's authoritative bbox over measured placeholder geometry
     // (which over-counts ears/horns for multi-primitive components like servos).
     // Falls back to measureLinkDims for components without a 3-tuple bbox preset.
@@ -152,14 +190,23 @@ export function applyRichVisuals(
       ? { x: presetBbox[0] / 1000, y: presetBbox[1] / 1000, z: presetBbox[2] / 1000 }
       : measureLinkDims(linkGroup)
 
-    // Check for real mesh override (STEP file from manufacturer)
+    const resolved = resolveComponentVisual({
+      preset: makeResolverPreset(compId, dims),
+      category: inferComponentCategory(compId),
+      mode: 'render',
+      linkName,
+      materialCache: _tintedMatCache,
+      castShadow: true,
+      receiveShadow: true,
+    })
+
+    // Check for a real mesh override. Cached meshes are applied through the
+    // resolver; uncached meshes keep the resolver fallback while loading.
     const meshUrl = getMeshOverrideUrl(compId)
     if (meshUrl && !SLOW_MESH_BLACKLIST.has(compId)) {
       // Check cache first — reuse previously loaded STEP mesh
-      if (hasCachedMeshGroup(compId)) {
-        const cached = getCachedMeshGroup(compId)!
-        const clone = cached.clone(true)
-        applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+      if (resolved.source === 'mesh' && resolved.previewGroup) {
+        applyResolvedRenderVisual(resolved, linkGroup)
         onMeshLoaded?.(linkName)
         continue
       }
@@ -171,24 +218,8 @@ export function applyRichVisuals(
       // Fall through to parametric generation as placeholder
     }
 
-    // Generate rich visual group (parametric fallback)
-    let richGroup: THREE.Group
-    try {
-      const compColor = getComponentColor(compId)
-      richGroup = generator(compId, dims, compColor.tint)
-    } catch (e) {
-      console.warn(`[richVisuals] Generator failed for ${compId}:`, e)
-      continue  // keep primitive visuals
-    }
-
-    // Tag all meshes for raycasting (preserve existing contract)
-    richGroup.traverse(child => {
-      if (child instanceof THREE.Mesh) {
-        child.castShadow = true
-        child.receiveShadow = true
-        ;(child.userData as Record<string, unknown>).urdfLinkName = linkName
-      }
-    })
+    if (!resolved.previewGroup) continue
+    const richGroup = resolved.previewGroup
 
     // Find the geometryGroup (first child of linkGroup that contains any mesh descendants)
     const geometryChild = linkGroup.children.find(c => {
@@ -222,63 +253,105 @@ export function applyRichVisuals(
         }
       })
 
-      // Preserve the first visual's rotation (URDF <visual rpy>). Generators
-      // produce content in the component's natural frame — e.g. wheels with
-      // axles along Z — and rely on the URDF visual rpy (typically π/2 about X
-      // for wheels) to rotate that into the link's URDF frame. Without this,
-      // wheels land flat on their sides and motor shafts point the wrong way.
-      const firstVisual = geometryChild.children.find(c => c instanceof THREE.Group) as THREE.Group | undefined
-      const visualQuat = firstVisual ? firstVisual.quaternion.clone() : new THREE.Quaternion()
-
       while (geometryChild.children.length > 0) {
         geometryChild.remove(geometryChild.children[0])
       }
 
+      // Single shared adapter: take the resolver's previewGroup (authored
+      // either Y-up for rich or Z-up for mesh) and rotate it into the URDF
+      // Z-up link frame. The URDF primitive's `<visual rpy>` is intentionally
+      // ignored here — that rpy was tuned to orient the primitive cylinder,
+      // not the rich group, and re-applying it stacked an extra Rx(π/2) on
+      // wheels (the load-bearing piece of the post-commit "flat tire" bug).
       richGroup.position.set(0, 0, 0)
-      richGroup.quaternion.copy(visualQuat)
+      richGroup.quaternion.copy(componentVisualWorldQuat(resolved.authoredFrame, 'urdf_z_up'))
       richGroup.scale.set(1, 1, 1)
       geometryChild.add(richGroup)
     }
   }
 }
 
-/** Apply a cached mesh group to a link, handling scaling and raycasting tags. */
-function applyMeshToLink(
-  meshGroup: THREE.Group,
+function makeResolverPreset(compId: string, dims: GeneratorDims): ComponentVisualPresetLike {
+  return {
+    id: compId,
+    physical: {
+      bounding_box_mm: [
+        Math.max(1, dims.x * 1000),
+        Math.max(1, dims.y * 1000),
+        Math.max(1, dims.z * 1000),
+      ],
+    },
+    mechanical_electrical: {},
+  }
+}
+
+function inferComponentCategory(compId: string): string {
+  if (compId.startsWith('actuator_')) return 'actuators'
+  if (compId.startsWith('motor_')) return 'motors'
+  if (compId.startsWith('sensor_')) return 'sensors'
+  if (compId.startsWith('compute_')) return 'compute'
+  if (compId.startsWith('power_')) return 'power'
+  if (compId.startsWith('transmission_')) return 'transmission'
+  if (compId.startsWith('effector_')) return 'end_effectors'
+  if (compId.startsWith('mobility_')) return 'mobility'
+  return 'structural'
+}
+
+function resolveAndApplyLoadedMesh(
   linkName: string,
   linkGroup: THREE.Group,
   dims: GeneratorDims,
   compId: string,
-) {
-  const prepared = prepareMeshVisualGroup(meshGroup, dims, compId, {
+): boolean {
+  const resolved = resolveComponentVisual({
+    preset: makeResolverPreset(compId, dims),
+    category: inferComponentCategory(compId),
+    mode: 'render',
     linkName,
     materialCache: _tintedMatCache,
-    includeShaftOverlay: true,
     castShadow: true,
     receiveShadow: true,
   })
+  if (resolved.source !== 'mesh' || !resolved.previewGroup) return false
+  applyResolvedRenderVisual(resolved, linkGroup)
+  return true
+}
 
+function applyResolvedRenderVisual(
+  resolved: ResolvedComponentVisual,
+  linkGroup: THREE.Group,
+): void {
+  applyResolvedVisualToLink(resolved, linkGroup)
   if (
-    prepared.renderedBodySize &&
-    (prepared.renderedBodySize.x > 0.001 || prepared.renderedBodySize.y > 0.001 || prepared.renderedBodySize.z > 0.001)
+    resolved.renderedBodySize &&
+    (resolved.renderedBodySize.x > 0.001 || resolved.renderedBodySize.y > 0.001 || resolved.renderedBodySize.z > 0.001)
   ) {
-    setRenderedMeshDims(compId, prepared.renderedBodySize)
+    setRenderedMeshDims(resolved.componentId, resolved.renderedBodySize)
   }
+}
 
-  const preparedGeometryChild = linkGroup.children.find(c => {
+function applyResolvedVisualToLink(
+  resolved: ResolvedComponentVisual,
+  linkGroup: THREE.Group,
+): void {
+  const resolvedGroup = resolved.previewGroup
+  if (!resolvedGroup) return
+
+  const geometryChild = linkGroup.children.find(c => {
     if (!(c instanceof THREE.Group)) return false
     let hasMesh = false
     c.traverse(gc => { if (gc instanceof THREE.Mesh) hasMesh = true })
     return hasMesh
   }) as THREE.Group | undefined
+  if (!geometryChild) return
 
-  if (preparedGeometryChild) {
-    while (preparedGeometryChild.children.length > 0) {
-      preparedGeometryChild.remove(preparedGeometryChild.children[0])
-    }
-    preparedGeometryChild.add(prepared.group)
-    if (prepared.shaftOverlayMesh) preparedGeometryChild.add(prepared.shaftOverlayMesh)
+  while (geometryChild.children.length > 0) {
+    geometryChild.remove(geometryChild.children[0])
   }
+  resolvedGroup.position.set(0, 0, 0)
+  resolvedGroup.quaternion.copy(componentVisualWorldQuat(resolved.authoredFrame, 'urdf_z_up'))
+  resolvedGroup.scale.set(1, 1, 1)
+  geometryChild.add(resolvedGroup)
 }
 
 /**
@@ -310,9 +383,8 @@ async function loadMeshOverride(
     setCachedMeshGroup(compId, meshGroup)
     clearMeshLoadInProgress(compId)
 
-    // Apply to the current link
-    const clone = meshGroup.clone(true)
-    applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+    // Apply to the current link through the same resolver used by cached meshes.
+    resolveAndApplyLoadedMesh(linkName, linkGroup, dims, compId)
     onMeshLoaded?.(linkName)
 
     console.log(`[richVisuals] Mesh loaded and cached: ${compId} (${meshUrl})`)
@@ -326,8 +398,7 @@ async function loadMeshOverride(
           const meshGroup = await loadSTEP(stepUrl)
           setCachedMeshGroup(compId, meshGroup)
           clearMeshLoadInProgress(compId)
-          const clone = meshGroup.clone(true)
-          applyMeshToLink(clone, linkName, linkGroup, dims, compId)
+          resolveAndApplyLoadedMesh(linkName, linkGroup, dims, compId)
           onMeshLoaded?.(linkName)
           console.log(`[richVisuals] STEP fallback loaded: ${compId}`)
           return
@@ -400,9 +471,9 @@ export async function preloadMeshCache(): Promise<void> {
       const meshGroup = await loadGLB(url)
       // Store the same parsed mesh for every component ID sharing this GLB.
       // meshDimsCache is NOT pre-populated here — the raw GLB size is meaningless for
-      // shared-GLB components (all variants would get the same dims). applyMeshToLink
-      // sets meshDimsCache after per-axis scaling to bounding_box_mm on first placement.
-      // computeCarryGhostBounds falls back to bounding_box_mm directly when no dims cached.
+      // shared-GLB components (all variants would get the same dims). The resolver
+      // records diagnostic meshDimsCache data after per-axis scaling on first placement.
+      // Placement bounds do not depend on this cache.
       for (const compId of compIds) {
         setCachedMeshGroup(compId, meshGroup)
         clearMeshLoadInProgress(compId)

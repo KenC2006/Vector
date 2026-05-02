@@ -1,11 +1,12 @@
 use serde_json::json;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Command, Child, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{State, Emitter, AppHandle};
-use std::fs;
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 /// Find the project root directory (where core/ lives)
@@ -38,6 +39,7 @@ struct CoreProcess {
 /// Application state containing the persistent core process
 pub struct AppState {
     core: Mutex<Option<CoreProcess>>,
+    core_pid: AtomicU32,
 }
 
 impl CoreProcess {
@@ -67,7 +69,12 @@ impl CoreProcess {
                     .current_dir(&project_root)
                     .spawn()
             })
-            .map_err(|e| format!("Failed to spawn Python process (tried 'python' and 'python3'): {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to spawn Python process (tried 'python' and 'python3'): {}",
+                    e
+                )
+            })?;
 
         let stdin = std::io::BufWriter::new(
             child
@@ -93,14 +100,19 @@ impl CoreProcess {
     /// Check if the child process is still alive
     fn is_alive(&mut self) -> bool {
         match self.child.try_wait() {
-            Ok(Some(_)) => false,  // Process has exited
-            Ok(None) => true,      // Still running
-            Err(_) => false,       // Error checking — assume dead
+            Ok(Some(_)) => false, // Process has exited
+            Ok(None) => true,     // Still running
+            Err(_) => false,      // Error checking — assume dead
         }
     }
 
     /// Send a JSON-RPC request and read the response
-    fn send_rpc(&mut self, method: &str, params: serde_json::Value, id: u32) -> Result<serde_json::Value, String> {
+    fn send_rpc(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        id: u32,
+    ) -> Result<serde_json::Value, String> {
         // Check if the Python process is still alive
         if !self.is_alive() {
             return Err("Python core process has exited unexpectedly".to_string());
@@ -149,14 +161,21 @@ impl CoreProcess {
                 .read_line(&mut response_line)
                 .map_err(|e| format!("Failed to read response: {}", e))?;
             if response_line.is_empty() {
-                return Err("No response from Python process after skipping non-JSON output".to_string());
+                return Err(
+                    "No response from Python process after skipping non-JSON output".to_string(),
+                );
             }
             attempts += 1;
         }
 
         // Parse response
-        let response: serde_json::Value = serde_json::from_str(&response_line)
-            .map_err(|e| format!("Failed to parse response JSON: {} — raw: {}", e, response_line.trim()))?;
+        let response: serde_json::Value = serde_json::from_str(&response_line).map_err(|e| {
+            format!(
+                "Failed to parse response JSON: {} — raw: {}",
+                e,
+                response_line.trim()
+            )
+        })?;
 
         // Extract result or error
         if let Some(result) = response.get("result") {
@@ -170,7 +189,13 @@ impl CoreProcess {
 
     /// Send a JSON-RPC request, forwarding any notification lines as Tauri events.
     /// Notifications are JSON lines with "method" but no "id" field.
-    fn send_rpc_streaming(&mut self, method: &str, params: serde_json::Value, id: u32, app: &AppHandle) -> Result<serde_json::Value, String> {
+    fn send_rpc_streaming(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        id: u32,
+        app: &AppHandle,
+    ) -> Result<serde_json::Value, String> {
         if !self.is_alive() {
             return Err("Python core process has exited unexpectedly".to_string());
         }
@@ -201,14 +226,18 @@ impl CoreProcess {
                 .map_err(|e| format!("Failed to read response: {}", e))?;
 
             if line.is_empty() {
-                return Err("No response from Python process (process may have crashed)".to_string());
+                return Err(
+                    "No response from Python process (process may have crashed)".to_string()
+                );
             }
 
             let trimmed = line.trim();
             if !trimmed.starts_with('{') {
                 eprintln!("[send_rpc_streaming] Skipping non-JSON: {}", trimmed);
                 attempts += 1;
-                if attempts > 100 { return Err("Too many non-JSON lines".to_string()); }
+                if attempts > 100 {
+                    return Err("Too many non-JSON lines".to_string());
+                }
                 continue;
             }
 
@@ -218,7 +247,9 @@ impl CoreProcess {
                 Err(e) => {
                     eprintln!("[send_rpc_streaming] Bad JSON: {} — {}", e, trimmed);
                     attempts += 1;
-                    if attempts > 100 { return Err("Too many bad JSON lines".to_string()); }
+                    if attempts > 100 {
+                        return Err("Too many bad JSON lines".to_string());
+                    }
                     continue;
                 }
             };
@@ -247,17 +278,28 @@ impl CoreProcess {
 /// Start the persistent Python core process
 #[tauri::command]
 async fn start_core(state: State<'_, AppState>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
+    let cancelled_core_pid = state.core_pid.load(Ordering::SeqCst) == 0;
     if let Some(process) = core.as_mut() {
-        if process.is_alive() {
+        if process.is_alive() && !cancelled_core_pid {
             return Err("Core process already running".to_string());
         }
-        eprintln!("[Core] Stored Python core process had exited; restarting...");
+        if process.is_alive() {
+            eprintln!("[Core] Discarding cancelled Python core process before restart...");
+            process.child.kill().ok();
+        } else {
+            eprintln!("[Core] Stored Python core process had exited; restarting...");
+        }
         *core = None;
+        state.core_pid.store(0, Ordering::SeqCst);
     }
 
     let mut process = CoreProcess::spawn()?;
+    let pid = process.child.id();
 
     // Give Python a moment to initialize (import modules, load .env)
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -265,24 +307,78 @@ async fn start_core(state: State<'_, AppState>) -> Result<String, String> {
     // Verify the process is actually running with a ping
     match process.send_rpc("ping", json!({}), 0) {
         Ok(_) => {
+            state.core_pid.store(pid, Ordering::SeqCst);
             *core = Some(process);
             Ok("Core process started and verified".to_string())
         }
         Err(e) => {
             process.child.kill().ok();
-            Err(format!("Core process started but failed health check: {}", e))
+            state.core_pid.store(0, Ordering::SeqCst);
+            Err(format!(
+                "Core process started but failed health check: {}",
+                e
+            ))
         }
     }
+}
+
+fn kill_process_tree(pid: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .status()
+            .map_err(|e| format!("Failed to run taskkill for Python core: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("taskkill failed for Python core pid {}", pid))
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| format!("Failed to signal Python core: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("kill failed for Python core pid {}", pid))
+        }
+    }
+}
+
+/// Interrupt the current Python core request without waiting on the core mutex.
+#[tauri::command]
+async fn cancel_core_request(state: State<'_, AppState>) -> Result<String, String> {
+    let pid = state.core_pid.load(Ordering::SeqCst);
+    if pid == 0 {
+        return Ok("No Python core process to cancel".to_string());
+    }
+
+    kill_process_tree(pid)?;
+    state.core_pid.store(0, Ordering::SeqCst);
+    Ok("Python core request cancelled".to_string())
 }
 
 /// Stop the persistent Python core process
 #[tauri::command]
 async fn stop_core(state: State<'_, AppState>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
     if let Some(mut process) = core.take() {
         process.child.kill().ok();
     }
+    state.core_pid.store(0, Ordering::SeqCst);
 
     Ok("Core process stopped".to_string())
 }
@@ -290,9 +386,14 @@ async fn stop_core(state: State<'_, AppState>) -> Result<String, String> {
 /// Ping the Python core process to verify it's working
 #[tauri::command]
 async fn ping_core(state: State<'_, AppState>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let result = process.send_rpc("ping", json!({}), 1)?;
     Ok(format!("Pong: {:?}", result))
@@ -301,31 +402,56 @@ async fn ping_core(state: State<'_, AppState>) -> Result<String, String> {
 /// Parse a URDF file using the Python core process
 #[tauri::command]
 async fn parse_urdf(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     process.send_rpc("parse_urdf", json!({ "path": path }), 1)
 }
 
 /// Validate a URDF file (structural, physics, actuator, mesh checks)
 #[tauri::command]
-async fn validate_urdf(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn validate_urdf(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     process.send_rpc("validate_urdf", json!({ "path": path }), 1)
 }
 
 /// Validate URDF content from a string (for real-time editor validation)
 #[tauri::command]
-async fn validate_urdf_content(state: State<'_, AppState>, urdf_content: String) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn validate_urdf_content(
+    state: State<'_, AppState>,
+    urdf_content: String,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc("validate_urdf_content", json!({ "urdf_content": urdf_content }), 1)
+    process.send_rpc(
+        "validate_urdf_content",
+        json!({ "urdf_content": urdf_content }),
+        1,
+    )
 }
 
 /// Load a robot model for simulation
@@ -337,9 +463,14 @@ async fn sim_load(
     seed: Option<u64>,
     terrain_config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let mut params = json!({ "path": path, "free_base": free_base.unwrap_or(false) });
     if let Some(s) = seed {
@@ -353,10 +484,18 @@ async fn sim_load(
 
 /// Step the simulation forward and return the resulting state
 #[tauri::command]
-async fn sim_step(state: State<'_, AppState>, n_steps: Option<u32>) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn sim_step(
+    state: State<'_, AppState>,
+    n_steps: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let params = json!({ "n_steps": n_steps.unwrap_or(1) });
     process.send_rpc("sim_step", params, 1)
@@ -365,9 +504,14 @@ async fn sim_step(state: State<'_, AppState>, n_steps: Option<u32>) -> Result<se
 /// Reset the simulation
 #[tauri::command]
 async fn sim_reset(state: State<'_, AppState>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let result = process.send_rpc("sim_reset", json!({}), 1)?;
     Ok(format!("Reset: {:?}", result))
@@ -376,19 +520,32 @@ async fn sim_reset(state: State<'_, AppState>) -> Result<String, String> {
 /// Get the current simulation state (joint positions, velocities, etc.)
 #[tauri::command]
 async fn sim_get_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     process.send_rpc("sim_get_state", json!({}), 1)
 }
 
 /// Set control inputs (joint targets, gripper, etc.)
 #[tauri::command]
-async fn sim_set_control(state: State<'_, AppState>, controls: serde_json::Value) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn sim_set_control(
+    state: State<'_, AppState>,
+    controls: serde_json::Value,
+) -> Result<String, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let result = process.send_rpc("sim_set_control", json!({ "controls": controls }), 1)?;
     Ok(format!("Controls set: {:?}", result))
@@ -397,9 +554,14 @@ async fn sim_set_control(state: State<'_, AppState>, controls: serde_json::Value
 /// Set gravity vector ([gx, gy, gz], URDF/MuJoCo Z-up, default [0,0,-9.81])
 #[tauri::command]
 async fn sim_set_gravity(state: State<'_, AppState>, gravity: Vec<f64>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let result = process.send_rpc("sim_set_gravity", json!({ "gravity": gravity }), 1)?;
     Ok(format!("Gravity set: {:?}", result))
@@ -407,9 +569,17 @@ async fn sim_set_gravity(state: State<'_, AppState>, gravity: Vec<f64>) -> Resul
 
 /// Compile and install a Python step-callback script (Phase C script runner)
 #[tauri::command]
-async fn sim_set_script(state: State<'_, AppState>, code: String) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+async fn sim_set_script(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
     process.send_rpc("sim_set_script", json!({ "code": code }), 1)
 }
 
@@ -422,8 +592,13 @@ async fn ai_gen_sim_script(
     current_script: Option<String>,
     terrain_config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
     let mut params = json!({
         "prompt": prompt,
         "urdf_content": urdf_content,
@@ -437,10 +612,19 @@ async fn ai_gen_sim_script(
 
 /// Render the simulation viewport to PNG and return base64
 #[tauri::command]
-async fn sim_render(state: State<'_, AppState>, width: Option<u32>, height: Option<u32>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn sim_render(
+    state: State<'_, AppState>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<String, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
     let params = json!({
         "width": width.unwrap_or(640),
@@ -470,23 +654,33 @@ async fn ai_edit(
     images: Option<Vec<serde_json::Value>>,
     assembly_graph: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc_streaming("ai_edit", json!({
-        "prompt": prompt,
-        "urdf_content": urdf_content,
-        "kinematic_context": kinematic_context,
-        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
-        "model": model,
-        "images": images.unwrap_or_default(),
-        // Workstream #1: canonical AssemblyGraph preserved across edits.
-        // When present, the Python side hands this to Claude as the lossless
-        // source of truth instead of the URDF (which drops orientation /
-        // elevation_angle / length_mm / attach_rpy on round-trip).
-        "assembly_graph": assembly_graph,
-    }), 1, &app)
+    process.send_rpc_streaming(
+        "ai_edit",
+        json!({
+            "prompt": prompt,
+            "urdf_content": urdf_content,
+            "kinematic_context": kinematic_context,
+            "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+            "model": model,
+            "images": images.unwrap_or_default(),
+            // Workstream #1: canonical AssemblyGraph preserved across edits.
+            // When present, the Python side hands this to Claude as the lossless
+            // source of truth instead of the URDF (which drops orientation /
+            // elevation_angle / length_mm / attach_rpy on round-trip).
+            "assembly_graph": assembly_graph,
+        }),
+        1,
+        &app,
+    )
 }
 
 /// WS2 tool-call edit surface: one turn of the multi-round tool-use loop.
@@ -503,68 +697,126 @@ async fn ai_edit_turn(
     model: Option<String>,
     images: Option<Vec<serde_json::Value>>,
 ) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc("ai_edit_turn", json!({
-        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
-        "prompt": prompt,
-        "assembly_graph": assembly_graph,
-        "kinematic_context": kinematic_context,
-        "tool_results": tool_results,
-        "model": model,
-        "images": images.unwrap_or_default(),
-    }), 1)
+    process.send_rpc(
+        "ai_edit_turn",
+        json!({
+            "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+            "prompt": prompt,
+            "assembly_graph": assembly_graph,
+            "kinematic_context": kinematic_context,
+            "tool_results": tool_results,
+            "model": model,
+            "images": images.unwrap_or_default(),
+        }),
+        1,
+    )
 }
 
 /// Restore conversation history for an AI session from frontend localStorage
 #[tauri::command]
-async fn ai_set_history(state: State<'_, AppState>, session_id: String, history: serde_json::Value) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn ai_set_history(
+    state: State<'_, AppState>,
+    session_id: String,
+    history: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc("ai_set_history", json!({
-        "session_id": session_id,
-        "history": history
-    }), 1)
+    process.send_rpc(
+        "ai_set_history",
+        json!({
+            "session_id": session_id,
+            "history": history
+        }),
+        1,
+    )
 }
 
 /// Second-pass AI validation of assembled URDF — checks spatial correctness
 #[tauri::command]
-async fn ai_validate_assembly(app: AppHandle, state: State<'_, AppState>, urdf_content: String, original_prompt: String, session_id: Option<String>, screenshot_base64: Option<String>, screenshots: Option<Vec<String>>, reference_images: Option<Vec<serde_json::Value>>, engine_summary: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn ai_validate_assembly(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    urdf_content: String,
+    original_prompt: String,
+    session_id: Option<String>,
+    screenshot_base64: Option<String>,
+    screenshots: Option<Vec<String>>,
+    reference_images: Option<Vec<serde_json::Value>>,
+    engine_summary: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    process.send_rpc_streaming("ai_validate_assembly", json!({
-        "urdf_content": urdf_content,
-        "original_prompt": original_prompt,
-        "session_id": session_id.unwrap_or_else(|| "default".to_string()),
-        "screenshot_base64": screenshot_base64,
-        "screenshots": screenshots,
-        "reference_images": reference_images.unwrap_or_default(),
-        // Engine-computed ground truth (placement + ICP tables) —
-        // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1. Pass-through to the
-        // Python core which formats it into the Gemini validator prompt.
-        "engine_summary": engine_summary,
-    }), 1, &app)
+    process.send_rpc_streaming(
+        "ai_validate_assembly",
+        json!({
+            "urdf_content": urdf_content,
+            "original_prompt": original_prompt,
+            "session_id": session_id.unwrap_or_else(|| "default".to_string()),
+            "screenshot_base64": screenshot_base64,
+            "screenshots": screenshots,
+            "reference_images": reference_images.unwrap_or_default(),
+            // Engine-computed ground truth (placement + ICP tables) —
+            // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1. Pass-through to the
+            // Python core which formats it into the Gemini validator prompt.
+            "engine_summary": engine_summary,
+        }),
+        1,
+        &app,
+    )
 }
 
 /// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing
 #[tauri::command]
-async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_line: u32, cursor_column: u32, prefix: String, kinematic_context: Option<String>) -> Result<String, String> {
-    let mut core = state.core.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+async fn ai_complete(
+    state: State<'_, AppState>,
+    urdf_content: String,
+    cursor_line: u32,
+    cursor_column: u32,
+    prefix: String,
+    kinematic_context: Option<String>,
+) -> Result<String, String> {
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|e| format!("Failed to lock state: {}", e))?;
 
-    let process = core.as_mut().ok_or("Core process not running. Call start_core first.")?;
+    let process = core
+        .as_mut()
+        .ok_or("Core process not running. Call start_core first.")?;
 
-    let result = process.send_rpc("ai_complete", json!({
-        "urdf_content": urdf_content,
-        "cursor_line": cursor_line,
-        "cursor_column": cursor_column,
-        "prefix": prefix,
-        "kinematic_context": kinematic_context.unwrap_or_default()
-    }), 1)?;
+    let result = process.send_rpc(
+        "ai_complete",
+        json!({
+            "urdf_content": urdf_content,
+            "cursor_line": cursor_line,
+            "cursor_column": cursor_column,
+            "prefix": prefix,
+            "kinematic_context": kinematic_context.unwrap_or_default()
+        }),
+        1,
+    )?;
 
     // Extract the completion text from the result
     if let Some(completion) = result.as_str() {
@@ -578,7 +830,10 @@ async fn ai_complete(state: State<'_, AppState>, urdf_content: String, cursor_li
 /// on-disk URDF), the staging file is written in the same directory so mesh `filename="meshes/..."`
 /// resolves like the neighbor file. Otherwise uses the system temp directory.
 #[tauri::command]
-async fn write_sim_staging_urdf(content: String, neighbor_urdf_path: Option<String>) -> Result<String, String> {
+async fn write_sim_staging_urdf(
+    content: String,
+    neighbor_urdf_path: Option<String>,
+) -> Result<String, String> {
     let dest = if let Some(ref p) = neighbor_urdf_path {
         let trimmed = p.trim();
         if trimmed.is_empty() {
@@ -618,32 +873,26 @@ async fn remove_sim_staging_urdf(path: String) -> Result<(), String> {
 /// Save file to disk
 #[tauri::command]
 async fn save_file(path: String, content: String) -> Result<String, String> {
-    fs::write(&path, &content)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    fs::write(&path, &content).map_err(|e| format!("Failed to write file: {}", e))?;
     Ok(path)
 }
 
 /// Read file from disk
 #[tauri::command]
 async fn open_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
 /// Read a binary file and return its contents as a Vec<u8> (for mesh loading)
 #[tauri::command]
 async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
-    fs::read(&path)
-        .map_err(|e| format!("Failed to read binary file: {}", e))
+    fs::read(&path).map_err(|e| format!("Failed to read binary file: {}", e))
 }
 
 /// Open folder dialog and return the selected directory path
 #[tauri::command]
 async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path: Option<tauri_plugin_dialog::FilePath> = app
-        .dialog()
-        .file()
-        .blocking_pick_folder();
+    let path: Option<tauri_plugin_dialog::FilePath> = app.dialog().file().blocking_pick_folder();
 
     Ok(path.map(|p| p.to_string()))
 }
@@ -664,7 +913,9 @@ fn list_dir_recursive(
     max_depth: u32,
     entries: &mut Vec<serde_json::Value>,
 ) -> std::io::Result<()> {
-    if depth > max_depth { return Ok(()); }
+    if depth > max_depth {
+        return Ok(());
+    }
     let mut items: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     items.sort_by_key(|e| e.file_name());
 
@@ -675,7 +926,11 @@ fn list_dir_recursive(
         let is_dir = path.is_dir();
 
         // Skip hidden files and common non-relevant dirs
-        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" {
+        if name.starts_with('.')
+            || name == "node_modules"
+            || name == "target"
+            || name == "__pycache__"
+        {
             continue;
         }
 
@@ -699,7 +954,10 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
     let path: Option<tauri_plugin_dialog::FilePath> = app
         .dialog()
         .file()
-        .add_filter("Robot Files", &["urdf", "xacro", "mjcf", "sdf", "xml", "step", "stp", "iges"])
+        .add_filter(
+            "Robot Files",
+            &["urdf", "xacro", "mjcf", "sdf", "xml", "step", "stp", "iges"],
+        )
         .add_filter("All Files", &["*"])
         .blocking_pick_file();
 
@@ -708,7 +966,10 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
 
 /// Save file dialog and return selected save path
 #[tauri::command]
-async fn save_file_dialog(app: tauri::AppHandle, default_name: Option<String>) -> Result<Option<String>, String> {
+async fn save_file_dialog(
+    app: tauri::AppHandle,
+    default_name: Option<String>,
+) -> Result<Option<String>, String> {
     let mut dialog = app
         .dialog()
         .file()
@@ -770,7 +1031,11 @@ async fn git_branch() -> Result<String, String> {
     }
 
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(if branch.is_empty() { "HEAD".to_string() } else { branch })
+    Ok(if branch.is_empty() {
+        "HEAD".to_string()
+    } else {
+        branch
+    })
 }
 
 /// Get git status as structured data
@@ -1002,6 +1267,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             core: Mutex::new(None),
+            core_pid: AtomicU32::new(0),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -1017,6 +1283,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_core,
             stop_core,
+            cancel_core_request,
             ping_core,
             parse_urdf,
             validate_urdf,

@@ -262,7 +262,12 @@ def _extract_geometry(geom_elem: etree._Element, urdf_dir: str) -> Optional[Dict
 
 
 def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
-    """Convert roll-pitch-yaw to quaternion [w, x, y, z]."""
+    """Convert app/URDF roll-pitch-yaw to quaternion [w, x, y, z].
+
+    The frontend assembler uses Three.js Euler order XYZ for all URDF RPY
+    reads/writes. Keep the sim converter on that same convention so mirrored
+    generated poses compile to the same transforms in MuJoCo.
+    """
     cy = np.cos(yaw * 0.5)
     sy = np.sin(yaw * 0.5)
     cp = np.cos(pitch * 0.5)
@@ -270,10 +275,10 @@ def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
     cr = np.cos(roll * 0.5)
     sr = np.sin(roll * 0.5)
 
-    w = cr * cp * cy + sr * sp * sy
-    x = sr * cp * cy - cr * sp * sy
-    y = cr * sp * cy + sr * cp * sy
-    z = cr * cp * sy - sr * sp * cy
+    w = cr * cp * cy - sr * sp * sy
+    x = sr * cp * cy + cr * sp * sy
+    y = cr * sp * cy - sr * cp * sy
+    z = cr * cp * sy + sr * sp * cy
 
     return [w, x, y, z]
 
@@ -334,6 +339,44 @@ def _contact_class_for_link(link_name: str) -> str:
     sim_metadata = preset.get("sim_metadata", {}) if preset else {}
     contact_class = sim_metadata.get("contact_class")
     return contact_class if isinstance(contact_class, str) else ""
+
+
+def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Return the intended MuJoCo wheel cylinder collision for preset-backed wheels.
+
+    The frontend can emit authored OBJ collision meshes for visual inspection,
+    but rolling contact is much more stable as a primitive cylinder.  Presets
+    opt into that with sim_metadata.mjcf_geom_type="cylinder".
+    """
+    preset = _preset_for_link(link_name)
+    if not preset:
+        return None
+    sim_metadata = preset.get("sim_metadata", {})
+    if sim_metadata.get("mjcf_geom_type") != "cylinder":
+        return None
+    bbox = preset.get("physical", {}).get("bounding_box_mm")
+    if not isinstance(bbox, list) or len(bbox) < 3:
+        return None
+    try:
+        x_m = float(bbox[0]) / 1000.0
+        y_m = float(bbox[1]) / 1000.0
+        z_m = float(bbox[2]) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    radius = max(x_m, y_m) / 2.0
+    length = z_m
+    if radius <= 0 or length <= 0:
+        return None
+    return {
+        "geometry": {
+            "type": "cylinder",
+            "radius": radius,
+            "length": length,
+        },
+        "origin_xyz": [0.0, 0.0, 0.0],
+        "origin_rpy": [0.0, 0.0, 0.0],
+    }
 
 
 def _is_gripper_link(link_name: str) -> bool:
@@ -658,6 +701,8 @@ def _create_body_element(
             if g.get("type") == "cylinder":
                 if tire_coll is None or g.get("radius", 0) > tire_coll["geometry"].get("radius", 0):
                     tire_coll = c
+        if tire_coll is None:
+            tire_coll = _sim_wheel_cylinder_collision(link_data["name"])
         if tire_coll:
             collision_list = [{
                 "geometry": tire_coll["geometry"],

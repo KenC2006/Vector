@@ -128,7 +128,7 @@ function buildPortOccupancyContext(graph: AssemblyGraph): string {
   if (lines.length === 0) return ''
   return `\n\nPort occupancy (existing children per face). Rules:
 - Rotary servos drive exactly ONE child. For joint_axis="x" or "y", the assembler automatically adds side-yoke plus slim horn-link adapter hardware and turns the physical shaft onto that red/blue hinge axis; do not add extra coupler-disc stacks.
-- For sleek robot legs/arms, use structural_limb_link_slim for thighs, shins, and forearms instead of bulky 2020/4040 extrusions. Set length_mm for the limb segment length.
+- For sleek robot legs/arms, use structural_limb_link_slim for thighs, shins, and forearms instead of bulky 2020/4040 extrusions. Set length_mm for the limb segment length. For robot dogs/quadrupeds, never use structural_extrusion_2020 or structural_extrusion_4040 as thigh/shin bones.
 - Never put structural_servo_coupler_disc between a servo and a leg/arm limb; it makes the limb coaxial with the shaft instead of radial to the horn.
 - Do NOT attach a second child to an already-taken face of an actuator — reparent to a structural link (extrusion, bracket) instead.
 ${lines.join('\n')}`
@@ -612,19 +612,29 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           const rejectBtn = actions.querySelector('.ai-reject') as HTMLButtonElement
 
           acceptBtn.addEventListener('click', () => {
-            deps.setActiveChatActionsId(null)
-            deps.acceptInlineDiff()
+            setAiBusy(false)
+            try {
+              deps.acceptInlineDiff()
             acceptBtn.textContent = '✓ Applied'
-            acceptBtn.className = 'ai-applied'
-            rejectBtn.style.display = 'none'
+              acceptBtn.className = 'ai-applied'
+              rejectBtn.style.display = 'none'
+            } finally {
+              setAiBusy(false)
+              deps.setActiveChatActionsId(null)
+            }
           })
 
           rejectBtn.addEventListener('click', () => {
-            deps.setActiveChatActionsId(null)
-            deps.dismissInlineDiff()
+            setAiBusy(false)
+            try {
+              deps.dismissInlineDiff()
             rejectBtn.textContent = '✗ Dismissed'
-            rejectBtn.className = 'ai-rejected'
-            acceptBtn.style.display = 'none'
+              rejectBtn.className = 'ai-rejected'
+              acceptBtn.style.display = 'none'
+            } finally {
+              setAiBusy(false)
+              deps.setActiveChatActionsId(null)
+            }
           })
         }, 0)
       } else {
@@ -643,15 +653,21 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     return msg
   }
 
-  function addVCThinking(): HTMLElement & { updateStage: (stage: string, text: string) => void } {
+  function addVCThinking(onCancel?: () => void): HTMLElement & { updateStage: (stage: string, text: string) => void } {
     const msg = document.createElement('div') as unknown as HTMLElement & { updateStage: (stage: string, text: string) => void }
     msg.className = 'ai-msg assistant'
     msg.innerHTML = `<div class="ai-thinking">
       <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       <span class="ai-thinking-text">Thinking...</span>
+      <button type="button" class="ai-thinking-cancel" title="Cancel generation">✕ Cancel</button>
     </div>
     <div class="ai-streaming-preview" style="display:none"></div>`
     vcMessages.appendChild(msg)
+    const cancelBtn = msg.querySelector('.ai-thinking-cancel') as HTMLButtonElement | null
+    if (cancelBtn) {
+      if (onCancel) cancelBtn.addEventListener('click', onCancel)
+      else cancelBtn.style.display = 'none'
+    }
     vcMessages.scrollTop = vcMessages.scrollHeight
 
     const stageLabels: Record<string, string> = {
@@ -690,8 +706,9 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     fullUrdf: string
     thinking: HTMLElement & { updateStage: (stage: string, text: string) => void }
     urdfAssemblyApi: UrdfAssemblyApi
+    cancelToken: { cancelled: boolean; awaitingDecision: boolean }
   }): Promise<boolean> {
-    const { prompt, initialGraph, kinematicContext, images, sessionId, fullUrdf, thinking, urdfAssemblyApi } = args
+    const { prompt, initialGraph, kinematicContext, images, sessionId, fullUrdf, thinking, urdfAssemblyApi, cancelToken } = args
 
     // Working copy — each successful tool dispatch replaces this; a failed
     // call feeds the error back without touching the working graph. Final
@@ -719,6 +736,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       console.warn('[AI][tool-loop] First turn failed, falling back to ai_edit:', err)
       return false
     }
+    if (cancelToken.cancelled) return true
 
     // ── Loop: dispatch → feed tool_results back → next turn ────────────────
     while (!turn.done && turnCount < MAX_TURNS) {
@@ -761,8 +779,10 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.warn('[AI][tool-loop] Continuation failed:', err)
         break
       }
+      if (cancelToken.cancelled) return true
     }
 
+    if (cancelToken.cancelled) return true
     if (turn.text) explanationText = turn.text
 
     thinking.remove()
@@ -799,7 +819,56 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       diff, newUrdf: assemblyOut.urdf,
     })
     deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+    cancelToken.awaitingDecision = true
     return true
+  }
+
+  // Global lock while the AI is mid-generation. Freezes user input on the
+  // editor and sidebars so they can't fight the model — viewport (3D camera +
+  // sim controls) stays interactive. Released as soon as the apply/dismiss
+  // prompt is on screen (or on error / cancel / early return).
+  function setAiBusy(busy: boolean) {
+    vcSend.disabled = busy
+    vcInput.disabled = busy
+    document.body.classList.toggle('ai-busy', busy)
+    const editor = (window as any).__vectorEditor as
+      | { updateOptions(opts: { readOnly: boolean }): void } | undefined
+    editor?.updateOptions({ readOnly: busy })
+  }
+
+  // Cancellation token shared by the active generation. The cancel button on
+  // the thinking bubble flips `cancelled = true`; awaits in sendVCMessage and
+  // runToolCallEditLoop check this and bail before mutating UI/state.
+  type CancelToken = { cancelled: boolean; awaitingDecision: boolean }
+  let activeCancel: CancelToken | null = null
+  let coreRestartAfterCancel: Promise<void> | null = null
+
+  function scheduleCoreRestartAfterCancel() {
+    coreRestartAfterCancel = invoke('cancel_core_request')
+      .catch(err => {
+        console.warn('[VC] Failed to cancel Python core request:', err)
+      })
+      .then(() => invoke('start_core'))
+      .catch(err => {
+        const msg = String(err).toLowerCase()
+        if (!msg.includes('already running') && !msg.includes('already started')) {
+          console.warn('[VC] Failed to restart Python core after cancel:', err)
+        }
+      })
+      .then(() => undefined)
+      .finally(() => {
+        coreRestartAfterCancel = null
+      })
+  }
+
+  function cancelActiveGeneration(thinking: HTMLElement | null) {
+    if (!activeCancel) return
+    activeCancel.cancelled = true
+    activeCancel = null
+    thinking?.remove()
+    setAiBusy(false)
+    addVCMessage('system', '<span style="color:#e5c07b;">Generation cancelled.</span>')
+    scheduleCoreRestartAfterCancel()
   }
 
   async function sendVCMessage(prompt: string, retryCount = 0, imagesOverride?: ImageAttachment[]) {
@@ -812,20 +881,14 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     // On the first turn, snapshot what the user attached so retries can re-send
     // the same reference image(s). Retries pass the captured list back in.
     const imagesForThisSend: ImageAttachment[] = imagesOverride ?? attachedImages.slice()
+    let historyForBackend: Array<{ role: string; content: string }> = []
+    let historySessionId = deps.getCurrentChatId()
 
     if (retryCount === 0) {
-      // Resync conversation history to backend BEFORE recording the new message,
-      // so the current prompt isn't duplicated (generate_edit adds it separately).
-      const chatId = deps.getCurrentChatId()
-      const history = deps.exportForBackend(chatId)
-      if (history.length > 0) {
-        try {
-          await invoke('ai_set_history', { sessionId: chatId, history })
-          console.log(`[VC] Resynced ${history.length} messages for session ${chatId}`)
-        } catch (err) {
-          console.warn('[VC] History resync failed (non-critical):', err)
-        }
-      }
+      // Snapshot history before recording the new message so the current prompt
+      // is not duplicated when generate_edit adds it separately.
+      historySessionId = deps.getCurrentChatId()
+      historyForBackend = deps.exportForBackend(historySessionId)
 
       addVCMessage('user', prompt, imagesForThisSend.length > 0 ? { images: imagesForThisSend } : undefined)
       vcInput.value = ''
@@ -836,8 +899,20 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       renderAttachThumbs()
     }
 
-    vcSend.disabled = true
-    const thinking = addVCThinking()
+    setAiBusy(true)
+    // Reuse the parent's token across recursive retries so a single click on
+    // ✕ Cancel kills the whole chain. Only the outermost call owns the token.
+    const isOutermost = activeCancel === null
+    const cancelToken: CancelToken = isOutermost
+      ? { cancelled: false, awaitingDecision: false }
+      : activeCancel!
+    let thinking!: ReturnType<typeof addVCThinking>
+    if (isOutermost) {
+      activeCancel = cancelToken
+      thinking = addVCThinking(() => cancelActiveGeneration(thinking))
+    } else {
+      thinking = addVCThinking(() => cancelActiveGeneration(thinking))
+    }
 
     let unlisten: (() => void) | null = null
     try {
@@ -849,6 +924,20 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     }
 
     try {
+      if (coreRestartAfterCancel) {
+        await coreRestartAfterCancel
+        if (cancelToken.cancelled) return
+      }
+
+      if (retryCount === 0 && historyForBackend.length > 0) {
+        try {
+          await invoke('ai_set_history', { sessionId: historySessionId, history: historyForBackend })
+          console.log(`[VC] Resynced ${historyForBackend.length} messages for session ${historySessionId}`)
+        } catch (err) {
+          console.warn('[VC] History resync failed (non-critical):', err)
+        }
+        if (cancelToken.cancelled) return
+      }
 
       const fullUrdf = deps.getEditorValue()
       const kinematicContext = deps.buildKinematicContext()
@@ -947,7 +1036,9 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           fullUrdf,
           thinking,
           urdfAssemblyApi: urdfAssemblyApiEarly,
+          cancelToken,
         })
+        if (cancelToken.cancelled) return
         if (handled) {
           // Loop owned the UI update (diff + assistant message). Nothing else
           // to do for this send; exit cleanly.
@@ -966,6 +1057,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         assemblyGraph: canonicalGraphForAi ?? undefined,
       }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
+      if (cancelToken.cancelled) return
       thinking.remove()
 
       const urdfAssemblyApi = urdfAssemblyApiEarly
@@ -1001,6 +1093,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               diff, newUrdf: assemblyOut.urdf,
             })
             deps.showInlineDiff(fullUrdf, assemblyOut.urdf, assemblyOut.urdf)
+            cancelToken.awaitingDecision = true
           } else {
             const errors = assemblyOut.topologyErrors?.join(', ') || 'unknown error'
             addVCMessage('assistant', `<span style="color:#f85149;">Topology modification failed: ${escapeHtml(errors)}</span>`)
@@ -1238,9 +1331,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                   : ''
                 const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
                 const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
-                vcSend.disabled = false
                 unlisten?.()
-                return sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
+                return await sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
               }
               // Skip-paths: we only reach here when shouldRedesign was false
               // OR retryCount already hit the cap. Log + surface remaining
@@ -1274,6 +1366,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             diff, newUrdf: assemblyResult,
           })
           deps.showInlineDiff(fullUrdf, assemblyResult, assemblyResult)
+          cancelToken.awaitingDecision = true
         } else if (retryCount < 2) {
           const topoErrors = assemblyOut.topologyErrors
           if (topoErrors && topoErrors.length > 0) {
@@ -1281,15 +1374,13 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const errorList = topoErrors.map(e => `- ${e}`).join('\n')
             const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
             const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
-            vcSend.disabled = false
             unlisten?.()
-            return sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
           } else {
             addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
             const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components.`
-            vcSend.disabled = false
             unlisten?.()
-            return sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
           }
         } else {
           addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. Try describing a simpler robot.</span>`)
@@ -1299,11 +1390,16 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         addVCMessage('assistant', `${result.explanation}<br><span style="color:#858585;font-size:11px">${result.stats}</span>`, {
           diff, newUrdf: result.new_urdf,
         })
-        deps.showInlineDiff(currentUrdf, result.new_urdf, result.new_urdf)
+        // Use fullUrdf (true editor contents at send time), not currentUrdf —
+        // currentUrdf is a 4-line stub on redesigns, and Dismiss would revert
+        // the editor to that stub instead of the user's actual original URDF.
+        deps.showInlineDiff(fullUrdf, result.new_urdf, result.new_urdf)
+        cancelToken.awaitingDecision = true
       }
 
     } catch (err) {
       thinking.remove()
+      if (cancelToken.cancelled) return
       const errStr = String(err)
       console.warn('[VC] Backend error:', err)
 
@@ -1313,8 +1409,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
           await new Promise(r => setTimeout(r, waitSec * 1000))
           unlisten?.()
-          vcSend.disabled = false
-          return sendVCMessage(prompt, retryCount + 1, imagesForThisSend)
+          return await sendVCMessage(prompt, retryCount + 1, imagesForThisSend)
         }
         addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
       } else {
@@ -1322,7 +1417,15 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
     } finally {
       unlisten?.()
-      vcSend.disabled = false
+      if (isOutermost) {
+        if (activeCancel === cancelToken) activeCancel = null
+        // If a diff prompt is waiting for the user, leave the lockout on —
+        // the Apply/Dismiss handlers release it. Otherwise (error / no diff
+        // shown / already cancelled), drop it now.
+        if (!cancelToken.awaitingDecision && (activeCancel === null || activeCancel === cancelToken)) {
+          setAiBusy(false)
+        }
+      }
     }
   }
 
@@ -1331,6 +1434,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   vcInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      if (vcSend.disabled) return
       sendVCMessage(vcInput.value)
     }
   })

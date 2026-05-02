@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
-import { generateVisuals, CATEGORY_COLORS, SERVO_HORN_ORIGIN_Z_RATIO, servoBodyShape, servoHornShape, servoSideYokeShape, servoHornBeamAdapterShape } from './componentMeshes'
+import { CATEGORY_COLORS, SERVO_HORN_ORIGIN_Z_RATIO } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import {
   isMountLinkName,
@@ -18,12 +18,11 @@ import {
 } from './attachmentNodes'
 import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
 import { hasMeshOverride, SLOW_MESH_BLACKLIST } from './richVisuals/meshOverrides'
-import { getRenderedMeshDims } from './richVisuals/index'
-import { getOrComputeBbox } from './componentDims'
+import { componentVisualWorldQuat } from './richVisuals'
 import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
 import { quatToRpy, rpyToQuat } from './rotationIO'
-import { resolveComponentVisual } from './componentVisualResolver'
-import type { ComponentVisualBounds } from './componentVisualResolver'
+import { resolveComponentVisual, resolveSplitServoVisual } from './componentVisualResolver'
+import type { ComponentVisualBounds, ResolvedComponentVisual } from './componentVisualResolver'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
@@ -148,6 +147,20 @@ function isSplitServoComponentId(componentId: string): boolean {
   )
 }
 
+const DEFAULT_REVOLUTE_LIMIT_RAD = Math.PI / 2
+
+function resolveJointLimitsRad(preset: any): [number, number] {
+  const sim = preset?.sim_metadata || {}
+  const me = preset?.mechanical_electrical || {}
+  const deg = sim.mjcf_joint_limits_deg || me.angle_range_deg
+  if (Array.isArray(deg) && deg.length === 2) {
+    const lo = (Number(deg[0]) || 0) * Math.PI / 180
+    const hi = (Number(deg[1]) || 0) * Math.PI / 180
+    if (hi > lo) return [lo, hi]
+  }
+  return [-DEFAULT_REVOLUTE_LIMIT_RAD, DEFAULT_REVOLUTE_LIMIT_RAD]
+}
+
 function parseRpyString(rpy: string): [number, number, number] {
   const parts = rpy.split(/\s+/).map(Number)
   return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
@@ -176,6 +189,12 @@ function transformFromXyzRpy(xyz: string, rpy: string): THREE.Matrix4 {
 function formatRpyFromMatrix(m: THREE.Matrix4): string {
   const q = new THREE.Quaternion().setFromRotationMatrix(m)
   return formatRpyTuple(quatToRpy(q))
+}
+
+function worldLevelRpyForParent(parentWorld: THREE.Matrix4 | undefined): string {
+  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
+  parentRot.setPosition(0, 0, 0)
+  return formatRpyFromMatrix(parentRot.invert())
 }
 
 function axisNameFromUrdf(axis: string): 'x' | 'y' | 'z' {
@@ -208,7 +227,8 @@ function servoDesiredWorldRotation(axisName: 'x' | 'y' | 'z', axisSign = 1): THR
   // below the horn before rest-pose spin is applied.
   if (axisName === 'y' && axisSign < 0) {
     const mirrored = new THREE.Matrix4()
-    // local +Z (shaft) -> world -Y, local +Y (radial zero) -> world -Z.
+    // Mirror the physical shaft onto world -Y while keeping local +Y as the
+    // radial-down zero for leg chains.
     mirrored.set(
       -1,  0,  0, 0,
        0,  0, -1, 0,
@@ -251,19 +271,71 @@ function servoPlanarMountRpyForParentWorld(parentWorld: THREE.Matrix4 | undefine
 
 function servoLocalRestRpyFromJointRpy(rpy: [number, number, number], axisName: 'x' | 'y' | 'z', axisSign = 1): string {
   const axisIndex = axisName === 'x' ? 0 : axisName === 'y' ? 1 : 2
-  return formatRpyTuple([0, 0, (rpy[axisIndex] || 0) * axisSign])
-}
-
-function worldLevelRpyForParent(parentWorld: THREE.Matrix4 | undefined): string {
-  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
-  parentRot.setPosition(0, 0, 0)
-  return formatRpyFromMatrix(parentRot.invert())
+  // Authored attach_rpy is a semantic joint-axis rest angle. Side-axis servos
+  // are mirrored left/right in hardware, so convert that semantic angle into
+  // the split servo's local +Z horn frame.
+  return formatRpyTuple([0, 0, -(rpy[axisIndex] || 0) * axisSign])
 }
 
 function worldOffsetFromParent(parentWorld: THREE.Matrix4 | undefined, localOffset: [number, number, number]): THREE.Vector3 {
   const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
   parentRot.setPosition(0, 0, 0)
   return new THREE.Vector3(localOffset[0], localOffset[1], localOffset[2]).applyMatrix4(parentRot)
+}
+
+function servoDrivenStructuralLimbPlacement(
+  parentAxisName: 'x' | 'y' | 'z',
+  attachFace: string | null | undefined,
+  childBodyHY: number,
+  childBodyHZ: number,
+  parentWorld?: THREE.Matrix4,
+): { xyz: string; rpy: string } | null {
+  const adapterGap = 0.008
+  const offset = adapterGap + childBodyHZ
+  const desiredWorldZ = attachFace === 'top' ? 1 : -1
+  const signedRadial = (axis: [number, number, number]) => {
+    const baseSign = attachFace === 'top' ? -1 : 1
+    const radial = worldOffsetFromParent(parentWorld, [
+      axis[0] * baseSign,
+      axis[1] * baseSign,
+      axis[2] * baseSign,
+    ])
+    return radial.z * desiredWorldZ < 0 ? -baseSign : baseSign
+  }
+
+  if (parentAxisName === 'x') {
+    const sign = signedRadial([1, 0, 0])
+    const x = sign * offset
+    const pitch = sign >= 0 ? Math.PI / 2 : -Math.PI / 2
+    return {
+      xyz: `${x.toFixed(4)} 0.0000 ${childBodyHY.toFixed(4)}`,
+      // Slim links are thin plates: length is local Z, broad face normal is
+      // local Y. Map local Z to the radial direction and local Y onto the horn
+      // shaft normal so the plate seats on its broad face instead of edge-on.
+      rpy: `${(Math.PI / 2).toFixed(4)} ${pitch.toFixed(4)} 0`,
+    }
+  }
+
+  if (parentAxisName === 'y') {
+    const sign = signedRadial([0, 1, 0])
+    const y = sign * offset
+    const roll = sign >= 0 ? -Math.PI / 2 : Math.PI / 2
+    return {
+      xyz: `0.0000 ${y.toFixed(4)} ${childBodyHY.toFixed(4)}`,
+      rpy: `${roll.toFixed(4)} 0 0`,
+    }
+  }
+
+  const sign = signedRadial([0, 0, 1])
+  return {
+    xyz: `0.0000 0.0000 ${(sign * offset).toFixed(4)}`,
+    rpy: '0 0 0',
+  }
+}
+
+function isDistalBeamComponentId(componentId: string | null | undefined): boolean {
+  return componentId === 'structural_limb_link_slim'
+    || componentId?.startsWith('structural_extrusion_') === true
 }
 
 function servoDrivenChildPlacement(
@@ -621,6 +693,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   // `localPos` is the face center in the parent link's local frame.
   interface MountNodeEntry extends AttachmentNodeRuntime {
     localPos: THREE.Vector3
+    frameLinkName: string
   }
   let mountNodes: MountNodeEntry[] = []
   let lastSnapCheckMs = 0
@@ -731,7 +804,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     cls: AttachmentNodeClass
   }> {
     if (!selectedLink) return []
-    const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    const selectedGroup = getInteractionLinkGroup(selectedLink)
     if (!selectedGroup) return []
     selectedGroup.updateMatrixWorld(true)
     // Face nodes share the link's orientation and sit at localPos within the link frame,
@@ -777,7 +850,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       return
     }
     if (!selectedLink) return
-    const selectedGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    const selectedGroup = getInteractionLinkGroup(selectedLink)
     if (!selectedGroup) return
     selectedGroup.updateMatrixWorld(true)
     const sourceNodes = getSourceNodesForSelected()
@@ -977,13 +1050,25 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     for (const linkName of Object.keys(graph)) {
       if (isMountLinkName(linkName)) continue
-      const lg = parsed.linkGroups.get(linkName)
+      const frameLinkName = resolveInteractionFrameLinkName(linkName, parsed)
+      if (!frameLinkName) continue
+      const lg = parsed.linkGroups.get(frameLinkName)
       if (!lg) continue
       let localBox: THREE.Box3 | null
       if (linkBBoxCache.has(linkName)) {
         localBox = linkBBoxCache.get(linkName)!
       } else {
-        localBox = computeLinkLocalBoundingBox(lg)
+        const componentId = componentIdFromLinkName(linkName)
+        const preset = findPresetById(componentId)
+        if (frameLinkName !== linkName && preset && isSplitServoComponentId(componentId)) {
+          const resolved = resolveComponentVisual({ preset, category: findCategory(preset), mode: 'collision' })
+          localBox = new THREE.Box3(
+            new THREE.Vector3(-resolved.bounds.hx, -resolved.bounds.hy, -resolved.bounds.hz),
+            new THREE.Vector3(resolved.bounds.hx, resolved.bounds.hy, resolved.bounds.hz),
+          )
+        } else {
+          localBox = computeLinkLocalBoundingBox(lg)
+        }
         linkBBoxCache.set(linkName, localBox)
       }
       if (!localBox || localBox.isEmpty()) continue
@@ -1047,6 +1132,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           label: f.label,
           cls: f.cls,
           single: f.single,
+          frameLinkName,
           localPos,
           worldPosition,
           worldQuaternion,
@@ -1086,11 +1172,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const updatedLinks = new Set<string>()
     for (const n of mountNodes) {
       if (onlyLink !== undefined && n.parentLink !== onlyLink) continue
-      const lg = parsed.linkGroups.get(n.parentLink)
+      const lg = parsed.linkGroups.get(n.frameLinkName)
       if (!lg) continue
-      if (!updatedLinks.has(n.parentLink)) {
+      if (!updatedLinks.has(n.frameLinkName)) {
         lg.updateMatrixWorld(true)
-        updatedLinks.add(n.parentLink)
+        updatedLinks.add(n.frameLinkName)
       }
       lg.matrixWorld.decompose(worldPosTmp, worldQuatTmp, worldScaleTmp)
       n.worldQuaternion.copy(worldQuatTmp)
@@ -1235,6 +1321,29 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return _bulkMode && _bulkUrdfBuffer !== null ? _bulkUrdfBuffer : ctx.getUrdfText()
   }
 
+  function resolveInteractionFrameLinkName(linkName: string, parsed: ParsedRobotLike = ctx.getParsedRobot()): string | null {
+    if (parsed.linkGroups.has(linkName)) return linkName
+    if (parsed.linkGroups.has(`${linkName}_body`)) return `${linkName}_body`
+    if (parsed.linkGroups.has(`${linkName}_horn`)) return `${linkName}_horn`
+    return null
+  }
+
+  function getInteractionLinkGroup(linkName: string): THREE.Group | null {
+    const parsed = ctx.getParsedRobot()
+    const frameLinkName = resolveInteractionFrameLinkName(linkName, parsed)
+    return frameLinkName ? (parsed.linkGroups.get(frameLinkName) ?? null) : null
+  }
+
+  function isLogicalSplitServoLink(linkName: string): boolean {
+    const parsed = ctx.getParsedRobot()
+    return (
+      !!ctx.getKinematicGraph()[linkName] &&
+      !parsed.linkGroups.has(linkName) &&
+      parsed.linkGroups.has(`${linkName}_body`) &&
+      parsed.linkGroups.has(`${linkName}_horn`)
+    )
+  }
+
   let _pickTargetCache: THREE.Mesh[] | null = null
   function getPickTargets(): THREE.Mesh[] {
     if (_pickTargetCache) return _pickTargetCache
@@ -1262,7 +1371,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function getParentJointForLink(linkName: string): { name: string; type: string; axis: string; parentLink: string; childLink: string } | null {
     const joints = ctx.getKinematicJoints()
-    return Object.values(joints).find(j => j.childLink === linkName) ?? null
+    const joint = Object.values(joints).find(j => j.childLink === linkName) ?? null
+    if (!joint) return null
+    if (isLogicalSplitServoLink(linkName) && ctx.getParsedRobot().joints.has(`${joint.name}_mount`)) {
+      return {
+        ...joint,
+        name: `${joint.name}_mount`,
+        type: 'fixed',
+        childLink: `${linkName}_body`,
+      }
+    }
+    return joint
   }
 
   function getPivotGroupForLink(linkName: string): THREE.Group | null {
@@ -1814,25 +1933,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
-    // Primary: use the actual rendered mesh dims from meshDimsCache — this is exactly what
-    // rebuildMountNodes uses via computeLinkLocalBoundingBox, so joint origins align with nodes.
-    // Use rendered full-component bounds only for logical links, not split servo body/horn links.
-    const isSplitServoLink = /_(horn|body)$/.test(parentLinkName)
-    const compIdMatch = parentLinkName.match(/^(.+)_(\d+)$/)
-    const compId = compIdMatch?.[1] ?? parentLinkName
-    const renderedDims = isSplitServoLink ? null : getRenderedMeshDims(compId)
-    if (renderedDims && renderedDims.x > 0.001) {
-      // GLB is re-centered on its AABB in applyMeshToLink, so AABB center sits at the
-      // link origin — report cx=cy=cz=0 for the rendered-mesh path.
-      return {
-        hx: renderedDims.x / 2,
-        hy: renderedDims.y / 2,
-        hz: renderedDims.z / 2,
-        cx: 0, cy: 0, cz: 0,
-      }
-    }
-
-    // Fallback: iterate ALL <visual> elements in the URDF, accounting for each element's
+    // Iterate ALL <visual> elements in the URDF, accounting for each element's
     // <origin xyz> offset. This handles multi-piece shapes (body + shaft, body + horn, etc.)
     // where previously only the first visual was read, missing protrusions in URDF Z (up).
     const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
@@ -2062,35 +2163,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const childPreset = _findPresetForCleanup(comp.component_id)
       if (!parentPreset || !childPreset) continue
 
-      // Parametric components (extrusions) carry their Z-length on the
-      // COMPONENT instance via `length_mm`, not on the preset. The preset
-      // only authors `cross_section_mm`. Splice the instance length in so
       // the default-top connector lands at (0, 0, +length/2) — matches the
-      // splice computeMatePlacement already does for parent bbox upstream.
-      // Without this, the default child.top for a 100mm extrusion mates at
-      // (0, 0, +20mm) (hardcoded-40 fallback / 2), 30mm off from where the
-      // placement engine actually sits the extrusion, producing bogus
-      // per-sample gap values in the 10-30mm range on extrusion mates.
-      const parentPhys = parentPreset.physical
-      const parentBbRaw = getOrComputeBbox(parentPreset.id, parentPreset)
-      const parentBbMm = (parentPhys.cross_section_mm && parentComp.length_mm !== undefined)
-        ? [parentBbRaw[0] ?? 40, parentBbRaw[1] ?? 40, parentComp.length_mm]
-        : parentBbRaw
-      const childPhys = childPreset.physical
-      const childBbRaw = getOrComputeBbox(childPreset.id, childPreset)
-      const childBbMm = (childPhys.cross_section_mm && comp.length_mm !== undefined)
-        ? [childBbRaw[0] ?? 40, childBbRaw[1] ?? 40, comp.length_mm]
-        : childBbRaw
-      const parentDefaults = generateDefaultConnectors({
-        hxMm: (parentBbMm[0] ?? 40) / 2,
-        hyMm: (parentBbMm[1] ?? 40) / 2,
-        hzMm: (parentBbMm[2] ?? 40) / 2,
-      })
-      const childDefaults = generateDefaultConnectors({
-        hxMm: (childBbMm[0] ?? 40) / 2,
-        hyMm: (childBbMm[1] ?? 40) / 2,
-        hzMm: (childBbMm[2] ?? 40) / 2,
-      })
+      const parentDefaults = generateDefaultConnectors(resolveVisualHalfBoundsMm(parentPreset, parentComp))
+      const childDefaults = generateDefaultConnectors(resolveVisualHalfBoundsMm(childPreset, comp))
       const pAll = mergeConnectors(parentDefaults, parentPreset.connectors)
       const cAll = mergeConnectors(childDefaults, childPreset.connectors)
       const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
@@ -2351,6 +2426,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       childIsDrivetrain?: boolean
       childUsesRollingBottomPose?: boolean
     } = {},
+    parentParametricLengthMm?: number,
   ): { xyz: string; rpy: string } {
     const parent = getParentBounds(doc, parentLinkName)
     const gap = 0
@@ -2360,7 +2436,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Formula: body_face_distance = axis_half_extent - |axis_center_offset|.
     const parentBodyHX = parent.hx - Math.abs(parent.cx)
     const parentBodyHY = parent.hy - Math.abs(parent.cy)
-    const parentBodyHZ = parent.hz - Math.abs(parent.cz)
+    // For parametric extrusions (length_mm + cross_section_mm), the body's
+    // Z tip is at length_mm/2 — but the URDF visual AABB also includes pivot
+    // bosses/axle caps perpendicular to the extrusion axis. Those bosses live
+    // ON the end face, not past it, so the extruded body tip is the true
+    // end-mount surface for end-of-limb children (foot pads, etc.).
+    const parentBodyHZ = (parentParametricLengthMm && parentParametricLengthMm > 0)
+      ? parentParametricLengthMm / 2000
+      : parent.hz - Math.abs(parent.cz)
     // Child's link-origin-to-body-face distance along each axis. Lets the
     // child's body (not the tip of an off-center protrusion) sit flush.
     const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
@@ -2788,13 +2871,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   type CarryGhostBounds = ComponentVisualBounds
-  type CarryGhostPreview = { bounds: CarryGhostBounds; visuals: UrdfVisualDesc[]; previewGroup?: THREE.Group }
+  type CarryGhostPreview = {
+    bounds: CarryGhostBounds
+    visuals: UrdfVisualDesc[]
+    previewGroup?: THREE.Group
+    authoredFrame: ResolvedComponentVisual['authoredFrame']
+  }
 
   function computeCarryGhostPreview(comp: PresetComponent): CarryGhostPreview {
     const catName = findCategory(comp)
     const resolved = resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' })
     const bounds = resolved.previewGroup ? resolved.bounds : (resolved.visualBounds ?? resolved.bounds)
-    return { bounds, visuals: resolved.visuals, previewGroup: resolved.previewGroup }
+    return { bounds, visuals: resolved.visuals, previewGroup: resolved.previewGroup, authoredFrame: resolved.authoredFrame }
   }
 
   function makeCarryGhostVisualGroup(visuals: UrdfVisualDesc[]): THREE.Group {
@@ -2830,8 +2918,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return group
   }
 
-  function makeCarryGhostPreviewGroup(group: THREE.Group): THREE.Group {
+  function makeCarryGhostPreviewGroup(
+    group: THREE.Group,
+    authoredFrame: ResolvedComponentVisual['authoredFrame'],
+  ): THREE.Group {
     const ghost = group.clone(true)
+    // Same adapter the render path uses, only with target='scene_y_up' since
+    // the carry parent is the scene (Y-up) rather than a URDF link group.
+    // This is what makes carry and render orientations identical by
+    // construction — a Z-up authored mesh that previously appeared sideways
+    // here, or a Y-up rich generator whose render path silently re-rotated,
+    // both now route through one explicit transform.
+    ghost.quaternion.copy(componentVisualWorldQuat(authoredFrame, 'scene_y_up'))
     const edgeItems: Array<{ parent: THREE.Object3D; mesh: THREE.Mesh }> = []
     ghost.traverse(child => {
       if (child instanceof THREE.Mesh) {
@@ -2858,6 +2956,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   function computeCarryGhostBounds(comp: PresetComponent): CarryGhostBounds {
     const catName = findCategory(comp)
     return resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' }).bounds
+  }
+
+  function resolveVisualHalfBoundsMm(
+    preset: PresetComponent,
+    instance?: { length_mm?: number },
+  ): { hxMm: number; hyMm: number; hzMm: number } {
+    const catName = findCategory(preset)
+    const resolved = resolveComponentVisual({
+      preset,
+      category: catName,
+      mode: 'collision',
+      instance,
+    })
+    return {
+      hxMm: resolved.bounds.hx * 1000,
+      hyMm: resolved.bounds.hy * 1000,
+      hzMm: resolved.bounds.hz * 1000,
+    }
   }
 
   function addVisualElement(doc: Document, link: Element, vis: UrdfVisualDesc, matIdx: number) {
@@ -2940,6 +3056,49 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
+  function addBoundsCollisionElement(doc: Document, link: Element, bounds: ComponentVisualBounds) {
+    const collision = doc.createElement('collision')
+    const co = doc.createElement('origin')
+    co.setAttribute('xyz', [bounds.cx, bounds.cy, bounds.cz].map(v => v.toFixed(6)).join(' '))
+    co.setAttribute('rpy', '0 0 0')
+    const geometry = doc.createElement('geometry')
+    const boxEl = doc.createElement('box')
+    boxEl.setAttribute('size', [
+      bounds.hx * 2,
+      bounds.hy * 2,
+      bounds.hz * 2,
+    ].map(v => v.toFixed(6)).join(' '))
+    geometry.appendChild(boxEl)
+    collision.appendChild(co)
+    collision.appendChild(geometry)
+    link.appendChild(collision)
+  }
+
+  function addResolvedCollisionElements(doc: Document, link: Element, resolved: ResolvedComponentVisual) {
+    if (resolved.collision.source === 'authored_mesh' && resolved.collision.meshFile) {
+      addMeshCollisionElement(doc, link, resolved.collision.meshFile)
+    } else if (resolved.collision.source === 'urdf_primitives') {
+      resolved.visuals.forEach(vis => addCollisionElement(doc, link, vis))
+    } else {
+      addBoundsCollisionElement(doc, link, resolved.collision.bounds)
+    }
+  }
+
+  function addResolvedCollisionSourceElements(
+    doc: Document,
+    link: Element,
+    collision: ResolvedComponentVisual['collision'],
+    primitiveVisuals: UrdfVisualDesc[],
+  ) {
+    if (collision.source === 'authored_mesh' && collision.meshFile) {
+      addMeshCollisionElement(doc, link, collision.meshFile)
+    } else if (collision.source === 'urdf_primitives') {
+      primitiveVisuals.forEach(vis => addCollisionElement(doc, link, vis))
+    } else {
+      addBoundsCollisionElement(doc, link, collision.bounds)
+    }
+  }
+
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
   function addComponentCore(
     comp: PresetComponent,
@@ -2954,11 +3113,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     const phys = comp.physical
     const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
-    const bb = getOrComputeBbox(comp.id, comp)
+    const catName = findCategory(comp)
+    const resolvedForSizing = resolveComponentVisual({ preset: comp, category: catName, mode: 'collision' })
     const shape = phys.inertia_primitive || 'box'
-    const xm = bb[0] / 1000
-    const ym = bb[1] / 1000
-    const zm = bb[2] / 1000
+    const xm = resolvedForSizing.bounds.hx * 2
+    const ym = resolvedForSizing.bounds.hy * 2
+    const zm = resolvedForSizing.bounds.hz * 2
 
     let inertia: { ixx: number; iyy: number; izz: number }
     if (shape === 'cylinder') {
@@ -2969,7 +3129,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       inertia = computeBoxInertia(mass, xm, ym, zm)
     }
 
-    const catName = findCategory(comp)
     const category = comp.id.split('_')[0]
     const isActuated = isSplitServoComponentId(comp.id)
     const isNonSplitActuated = !isActuated && (category === 'actuator' || category === 'motor')
@@ -2988,10 +3147,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const hornMass = mass * 0.05
         const bodyInertia = computeBoxInertia(bodyMass, xm, ym, zm * 0.88)
         const hornInertia = computeBoxInertia(hornMass, xm * 0.7, ym * 0.7, zm * 0.12)
-        const hornOriginZ = (zm * SERVO_HORN_ORIGIN_Z_RATIO).toFixed(6)
-
-        const bodyVisuals = servoBodyShape(xm, zm, ym, catName)
-        const hornVisuals = servoHornShape(xm, zm, ym, catName)
+        const splitVisual = resolveSplitServoVisual({ preset: comp, category: catName })
+        const hornOriginZ = splitVisual.hornOriginZ.toFixed(6)
+        const bodyVisuals = splitVisual.bodyVisuals
+        const hornVisuals = splitVisual.hornVisuals
 
         // Body link
         const bodyLink = doc.createElement('link')
@@ -3004,12 +3163,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         bodyInertialEl.appendChild(bodyMassEl); bodyInertialEl.appendChild(bodyInertiaEl)
         bodyLink.appendChild(bodyInertialEl)
         bodyVisuals.forEach((vis, i) => addVisualElement(doc, bodyLink, vis, i))
-        const collisionMesh = comp.physical.collision_mesh
-        if (collisionMesh) {
-          addMeshCollisionElement(doc, bodyLink, collisionMesh)
-        } else {
-          bodyVisuals.forEach(vis => addCollisionElement(doc, bodyLink, vis))
-        }
+        addResolvedCollisionSourceElements(doc, bodyLink, splitVisual.bodyCollision, bodyVisuals)
 
         // Mount joint: fixed, parent → body
         const mountJoint = doc.createElement('joint'); mountJoint.setAttribute('name', mountJointName); mountJoint.setAttribute('type', 'fixed')
@@ -3029,7 +3183,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         hornInertialEl.appendChild(hornMassEl); hornInertialEl.appendChild(hornInertiaEl)
         hornLink.appendChild(hornInertialEl)
         hornVisuals.forEach((vis, i) => addVisualElement(doc, hornLink, vis, i))
-        hornVisuals.forEach(vis => addCollisionElement(doc, hornLink, vis))
+        addResolvedCollisionSourceElements(doc, hornLink, splitVisual.hornCollision, hornVisuals)
 
         // Revolute joint: body → horn at horn origin
         const revJoint = doc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', 'revolute')
@@ -3038,7 +3192,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const revOrigin = doc.createElement('origin'); revOrigin.setAttribute('xyz', `0 0 ${hornOriginZ}`); revOrigin.setAttribute('rpy', '0 0 0')
         const revAxis = doc.createElement('axis'); revAxis.setAttribute('xyz', '0 0 1')
         const revLimit = doc.createElement('limit')
-        revLimit.setAttribute('lower', '-3.14159'); revLimit.setAttribute('upper', '3.14159')
+        const [revLo, revHi] = resolveJointLimitsRad(comp)
+        revLimit.setAttribute('lower', revLo.toFixed(5)); revLimit.setAttribute('upper', revHi.toFixed(5))
         const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
                           (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
         revLimit.setAttribute('effort', String(maxTorque)); revLimit.setAttribute('velocity', '3.14')
@@ -3047,7 +3202,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         robot.appendChild(bodyLink); robot.appendChild(mountJoint)
         robot.appendChild(hornLink); robot.appendChild(revJoint)
       } else {
-        const visuals = generateVisuals(comp as Parameters<typeof generateVisuals>[0], catName)
+        const resolvedVisual = resolvedForSizing
+        const visuals = resolvedVisual.visuals
         const link = doc.createElement('link')
         link.setAttribute('name', childName)
 
@@ -3063,12 +3219,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         link.appendChild(inertialEl)
 
         visuals.forEach((vis, i) => addVisualElement(doc, link, vis, i))
-        const collisionMesh = comp.physical.collision_mesh
-        if (collisionMesh) {
-          addMeshCollisionElement(doc, link, collisionMesh)
-        } else {
-          visuals.forEach(vis => addCollisionElement(doc, link, vis))
-        }
+        addResolvedCollisionElements(doc, link, resolvedVisual)
 
         const joint = doc.createElement('joint')
         joint.setAttribute('name', jointName)
@@ -3082,7 +3233,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           const axis = doc.createElement('axis'); axis.setAttribute('xyz', '0 0 1')
           joint.appendChild(axis)
           const limit = doc.createElement('limit')
-          limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+          const [lLo, lHi] = resolveJointLimitsRad(comp)
+          limit.setAttribute('lower', lLo.toFixed(5)); limit.setAttribute('upper', lHi.toFixed(5))
           const maxTorque = (comp.mechanical_electrical.max_torque_nm as number) ??
                             (comp.mechanical_electrical.holding_torque_nm as number) ?? 10
           limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')
@@ -3247,7 +3399,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     carryGhostBounds = bounds
     carryGroup = new THREE.Group()
     carryGroup.name = 'carry_ghost'
-    carryGroup.add(preview.previewGroup ? makeCarryGhostPreviewGroup(preview.previewGroup) : makeCarryGhostVisualGroup(preview.visuals))
+    carryGroup.add(preview.previewGroup ? makeCarryGhostPreviewGroup(preview.previewGroup, preview.authoredFrame) : makeCarryGhostVisualGroup(preview.visuals))
     ctx.scene.add(carryGroup)
 
     rebuildMountNodes()
@@ -3457,12 +3609,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     } else {
       const graph = ctx.getKinematicGraph()
       const parent = resolveFreePlacementParent(graph)
-      const bb = getOrComputeBbox(comp.id, comp)
-      const xm = bb[0] / 1000
-      const ym = bb[1] / 1000
-      const zm = bb[2] / 1000
+      const resolved = resolveComponentVisual({ preset: comp, category: findCategory(comp), mode: 'collision' })
+      const xm = resolved.bounds.hx * 2
+      const ym = resolved.bounds.hy * 2
+      const zm = resolved.bounds.hz * 2
       const doc = new DOMParser().parseFromString(ctx.getUrdfText(), 'application/xml')
-      const placement = computePlacement(doc, parent, comp, xm, ym, zm)
+      const placement = computePlacement(doc, parent, comp, xm, ym, zm, {
+        cx: resolved.bounds.cx,
+        cy: resolved.bounds.cy,
+        cz: resolved.bounds.cz,
+      })
       addComponentCore(comp, parent, placement.xyz, placement.rpy)
     }
   }
@@ -3489,7 +3645,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const mass = comp.physical.mass_kg ?? comp.physical.mass_kg_per_100mm
     const massLabel = comp.physical.mass_kg_per_100mm ? `${(comp.physical.mass_kg_per_100mm * 1000).toFixed(0)}g/100mm` :
                       mass != null ? (mass >= 1 ? `${mass.toFixed(2)} kg` : `${Math.round(mass * 1000)} g`) : '—'
-    const bb = getOrComputeBbox(comp.id, comp)
+    const halfBounds = resolveVisualHalfBoundsMm(comp)
+    const bb = [halfBounds.hxMm * 2, halfBounds.hyMm * 2, halfBounds.hzMm * 2]
     const dims = `${Math.round(bb[0])}×${Math.round(bb[1])}×${Math.round(bb[2])} mm`
     const shape = comp.physical.inertia_primitive || 'box'
     const mounting = ((comp.mounting_logic as Record<string, unknown>).primary ?? '—') as string
@@ -3666,7 +3823,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       ctx.showToast('Select a link to export', 'warning')
       return
     }
-    const linkGroup = ctx.getParsedRobot().linkGroups.get(selectedLink)
+    const linkGroup = getInteractionLinkGroup(selectedLink)
     if (!linkGroup) {
       ctx.showToast('Link geometry not found', 'error')
       return
@@ -3795,7 +3952,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         }
 
         pivot.updateMatrixWorld(true)
-        const parentLinkGroup = ctx.getParsedRobot().linkGroups.get(targetParent)
+        const parentLinkGroup = getInteractionLinkGroup(targetParent)
         if (!parentLinkGroup) {
           ctx.showToast('Snap target not found in scene', 'warning')
           bestMountCandidate = null
@@ -4153,7 +4310,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function onModelUpdated() {
     if (selectedLink) {
-      if (!ctx.getParsedRobot().linkGroups.has(selectedLink)) {
+      if (!resolveInteractionFrameLinkName(selectedLink)) {
         selectedLink = null
         gizmo.detach()
       } else {
@@ -4293,13 +4450,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
     // Create a fresh minimal URDF with just a base_link
     const phys = rootPreset.physical
-    const bb = getOrComputeBbox(rootPreset.id, rootPreset)
-    const xm = bb[0] / 1000
-    const ym = bb[1] / 1000
-    let zm = bb[2] / 1000
-    if (root.length_mm && phys.cross_section_mm) {
-      zm = root.length_mm / 1000
-    }
+    const catName = findCategory(rootPreset)
+    const rootResolved = resolveComponentVisual({
+      preset: rootPreset,
+      category: catName,
+      mode: 'collision',
+      instance: root,
+    })
+    const xm = rootResolved.bounds.hx * 2
+    const ym = rootResolved.bounds.hy * 2
+    const zm = rootResolved.bounds.hz * 2
     const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
     const shape = phys.inertia_primitive || 'box'
     let inertia: { ixx: number; iyy: number; izz: number }
@@ -4308,9 +4468,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     else inertia = computeBoxInertia(mass, xm, ym, zm)
 
     const rootLinkName = root.link_name
-    const catName = findCategory(rootPreset)
-    const rootVisualPreset = buildVisPreset(rootPreset, root)
-    const visuals = generateVisuals(rootVisualPreset as Parameters<typeof generateVisuals>[0], catName)
+    const visuals = rootResolved.visuals
 
     // Build root link XML
     let visualsXml = ''
@@ -4332,14 +4490,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // convex-hull OBJ (Step 4 of docs/ENGINE_NEXT_STEPS.md), else one
     // primitive element per visual piece.
     let collisionsXml = ''
-    const rootCollisionMesh = rootPreset.physical.collision_mesh
-    if (rootCollisionMesh) {
+    if (rootResolved.collision.source === 'authored_mesh' && rootResolved.collision.meshFile) {
       collisionsXml += `
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><mesh filename="package://meshes/collision/${rootCollisionMesh}"/></geometry>
+      <geometry><mesh filename="package://meshes/collision/${rootResolved.collision.meshFile}"/></geometry>
     </collision>`
-    } else {
+    } else if (rootResolved.collision.source === 'urdf_primitives') {
       visuals.forEach(vis => {
         const cGeomXml = vis.geometry.type === 'box'
           ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
@@ -4352,6 +4509,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       <geometry>${cGeomXml}</geometry>
     </collision>`
       })
+    } else {
+      const bounds = rootResolved.collision.bounds
+      collisionsXml += `
+    <collision>
+      <origin xyz="${[bounds.cx, bounds.cy, bounds.cz].map(v => v.toFixed(6)).join(' ')}" rpy="0 0 0"/>
+      <geometry><box size="${[bounds.hx * 2, bounds.hy * 2, bounds.hz * 2].map(v => v.toFixed(6)).join(' ')}"/></geometry>
+    </collision>`
     }
 
     const baseUrdf = `<?xml version="1.0"?>
@@ -4506,18 +4670,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       let childPort: ReturnType<typeof resolveFaceToPort> = undefined
 
       if (parentPreset) {
-        const pBb = getOrComputeBbox(parentPreset.id, parentPreset)
+        const parentHalfBounds = resolveVisualHalfBoundsMm(parentPreset, parentCompDef ?? undefined)
         const parentPorts = componentPortsForPreset(
-          parentPreset.id, pBb[0] / 2000, pBb[1] / 2000, pBb[2] / 2000,
+          parentPreset.id,
+          parentHalfBounds.hxMm / 1000,
+          parentHalfBounds.hyMm / 1000,
+          parentHalfBounds.hzMm / 1000,
           parentPreset.mounting_logic
         )
         parentPort = resolveFaceToPort(attachFace, parentPorts)
         console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
 
         if (childPreset) {
-          const cBbP = getOrComputeBbox(childPreset.id, childPreset)
+          const childHalfBounds = resolveVisualHalfBoundsMm(childPreset, comp)
           const childPorts = componentPortsForPreset(
-            childPreset.id, cBbP[0] / 2000, cBbP[1] / 2000, cBbP[2] / 2000,
+            childPreset.id,
+            childHalfBounds.hxMm / 1000,
+            childHalfBounds.hyMm / 1000,
+            childHalfBounds.hzMm / 1000,
             childPreset.mounting_logic
           )
           childPort = resolveFaceToPort(childFace, childPorts)
@@ -4615,6 +4785,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (typeof aor === 'number') effectiveCym = aor / 1000
       }
 
+      const parentParametricLengthMm = (parentCompDef?.length_mm && parentPreset?.physical.cross_section_mm)
+        ? parentCompDef.length_mm
+        : undefined
       let placement = computeFacePlacement(
         doc, parentLinkName,
         cxm, effectiveCym, czm,
@@ -4632,6 +4805,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         undefined,
         undefined,
         { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
+        parentParametricLengthMm,
       )
       console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${jointType} axis=${comp.joint_axis}`)
       // Phase 2/3: if this component has authored mate-connector fields OR
@@ -4640,26 +4814,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // extent math. Returns null to fall through to legacy whenever neither
       // side opts in.
       // Connector-aware placement below may override the fallback placement.
-      const parentPhys = parentPreset?.physical
-      const rawParentBb = parentPreset
-        ? getOrComputeBbox(parentPreset.id, parentPreset)
-        : [40, 40, 40]
-      // Parametric components (extrusions, bars, tubes) declare cross_section_mm
-      // and carry their length on the COMPONENT instance via `length_mm`. The
-      // raw preset bbox falls through to a `[w, h, undefined]` and matePlacement
-      // gets `[w, h, 40]` — so a 100mm extrusion default-`bottom` connector
-      // lands at -20mm instead of -50mm, and any child mating to it floats
-      // 30mm short of the real end. Look the parent comp up by link_name and
-      // splice its length_mm into the Z slot when the preset only authored a
-      // cross-section.
       const parentComp = components.find(c => c.link_name === parentLinkName)
-      const parentBb = (parentPhys?.cross_section_mm && parentComp?.length_mm !== undefined)
-        ? [rawParentBb[0] ?? 40, rawParentBb[1] ?? 40, parentComp.length_mm]
-        : rawParentBb
+      const parentHalfBounds = parentPreset
+        ? resolveVisualHalfBoundsMm(parentPreset, parentComp ?? undefined)
+        : { hxMm: 20, hyMm: 20, hzMm: 20 }
       const matePlacement = (parentPreset && childPreset)
         ? computeMatePlacement(
             comp,
-            { hxMm: (parentBb[0] ?? 40) / 2, hyMm: (parentBb[1] ?? 40) / 2, hzMm: (parentBb[2] ?? 40) / 2 },
+            parentHalfBounds,
             { hxMm: cxm * 500,                hyMm: effectiveCym * 500,       hzMm: czm * 500 },
             parentPreset.connectors,
             childPreset.connectors,
@@ -4680,7 +4842,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
       } else {
         const placeFlags = { viaConnector: false }
-        placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags, childPreset?.connectors, { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose })
+        placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags, childPreset?.connectors, { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose }, parentParametricLengthMm)
         if (placeFlags.viaConnector) {
           viaConnectorMap.set(comp.link_name, true)
           const oppositeFaceLog: Record<string, string> = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' }
@@ -4723,8 +4885,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       else cInertia = computeBoxInertia(cMass, cxm, cym, czm)
 
       const cCatName = findCategory(preset)
-      const visualPreset = buildVisPreset(preset, comp)
-      const cVisuals = generateVisuals(visualPreset as Parameters<typeof generateVisuals>[0], cCatName)
+      const resolvedVisual = resolveComponentVisual({
+        preset,
+        category: cCatName,
+        mode: 'collision',
+        instance: comp,
+      })
+      const cVisuals = resolvedVisual.visuals
       const cIsActuated = isSplitServoComponentId(preset.id)
       const servoAxisName = axisNameFromUrdf(jointAxis)
       const servoUsesSideYoke = cIsActuated && servoAxisName !== 'z'
@@ -4737,6 +4904,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         parentCompDef &&
         isSplitServoComponentId(parentCompDef.component_id)
       )
+      const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
       if (parentIsServo) {
         const parentServoAxis = axisNameFromComponentAxis(parentCompDef!.joint_axis)
         const grandParentComp = parentCompDef?.attach_to
@@ -4756,15 +4924,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const childBodyHX = Math.max(cxm / 2 - Math.abs(childBounds.cx), 0)
         const childBodyHY = Math.max(cym / 2 - Math.abs(childBounds.cy), 0)
         const childBodyHZ = Math.max(czm / 2 - Math.abs(childBounds.cz), 0)
-        const drivenPlacement = servoDrivenChildPlacement(
-          parentServoAxis,
-          comp.attach_face,
-          childBodyHX,
-          childBodyHY,
-          childBodyHZ,
-          invertRadialSide,
-          cIsActuated,
-        )
+        const drivenPlacement = preset.id === 'structural_limb_link_slim'
+          ? servoDrivenStructuralLimbPlacement(parentServoAxis, comp.attach_face, childBodyHY, childBodyHZ, parentWorldTransform)
+          : servoDrivenChildPlacement(
+            parentServoAxis,
+            comp.attach_face,
+            childBodyHX,
+            childBodyHY,
+            childBodyHZ,
+            invertRadialSide,
+            cIsActuated,
+          )
         if (drivenPlacement) {
           placement = drivenPlacement
           viaConnectorMap.set(comp.link_name, true)
@@ -4775,9 +4945,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Rest-pose offsets belong to the body -> horn joint origin instead.
       let finalRpy = placement.rpy
       let servoHornZeroRpy = '0 0 0'
-      const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
       if (
-        parentCompDef?.component_id === 'structural_limb_link_slim' &&
+        isDistalBeamComponentId(parentCompDef?.component_id) &&
         comp.attach_face === 'bottom'
       ) {
         const xyz = parseXyzString(placement.xyz)
@@ -4785,7 +4954,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (normalWorld.z > 0.0001) {
           xyz[2] = -xyz[2]
           placement = { ...placement, xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' ') }
-          console.log(`[assembly] limb distal bottom corrected: ${comp.link_name} local_z flipped so child moves downward in world`)
+          console.log(`[assembly] beam distal bottom corrected: ${comp.link_name} local_z flipped so child moves downward in world`)
         }
       }
       const servoAxisSign = cIsActuated ? servoAxisSignFromParentWorld(parentWorldTransform, servoAxisName) : 1
@@ -4825,7 +4994,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         ])
         if (cIsActuated) {
           const explicitTuple = parseRpyString(explicitRpyStr)
-          servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, servoAxisSign)
+          if (
+            servoAxisName === 'y' &&
+            isDistalBeamComponentId(parentCompDef?.component_id) &&
+            comp.attach_face === 'bottom'
+          ) {
+            const bend = Math.abs(explicitTuple[1] || 0)
+            // Mirrored Y-axis knee carriers need opposite local horn signs so
+            // both sides fold toward world -X (backward) in the dog stance.
+            servoHornZeroRpy = formatRpyTuple([0, 0, bend * servoAxisSign])
+          } else {
+            servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, servoAxisSign)
+          }
           console.log(`[assembly] servo horn zero rpy: ${comp.link_name} axis=${servoAxisName} sign=${servoAxisSign} joint_rpy=[${explicitRpy.join(', ')}] local=${servoHornZeroRpy}`)
         } else {
           finalRpy = explicitRpyStr
@@ -4876,14 +5056,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           const bodyInertia = computeBoxInertia(bodyMass, cxm, cym, czm * 0.88)
           const hornInertia = computeBoxInertia(hornMass, cxm * 0.7, cym * 0.7, czm * 0.12)
           const carrierInertia = computeBoxInertia(carrierMass || 0.001, cxm * 1.2, cym * 1.4, czm * 1.2)
-          const hornOriginZ = servoHornOriginZ.toFixed(6)
-
-          const bodyVisuals = servoUsesSideYoke
-            ? [...servoBodyShape(cxm, czm, cym, cCatName), ...servoSideYokeShape(cxm, czm, cym, cCatName)]
-            : servoBodyShape(cxm, czm, cym, cCatName)
-          const hornVisuals = servoUsesSideYoke
-            ? [...servoHornShape(cxm, czm, cym, cCatName), ...servoHornBeamAdapterShape(cxm, czm, cym, cCatName)]
-            : servoHornShape(cxm, czm, cym, cCatName)
+          const splitVisual = resolveSplitServoVisual({
+            preset,
+            category: cCatName,
+            includeSideYoke: servoUsesSideYoke,
+          })
+          const hornOriginZ = splitVisual.hornOriginZ.toFixed(6)
+          const bodyVisuals = splitVisual.bodyVisuals
+          const hornVisuals = splitVisual.hornVisuals
 
           // Body link
           const bodyLink = urdfDoc.createElement('link'); bodyLink.setAttribute('name', bodyLinkName)
@@ -4895,12 +5075,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           bodyInertialEl.appendChild(bodyMassEl); bodyInertialEl.appendChild(bodyInertiaEl)
           bodyLink.appendChild(bodyInertialEl)
           bodyVisuals.forEach((vis, i) => addVisualElement(urdfDoc, bodyLink, vis, i))
-          const cCollisionMesh = preset.physical.collision_mesh
-          if (cCollisionMesh) {
-            addMeshCollisionElement(urdfDoc, bodyLink, cCollisionMesh)
-          } else {
-            bodyVisuals.forEach(vis => addCollisionElement(urdfDoc, bodyLink, vis))
-          }
+          addResolvedCollisionSourceElements(urdfDoc, bodyLink, splitVisual.bodyCollision, bodyVisuals)
 
           // Mount joint: fixed, parent → body
           if (useCompoundServoCarrier) {
@@ -4944,7 +5119,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           hornInertialEl.appendChild(hornMassEl); hornInertialEl.appendChild(hornInertiaEl2)
           hornLink.appendChild(hornInertialEl)
           hornVisuals.forEach((vis, i) => addVisualElement(urdfDoc, hornLink, vis, i))
-          hornVisuals.forEach(vis => addCollisionElement(urdfDoc, hornLink, vis))
+          addResolvedCollisionSourceElements(urdfDoc, hornLink, splitVisual.hornCollision, hornVisuals)
 
           // Revolute joint: body → horn at horn origin
           const revJoint = urdfDoc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', 'revolute')
@@ -4953,7 +5128,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           const revOrigin = urdfDoc.createElement('origin'); revOrigin.setAttribute('xyz', `0 0 ${hornOriginZ}`); revOrigin.setAttribute('rpy', servoHornZeroRpy)
           const revAxis = urdfDoc.createElement('axis'); revAxis.setAttribute('xyz', '0 0 1')
           const revLimit = urdfDoc.createElement('limit')
-          revLimit.setAttribute('lower', '-3.14159'); revLimit.setAttribute('upper', '3.14159')
+          const [rLo2, rHi2] = resolveJointLimitsRad(preset)
+          revLimit.setAttribute('lower', rLo2.toFixed(5)); revLimit.setAttribute('upper', rHi2.toFixed(5))
           const me = preset.mechanical_electrical || {}
           const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
           revLimit.setAttribute('effort', String(maxTorque)); revLimit.setAttribute('velocity', '3.14')
@@ -4977,12 +5153,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           link.appendChild(inertialEl)
 
           cVisuals.forEach((vis, i) => addVisualElement(urdfDoc, link, vis, i))
-          const cCollisionMesh = preset.physical.collision_mesh
-          if (cCollisionMesh) {
-            addMeshCollisionElement(urdfDoc, link, cCollisionMesh)
-          } else {
-            cVisuals.forEach(vis => addCollisionElement(urdfDoc, link, vis))
-          }
+          addResolvedCollisionElements(urdfDoc, link, resolvedVisual)
 
           const joint = urdfDoc.createElement('joint')
           joint.setAttribute('name', jointName)
@@ -4998,7 +5169,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
           if (jointType === 'revolute' || jointType === 'prismatic') {
             const limit = urdfDoc.createElement('limit')
-            limit.setAttribute('lower', '-3.14159'); limit.setAttribute('upper', '3.14159')
+            const [pLo, pHi] = resolveJointLimitsRad(preset)
+            limit.setAttribute('lower', pLo.toFixed(5)); limit.setAttribute('upper', pHi.toFixed(5))
             const me = preset.mechanical_electrical || {}
             const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
             limit.setAttribute('effort', String(maxTorque)); limit.setAttribute('velocity', '3.14')

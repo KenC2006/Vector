@@ -1,6 +1,7 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
@@ -46,6 +47,62 @@ let viewportChatApi: ViewportChatApi
 // Viewport interaction state — declared early so simManager callbacks can reference it
 let viewportInteractionMode: 'build' | 'inspect' = 'build'
 let inspectFocusedLink: string | null = null
+
+/**
+ * Compute the lowest world-Y of the assembly's renderable URDF meshes,
+ * skipping helpers (collision visuals, wireframes, attachment-node markers).
+ * Returns null if no measurable geometry exists. Walks the tree explicitly
+ * (not Box3.setFromObject) so deep serial chains don't get silently dropped
+ * by stale-matrixWorld traversal — same rationale as `groundRobot` below.
+ */
+function computeLowestRenderedMeshY(robotGroup: THREE.Group): number | null {
+  robotGroup.updateMatrixWorld(true)
+  const urdfWorld = robotGroup.getObjectByName('urdf_world')
+  const target = urdfWorld || robotGroup
+  target.updateMatrixWorld(true)
+  let minY = Infinity
+  let meshCount = 0
+  const tmpBox = new THREE.Box3()
+  target.traverse((obj: THREE.Object3D) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.visible) return
+    const ud = mesh.userData as Record<string, unknown> | undefined
+    if (ud?.isCollision) return
+    const geom = mesh.geometry
+    if (!geom) return
+    if (!geom.boundingBox) geom.computeBoundingBox()
+    const bb = geom.boundingBox
+    if (!bb || bb.isEmpty()) return
+    tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
+    if (tmpBox.min.y < minY) minY = tmpBox.min.y
+    meshCount++
+  })
+  if (!isFinite(minY) || meshCount === 0) return null
+  return minY
+}
+
+/**
+ * Lift the assembly so its lowest mesh sits at or above Y=0. Only ever
+ * RAISES — never lowers — so it's safe to call on every reparse without the
+ * "jumps every edit" behavior that motivated keeping `groundRobot` reserved
+ * for initial load. Mirrors MuJoCo's `_auto_lift_above_floor` so editor and
+ * sim agree on what "on the floor" means.
+ *
+ * Why this exists: wheels render upright (after the carry/render parity fix)
+ * and a wheel link's origin sits at the wheel center, so the tire extends
+ * `tireRadius` below Y=0 of its joint origin. Without this lift, AI-generated
+ * cars visually sank into the editor floor between the moment the URDF was
+ * committed and the moment the user explicitly re-grounded.
+ */
+function liftAboveFloor(robotGroup: THREE.Group) {
+  const minY = computeLowestRenderedMeshY(robotGroup)
+  if (minY === null) return
+  const worldFloorY = robotGroup.position.y + minY
+  if (worldFloorY >= 0) return
+  robotGroup.position.y -= worldFloorY
+  robotGroup.updateMatrixWorld(true)
+  urdfAssemblyApi?.refreshMountNodeTransforms()
+}
 
 /**
  * Raise the assembly root group so the lowest geometry point touches Y=0.
@@ -1041,6 +1098,7 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       // STEP/GLB meshes load async — re-run edges so late arrivals get the
       // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
       addEdgeLines(parsedRobot)
+      applyCollisionOnlyView(showCollision)
     }, 150)
   }
 }
@@ -1215,8 +1273,11 @@ const collisionMat = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
 })
 const collisionEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.5 })
+const collisionObjLoader = new OBJLoader()
 
 let showCollision = false
+let collisionVisualBuildId = 0
+const HIDDEN_BY_COLLISION_VIEW = '__hiddenByCollisionView'
 
 function componentIdFromLinkName(linkName: string): string {
   const match = linkName.match(/^(.+)_(\d+)$/)
@@ -1236,7 +1297,100 @@ function collisionCylinderRadius(collisionEl: Element): number {
   return Number.isFinite(radius) ? radius : 0
 }
 
+function hasCollisionFlag(obj: THREE.Object3D): boolean {
+  let cur: THREE.Object3D | null = obj
+  while (cur) {
+    if ((cur.userData as Record<string, unknown> | undefined)?.isCollision) return true
+    cur = cur.parent
+  }
+  return false
+}
+
+function applyCollisionOnlyView(enabled: boolean) {
+  robot.traverse(obj => {
+    if (!(obj instanceof THREE.Mesh || obj instanceof THREE.Line)) return
+    if (hasCollisionFlag(obj)) return
+
+    const userData = obj.userData as Record<string, unknown>
+    if (enabled) {
+      if (obj.visible) {
+        userData[HIDDEN_BY_COLLISION_VIEW] = true
+        obj.visible = false
+      }
+    } else if (userData[HIDDEN_BY_COLLISION_VIEW]) {
+      obj.visible = true
+      delete userData[HIDDEN_BY_COLLISION_VIEW]
+    }
+  })
+}
+
+function collisionMeshUrl(filename: string): string {
+  const raw = filename.trim()
+  if (/^https?:\/\//i.test(raw) || raw.startsWith('/')) return raw
+  if (raw.startsWith('package://')) {
+    const pkgPath = raw.slice('package://'.length)
+    return pkgPath.startsWith('meshes/') ? `/${pkgPath}` : `/${pkgPath.replace(/^[^/]+\//, '')}`
+  }
+  return raw.startsWith('meshes/') ? `/${raw}` : `/meshes/collision/${raw}`
+}
+
+function applyCollisionOrigin(wrapper: THREE.Object3D, collisionEl: Element) {
+  const originEl = collisionEl.querySelector('origin')
+  if (!originEl) return
+  const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
+  const rpy = (originEl.getAttribute('rpy') || '0 0 0').split(/\s+/).map(parseFloat)
+  wrapper.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
+  wrapper.quaternion.copy(rpyToQuat(rpy))
+}
+
+function addCollisionMeshEdges(root: THREE.Object3D) {
+  root.traverse(obj => {
+    if (!(obj instanceof THREE.Mesh) || !obj.geometry) return
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(obj.geometry, 20), collisionEdgeMat)
+    edges.userData.isCollision = true
+    edges.visible = showCollision
+    edges.raycast = () => {}
+    obj.add(edges)
+  })
+}
+
+async function loadCollisionMeshIntoWrapper(
+  filename: string,
+  scaleAttr: string | null,
+  wrapper: THREE.Group,
+  buildId: number,
+) {
+  try {
+    const res = await fetch(collisionMeshUrl(filename))
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const obj = collisionObjLoader.parse(await res.text())
+    if (buildId !== collisionVisualBuildId || !wrapper.parent) return
+
+    obj.userData.isCollision = true
+    obj.visible = showCollision
+    if (scaleAttr) {
+      const s = scaleAttr.split(/\s+/).map(parseFloat)
+      if (s.length >= 3) obj.scale.set(s[0] || 1, s[1] || 1, s[2] || 1)
+      else if (s.length === 1 && Number.isFinite(s[0])) obj.scale.setScalar(s[0])
+    }
+    obj.traverse(child => {
+      child.userData.isCollision = true
+      child.visible = showCollision
+      if (child instanceof THREE.Mesh) {
+        child.material = collisionMat
+        child.raycast = () => {}
+      }
+    })
+    addCollisionMeshEdges(obj)
+    wrapper.add(obj)
+    applyCollisionOnlyView(showCollision)
+  } catch (err) {
+    console.warn(`[collision] Failed to load collision mesh ${filename}:`, err)
+  }
+}
+
 function rebuildCollisionVisuals(urdfText: string) {
+  const buildId = ++collisionVisualBuildId
   // Strip any existing collision meshes from all link groups.
   // Collect first, THEN remove — removing during traverse() corrupts the scene graph
   // and causes the viewport to stop updating on tab switch.
@@ -1276,8 +1430,36 @@ function rebuildCollisionVisuals(urdfText: string) {
       const boxEl = geomEl.querySelector('box')
       const cylEl = geomEl.querySelector('cylinder')
       const sphEl = geomEl.querySelector('sphere')
+      const meshEl = geomEl.querySelector('mesh')
+      let syntheticCyl = false
 
-      if (boxEl) {
+      if (meshEl && wheelCollision) {
+        const bbox = getPresetBboxMm(componentIdFromLinkName(linkName))
+        if (bbox) {
+          const r = Math.max(bbox[0] || 0, bbox[1] || 0) / 2000
+          const h = (bbox[2] || 0) / 1000
+          if (r > 0 && h > 0) {
+            geo = new THREE.CylinderGeometry(r, r, h, 32)
+            syntheticCyl = true
+          }
+        }
+      }
+
+      if (meshEl && !syntheticCyl) {
+        const filename = meshEl.getAttribute('filename') || ''
+        if (!filename) continue
+        const wrapper = new THREE.Group()
+        wrapper.userData.isCollision = true
+        wrapper.visible = showCollision
+        applyCollisionOrigin(wrapper, collisionEl)
+        linkGroup.add(wrapper)
+        void loadCollisionMeshIntoWrapper(filename, meshEl.getAttribute('scale'), wrapper, buildId)
+        continue
+      }
+
+      if (geo) {
+        // Synthetic sim-only wheel cylinder from preset metadata.
+      } else if (boxEl) {
         const s = (boxEl.getAttribute('size') || '0.1 0.1 0.1').split(/\s+/).map(parseFloat)
         geo = new THREE.BoxGeometry(s[0] || 0.1, s[1] || 0.1, s[2] || 0.1)
       } else if (cylEl) {
@@ -1295,9 +1477,9 @@ function rebuildCollisionVisuals(urdfText: string) {
       mesh.visible = showCollision
 
       // Cylinder in Three.js is along Y; URDF cylinder is along Z — match visual parser
-      if (cylEl) mesh.rotation.x = Math.PI / 2
+      if (cylEl || syntheticCyl) mesh.rotation.x = Math.PI / 2
 
-      // Apply collision origin (same convention as visual parser: ZYX euler)
+      // Apply collision origin using the shared URDF RPY convention.
       const originEl = collisionEl.querySelector('origin')
       if (originEl) {
         const xyz = (originEl.getAttribute('xyz') || '0 0 0').split(/\s+/).map(parseFloat)
@@ -1310,7 +1492,7 @@ function rebuildCollisionVisuals(urdfText: string) {
         // Match the MuJoCo conversion path for wheel links: the link/joint pose
         // already orients the tire, so applying the collision cylinder's own rpy
         // here makes the debug overlay show a misleading flat puck.
-        wrapper.quaternion.copy(wheelCollision && cylEl ? new THREE.Quaternion() : rpyToQuat(rpy))
+        wrapper.quaternion.copy(wheelCollision && (cylEl || syntheticCyl) ? new THREE.Quaternion() : rpyToQuat(rpy))
         wrapper.position.set(xyz[0] || 0, xyz[1] || 0, xyz[2] || 0)
         mesh.position.set(0, 0, 0)
         wrapper.add(mesh)
@@ -1318,7 +1500,7 @@ function rebuildCollisionVisuals(urdfText: string) {
         const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), collisionEdgeMat)
         edges.userData.isCollision = true
         edges.visible = showCollision
-        if (cylEl) edges.rotation.x = Math.PI / 2
+        if (cylEl || syntheticCyl) edges.rotation.x = Math.PI / 2
         wrapper.add(edges)
         linkGroup.add(wrapper)
         continue
@@ -1328,11 +1510,12 @@ function rebuildCollisionVisuals(urdfText: string) {
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), collisionEdgeMat)
       edges.userData.isCollision = true
       edges.visible = showCollision
-      if (cylEl) edges.rotation.x = Math.PI / 2
+      if (cylEl || syntheticCyl) edges.rotation.x = Math.PI / 2
       linkGroup.add(mesh)
       linkGroup.add(edges)
     }
   }
+  applyCollisionOnlyView(showCollision)
 }
 
 const toggleCollisionBtn = document.getElementById('toggle-collision') as HTMLButtonElement | null
@@ -1341,6 +1524,7 @@ toggleCollisionBtn?.addEventListener('click', () => {
   parsedRobot.group.traverse(obj => {
     if ((obj as any).userData?.isCollision) (obj as THREE.Object3D).visible = showCollision
   })
+  applyCollisionOnlyView(showCollision)
   toggleCollisionBtn.classList.toggle('active', showCollision)
 })
 
@@ -1451,6 +1635,7 @@ function rebuildWireframes() {
     }
   })
   wireframeBuilt = true
+  applyCollisionOnlyView(showCollision)
 }
 
 function animate() {
@@ -1711,6 +1896,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
           updateViewportInfo()
           urdfAssemblyApi?.onModelUpdated()
           if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
+          else if (!opts?.skipGround) liftAboveFloor(robot)
           robot.updateMatrixWorld(true)
           urdfAssemblyApi?.refreshMountNodeTransforms()
           // Wireframes must rebuild AFTER groundRobot so world-space capture
@@ -1766,6 +1952,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
     urdfAssemblyApi?.onModelUpdated()
 
     if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
+    else if (!opts?.skipGround) liftAboveFloor(robot)
     robot.updateMatrixWorld(true)
     urdfAssemblyApi?.refreshMountNodeTransforms()
 

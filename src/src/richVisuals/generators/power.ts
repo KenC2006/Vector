@@ -39,7 +39,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   const bodyD = d * 0.85
   const bodyH = h * 0.85
   const body = new THREE.Mesh(
-    nurbsFilletBox(bodyW, bodyD, bodyH, chamfer, 16),
+    nurbsFilletBox(bodyW, bodyH, bodyD, chamfer, 16),
     catBody('glossy_plastic', 0.5),
   )
   g.add(body)
@@ -49,7 +49,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   const edgeStripMat = getMaterial('glossy_plastic', 0x1a3d7a)
   for (const sy of [-1, 1]) {
     const strip = new THREE.Mesh(
-      nurbsFilletBox(bodyW * 1.005, bodyD * 0.92, edgeStripH, chamfer * 0.15, 12),
+      nurbsFilletBox(bodyW * 1.005, edgeStripH, bodyD * 0.92, chamfer * 0.15, 12),
       edgeStripMat,
     )
     strip.position.y = sy * (bodyH * 0.5 - edgeStripH * 0.4)
@@ -58,7 +58,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   // Side edge strips
   for (const sx of [-1, 1]) {
     const sideStrip = new THREE.Mesh(
-      nurbsFilletBox(bodyW * 0.04, bodyD * 0.92, bodyH * 0.85, chamfer * 0.08, 12),
+      nurbsFilletBox(bodyW * 0.04, bodyH * 0.85, bodyD * 0.92, chamfer * 0.08, 12),
       edgeStripMat,
     )
     sideStrip.position.x = sx * bodyW * 0.49
@@ -75,7 +75,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   const xt60H = h * 0.16
   const xt60D = d * 0.12
   const xt60 = new THREE.Mesh(
-    nurbsFilletBox(xt60W, xt60D, xt60H, chamfer * 0.15, 12),
+    nurbsFilletBox(xt60W, xt60H, xt60D, chamfer * 0.15, 12),
     getMaterial('glossy_plastic', 0xddaa00),
   )
   xt60.position.set(w * 0.45, 0, d * 0.35)
@@ -97,7 +97,7 @@ function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
   const balH = h * 0.08
   const balD = d * 0.2
   const bal = new THREE.Mesh(
-    nurbsFilletBox(balW, balD, balH, chamfer * 0.1, 12),
+    nurbsFilletBox(balW, balH, balD, chamfer * 0.1, 12),
     getMaterial('glossy_plastic', 0xeeeeee),
   )
   bal.position.set(w * 0.45, h * 0.2, -d * 0.15)
@@ -120,7 +120,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main housing
   const body = new THREE.Mesh(
-    nurbsFilletBox(w * 0.9, d * 0.85, h * 0.8, chamfer, 16),
+    nurbsFilletBox(w * 0.9, h * 0.8, d * 0.85, chamfer, 16),
     catBody('matte_plastic', 0.4),
   )
   g.add(body)
@@ -133,7 +133,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
   for (let i = 1; i < cols; i++) {
     const t = (i / cols) - 0.5
     const divider = new THREE.Mesh(
-      nurbsFilletBox(w * 0.008, dividerD, dividerH, chamfer * 0.05, 12),
+      nurbsFilletBox(w * 0.008, dividerH, dividerD, chamfer * 0.05, 12),
       getMaterial('matte_plastic', 0x333333),
     )
     divider.position.set(t * w * 0.85, h * 0.02, 0)
@@ -142,7 +142,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
 
   if (is4s2p) {
     const hDiv = new THREE.Mesh(
-      nurbsFilletBox(w * 0.87, w * 0.008, dividerH, chamfer * 0.05, 12),
+      nurbsFilletBox(w * 0.87, dividerH, w * 0.008, chamfer * 0.05, 12),
       getMaterial('matte_plastic', 0x333333),
     )
     hDiv.position.y = h * 0.02
@@ -152,7 +152,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
   // Terminal contacts
   for (const sx of [-1, 1]) {
     const terminal = new THREE.Mesh(
-      nurbsFilletBox(w * 0.06, d * 0.3, h * 0.08, chamfer * 0.1, 12),
+      nurbsFilletBox(w * 0.06, h * 0.08, d * 0.3, chamfer * 0.1, 12),
       getMaterial('copper_trace'),
     )
     terminal.position.set(sx * w * 0.42, h * 0.35, 0)
@@ -186,6 +186,7 @@ function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
   // PCB board base
   const pcbH = h * 0.08
   const pcb = pcbBoard(w * 0.85, d * 0.8, pcbH, catPcb())
+  pcb.rotation.x = Math.PI / 2
   g.add(pcb)
 
   // Inductor — chamferedCylinder (prominent toroidal shape)
@@ -232,7 +233,7 @@ function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
   const icH = h * 0.06
   const icD = d * 0.18
   const ic = new THREE.Mesh(
-    nurbsFilletBox(icW, icD, icH, chamfer * 0.1, 12),
+    nurbsFilletBox(icW, icH, icD, chamfer * 0.1, 12),
     getMaterial('matte_plastic', 0x111111),
   )
   ic.position.set(-w * 0.1, pcbH * 0.5 + icH * 0.5, -d * 0.1)
@@ -249,7 +250,7 @@ function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
   // Input/output pads
   for (const sx of [-1, 1]) {
     const pad = new THREE.Mesh(
-      nurbsFilletBox(w * 0.06, d * 0.08, pcbH * 0.3, chamfer * 0.02, 12),
+      nurbsFilletBox(w * 0.06, pcbH * 0.3, d * 0.08, chamfer * 0.02, 12),
       getMaterial('copper_trace'),
     )
     pad.position.set(sx * w * 0.38, 0, d * 0.3)
@@ -269,7 +270,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   // Large thin chamferedBox body (dark blue/purple)
   const panelH = h * 0.12
   const panel = new THREE.Mesh(
-    nurbsFilletBox(w * 0.92, d * 0.92, panelH, chamfer, 16),
+    nurbsFilletBox(w * 0.92, panelH, d * 0.92, chamfer, 16),
     getMaterial('glossy_plastic', 0x1a1a55),
   )
   g.add(panel)
@@ -280,7 +281,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   for (let i = 1; i < hLines; i++) {
     const t = (i / hLines) - 0.5
     const line = new THREE.Mesh(
-      nurbsFilletBox(w * 0.88, d * 0.004, panelH * 0.18, chamfer * 0.04, 12),
+      nurbsFilletBox(w * 0.88, panelH * 0.18, d * 0.004, chamfer * 0.04, 12),
       gridMat,
     )
     line.position.set(0, panelH * 0.46, t * d * 0.85)
@@ -292,7 +293,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   for (let i = 1; i < vLines; i++) {
     const t = (i / vLines) - 0.5
     const line = new THREE.Mesh(
-      nurbsFilletBox(w * 0.004, d * 0.88, panelH * 0.18, chamfer * 0.04, 12),
+      nurbsFilletBox(w * 0.004, panelH * 0.18, d * 0.88, chamfer * 0.04, 12),
       gridMat,
     )
     line.position.set(t * w * 0.85, panelH * 0.46, 0)
@@ -305,7 +306,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   // Left & right
   for (const sx of [-1, 1]) {
     const frame = new THREE.Mesh(
-      nurbsFilletBox(frameThick, d * 0.95, panelH * 1.1, chamfer * 0.1, 16),
+      nurbsFilletBox(frameThick, panelH * 1.1, d * 0.95, chamfer * 0.1, 16),
       frameMat,
     )
     frame.position.x = sx * w * 0.47
@@ -314,7 +315,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   // Front & back
   for (const sz of [-1, 1]) {
     const frame = new THREE.Mesh(
-      nurbsFilletBox(w * 0.95, frameThick, panelH * 1.1, chamfer * 0.1, 16),
+      nurbsFilletBox(w * 0.95, panelH * 1.1, frameThick, chamfer * 0.1, 16),
       frameMat,
     )
     frame.position.z = sz * d * 0.47
@@ -326,7 +327,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
   const jboxH = h * 0.08
   const jboxD = d * 0.1
   const jbox = new THREE.Mesh(
-    nurbsFilletBox(jboxW, jboxD, jboxH, chamfer * 0.15, 12),
+    nurbsFilletBox(jboxW, jboxH, jboxD, chamfer * 0.15, 12),
     getMaterial('matte_plastic'),
   )
   jbox.position.set(0, -panelH * 0.5 - jboxH * 0.4, 0)
@@ -347,7 +348,7 @@ function generateEStop(id: string, dims: GeneratorDims): THREE.Group {
   const baseH = h * 0.35
   const baseD = d * 0.7
   const base = new THREE.Mesh(
-    nurbsFilletBox(baseW, baseD, baseH, chamfer, 16),
+    nurbsFilletBox(baseW, baseH, baseD, chamfer, 16),
     getMaterial('glossy_plastic', 0xddaa00),
   )
   base.position.y = -h * 0.15
@@ -396,7 +397,7 @@ function generateEStop(id: string, dims: GeneratorDims): THREE.Group {
   const contactH = h * 0.15
   const contactD = baseD * 0.4
   const contact = new THREE.Mesh(
-    nurbsFilletBox(contactW, contactD, contactH, chamfer * 0.3, 12),
+    nurbsFilletBox(contactW, contactH, contactD, chamfer * 0.3, 12),
     getMaterial('matte_plastic'),
   )
   contact.position.y = -h * 0.15 - baseH * 0.5 - contactH * 0.4
@@ -426,7 +427,7 @@ function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
 
   // Main housing — chamferedBox
   const body = new THREE.Mesh(
-    nurbsFilletBox(w * 0.9, d * 0.85, h * 0.7, chamfer, 16),
+    nurbsFilletBox(w * 0.9, h * 0.7, d * 0.85, chamfer, 16),
     catMetal(0.3),
   )
   g.add(body)
@@ -438,7 +439,7 @@ function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
   const termD = d * 0.2
   for (let i = 0; i < termCount; i++) {
     const tx = (i - (termCount - 1) / 2) * termW
-    const term = connectorBlock(termW * 0.8, termD, termH, 0x111111)
+    const term = connectorBlock(termW * 0.8, termH, termD, 0x111111)
     term.position.set(tx, h * 0.35 + termH * 0.3, d * 0.2)
     g.add(term)
   }
@@ -458,7 +459,7 @@ function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
   }
 
   // Main input connector
-  const input = connectorBlock(w * 0.15, d * 0.15, h * 0.12, 0xddaa00)
+  const input = connectorBlock(w * 0.15, h * 0.12, d * 0.15, 0xddaa00)
   input.position.set(-w * 0.35, 0, d * 0.38)
   g.add(input)
 
@@ -470,7 +471,7 @@ function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
   // Mounting ears
   for (const sx of [-1, 1]) {
     const ear = new THREE.Mesh(
-      nurbsFilletBox(w * 0.08, d * 0.15, h * 0.6, chamfer * 0.2, 12),
+      nurbsFilletBox(w * 0.08, h * 0.6, d * 0.15, chamfer * 0.2, 12),
       catMetal(0.2),
     )
     ear.position.set(sx * w * 0.48, 0, 0)
@@ -548,13 +549,14 @@ function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
   // PCB board
   const pcbH = h * 0.08
   const pcb = pcbBoard(w * 0.85, d * 0.75, pcbH, catPcb())
+  pcb.rotation.x = Math.PI / 2
   g.add(pcb)
 
   // USB-C connector
   const usbW = w * 0.18
   const usbH = h * 0.08
   const usbD = d * 0.12
-  const usb = connectorBlock(usbW, usbD, usbH, 0x444444)
+  const usb = connectorBlock(usbW, usbH, usbD, 0x444444)
   usb.position.set(w * 0.35, pcbH * 0.3, 0)
   g.add(usb)
 
@@ -572,7 +574,7 @@ function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
   const icH = h * 0.04
   const icD = d * 0.12
   const ic = new THREE.Mesh(
-    nurbsFilletBox(icW, icD, icH, chamfer * 0.05, 12),
+    nurbsFilletBox(icW, icH, icD, chamfer * 0.05, 12),
     getMaterial('matte_plastic', 0x111111),
   )
   ic.position.set(0, pcbH * 0.5 + icH * 0.5, -d * 0.1)
@@ -581,7 +583,7 @@ function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
   // Output pads
   for (const sx of [-1, 1]) {
     const pad = new THREE.Mesh(
-      nurbsFilletBox(w * 0.05, d * 0.06, pcbH * 0.3, chamfer * 0.02, 12),
+      nurbsFilletBox(w * 0.05, pcbH * 0.3, d * 0.06, chamfer * 0.02, 12),
       getMaterial('copper_trace'),
     )
     pad.position.set(-w * 0.3, 0, sx * d * 0.2)
