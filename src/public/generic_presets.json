@@ -414,7 +414,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 10
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_bldc_large",
@@ -456,7 +501,52 @@
             "damping": 0.08,
             "friction": 0.03,
             "armature": 0.08
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 14
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_stepper_nema17",
@@ -497,7 +587,52 @@
             "damping": 0.1,
             "friction": 0.05,
             "armature": 0.008
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_stepper_nema23",
@@ -538,7 +673,52 @@
             "damping": 0.15,
             "friction": 0.08,
             "armature": 0.015
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6.35
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -28
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_linear_small",
@@ -577,7 +757,51 @@
             "damping": 0.3,
             "friction": 0.1,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -65
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_linear_heavy",
@@ -616,7 +840,51 @@
             "damping": 1,
             "friction": 0.3,
             "armature": 0.02
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -175
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_micro_linear_servo",
@@ -655,7 +923,51 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "rod_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -16
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_continuous_rotation_servo",
@@ -694,7 +1006,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5.9
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -18.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "actuator_high_speed_mini_servo",
@@ -734,7 +1091,52 @@
             "damping": 0.02,
             "friction": 0.01,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 4.6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -782,7 +1184,52 @@
             "damping": 0.001,
             "friction": 0.001,
             "armature": 0.0005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 2
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_dc_medium_540",
@@ -825,7 +1272,52 @@
             "damping": 0.005,
             "friction": 0.003,
             "armature": 0.003
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3.17
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_dc_large_775",
@@ -869,7 +1361,52 @@
             "damping": 0.01,
             "friction": 0.005,
             "armature": 0.008
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -33
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_small_n20",
@@ -912,7 +1449,52 @@
             "damping": 0.005,
             "friction": 0.003,
             "armature": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_medium_37mm",
@@ -955,7 +1537,52 @@
             "damping": 0.02,
             "friction": 0.01,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_gear_heavy_50mm",
@@ -998,7 +1625,52 @@
             "damping": 0.05,
             "friction": 0.02,
             "armature": 0.015
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -47.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_coreless_dc",
@@ -1041,7 +1713,52 @@
             "damping": 0.0002,
             "friction": 0.0001,
             "armature": 0.0001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 1
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -8
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_worm_gear",
@@ -1085,7 +1802,52 @@
             "damping": 0.1,
             "friction": 0.08,
             "armature": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_hub_80mm",
@@ -1134,7 +1896,52 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 10
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_hub_120mm",
@@ -1184,7 +1991,52 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 14
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_harmonic_drive_compact",
@@ -1228,7 +2080,37 @@
             "damping": 0.3,
             "friction": 0.05,
             "armature": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_harmonic_drive_large",
@@ -1272,7 +2154,37 @@
             "damping": 0.8,
             "friction": 0.1,
             "armature": 0.03
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_pancake_dc",
@@ -1313,7 +2225,52 @@
             "damping": 0.003,
             "friction": 0.002,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 4
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -9
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_brushless_inrunner_micro",
@@ -1354,7 +2311,52 @@
             "damping": 0.0005,
             "friction": 0.0003,
             "armature": 0.0003
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 2
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "motor_brushless_inrunner_medium",
@@ -1395,7 +2397,52 @@
             "damping": 0.002,
             "friction": 0.001,
             "armature": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 3.17
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -26
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -1522,7 +2569,37 @@
             ],
             "near_clip": 0.3,
             "far_clip": 15
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -62,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "optical_front",
+              "origin_xyz_mm": [
+                62,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "sensor_lidar_2d",
@@ -1560,7 +2637,37 @@
             "num_rays": 1000,
             "fov_deg": 360,
             "max_range": 12
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_lidar_3d",
@@ -1603,7 +2710,37 @@
             "num_channels": 16,
             "rays_per_channel": 1000,
             "max_range": 100
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -35.85
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35.85
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_imu_6dof",
@@ -1639,7 +2776,37 @@
             "mjcf_sensor_type": "accelerometer_gyro",
             "noise_accel": 0.01,
             "noise_gyro": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_imu_9dof",
@@ -1676,7 +2843,37 @@
             "noise_accel": 0.01,
             "noise_gyro": 0.005,
             "noise_mag": 0.02
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_ultrasonic",
@@ -1714,7 +2911,37 @@
             "mjcf_sensor_type": "rangefinder",
             "max_range": 4,
             "fov_deg": 15
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -22.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                22.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_tof",
@@ -1752,7 +2979,37 @@
             "mjcf_sensor_type": "rangefinder",
             "max_range": 4,
             "fov_deg": 25
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_force_torque_6axis",
@@ -1791,7 +3048,37 @@
             "mjcf_sensor_type": "force_torque",
             "noise_force": 0.1,
             "noise_torque": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_joint_encoder_absolute",
@@ -1825,7 +3112,52 @@
           "sim_metadata": {
             "mjcf_sensor_type": "jointpos",
             "noise": 0.0001
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_thermal_ir_camera",
@@ -1868,7 +3200,37 @@
             ],
             "near_clip": 0.1,
             "far_clip": 5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_contact_bumper",
@@ -1900,7 +3262,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "touch",
             "threshold_force_n": 1.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -14,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                14,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_limit_switch",
@@ -1934,7 +3326,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "touch",
             "threshold_force_n": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_rotary_potentiometer",
@@ -1965,7 +3387,52 @@
           "sim_metadata": {
             "mjcf_sensor_type": "jointpos",
             "noise": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 6
+            },
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_load_cell",
@@ -2003,7 +3470,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "force",
             "noise_force": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                -27.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "payload_face",
+              "origin_xyz_mm": [
+                27.5,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_current",
@@ -2038,7 +3535,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "actuatorfrc",
             "noise": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_voltage_divider",
@@ -2066,7 +3593,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_sensor"
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_color_light",
@@ -2113,7 +3670,37 @@
               1
             ],
             "fovy_deg": 20
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "sensing_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "sensor_barometric_pressure",
@@ -2148,7 +3735,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "framepos",
             "noise": 0.1
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -2196,7 +3813,37 @@
           "sim_metadata": {
             "mjcf_role": "controller",
             "control_frequency_hz": 1000
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_sbc_small",
@@ -2239,7 +3886,37 @@
           "sim_metadata": {
             "mjcf_role": "controller",
             "control_frequency_hz": 100
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                8.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -8.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_sbc_gpu",
@@ -2284,7 +3961,37 @@
           "sim_metadata": {
             "mjcf_role": "controller",
             "control_frequency_hz": 500
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_motor_driver_dual",
@@ -2320,7 +4027,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "actuator_driver"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_foc_controller",
@@ -2358,7 +4095,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "actuator_driver"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_fpga_dev_board",
@@ -2399,7 +4166,37 @@
           "sim_metadata": {
             "mjcf_role": "controller",
             "control_frequency_hz": 10000
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_can_transceiver",
@@ -2430,7 +4227,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "bus_interface"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_usb_hub",
@@ -2461,7 +4288,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_wireless_24ghz",
@@ -2492,7 +4349,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_lora_radio",
@@ -2530,7 +4417,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -2.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "compute_gps_gnss",
@@ -2570,7 +4487,37 @@
           "sim_metadata": {
             "mjcf_sensor_type": "framepos",
             "noise": 2.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -2610,7 +4557,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_lipo_4s_5000",
@@ -2645,7 +4622,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_lipo_6s_10000",
@@ -2679,7 +4686,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_buck_converter_5v",
@@ -2712,7 +4749,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_buck_converter_12v",
@@ -2745,7 +4812,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -6
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_distribution_unit",
@@ -2777,7 +4874,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_18650_cell_holder_1s",
@@ -2807,7 +4934,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_18650_4s2p_pack",
@@ -2839,7 +4996,37 @@
           "sim_metadata": {
             "mjcf_role": "passive_mass",
             "depletion_model": "linear_approximation"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -21
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_supercapacitor_module",
@@ -2869,7 +5056,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_solar_panel_small",
@@ -2901,7 +5118,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_usbc_pd_trigger",
@@ -2935,7 +5182,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -3
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "power_estop_switch",
@@ -2966,7 +5243,37 @@
           },
           "sim_metadata": {
             "mjcf_role": "passive_mass"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -3216,7 +5523,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -25,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                25,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                15,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -15,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_servo_coupler_disc",
@@ -3339,7 +5732,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -33,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                33,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                29,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -29,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_joint_plate",
@@ -4043,7 +6522,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_standoff_m4",
@@ -4087,7 +6596,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_gusset_plate",
@@ -4181,7 +6720,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -1.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_corner_cube",
@@ -4209,7 +6778,93 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -10
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "left",
+              "origin_xyz_mm": [
+                -10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                -1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "right",
+              "origin_xyz_mm": [
+                10,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "front",
+              "origin_xyz_mm": [
+                0,
+                10,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                1,
+                0
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "back",
+              "origin_xyz_mm": [
+                0,
+                -10,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_cross_plate",
@@ -4304,7 +6959,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.002,
             "friction": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                15,
+                0,
+                0
+              ],
+              "axis_xyz": [
+                1,
+                0,
+                0
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_shaft_collar",
@@ -4335,7 +7035,52 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "cylinder"
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_hole",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -4.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_linear_rail_mgn12",
@@ -4400,7 +7145,37 @@
             "mjcf_joint_type": "slide",
             "damping": 0.005,
             "friction": 0.003
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "structural_din_rail_35mm",
@@ -4577,7 +7352,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.001,
             "friction": 0.001
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -3.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bearing_large",
@@ -4612,7 +7432,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.003,
             "friction": 0.002
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 25
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bushing_flanged",
@@ -4646,7 +7511,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.01,
             "friction": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_planetary_gearbox",
@@ -4686,7 +7596,52 @@
           "sim_metadata": {
             "mjcf_role": "gear_ratio_element",
             "reflected_inertia_factor": "gear_ratio_squared"
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -19
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_spur_gear_pair",
@@ -4721,7 +7676,37 @@
           "sim_metadata": {
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 2
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_bevel_gear_pair",
@@ -4756,7 +7741,37 @@
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 1,
             "axis_change": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_worm_gear_set",
@@ -4792,7 +7807,37 @@
             "mjcf_role": "gear_ratio_element",
             "gear_ratio": 30,
             "axis_change": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_chain_sprocket_set",
@@ -4861,7 +7906,67 @@
             "mjcf_joint_type": "ball",
             "damping": 0.01,
             "friction": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -17.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_flexible_coupling_jaw",
@@ -4897,7 +8002,67 @@
             "mjcf_role": "coupling",
             "stiffness": 200,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 5
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_rigid_shaft_coupling",
@@ -4931,7 +8096,67 @@
             "mjcf_role": "coupling",
             "stiffness": 50000,
             "damping": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "shaft_in",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 8
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_rack_pinion_set",
@@ -5001,7 +8226,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.01,
             "friction": 0.005
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 50
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "transmission_slewing_ring_bearing",
@@ -5038,7 +8308,52 @@
             "mjcf_role": "joint_bearing",
             "damping": 0.05,
             "friction": 0.01
-          }
+          },
+          "connectors": [
+            {
+              "id": "inner_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "diameter_mm": 130
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -5084,7 +8399,37 @@
             "joint_type": "slide",
             "contact_friction": 0.8,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_parallel_gripper_large",
@@ -5125,7 +8470,37 @@
             "joint_type": "slide",
             "contact_friction": 0.8,
             "damping": 1
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                27.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_3finger_adaptive",
@@ -5171,7 +8546,37 @@
             "num_joints": 9,
             "contact_friction": 1,
             "damping": 0.5
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_suction_cup",
@@ -5205,7 +8610,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 40,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -25
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "suction_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                25
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_magnetic_tool",
@@ -5236,7 +8671,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 80,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_tool_changer",
@@ -5267,7 +8732,37 @@
           "sim_metadata": {
             "mjcf_joint_type": "fixed_detachable",
             "lock_constraint": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tool_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_soft_gripper",
@@ -5306,7 +8801,37 @@
             "contact_friction": 1.2,
             "damping": 2,
             "soft_contact": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "gripper_open",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_vacuum_pad_array",
@@ -5338,7 +8863,37 @@
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 160,
             "contact_required": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "suction_face",
+              "origin_xyz_mm": [
+                0,
+                0,
+                20
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "effector_welding_torch_holder",
@@ -5369,7 +8924,37 @@
           },
           "sim_metadata": {
             "mjcf_geom_type": "box"
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "effector_pen_marker_holder",
@@ -5403,7 +8988,37 @@
           "sim_metadata": {
             "mjcf_geom_type": "cylinder",
             "contact_friction": 0.3
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         },
         {
           "id": "effector_screwdriver_holder",
@@ -5436,7 +9051,37 @@
             "mjcf_actuator_type": "motor",
             "damping": 0.1,
             "friction": 0.05
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_back",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -50
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "tip",
+              "origin_xyz_mm": [
+                0,
+                0,
+                50
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "point"
+            }
+          ]
         }
       ]
     },
@@ -5483,7 +9128,65 @@
               0.02,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -50,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_caster_wheel",
@@ -5518,7 +9221,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_mecanum_wheel",
@@ -5557,7 +9290,65 @@
               0.0001
             ],
             "anisotropic_friction": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -50,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -24
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_omni_wheel",
@@ -5598,7 +9389,65 @@
               0.0001
             ],
             "anisotropic_friction": true
-          }
+          },
+          "connectors": [
+            {
+              "id": "hub_bore",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
+              "id": "tread_outer",
+              "origin_xyz_mm": [
+                0,
+                -30,
+                0
+              ],
+              "axis_xyz": [
+                0,
+                -1,
+                0
+              ],
+              "type": "point"
+            },
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -12.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_track_tread_system",
@@ -5640,7 +9489,37 @@
               0.02,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -30
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_swerve_drive_module",
@@ -5684,7 +9563,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                55
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -55
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_ball_transfer_unit",
@@ -5718,7 +9627,37 @@
               0.005,
               0.0001
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                11
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -11
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
         {
           "id": "mobility_rubber_foot_pad",
@@ -5759,7 +9698,37 @@
               0.05,
               1
             ]
-          }
+          },
+          "connectors": [
+            {
+              "id": "mount_top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "contact_bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -7.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     },
@@ -5794,7 +9763,37 @@
             "mjcf_joint_type": "continuous",
             "mjcf_actuator_type": "motor",
             "contact_class": "drivetrain"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
 
         {
@@ -5822,7 +9821,37 @@
             "mjcf_joint_type": "continuous",
             "mjcf_actuator_type": "motor",
             "contact_class": "drivetrain"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
 
         {
@@ -5848,7 +9877,37 @@
             "mjcf_joint_type": "continuous",
             "mjcf_actuator_type": null,
             "contact_class": "drivetrain"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
 
         {
@@ -5874,7 +9933,37 @@
             "mjcf_joint_type": "continuous",
             "mjcf_actuator_type": null,
             "contact_class": "drivetrain"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         },
 
         {
@@ -5901,7 +9990,37 @@
             "mjcf_joint_limits_deg": [-30, 30],
             "mjcf_actuator_type": "position",
             "contact_class": "drivetrain"
-          }
+          },
+          "connectors": [
+            {
+              "id": "top",
+              "origin_xyz_mm": [
+                0,
+                0,
+                40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "planar"
+            },
+            {
+              "id": "bottom",
+              "origin_xyz_mm": [
+                0,
+                0,
+                -40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                -1
+              ],
+              "type": "planar"
+            }
+          ]
         }
       ]
     }
