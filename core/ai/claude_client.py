@@ -156,8 +156,8 @@ _ALLOWED_COMPONENT_IDS = {
     'structural_baseplate', 'structural_baseplate_large',
     'structural_extrusion_2020', 'structural_extrusion_4040',
     'structural_bracket_l', 'structural_bracket_u', 'structural_shaft_collar',
-    # Transmission — belt, leadscrew, bearing, coupling
-    'transmission_timing_belt_gt2', 'transmission_leadscrew_8mm',
+    # Transmission — leadscrew, bearing, coupling
+    'transmission_leadscrew_8mm',
     'transmission_bearing_deep_groove', 'transmission_flexible_coupling_jaw',
     # End Effectors — two grippers + suction
     'effector_parallel_gripper_small', 'effector_parallel_gripper_large', 'effector_suction_cup',

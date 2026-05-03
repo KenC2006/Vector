@@ -752,28 +752,6 @@ function gearPairShape(
   ]
 }
 
-// Timing belt + pulleys
-function beltDriveShape(
-  cat: string,
-): UrdfVisualDesc[] {
-  const c = catColor(cat)
-  const c2 = catColor(cat, 1)
-  const pR = mm(10)
-  const beltW = mm(6)
-  const spacing = mm(60)
-  return [
-    // Driver pulley
-    cyl(pR, beltW, 0, 0, 0, c),
-    cyl(pR * 0.25, beltW * 1.5, 0, 0, 0, catColor(cat, 2)),
-    // Driven pulley
-    cyl(pR * 1.5, beltW, spacing, 0, 0, c2),
-    cyl(pR * 0.25, beltW * 1.5, spacing, 0, 0, catColor(cat, 2)),
-    // Belt (flat box connecting them)
-    box(spacing, mm(1), beltW, spacing / 2, pR * 1.2, 0, [0.15, 0.15, 0.15, 1]),
-    box(spacing, mm(1), beltW, spacing / 2, -pR * 1.2, 0, [0.15, 0.15, 0.15, 1]),
-  ]
-}
-
 // Leadscrew: long thin cylinder + nut
 function leadscrewShape(
   r: number, length: number,
@@ -1297,7 +1275,6 @@ export function generateVisuals(comp: {
   if (id.includes('shaft_collar')) return shaftCollarShape(xm, mm(p.inner_diameter_mm ?? 8) ?? xm * 0.5, zm, category)
 
   // ── Transmission ───────────────────────────────────────────────────────────
-  if (id.includes('timing_belt')) return beltDriveShape(category)
   if (id.includes('leadscrew') || id.includes('ballscrew')) return leadscrewShape(mm(p.outer_diameter_mm ?? bb[0] ?? 8) / 2, zm, category)
   if (id.includes('bearing_deep') || id.includes('bearing_large') || id.includes('crossed_roller')) {
     const od = mm((comp.mechanical_electrical.outer_diameter_mm as number) ?? bb[0] ?? 22)
@@ -1326,7 +1303,7 @@ export function generateVisuals(comp: {
   if (id.includes('vacuum_pad')) return vacuumPadArrayShape(xm, ym, category)
   if (id.includes('magnetic_tool') || id.includes('electromagnetic')) return magnetToolShape(xm / 2, ym, category)
   if (id.includes('tool_changer')) return toolChangerShape(xm / 2, ym, category)
-  if (id.includes('holder') || id.includes('welding') || id.includes('pen_marker') || id.includes('screwdriver')) return holderShape(xm / 2, ym, category)
+  if (id.includes('holder') || id.includes('welding') || id.includes('screwdriver')) return holderShape(xm / 2, ym, category)
 
   // ── Mobility ───────────────────────────────────────────────────────────────
   if (id.includes('mecanum')) return mecanumWheelShape(xm / 2, zm, category)

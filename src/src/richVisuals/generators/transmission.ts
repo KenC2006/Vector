@@ -195,66 +195,6 @@ function generatePlanetaryGearbox(id: string, dims: GeneratorDims): THREE.Group 
   return g
 }
 
-// ── Timing Belt GT2 ─────────────────────────────────────────────────────────
-
-function generateTimingBelt(id: string, dims: GeneratorDims): THREE.Group {
-  const g = new THREE.Group()
-  const { x: w, y: h, z: d } = dims
-
-  const pulleyR = Math.min(w, d) * 0.2
-  const pulleyH = h * 0.3
-  const spacing = w * 0.35
-
-  // Two chamferedCylinder pulleys
-  for (const sx of [-1, 1]) {
-    const pulley = new THREE.Mesh(
-      nurbsCylinder(pulleyR, pulleyH, pulleyR * 0.08, 32),
-      catMetal(),
-    )
-    pulley.position.set(sx * spacing, 0, 0)
-    g.add(pulley)
-
-    // Pulley flanges
-    for (const sy of [-1, 1]) {
-      const flange = new THREE.Mesh(
-        nurbsCylinder(pulleyR * 1.15, pulleyH * 0.08, pulleyR * 0.04, 32),
-        getMaterial('brushed_steel'),
-      )
-      flange.position.set(sx * spacing, sy * pulleyH * 0.45, 0)
-      g.add(flange)
-    }
-
-    // Shaft bore
-    const bore = new THREE.Mesh(
-      new THREE.CylinderGeometry(pulleyR * 0.25, pulleyR * 0.25, pulleyH * 1.2, 16),
-      getMaterial('dark_chrome'),
-    )
-    bore.position.set(sx * spacing, 0, 0)
-    g.add(bore)
-  }
-
-  // Thin belt box connecting pulleys
-  const beltW = spacing * 2 + pulleyR * 2
-  const beltThick = pulleyH * 0.06
-  const beltMat = getMaterial('rubber_black')
-
-  const topBelt = new THREE.Mesh(
-    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
-    beltMat,
-  )
-  topBelt.position.y = pulleyR
-  g.add(topBelt)
-
-  const botBelt = new THREE.Mesh(
-    nurbsFilletBox(beltW, beltThick, pulleyH * 0.8, beltThick * 0.2, 12),
-    beltMat,
-  )
-  botBelt.position.y = -pulleyR
-  g.add(botBelt)
-
-  return g
-}
-
 // ── Leadscrew ───────────────────────────────────────────────────────────────
 
 function generateLeadscrew(id: string, dims: GeneratorDims): THREE.Group {
@@ -672,8 +612,6 @@ function generateSlewingRing(id: string, dims: GeneratorDims): THREE.Group {
 
 export function generateRichTransmission(id: string, dims: GeneratorDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
-  if (id.includes('timing_belt'))
-    return generateTimingBelt(id, dims)
   if (id.includes('leadscrew') || id.includes('ballscrew'))
     return generateLeadscrew(id, dims)
   if (id.includes('bearing_deep_groove') || id.includes('bearing_large'))

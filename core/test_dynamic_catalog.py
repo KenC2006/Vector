@@ -184,10 +184,10 @@ def test_omitted_hint_present_when_truncated() -> None:
 
 def test_explicit_preset_id_mention_wins() -> None:
     print("\n[7] Explicit preset-id mention dominates")
-    cat = scoped(user_prompt="I want the transmission_timing_belt_gt2 on this build")
+    cat = scoped(user_prompt="I want the transmission_leadscrew_8mm on this build")
     present = ids_in(cat)
     expect(
-        "transmission_timing_belt_gt2" in present,
+        "transmission_leadscrew_8mm" in present,
         "explicit id mention surfaces the preset",
     )
 

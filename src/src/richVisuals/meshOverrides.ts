@@ -78,7 +78,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'power_18650_cell_holder': 'power_cell_holder.step',
   'power_18650_4s2p_battery': 'power_cell_holder.step',
   'power_supercapacitor': 'power_supercapacitor.stp',
-  'power_solar_panel_small': 'power_solar_panel.step',
   'power_usb_c_pd_trigger': 'power_usb_c_pd.step',
   'power_estop_switch': 'power_estop.stp',
 
@@ -97,7 +96,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'structural_din_rail_35mm': 'structural_din_rail.step',
 
   // ── Transmission ──
-  'transmission_timing_belt_gt2': 'pulley_gt2.step',
   'transmission_bearing_deep_groove': 'bearing_small.stp',
   'transmission_bearing_large': 'bearing_large.step',
   'transmission_planetary_gearbox': 'transmission_planetary_gearbox.step',
@@ -112,7 +110,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'effector_parallel_gripper_large': 'gripper_parallel.step',
   'effector_3finger_adaptive': 'effector_3finger.step',
   'effector_suction_cup': 'effector_suction_cup.step',
-  'effector_pen_marker_holder': 'effector_pen_holder.step',
 
   // ── Mobility ──
   'mobility_wheel_driven': 'wheel_driven.step',

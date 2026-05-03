@@ -5089,68 +5089,6 @@
           ]
         },
         {
-          "id": "power_solar_panel_small",
-          "name": "Small Solar Panel",
-          "description": "Compact 6V 1W monocrystalline solar panel for trickle charging and low-power outdoor robots. ~25g.",
-          "physical": {
-            "mass_kg": 0.025,
-            "bounding_box_mm": [
-              110,
-              60,
-              3
-            ],
-            "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "power_solar_panel_collision.obj"
-          },
-          "mechanical_electrical": {
-            "open_circuit_voltage_v": 6.5,
-            "peak_voltage_v": 6,
-            "peak_current_a": 0.17,
-            "max_power_w": 1,
-            "efficiency_percent": 20,
-            "connector": "wire_leads"
-          },
-          "mounting_logic": {
-            "primary": "face_mount",
-            "orientation_preferred": "sun_facing",
-            "adhesive_or_bolt": true
-          },
-          "sim_metadata": {
-            "mjcf_role": "passive_mass"
-          },
-          "connectors": [
-            {
-              "id": "top",
-              "origin_xyz_mm": [
-                0,
-                0,
-                1.5
-              ],
-              "axis_xyz": [
-                0,
-                0,
-                1
-              ],
-              "type": "planar"
-            },
-            {
-              "id": "bottom",
-              "origin_xyz_mm": [
-                0,
-                0,
-                -1.5
-              ],
-              "axis_xyz": [
-                0,
-                0,
-                -1
-              ],
-              "type": "planar"
-            }
-          ]
-        },
-        {
           "id": "power_usbc_pd_trigger",
           "name": "USB-C PD Trigger Board",
           "description": "USB-C Power Delivery trigger/decoy board for requesting specific voltages (5/9/12/15/20V) from PD chargers. ~5g.",
@@ -7218,48 +7156,6 @@
       "description": "Power transmission components: belts, gears, bearings, leadscrews, couplings, and driveline hardware.",
       "components": [
         {
-          "id": "transmission_timing_belt_gt2",
-          "name": "GT2 Timing Belt System",
-          "description": "2mm-pitch GT2 belt and pulley set for low-backlash rotary-to-linear or reduction drives. Mass is for 200mm belt + 2 pulleys.",
-          "physical": {
-            "mass_kg": 0.03,
-            "bounding_box_mm": [
-              6,
-              200,
-              15
-            ],
-            "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "pulley_gt2_collision.obj"
-          },
-          "mechanical_electrical": {
-            "pitch_mm": 2,
-            "belt_width_mm": 6,
-            "pulley_teeth_options": [
-              16,
-              20,
-              36,
-              60
-            ],
-            "max_tension_n": 80,
-            "backlash_mm": 0.05,
-            "efficiency_percent": 98
-          },
-          "mounting_logic": {
-            "primary": "axial_shaft",
-            "input": "hub_bore",
-            "output": "hub_bore",
-            "requires_tensioner": true,
-            "parametric": true,
-            "center_distance_param": "center_distance_mm"
-          },
-          "sim_metadata": {
-            "mjcf_tendon_type": "spatial",
-            "stiffness": 5000,
-            "damping": 10
-          }
-        },
-        {
           "id": "transmission_leadscrew_8mm",
           "name": "8mm Leadscrew Assembly",
           "description": "Tr8x2 trapezoidal leadscrew with brass nut for linear motion. 2mm lead per revolution.",
@@ -8946,70 +8842,6 @@
                 0,
                 0,
                 40
-              ],
-              "axis_xyz": [
-                0,
-                0,
-                1
-              ],
-              "type": "point"
-            }
-          ]
-        },
-        {
-          "id": "effector_pen_marker_holder",
-          "name": "Pen / Marker Holder",
-          "description": "Spring-loaded pen holder for drawing, writing, and plotting applications. ~30g.",
-          "physical": {
-            "mass_kg": 0.03,
-            "bounding_box_mm": [
-              25,
-              25,
-              60
-            ],
-            "inertia_primitive": "cylinder",
-            "legacy_override": true,
-            "collision_mesh": "effector_pen_holder_collision.obj"
-          },
-          "mechanical_electrical": {
-            "clamp_diameter_range_mm": [
-              8,
-              16
-            ],
-            "spring_force_n": 2,
-            "travel_mm": 10,
-            "material": "aluminum"
-          },
-          "mounting_logic": {
-            "primary": "face_mount",
-            "input": "tool_changer_slave",
-            "bolt_pattern_mm": "M3x2_20mm"
-          },
-          "sim_metadata": {
-            "mjcf_geom_type": "cylinder",
-            "contact_friction": 0.3
-          },
-          "connectors": [
-            {
-              "id": "mount_back",
-              "origin_xyz_mm": [
-                0,
-                0,
-                -30
-              ],
-              "axis_xyz": [
-                0,
-                0,
-                -1
-              ],
-              "type": "planar"
-            },
-            {
-              "id": "tip",
-              "origin_xyz_mm": [
-                0,
-                0,
-                30
               ],
               "axis_xyz": [
                 0,

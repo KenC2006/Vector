@@ -168,7 +168,6 @@ const COMPONENT_COLORS: Record<string, ComponentColorDef> = {
   power_18650_cell_holder_1s:        { material: 'matte_plastic',  tint: hexToRgb(0x2a4a2a), strength: 0.4 },   // Black+green cell
   power_18650_4s2p_pack:             { material: 'glossy_plastic', tint: hexToRgb(0x1a2a5a), strength: 0.5 },   // Blue wrap
   power_supercapacitor_module:       { material: 'glossy_plastic', tint: hexToRgb(0x1a2a4a), strength: 0.5 },   // Dark blue
-  power_solar_panel_small:           { material: 'glossy_plastic', tint: hexToRgb(0x0a1a3a), strength: 0.6 },   // Navy PV cells
   power_usbc_pd_trigger:             { material: 'pcb_green',      tint: hexToRgb(0x1a4a1a), strength: 0.4 },   // Green PCB
   power_estop_switch:                { material: 'glossy_plastic', tint: hexToRgb(0xcc1111), strength: 0.6 },   // Red mushroom
 
@@ -195,7 +194,6 @@ const COMPONENT_COLORS: Record<string, ComponentColorDef> = {
   structural_din_rail_35mm:          { material: 'brushed_steel',  tint: hexToRgb(0xaaaaaa), strength: 0.2 },
 
   // ── Transmission ──
-  transmission_timing_belt_gt2:      { material: 'rubber_black',   tint: hexToRgb(0x222222), strength: 0.2 },
   transmission_leadscrew_8mm:        { material: 'brushed_steel',  tint: hexToRgb(0x999999), strength: 0.2 },
   transmission_ballscrew_12mm:       { material: 'brushed_steel',  tint: hexToRgb(0xaaaaaa), strength: 0.2 },
   transmission_bearing_deep_groove:  { material: 'dark_chrome',    tint: hexToRgb(0xbbbbcc), strength: 0.2 },
@@ -223,7 +221,6 @@ const COMPONENT_COLORS: Record<string, ComponentColorDef> = {
   effector_soft_gripper:             { material: 'glossy_plastic', tint: hexToRgb(0x4466aa), strength: 0.5 },   // Blue silicone
   effector_vacuum_pad_array:         { material: 'rubber_black',   tint: hexToRgb(0x1a1a1a), strength: 0.2 },
   effector_welding_torch_holder:     { material: 'anodized_aluminum', tint: hexToRgb(0xc0c0c0), strength: 0.2 },
-  effector_pen_marker_holder:        { material: 'anodized_aluminum', tint: hexToRgb(0x3a3a3a), strength: 0.3 },
   effector_screwdriver_holder:       { material: 'anodized_aluminum', tint: hexToRgb(0x3a3a3a), strength: 0.3 },
 
   // ── Mobility ──
