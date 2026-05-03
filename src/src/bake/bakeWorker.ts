@@ -12,7 +12,8 @@
 
 import initOpenCascade from 'replicad-opencascadejs'
 import opencascadeWasmUrl from 'replicad-opencascadejs/src/replicad_single.wasm?url'
-import { setOC, importSTEP, makeCylinder, makeBaseBox } from 'replicad'
+import type { OpenCascadeInstance } from 'replicad-opencascadejs'
+import { setOC, importSTEP, makeCylinder, makeBaseBox, cast } from 'replicad'
 import type { AnyShape, Shape3D, PlaneName } from 'replicad'
 import type {
   BakeCommand, BakeResponse, SerializedMesh, SerializedEdges, BakeDiagnostics, MeshOpts,
@@ -27,11 +28,11 @@ declare const self: DedicatedWorkerGlobalScope
 // `initOpenCascade()` accepts a Module-overrides object; the declared TS type
 // is no-arg (the replicad-opencascadejs .d.ts only exports the default zero-arg
 // signature) so we cast.
-let occtReady: Promise<void> | null = null
-function ensureOcct(): Promise<void> {
+let occtReady: Promise<OpenCascadeInstance> | null = null
+function ensureOcct(): Promise<OpenCascadeInstance> {
   if (occtReady) return occtReady
   occtReady = (async () => {
-    const init = initOpenCascade as unknown as (args?: { locateFile?: (path: string) => string }) => Promise<unknown>
+    const init = initOpenCascade as unknown as (args?: { locateFile?: (path: string) => string }) => Promise<OpenCascadeInstance>
     const OC = await init({
       locateFile: (path: string) => {
         // replicad_single.js asks for its own .wasm by the filename only. Vite's
@@ -45,8 +46,52 @@ function ensureOcct(): Promise<void> {
     // structurally the same as what initOpenCascade returns but the type export
     // graph doesn't narrow automatically.
     setOC(OC as never)
+    return OC
   })()
   return occtReady
+}
+
+// Co-located .binbrep variant (OCCT native binary B-Rep) takes priority over
+// the .step source — same basename, different extension. Parses ~50x faster
+// than STEP through the same OCCT instance and the files are 50-80% smaller;
+// see scripts/convert_steps_to_brep.sh for the offline conversion. Falls
+// through to STEP when no .binbrep sibling exists so files that haven't been
+// converted yet still bake.
+interface LoadedShape { shape: AnyShape; bytes: number; source: 'binbrep' | 'step' }
+async function loadShapeFromUrl(stepUrl: string): Promise<LoadedShape> {
+  const oc = await ensureOcct()
+  const binbrepUrl = stepUrl.replace(/\.(step|stp)$/i, '.binbrep')
+  if (binbrepUrl !== stepUrl) {
+    const res = await fetch(binbrepUrl)
+    if (res.ok) {
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      return { shape: importBinBRep(bytes, oc), bytes: bytes.length, source: 'binbrep' }
+    }
+    // Non-200 → fall through to STEP. The file probably just hasn't been
+    // converted yet; do not throw.
+  }
+  const res = await fetch(stepUrl)
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${stepUrl}`)
+  const blob = await res.blob()
+  const shape = await importSTEP(blob) as AnyShape
+  return { shape, bytes: blob.size, source: 'step' }
+}
+
+// BinTools.Read takes a file path, so we stage the blob in OCCT's MEMFS, read
+// it, then unlink. Path is uniquified so parallel cluster-part loads can't
+// collide on the same temp name.
+function importBinBRep(bytes: Uint8Array, oc: OpenCascadeInstance): AnyShape {
+  const tmpPath = `/tmp/bake_${Date.now()}_${Math.random().toString(36).slice(2)}.binbrep`
+  oc.FS.writeFile(tmpPath, bytes)
+  try {
+    const shape = new oc.TopoDS_Shape()
+    const range = new oc.Message_ProgressRange_1()
+    const ok = oc.BinTools.Read_2(shape, tmpPath, range)
+    if (!ok) throw new Error(`BinTools.Read_2 returned false for ${tmpPath}`)
+    return cast(shape) as AnyShape
+  } finally {
+    try { oc.FS.unlink(tmpPath) } catch { /* MEMFS unlink should not fail; swallow if it does */ }
+  }
 }
 
 async function bakeSinglePreset(stepUrl: string, opts: MeshOpts | undefined): Promise<BakeResponse> {
@@ -55,19 +100,23 @@ async function bakeSinglePreset(stepUrl: string, opts: MeshOpts | undefined): Pr
     importMs: 0, meshMs: 0, edgeMs: 0, triangleCount: 0, vertexCount: 0,
   }
   try {
-    await ensureOcct()
-
     const t0 = performance.now()
-    const res = await fetch(stepUrl)
-    if (!res.ok) {
-      return {
-        kind: 'result', id, ok: false,
-        phase: 'fetch',
-        message: `Failed to fetch ${stepUrl}: HTTP ${res.status}`,
+    let shape: AnyShape
+    try {
+      const loaded = await loadShapeFromUrl(stepUrl)
+      shape = loaded.shape
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // STEP fallback fetch failure (binbrep miss is silent — see loadShapeFromUrl).
+      if (msg.startsWith('HTTP ')) {
+        return {
+          kind: 'result', id, ok: false,
+          phase: 'fetch',
+          message: `Failed to fetch ${stepUrl}: ${msg}`,
+        }
       }
+      throw e
     }
-    const blob = await res.blob()
-    const shape = await importSTEP(blob)
     diagnostics.importMs = performance.now() - t0
 
     const t1 = performance.now()
@@ -170,17 +219,15 @@ async function bakeFuseTwo(spec: FuseSpec, opts: MeshOpts | undefined): Promise<
     }
 
     const t0 = performance.now()
-    const [parentBlob, childBlob] = await Promise.all([
-      fetch(spec.parent.stepUrl).then(r => r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status} for ${spec.parent.stepUrl}`))),
-      fetch(spec.child.stepUrl).then(r => r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status} for ${spec.child.stepUrl}`))),
+    const [parentLoaded, childLoaded] = await Promise.all([
+      loadShapeFromUrl(spec.parent.stepUrl),
+      loadShapeFromUrl(spec.child.stepUrl),
     ])
-    console.log(`[bake/worker] fetched blobs — parent=${parentBlob.size}B child=${childBlob.size}B in ${(performance.now()-t0).toFixed(0)}ms`)
-    const tImportParent = performance.now()
-    let parent = await importSTEP(parentBlob) as AnyShape
-    console.log(`[bake/worker] importSTEP(parent) ${(performance.now()-tImportParent).toFixed(0)}ms faces=${parent.faces.length} edges=${parent.edges.length}`)
-    const tImportChild = performance.now()
-    let childRaw = await importSTEP(childBlob) as AnyShape
-    console.log(`[bake/worker] importSTEP(child) ${(performance.now()-tImportChild).toFixed(0)}ms faces=${childRaw.faces.length} edges=${childRaw.edges.length}`)
+    console.log(`[bake/worker] loaded parent (${parentLoaded.source}) ${parentLoaded.bytes}B, child (${childLoaded.source}) ${childLoaded.bytes}B in ${(performance.now()-t0).toFixed(0)}ms`)
+    let parent = parentLoaded.shape
+    console.log(`[bake/worker] parent faces=${parent.faces.length} edges=${parent.edges.length}`)
+    let childRaw = childLoaded.shape
+    console.log(`[bake/worker] child  faces=${childRaw.faces.length} edges=${childRaw.edges.length}`)
 
     // Simplify strips redundant topology (coupler has 974 edges from its
     // 25-tooth splined bore; simplify typically drops it to ~80-200). Skip
@@ -354,15 +401,11 @@ async function bakeFuseParametric(spec: FuseParamSpec, opts: MeshOpts | undefine
       }
     }
 
-    // Import the parent STEP.
+    // Import the parent STEP (or its .binbrep sibling, when present).
     const t0 = performance.now()
-    const parentBlob = await fetch(spec.parent.stepUrl).then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status} for ${spec.parent.stepUrl}`)
-      return r.blob()
-    })
-    console.log(`[bake/worker:param] fetched parent ${parentBlob.size}B`)
-    let parent = await importSTEP(parentBlob) as AnyShape
-    console.log(`[bake/worker:param] importSTEP(parent) ${(performance.now()-t0).toFixed(0)}ms faces=${parent.faces.length} edges=${parent.edges.length}`)
+    const parentLoaded = await loadShapeFromUrl(spec.parent.stepUrl)
+    let parent = parentLoaded.shape
+    console.log(`[bake/worker:param] loaded parent (${parentLoaded.source}) ${parentLoaded.bytes}B in ${(performance.now()-t0).toFixed(0)}ms faces=${parent.faces.length} edges=${parent.edges.length}`)
 
     if (spec.simplifyImports !== false) {
       const tSim = performance.now()
@@ -490,10 +533,8 @@ async function bakeFuseParametric(spec: FuseParamSpec, opts: MeshOpts | undefine
 
 async function loadClusterPart(part: ClusterPart): Promise<Shape3D> {
   if (part.kind === 'step') {
-    const res = await fetch(part.stepUrl)
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${part.stepUrl}`)
-    const blob = await res.blob()
-    let shape = await importSTEP(blob) as AnyShape
+    const loaded = await loadShapeFromUrl(part.stepUrl)
+    let shape = loaded.shape
     if (part.simplify !== false) {
       shape = (shape as unknown as { simplify: () => AnyShape }).simplify() as AnyShape
     }
@@ -509,6 +550,38 @@ async function loadClusterPart(part: ClusterPart): Promise<Shape3D> {
       if (Math.abs(rz) > 1e-6) shape3d = shape3d.rotate(rz * R2D, [0, 0, 0], [0, 0, 1]) as Shape3D
       if (Math.abs(ry) > 1e-6) shape3d = shape3d.rotate(ry * R2D, [0, 0, 0], [0, 1, 0]) as Shape3D
       if (Math.abs(rx) > 1e-6) shape3d = shape3d.rotate(rx * R2D, [0, 0, 0], [1, 0, 0]) as Shape3D
+    }
+    // Uniform-only auto-scale. Fires only when the per-axis ratios from
+    // STEP→authored agree within ±15% — i.e. same shape, wrong size (the
+    // 21 entries in `docs/STEP_BBOX_AUDIT.md` "Uniform-scale mismatch"
+    // section). Wrong-shape STEPs (variance > 1.15×, e.g. the high-torque
+    // servo's 33×54×58 vs authored 47×36×26) fall through unscaled — see
+    // the bbox-fit handoff doc for why anisotropic per-axis residuals are
+    // intentionally NOT applied (they squashed real CAD silhouettes into
+    // pucks). Replicad's `Shape.scale` is uniform-only by API; we pick
+    // the geometric-mean factor to minimise the max-axis error.
+    if (part.authoredBboxMm) {
+      const bb = shape3d.boundingBox as unknown as { width: number; height: number; depth: number }
+      const actual: [number, number, number] = [bb.width, bb.height, bb.depth]
+      const authored = part.authoredBboxMm
+      if (actual[0] > 0.1 && actual[1] > 0.1 && actual[2] > 0.1) {
+        const ratios: [number, number, number] = [
+          authored[0] / actual[0],
+          authored[1] / actual[1],
+          authored[2] / actual[2],
+        ]
+        const variance = Math.max(...ratios) / Math.min(...ratios)
+        const fileLabel = part.stepUrl.split('/').pop() ?? part.stepUrl
+        if (variance < 1.15) {
+          const factor = Math.cbrt(ratios[0] * ratios[1] * ratios[2])
+          if (Math.abs(factor - 1) > 0.02) {
+            shape3d = (shape3d as unknown as { scale: (s: number) => Shape3D }).scale(factor) as Shape3D
+            console.log(`[bake/scale] ${fileLabel} factor=${factor.toFixed(3)} ratios=[${ratios.map(r => r.toFixed(2)).join(',')}] variance=${variance.toFixed(3)}`)
+          }
+        } else {
+          console.log(`[bake/scale] ${fileLabel} SKIP wrong-shape ratios=[${ratios.map(r => r.toFixed(2)).join(',')}] variance=${variance.toFixed(3)}`)
+        }
+      }
     }
     // Center on bbox (matches richVisuals step 4). Without this, the baked
     // mesh sits at the STEP's native origin, while per-preset GLBs sit at

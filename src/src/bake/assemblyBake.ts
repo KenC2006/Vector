@@ -420,6 +420,7 @@ async function buildClusterSpec(
             kind: 'step', stepUrl,
             translateMm: t.translateMm, rotateRadXyz: t.rotateRadXyz,
             simplify: true, centerOnBbox: true,
+            authoredBboxMm: presetMap.get(m.component_id)?.bboxMm ?? undefined,
           })
           continue
         }
@@ -445,6 +446,7 @@ async function buildClusterSpec(
       simplify: true,
       rotationOverrideRadXyz: rotOverride ?? undefined,
       centerOnBbox: true,
+      authoredBboxMm: presetMap.get(m.component_id)?.bboxMm ?? undefined,
     })
   }
 
@@ -549,7 +551,8 @@ function hashClusterSpec(spec: BakeClusterSpec): string {
     const r = p.rotateRadXyz.map(n => Math.round(n * 1e6) / 1e6)
     if (p.kind === 'step') {
       const ovr = p.rotationOverrideRadXyz?.map(n => Math.round(n * 1e6) / 1e6) ?? null
-      return ['step', p.stepUrl, t, r, ovr, p.centerOnBbox === false ? 0 : 1]
+      const abb = p.authoredBboxMm?.map(rounded) ?? null
+      return ['step', p.stepUrl, t, r, ovr, p.centerOnBbox === false ? 0 : 1, abb]
     }
     if (p.kind === 'box') {
       return ['box', p.sizeMm.map(rounded), t, r]
@@ -674,6 +677,21 @@ export async function bakeScene(inputs: BakeSceneInputs): Promise<BakeSceneResul
     const plan = plans[i]
     const label = `cluster[${i}] root=${plan.rootLinkName} n=${plan.members.length}`
     progress('cluster-start', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
+
+    // Short-circuit: baseplate-rooted clusters hold discrete electronics
+    // (PCBs, batteries, sensors) that don't physically fuse to the baseplate.
+    // Bake's value is showing mechanical fusion (servo↔coupler↔extrusion);
+    // for stacked discrete parts the per-preset render shows real STEP
+    // detail and the bake-via-fuse adds nothing while paying the 30s OCCT
+    // timeout. Skip → fall through to per-preset (same path as a real
+    // failure, but instant). Tracked in feedback_bake_vs_fallback memory.
+    const rootCompId = plan.members[0].component_id
+    if (rootCompId.startsWith('structural_baseplate')) {
+      console.log(`[bake/scene] ${label} skip: baseplate-rooted cluster falls back to per-preset render`)
+      result.clusters.push({ plan, outcome: { ok: false, phase: 'skip-baseplate', message: 'baseplate-rooted cluster — per-preset render' } })
+      progress('cluster-fail', { clusterIdx: i, totalClusters: plans.length, clusterLabel: label })
+      continue
+    }
 
     const txResult = readClusterTransforms(plan, linkGroups)
     if (!txResult) {

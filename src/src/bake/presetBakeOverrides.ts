@@ -70,24 +70,6 @@ export const BAKE_SOURCE_OVERRIDES: Record<string, BakeSourceOverride> = {
   'structural_baseplate': {
     kind: 'box', sizeMm: [200, 150, 6],
   },
-
-  // LiPo batteries — meshOverrides.ts references `battery_lipo.step` but
-  // that file is missing from the catalog (only the pre-converted GLB
-  // shipped). OCCT falls back to parsing the 404 HTML response and fails,
-  // aborting whichever cluster contains the battery. Substitute with a
-  // parametric box matching each preset's bounding_box_mm.
-  'power_lipo_3s_2200': { kind: 'box', sizeMm: [105, 34, 24] },
-  'power_lipo_4s_5000': { kind: 'box', sizeMm: [137, 42, 30] },
-  'power_lipo_6s_10000': { kind: 'box', sizeMm: [165, 65, 42] },
-
-  // Electronics with very large STEP files — Replicad's importSTEP can't
-  // finish parsing them inside the 30s cluster timeout (sbc_small.step is
-  // 17.5 MB, depth_camera.step is 14.6 MB). They're rectangular boards so
-  // a bbox-derived box is a fine approximation; the seams aren't load-
-  // bearing visually since these mount flush on the baseplate.
-  'compute_sbc_small': { kind: 'box', sizeMm: [85, 56, 17] },
-  'sensor_depth_camera_small': { kind: 'box', sizeMm: [90, 25, 25] },
-  'sensor_depth_camera_wide': { kind: 'box', sizeMm: [124, 29, 26] },
 }
 
 export function getBakeSourceOverride(presetId: string): BakeSourceOverride | undefined {

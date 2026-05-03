@@ -113,6 +113,15 @@ export type ClusterPart =
       centerOnBbox?: boolean
       /** For bake hygiene — strips redundant topology. Default true. */
       simplify?: boolean
+      /** Preset's authored bounding box (mm). When provided AND the per-axis
+       *  ratios from STEP-actual → authored agree within ±15%, the worker
+       *  applies a single uniform scale (geometric-mean of the three ratios)
+       *  to bring the rendered silhouette to authored size. Wrong-shape STEPs
+       *  (per-axis variance > 1.15×) fall through unscaled — see
+       *  `docs/STEP_BBOX_AUDIT.md` for the wrong-shape vs. uniform-scale
+       *  split, and the bbox-fit handoff doc for why anisotropic per-axis
+       *  residuals are intentionally NOT applied. */
+      authoredBboxMm?: [number, number, number]
     }
   | {
       kind: 'disc'
