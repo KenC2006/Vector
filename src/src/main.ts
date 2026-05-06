@@ -659,6 +659,14 @@ function switchToFile(filename: string) {
     if (savedState) monacoEditor.restoreViewState(savedState)
   }
 
+  // Re-bind the in-memory AssemblyGraph to the new file. Without this the
+  // graph from whatever was loaded at module init lingers, so bake/edit
+  // operate on the wrong robot's topology after a file switch or checkpoint
+  // open. MUST run after the Monaco model swap so the reverse-parse fallback
+  // reads the new file's URDF text, not the previous tab's. No-op if
+  // urdfAssemblyApi hasn't initialized yet.
+  urdfAssemblyApi?.refreshAssemblyGraphForActiveFile()
+
   renderTabs()
   renderExplorer()
 
@@ -1101,6 +1109,12 @@ preloadMeshCache()
 // closure's stale reference won't match the live `parsedRobot` and the rebuild is skipped.
 // The sim guard prevents node positions from being updated mid-simulation.
 let _rebuildNodesTimer: ReturnType<typeof setTimeout> | null = null
+// Forward-declared auto-bake trigger. Reassigned by the bake setup block
+// (~L2700) once the lazy-loaded bake module resolves. No-op until then —
+// safe to call from anywhere that fires before bake module is ready (e.g.
+// the very first makeOnMeshLoaded debounce on page load).
+let _scheduleAutoBake: () => void = () => {}
+
 function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
   return (_linkName: string) => {
     if (_rebuildNodesTimer) clearTimeout(_rebuildNodesTimer)
@@ -1123,6 +1137,12 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
       addEdgeLines(parsedRobot)
       applyCollisionOnlyView(showCollision)
+      // Async loads + reconcile + ground are now settled — kick off the
+      // assembly bake. Quiet mode: silent during, single summary toast on
+      // failure, console-only on success. Concurrency-safe: in-flight bakes
+      // queue rather than overlap, and stale results (mid-bake reparse) are
+      // discarded.
+      _scheduleAutoBake()
     }, 150)
   }
 }
@@ -2874,3 +2894,234 @@ urdfAssemblyApi = initUrdfAssembly({
   },
   groundAssembly: () => groundRobot(robot),
 })
+
+// ── B-Rep bake smoke test (Phase 1, dev-only) ──
+// `__bake('actuator_servo_standard')` drops a Replicad-baked mesh next to the
+// existing per-preset GLB for visual comparison. `__bakeClear()` removes them.
+// Not part of the render path — remove once Phase 2 wires fuse+fillet into
+// the viewportChat accept flow.
+void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndShow, clearBakeSmoke }) => {
+  ;(window as unknown as { __bake: (id: string, offsetX?: number) => Promise<void> }).__bake =
+    (id, offsetX) => bakeAndShow({ scene }, id, offsetX)
+  ;(window as unknown as { __fuse: (args: Parameters<typeof fuseAndShow>[1]) => Promise<void> }).__fuse =
+    args => fuseAndShow({ scene }, args)
+  ;(window as unknown as { __fuseParam: (args: Parameters<typeof fuseParamAndShow>[1]) => Promise<void> }).__fuseParam =
+    args => fuseParamAndShow({ scene }, args)
+  ;(window as unknown as { __bakeClear: () => void }).__bakeClear = () => clearBakeSmoke({ scene })
+})
+
+// ── Phase 3: full-scene bake ──
+// `__bakeScene()` reads the current AssemblyGraph + scene link groups, plans
+// fixed-joint clusters, bakes each via the worker, and swaps baked meshes
+// in place of per-preset GLBs. Auto-fires after every URDF reparse via the
+// makeOnMeshLoaded debounce (`_scheduleAutoBake`). `__setAutoBake(false)`
+// disables auto-fire; `__bakeScene()` always runs on demand. `__unbakeScene()`
+// reverses the swap.
+{
+  let lastBakeResult: import('./bake/assemblyBake').BakeSceneResult | null = null
+  let bakeInProgress = false
+  // When auto-bake fires while another bake is in flight, set the queue flag
+  // and re-fire after the current bake finishes — avoids both overlapping
+  // worker requests and missed updates when a URDF reparse arrives mid-bake.
+  let autoBakeQueued = false
+  let autoBakeEnabled = true
+  void import('./bake/assemblyBake').then(({ bakeScene, clearBakedScene }) => {
+    async function runBake(opts: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean; quiet?: boolean } = {}): Promise<import('./bake/assemblyBake').BakeSceneResult | null> {
+      const quiet = opts.quiet === true
+      if (bakeInProgress) {
+        if (quiet) {
+          // Reparse fired during an in-flight bake — re-trigger after this
+          // one completes. Squashes multiple auto requests into one queued
+          // re-bake regardless of how many fire mid-bake.
+          autoBakeQueued = true
+        } else {
+          console.warn('[bake/scene] another bake is in progress')
+        }
+        return null
+      }
+      if (!urdfAssemblyApi) {
+        if (!quiet) console.warn('[bake/scene] urdfAssemblyApi not ready')
+        return null
+      }
+      let graph = urdfAssemblyApi.getLastAssemblyGraph()
+      if (!graph) {
+        if (!quiet) console.warn('[bake/scene] no assembly graph — load a robot first')
+        return null
+      }
+      const linkGroups = parsedRobot.linkGroups
+      // Snapshot the current parsedRobot so we can detect mid-bake URDF
+      // reparses and discard stale results before they swap into the wrong
+      // scene.
+      const robotEpoch = parsedRobot
+      // Validate graph belongs to currently-rendered URDF. Stored graphs
+      // are keyed per-filename in localStorage; if the user restored a
+      // pre-fix checkpoint (no embedded graph) the localStorage entry
+      // for the current filename can be stale and point at a different
+      // robot. The two robots typically share the baseplate name, so a
+      // "≥1 overlap" guard would still let us through — require majority
+      // overlap of GRAPH components (not scene), then fall back to
+      // reverse-parsing the live URDF if the stored graph fails the bar.
+      const sceneNames = new Set(linkGroups.keys())
+      const overlap = graph.components.filter(c => sceneNames.has(c.link_name)).length
+      const overlapRatio = graph.components.length > 0 ? overlap / graph.components.length : 0
+      if (overlapRatio < 0.5) {
+        console.warn(`[bake/scene] stored AssemblyGraph (${graph.components.length} components) overlaps only ${overlap} link names with the rendered URDF (${sceneNames.size} links) — likely a different robot. Falling back to reverse-parsing the current URDF.`)
+        const urdfText = monacoEditor.getModel()?.getValue() || ''
+        const reparsed = urdfText.trim().length > 0 ? urdfAssemblyApi.urdfToAssemblyGraph(urdfText) : null
+        if (!reparsed || reparsed.components.length === 0) {
+          console.warn('[bake/scene] reverse-parse failed — cannot bake without a graph that matches the scene')
+          return null
+        }
+        // Install so subsequent bakes don't re-fall-through. Marks graph
+        // source as 'restored' (user-owned), preventing reconcile from
+        // mutating the URDF on the next meshLoaded debounce.
+        urdfAssemblyApi.setLastAssemblyGraph(reparsed)
+        graph = reparsed
+      }
+      bakeInProgress = true
+      try {
+        const t0 = performance.now()
+        if (!quiet) showToast('Baking assembly…', 'info')
+        const res = await bakeScene({
+          graph, linkGroups,
+          dryRun: opts.dryRun,
+          bypassCache: opts.bypassCache,
+          preserveColors: opts.preserveColors,
+          onProgress: (phase, data) => {
+            // Auto mode is silent during — only the final summary surfaces
+            // (and only on failure). Manual mode keeps verbose progress.
+            if (quiet) return
+            if (phase === 'cluster-start' && data) {
+              console.log(`[bake/scene] [${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}] baking ${data.clusterLabel}...`)
+              showToast(`Baking cluster ${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}…`, 'info')
+            } else if (phase === 'done' && data) {
+              console.log(`[bake/scene] finished ${data.totalClusters} cluster(s) in ${(performance.now()-t0).toFixed(0)}ms`)
+            }
+          },
+        })
+        // If the URDF was reparsed under us, the new bakedGroup got attached
+        // to the old (now-detached) linkGroups — discard. The auto-bake
+        // queue (set by the new reparse's onMeshLoaded debounce) will
+        // re-fire after this finally block.
+        if (parsedRobot !== robotEpoch) {
+          console.warn('[bake/scene] robot changed during bake — discarding stale result; queued re-bake will pick up new state')
+          autoBakeQueued = true
+          return null
+        }
+        lastBakeResult = res
+        const ok = res.clusters.filter(c => c.outcome.ok).length
+        const fail = res.clusters.length - ok
+        const summary = `Bake: ${ok} ok, ${fail} failed, ${res.hiddenLinks.size} links swapped (${(performance.now()-t0).toFixed(0)}ms)`
+        console.log(`[bake/scene] ${summary}`)
+        // Toast only when the user asked (manual mode) or when something
+        // actually failed (worth surfacing in auto mode).
+        if (!quiet) showToast(summary, fail === 0 ? 'success' : 'warning')
+        else if (fail > 0) showToast(summary, 'warning')
+        return res
+      } catch (e) {
+        console.warn('[bake/scene] bake threw:', e)
+        if (!quiet) showToast('Bake failed — see console', 'error')
+        return null
+      } finally {
+        bakeInProgress = false
+        if (autoBakeQueued) {
+          autoBakeQueued = false
+          // queueMicrotask defers to after this finally block returns so the
+          // recursive runBake doesn't reset bakeInProgress before the
+          // outer await sees it cleared.
+          queueMicrotask(() => { if (autoBakeEnabled) void runBake({ quiet: true }) })
+        }
+      }
+    }
+    // Wire the forward-declared trigger (called from makeOnMeshLoaded
+    // debounce). Auto-mode runs are quiet by default and gated by
+    // `autoBakeEnabled` so the user can opt out via `__setAutoBake(false)`.
+    _scheduleAutoBake = () => {
+      if (!autoBakeEnabled) return
+      void runBake({ quiet: true })
+    }
+    ;(window as unknown as { __bakeScene: (opts?: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean }) => Promise<unknown> }).__bakeScene =
+      opts => runBake(opts ?? {})
+    ;(window as unknown as { __setAutoBake: (on: boolean) => void }).__setAutoBake = (on: boolean) => {
+      autoBakeEnabled = on
+      console.log(`[bake/scene] auto-bake ${on ? 'ENABLED' : 'DISABLED'}`)
+    }
+    ;(window as unknown as { __unbakeScene: () => void }).__unbakeScene = () => {
+      if (!lastBakeResult) { console.warn('[bake/scene] no prior bake to undo'); return }
+      clearBakedScene({ linkGroups: parsedRobot.linkGroups, hiddenLinks: lastBakeResult.hiddenLinks })
+      lastBakeResult = null
+      console.log('[bake/scene] unbaked — per-preset meshes restored')
+    }
+    // Diagnostic: report global debug-overlay state. Confirms whether
+    // wireframeGroup, comGroup, etc. are actually visible (independent of
+    // their button state) and whether they hold any clones.
+    ;(window as unknown as { __inspectOverlays: () => void }).__inspectOverlays = () => {
+      console.log('[overlays] wireframeGroup', {
+        visible: wireframeGroup.visible,
+        cloneCount: wireframeGroup.children.length,
+        someClonesVisible: wireframeGroup.children.some(c => c.visible),
+      })
+      console.log('[overlays] comGroup', {
+        visible: comGroup.visible,
+        childCount: comGroup.children.length,
+      })
+      console.log('[overlays] axisVisuals (joint axes)', {
+        count: axisVisuals.length,
+        anyVisible: axisVisuals.some(o => o.visible),
+      })
+      // Walk robot for any Line/LineSegments/wireframe-material meshes that
+      // ARE rendering (visible up the chain). If wireframe is "off" but
+      // something gripper-shaped renders, this surfaces it.
+      const renderingLines: Array<Record<string, unknown>> = []
+      const isRenderingChain = (o: THREE.Object3D | null): boolean => {
+        let cur = o
+        while (cur) { if (!cur.visible) return false; cur = cur.parent }
+        return true
+      }
+      robot.traverse(o => {
+        const any = o as THREE.Mesh & { isLine?: boolean; isLineSegments?: boolean; material?: THREE.Material & { wireframe?: boolean } }
+        const isLineish = any.isLine || any.isLineSegments
+        const isWireMesh = any.isMesh && any.material && (any.material as { wireframe?: boolean }).wireframe === true
+        if (!isLineish && !isWireMesh) return
+        if (!isRenderingChain(o)) return
+        renderingLines.push({
+          kind: any.isLineSegments ? 'LineSegments' : any.isLine ? 'Line' : 'WireMesh',
+          name: o.name || '<unnamed>',
+          parent: o.parent?.name || '<no name>',
+          parentChainOK: true,
+          urdfLinkName: (o.userData as Record<string, unknown>)?.urdfLinkName,
+          materialColor: (any.material as { color?: { getHexString(): string } } | undefined)?.color?.getHexString?.(),
+        })
+      })
+      console.log(`[overlays] ${renderingLines.length} Line/LineSegments/wireframe meshes ACTUALLY RENDERING under robot:`)
+      console.table(renderingLines)
+    }
+    // Diagnostic: dump every mesh under a given link name with its shadow +
+    // visibility state. Use to confirm whether a stray mesh is still casting.
+    ;(window as unknown as { __inspectLink: (name: string) => void }).__inspectLink = (name: string) => {
+      const g = parsedRobot.linkGroups.get(name)
+      if (!g) { console.warn(`[inspect] no linkGroup for ${name}`); return }
+      const rows: Array<Record<string, unknown>> = []
+      g.traverse(o => {
+        const m = o as THREE.Mesh & { isLine?: boolean; isLineSegments?: boolean }
+        if (!m.isMesh && !m.isLine && !m.isLineSegments) return
+        const matAny = m.material as { transparent?: boolean; opacity?: number; color?: { getHexString(): string } } | undefined
+        rows.push({
+          kind: m.isLineSegments ? 'LineSegments' : m.isLine ? 'Line' : 'Mesh',
+          name: m.name || '<unnamed>',
+          geom: m.geometry?.type ?? '?',
+          castShadow: m.castShadow,
+          visible: m.visible,
+          opacity: matAny?.transparent ? matAny.opacity : 1,
+          color: matAny?.color ? '#' + matAny.color.getHexString() : undefined,
+          parent: m.parent?.name || '<no name>',
+          parentVisible: m.parent?.visible,
+          urdfLinkName: (m.userData as Record<string, unknown>)?.urdfLinkName,
+          isCollision: (m.userData as Record<string, unknown>)?.isCollision,
+        })
+      })
+      console.table(rows)
+    }
+  })
+}
+

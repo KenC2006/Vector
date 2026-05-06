@@ -162,6 +162,13 @@ interface Checkpoint {
   timestamp: number
   urdfContent: string
   isAutomatic: boolean
+  /** Snapshot of the AssemblyGraph at checkpoint time. Captured so that
+   *  restoring a checkpoint round-trips the graph losslessly — without it,
+   *  bake/edit on a restored checkpoint falls back to the lossy
+   *  urdfToAssemblyGraph reverse parser (drops orientation, elevation_angle,
+   *  attach_rpy, length_mm). Optional for back-compat with pre-2026-04-25
+   *  checkpoints. */
+  assemblyGraph?: import('./urdfGraphEquivalence.ts').AssemblyGraph | null
 }
 
 // ── Keyboard Shortcuts ──────────────────────────────────────────────────────
@@ -207,7 +214,11 @@ function getBinding(id: string): string {
 export function initSettings(deps: {
   monacoEditor: monaco.editor.IStandaloneCodeEditor
   showToast: (msg: string, type?: 'success' | 'warning' | 'error' | 'info') => void
-  urdfAssemblyApi: { recordUndoExternal(content: string): void } | null
+  urdfAssemblyApi: {
+    recordUndoExternal(content: string): void
+    getLastAssemblyGraph(): import('./urdfGraphEquivalence.ts').AssemblyGraph | null
+    setLastAssemblyGraph(graph: import('./urdfGraphEquivalence.ts').AssemblyGraph | null): void
+  } | null
   renderer?: THREE.WebGLRenderer
 }): {
   applyTheme: (theme: ThemeId) => void
@@ -250,6 +261,10 @@ export function initSettings(deps: {
       timestamp: Date.now(),
       urdfContent: content,
       isAutomatic: auto,
+      // Capture the canonical AssemblyGraph alongside the URDF so a restore
+      // is lossless. Without this we'd fall back to reverse-parsing the URDF,
+      // which drops length_mm/elevation_angle/attach_rpy/attach_connector.
+      assemblyGraph: deps.urdfAssemblyApi?.getLastAssemblyGraph() ?? null,
     }
     checkpoints.push(cp)
     saveCheckpoints()
@@ -261,12 +276,29 @@ export function initSettings(deps: {
     const cp = checkpoints.find(c => c.id === id)
     if (!cp) return
     if (deps.urdfAssemblyApi && monacoEditor.getModel()) deps.urdfAssemblyApi.recordUndoExternal(monacoEditor.getValue())
+    // Install the captured graph BEFORE setting the URDF so any reparse
+    // listeners that read getLastAssemblyGraph() see the right topology.
+    // Falls through to the URDF-load path's reverse-parse fallback if the
+    // checkpoint pre-dates this field.
+    if (cp.assemblyGraph && deps.urdfAssemblyApi) {
+      deps.urdfAssemblyApi.setLastAssemblyGraph(cp.assemblyGraph)
+    }
     monacoEditor.setValue(cp.urdfContent)
     showToast(`Restored: ${cp.name}`, 'success')
   }
 
   function deleteCheckpoint(id: string) {
     checkpoints = checkpoints.filter(c => c.id !== id)
+    saveCheckpoints()
+    renderCheckpointsPanel()
+  }
+
+  function renameCheckpoint(id: string, newName: string) {
+    const trimmed = newName.trim()
+    if (!trimmed) return  // empty rename — drop silently, render restores the old name
+    const cp = checkpoints.find(c => c.id === id)
+    if (!cp || cp.name === trimmed) return
+    cp.name = trimmed
     saveCheckpoints()
     renderCheckpointsPanel()
   }
@@ -290,14 +322,52 @@ export function initSettings(deps: {
       const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' })
       el.innerHTML = `
         <div class="cp-info">
-          <span class="cp-name">${cp.isAutomatic ? '&#9679; ' : ''}${cp.name}</span>
+          <span class="cp-name" title="Double-click to rename"></span>
           <span class="cp-time">${dateStr} ${timeStr}</span>
         </div>
         <div class="cp-actions">
+          <button class="cp-btn cp-rename" title="Rename">&#9998;</button>
           <button class="cp-btn cp-restore" title="Restore">&#8634;</button>
           <button class="cp-btn cp-delete" title="Delete">&times;</button>
         </div>
       `
+      const nameEl = el.querySelector('.cp-name') as HTMLSpanElement
+      // Set name via textContent to avoid HTML injection from user-typed names.
+      // The ● prefix marks auto-generated checkpoints (pre-AI-edit snapshots).
+      nameEl.textContent = (cp.isAutomatic ? '● ' : '') + cp.name
+
+      const startEdit = () => {
+        const input = document.createElement('input')
+        input.type = 'text'
+        input.className = 'cp-name-input'
+        input.value = cp.name
+        input.maxLength = 80
+        nameEl.replaceWith(input)
+        input.focus()
+        input.select()
+        let committed = false
+        const commit = () => {
+          if (committed) return
+          committed = true
+          renameCheckpoint(cp.id, input.value)
+          // Either rename succeeded (rerender) or we re-render to restore the
+          // original name. saveCheckpoints + render is invoked inside rename.
+          renderCheckpointsPanel()
+        }
+        const cancel = () => {
+          if (committed) return
+          committed = true
+          renderCheckpointsPanel()
+        }
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); commit() }
+          else if (e.key === 'Escape') { e.preventDefault(); cancel() }
+        })
+        input.addEventListener('blur', commit)
+      }
+
+      nameEl.addEventListener('dblclick', startEdit)
+      el.querySelector('.cp-rename')!.addEventListener('click', startEdit)
       el.querySelector('.cp-restore')!.addEventListener('click', () => restoreCheckpoint(cp.id))
       el.querySelector('.cp-delete')!.addEventListener('click', () => deleteCheckpoint(cp.id))
       container.appendChild(el)

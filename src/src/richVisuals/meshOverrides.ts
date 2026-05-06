@@ -78,7 +78,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'power_18650_cell_holder': 'power_cell_holder.step',
   'power_18650_4s2p_battery': 'power_cell_holder.step',
   'power_supercapacitor': 'power_supercapacitor.stp',
-  'power_solar_panel_small': 'power_solar_panel.step',
   'power_usb_c_pd_trigger': 'power_usb_c_pd.step',
   'power_estop_switch': 'power_estop.stp',
 
@@ -97,7 +96,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'structural_din_rail_35mm': 'structural_din_rail.step',
 
   // ── Transmission ──
-  'transmission_timing_belt_gt2': 'pulley_gt2.step',
   'transmission_bearing_deep_groove': 'bearing_small.stp',
   'transmission_bearing_large': 'bearing_large.step',
   'transmission_planetary_gearbox': 'transmission_planetary_gearbox.step',
@@ -112,7 +110,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'effector_parallel_gripper_large': 'gripper_parallel.step',
   'effector_3finger_adaptive': 'effector_3finger.step',
   'effector_suction_cup': 'effector_suction_cup.step',
-  'effector_pen_marker_holder': 'effector_pen_holder.step',
 
   // ── Mobility ──
   'mobility_wheel_driven': 'wheel_driven.step',
@@ -344,5 +341,36 @@ export function getShaftOverlay(componentId: string): { shaft_length_mm: number;
 /** Get the per-component rotation override (XYZ Euler radians), or null if none. */
 export function getRotationOverride(componentId: string): [number, number, number] | null {
   return getMeshVisualMetadata(componentId)?.rotation ?? null
+}
+
+// ── Shadow-cast policy ──────────────────────────────────────────────────────
+// End-effectors ship intricate geometry (gears, finger plates, pinion teeth,
+// suction cups, finger linkages). Hard PCFShadowMap projects every detail onto
+// the parallel face of the parent extrusion/bracket below them — the result
+// reads as a duplicate mesh, not a shadow. Catch all `effector_*` presets so
+// the policy stays consistent across catalog additions; effectors still
+// RECEIVE shadows from the rest of the scene.
+const NO_SHADOW_CAST_PREFIXES: readonly string[] = [
+  'effector_',
+]
+
+/** Strip trailing _N suffix from a URDF link name to recover the preset id.
+ *  Falls through unchanged if there's no suffix (defensive — link names with
+ *  no numeric suffix won't match any preset prefix anyway). */
+function _linkNameToCompId(linkOrCompId: string): string {
+  const m = linkOrCompId.match(/^(.+?)_(\d+)$/)
+  return m ? m[1] : linkOrCompId
+}
+
+/** True when a mesh from this component should cast shadows. False for
+ *  detail-rich end-effectors whose hard shadow on adjacent surfaces reads
+ *  as a duplicate mesh. Accepts either the bare component id or a URDF
+ *  link name with a numeric suffix. */
+export function shouldCastShadow(linkOrCompId: string): boolean {
+  const id = _linkNameToCompId(linkOrCompId)
+  for (const prefix of NO_SHADOW_CAST_PREFIXES) {
+    if (id === prefix || id.startsWith(prefix)) return false
+  }
+  return true
 }
 

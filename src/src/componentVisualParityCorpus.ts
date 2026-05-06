@@ -630,27 +630,6 @@ function assertSplitServoResolverContract(): Case {
 }
 
 function assertTransmissionLongFootprintAxisAdapter(): Case {
-  const belt = preset('transmission_timing_belt_gt2', [6, 200, 15])
-  markMeshLoadInProgress(belt.id)
-  const beltResolved = resolveComponentVisual({ preset: belt, category: 'transmission' })
-  clearMeshLoadInProgress(belt.id)
-
-  const beltSize = generatorNativeSize(beltResolved.previewGroup)
-  if (beltResolved.source !== 'rich') {
-    return {
-      name: 'transmission adapter: long footprint uses bbox depth',
-      passed: false,
-      reason: `expected timing belt rich source, got ${beltResolved.source}`,
-    }
-  }
-  if (!beltSize || beltSize.z < 0.13 || beltSize.y > 0.02) {
-    return {
-      name: 'transmission adapter: long footprint uses bbox depth',
-      passed: false,
-      reason: `expected timing belt long axis on Z and compact height on Y, got ${beltSize?.toArray()}`,
-    }
-  }
-
   const rack = preset('transmission_rack_pinion_set', [20, 200, 12])
   const rackResolved = resolveComponentVisual({ preset: rack, category: 'transmission' })
   const rackSize = generatorNativeSize(rackResolved.previewGroup)
@@ -836,7 +815,7 @@ function assertEndEffectorAxisAdapter(): Case {
     }
   }
 
-  const holder = preset('effector_pen_marker_holder', [25, 25, 60])
+  const holder = preset('effector_screwdriver_holder', [25, 25, 60])
   markMeshLoadInProgress(holder.id)
   const holderResolved = resolveComponentVisual({ preset: holder, category: 'end_effectors' })
   clearMeshLoadInProgress(holder.id)

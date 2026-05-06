@@ -31,6 +31,11 @@ export interface ValidationPreset {
   }
   mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
+  /** Authored mate connectors. Merged over the 6 default face connectors
+   *  (top/bottom/front/back/left/right) by id. Used by
+   *  graphMutations._checkConnectorReferences to reject attach_connector /
+   *  mate_connector references that don't resolve before resolveAssemblyGraph
+   *  hits the dev-throw at urdfAssembly.ts:2048. */
   connectors?: MateConnector[]
 }
 

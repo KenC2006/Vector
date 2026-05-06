@@ -55,6 +55,9 @@ function completeComponent(c: ComponentInput): AssemblyComponent {
     orientation: c.orientation,
     elevation_angle: c.elevation_angle,
     attach_rpy: c.attach_rpy,
+    attach_connector: c.attach_connector,
+    mate_connector: c.mate_connector,
+    mate_type: c.mate_type,
   }
 }
 
@@ -188,6 +191,62 @@ const fixtures: Fixture[] = [
       },
     },
     expect: { ok: true },
+  },
+
+  // ── add_link: connector reference validation (CONNECTOR_MISS) ───────────
+  {
+    // Reproduces memory/project_engine_regression_connector_miss.md: AI puts
+    // a bracket-side connector name ("plate_top") into attach_connector, which
+    // names a connector on the PARENT. The parent (extrusion) has no
+    // plate_top — only top/bottom/front/back/left/right defaults. Without
+    // pre-validation this hard-throws inside resolveAssemblyGraph; with it
+    // the AI gets a structured error and can move "plate_top" to
+    // mate_connector on the next turn.
+    name: 'add_link: bracket-side name in attach_connector — CONNECTOR_MISS',
+    graph: GRAPH_WITH_EXTRUSION_AND_SERVO,
+    mutation: {
+      kind: 'add_link',
+      args: {
+        link_name: 'brac1', parent_link: 'ext1',
+        component_id: 'structural_bracket_l', attach_face: 'top',
+        attach_connector: 'plate_top',  // wrong side — plate_top is ON the bracket
+        mate_type: 'fastened',
+      },
+    },
+    expect: { ok: false, code: 'CONNECTOR_MISS' },
+  },
+  {
+    name: 'add_link: bracket mate_connector="wall_outer" — accepted (fix case)',
+    // The corrected form of the bad case above: bracket-side names live in
+    // mate_connector. wall_outer IS authored on structural_bracket_l, so the
+    // pre-validator passes through.
+    graph: GRAPH_WITH_EXTRUSION_AND_SERVO,
+    mutation: {
+      kind: 'add_link',
+      args: {
+        link_name: 'brac1', parent_link: 'ext1',
+        component_id: 'structural_bracket_l', attach_face: 'top',
+        mate_connector: 'wall_outer',
+        mate_type: 'fastened',
+      },
+    },
+    expect: { ok: true, graphContainsLink: 'brac1' },
+  },
+  {
+    // Defensive opt-in gate: a graph without any named-connector fields stays
+    // on the legacy attach_face path and must NOT trip CONNECTOR_MISS even if
+    // the attach_face is something exotic. Regression guard for the gate at
+    // _checkConnectorReferences's first early-return.
+    name: 'add_link: no connector fields — pre-validator skips, no CONNECTOR_MISS',
+    graph: GRAPH_WITH_EXTRUSION_AND_SERVO,
+    mutation: {
+      kind: 'add_link',
+      args: {
+        link_name: 'brac1', parent_link: 'ext1',
+        component_id: 'structural_bracket_l', attach_face: 'top',
+      },
+    },
+    expect: { ok: true, graphContainsLink: 'brac1' },
   },
 
   // ── attach_sensor ────────────────────────────────────────────────────────

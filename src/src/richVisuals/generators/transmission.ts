@@ -198,69 +198,6 @@ function generatePlanetaryGearbox(_id: string, dims: ComponentVisualDims): THREE
   return g
 }
 
-// ── Timing Belt GT2 ─────────────────────────────────────────────────────────
-
-function generateTimingBelt(_id: string, dims: ComponentVisualDims): THREE.Group {
-  const g = new THREE.Group()
-  const { x: beltWidth, y: length, z: height } = dims
-
-  const pulleyR = height * 0.35
-  const pulleyW = beltWidth * 0.8
-  const spacing = length * 0.35
-
-  // Two pulleys: shaft axis across belt width (X), belt run along depth (Z).
-  for (const sz of [-1, 1]) {
-    const pulley = new THREE.Mesh(
-      nurbsCylinder(pulleyR, pulleyW, pulleyR * 0.08, 32),
-      catMetal(),
-    )
-    pulley.rotation.z = Math.PI / 2
-    pulley.position.set(0, 0, sz * spacing)
-    g.add(pulley)
-
-    // Pulley flanges
-    for (const sx of [-1, 1]) {
-      const flange = new THREE.Mesh(
-        nurbsCylinder(pulleyR * 1.15, pulleyW * 0.08, pulleyR * 0.04, 32),
-        getMaterial('brushed_steel'),
-      )
-      flange.rotation.z = Math.PI / 2
-      flange.position.set(sx * pulleyW * 0.45, 0, sz * spacing)
-      g.add(flange)
-    }
-
-    // Shaft bore
-    const bore = new THREE.Mesh(
-      new THREE.CylinderGeometry(pulleyR * 0.25, pulleyR * 0.25, pulleyW * 1.2, 16),
-      getMaterial('dark_chrome'),
-    )
-    bore.rotation.z = Math.PI / 2
-    bore.position.set(0, 0, sz * spacing)
-    g.add(bore)
-  }
-
-  // Thin belt box connecting pulleys
-  const beltRun = spacing * 2 + pulleyR * 2
-  const beltThick = height * 0.08
-  const beltMat = getMaterial('rubber_black')
-
-  const topBelt = new THREE.Mesh(
-    nurbsFilletBox(beltWidth, beltThick, beltRun, beltThick * 0.2, 12),
-    beltMat,
-  )
-  topBelt.position.y = pulleyR
-  g.add(topBelt)
-
-  const botBelt = new THREE.Mesh(
-    nurbsFilletBox(beltWidth, beltThick, beltRun, beltThick * 0.2, 12),
-    beltMat,
-  )
-  botBelt.position.y = -pulleyR
-  g.add(botBelt)
-
-  return g
-}
-
 // ── Leadscrew ───────────────────────────────────────────────────────────────
 
 function generateLeadscrew(id: string, dims: ComponentVisualDims): THREE.Group {
@@ -679,8 +616,6 @@ function generateSlewingRing(_id: string, dims: ComponentVisualDims): THREE.Grou
 
 export function generateRichTransmission(id: string, dims: ComponentVisualDims, color?: [number, number, number]): THREE.Group {
   CAT_COLOR = color ?? DEFAULT_COLOR
-  if (id.includes('timing_belt'))
-    return generateTimingBelt(id, dims)
   if (id.includes('leadscrew') || id.includes('ballscrew'))
     return generateLeadscrew(id, dims)
   if (id.includes('bearing_deep_groove') || id.includes('bearing_large'))

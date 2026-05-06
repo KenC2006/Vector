@@ -41,7 +41,7 @@ import {
   childConnectorIdForAttachFace,
   type MateConnector,
 } from './mateConnectors.ts'
-import { applyMutation as runApplyMutation } from './graphMutations.ts'
+import { applyMutation as runApplyMutation, validateConnectorReferences as runValidateConnectorRefs } from './graphMutations.ts'
 import type { GraphMutation, MutationResult } from './graphMutations.ts'
 // Render-time alignment pass (Option C — ).
 // Kept in its own module so the test harness can import it without pulling in
@@ -217,6 +217,17 @@ export interface UrdfAssemblyApi {
   /** Get a deep-cloned snapshot of the last successfully resolved AssemblyGraph. Cloned so
    * callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
   getLastAssemblyGraph(): AssemblyGraph | null
+  /** Re-read the stored graph from localStorage for the current active filename.
+   *  Call from main.ts whenever the active file changes — without it the in-memory
+   *  graph stays pinned to whatever was loaded at module init, so opening a
+   *  checkpoint or switching files leaves bake/edit reading the wrong robot's
+   *  graph. Returns true if a graph was found, false if cleared. */
+  refreshAssemblyGraphForActiveFile(): boolean
+  /** Replace the in-memory AssemblyGraph and persist it to localStorage under
+   *  the current filename. Used by checkpoint restore to install the captured
+   *  graph losslessly — alternative to losing fields via the URDF round-trip
+   *  fallback. Pass null to clear. */
+  setLastAssemblyGraph(graph: AssemblyGraph | null): void
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
   urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null
   /** Structural + parametric equality for two AssemblyGraphs. Use to detect drift when a
@@ -3618,6 +3629,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   // ── AI Assembly Graph Resolver ───────────────────────────────────────────────
   const GRAPH_STORAGE_KEY = 'vector_assembly_graphs'
   let _lastAssemblyGraph: AssemblyGraph | null = null
+  // Provenance of the in-memory graph. 'ai' means resolveAssemblyGraph just
+  // ran (engine owns the URDF — reconcile may write back). 'restored' means
+  // the graph came from localStorage / reverse-parse / checkpoint restore
+  // (user owns the URDF — reconcile must NOT mutate it). Without this gate,
+  // loading a file from disk drifts the editor away from the on-disk text by
+  // sub-mm reconcile shifts, breaking byte-equal round-trips.
+  let _graphSource: 'ai' | 'restored' | null = null
 
   // Restore stored graph for current file on init
   try {
@@ -3691,6 +3709,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (topologyWarnings.length > 0) {
       for (const w of topologyWarnings) console.warn(`[assembly][topology][warning] ${w}`)
     }
+
+    // Connector-reference pre-pass: walk the graph once and surface any
+    // attach_connector / mate_connector that doesn't resolve on its target
+    // preset as a topology error. Without this the placement loop would hit
+    // the dev-throw at urdfAssembly.ts:2048 (computeMatePlacement) and
+    // hard-crash an AI-generated build instead of letting the redesign loop
+    // see a recoverable signal. The dev-throw stays as defense-in-depth for
+    // genuine preset coverage holes that escape this pre-pass. See
+    // memory/project_engine_regression_connector_miss.md.
+    const connectorErrors = runValidateConnectorRefs(graph.components, validationCtx)
+    for (const e of connectorErrors) topologyErrors.push(e)
+
     if (topologyErrors.length > 0) {
       console.error('[assembly] Topology validation failed:', topologyErrors)
       ctx.showToast(`Invalid topology: ${topologyErrors[0]}`, 'error')
@@ -4316,6 +4346,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }))
     const remappedBase = nameMap.get(graph.base_link) || graph.base_link
     _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
+    _graphSource = 'ai'  // engine owns this URDF — reconcile may write back
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
 
@@ -4609,6 +4640,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (!_lastAssemblyGraph) {
         return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
       }
+      // Skip entirely for user-owned URDFs (file load, checkpoint restore,
+      // reverse-parse). The user's saved URDF is the source of truth — neither
+      // the visual scene nor the editor text should be second-guessed by the
+      // engine on reload. AI flow keeps reconcile because the engine just
+      // generated the URDF and owns its placement.
+      if (_graphSource !== 'ai') {
+        return { adjustedCount: 0, residualMaxMm: 0, shifts: [] }
+      }
       const parsed = ctx.getParsedRobot()
       const res = reconcileNodePlacement({
         graph: _lastAssemblyGraph,
@@ -4623,13 +4662,67 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // ~3940: mount nodes were placed against the pre-reconcile pivots,
       // and persisting without rebuilding leaves attachment rings on the
       // old pose while the URDF and scene have moved on.
+      //
+      // Provenance gate: only the AI flow owns the URDF. For load-from-disk
+      // (graphSource='restored'), reconcile may shift pivots in the live
+      // scene for visual alignment, but MUST NOT write back — otherwise the
+      // editor drifts away from the on-disk text by sub-mm AABB-measurement
+      // float noise. Mount nodes still rebuild so attachment rings stay
+      // visually correct.
       if (res.adjustedCount > 0) {
-        persistReconcileShiftsToUrdf(parsed.linkGroups)
+        if (_graphSource === 'ai') {
+          persistReconcileShiftsToUrdf(parsed.linkGroups)
+        }
         rebuildMountNodes()
       }
       return res
     },
     getLastAssemblyGraph: () => _lastAssemblyGraph ? cloneAssemblyGraph(_lastAssemblyGraph) : null,
+    setLastAssemblyGraph: (graph: AssemblyGraph | null) => {
+      _lastAssemblyGraph = graph ? cloneAssemblyGraph(graph) : null
+      _graphSource = graph ? 'restored' : null  // user owns this URDF — don't mutate it
+      _persistGraph(_lastAssemblyGraph)
+    },
+    refreshAssemblyGraphForActiveFile: () => {
+      try {
+        const fileName = ctx.getActiveFileName?.() || 'robot.urdf'
+        const stored = JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY) || '{}')
+        if (stored[fileName]) {
+          _lastAssemblyGraph = stored[fileName]
+          _graphSource = 'restored'  // user-owned: file just loaded from disk/cache
+          console.log(`[assembly] Loaded stored graph for "${fileName}" (${_lastAssemblyGraph!.components.length} components)`)
+          return true
+        }
+        // No stored graph — fall back to reverse-parsing the current URDF.
+        // Lossy: drops orientation, elevation_angle, length_mm, attach_rpy,
+        // attach_connector. For bake those losses are mostly tolerable
+        // (cluster planning needs joint_type + component_id, both preserved).
+        // See graphPreservationCorpus.ts §"urdfToAssemblyGraph known limitations".
+        const urdfText = ctx.getUrdfText()
+        if (urdfText && urdfText.trim().length > 0) {
+          const parsed = urdfToAssemblyGraph(urdfText)
+          if (parsed && parsed.components.length > 0) {
+            _lastAssemblyGraph = parsed
+            _graphSource = 'restored'  // user-owned: third-party URDF loaded from disk
+            console.log(`[assembly] Reverse-parsed graph from URDF for "${fileName}" (${parsed.components.length} components, lossy fallback)`)
+            return true
+          }
+        }
+        // Reverse-parse also failed (empty URDF, parse error). Clear in-memory
+        // so callers fail fast instead of using a previous robot's graph.
+        if (_lastAssemblyGraph !== null) {
+          console.log(`[assembly] Cleared in-memory graph (no stored or reverse-parsable graph for "${fileName}")`)
+          _lastAssemblyGraph = null
+          _graphSource = null
+        }
+        return false
+      } catch {
+        // localStorage parse error — clear so callers don't act on stale data.
+        _lastAssemblyGraph = null
+        _graphSource = null
+        return false
+      }
+    },
     urdfToAssemblyGraph,
     applyTopologyOps,
     applyGraphMutation: (graph: AssemblyGraph, mutation: GraphMutation): MutationResult => {
