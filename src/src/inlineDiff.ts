@@ -54,6 +54,14 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
   function releaseAiBusyLock(editor?: monaco.editor.IStandaloneCodeEditor) {
     document.body.classList.remove('ai-busy')
     editor?.updateOptions({ readOnly: false })
+    // viewportChat.setAiBusy() owns vc-send/vc-input.disabled — but if the
+    // user clicked Accept/Dismiss on the inline diff bar (instead of the
+    // chat message buttons), that path never fires. Mirror it here so the
+    // chat doesn't stay frozen after an editor-bar accept.
+    const vcSend = document.getElementById('vc-send') as HTMLButtonElement | null
+    const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement | null
+    if (vcSend) vcSend.disabled = false
+    if (vcInput) vcInput.disabled = false
   }
 
   function showInlineDiff(oldText: string, newText: string, newUrdf?: string) {
