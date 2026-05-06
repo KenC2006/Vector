@@ -7,18 +7,9 @@ import * as THREE from 'three'
 
 const meshDimsCache = new Map<string, THREE.Vector3>()
 
-/** Return the observed rendered mesh size (full extents, meters) for a
- *  component, or null if not yet loaded. */
-export function getRenderedMeshDims(compId: string): THREE.Vector3 | null {
-  return meshDimsCache.get(compId) ?? null
-}
-
-/** Record a component's rendered mesh size for diagnostics. */
+/** Record a component's rendered mesh size for diagnostics. The cache is
+ *  not consulted by placement, sizing, or any non-diagnostic path — it
+ *  exists so the viewport can show observed-vs-declared mesh extents. */
 export function setRenderedMeshDims(compId: string, dims: THREE.Vector3): void {
   meshDimsCache.set(compId, dims.clone())
-}
-
-/** Reset cache, used by viewport reset / preset reload paths. */
-export function clearRenderedMeshDimsCache(): void {
-  meshDimsCache.clear()
 }

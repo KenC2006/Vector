@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { AttachmentNodeDef } from './componentSpec'
 import {
   generateVisuals,
   SERVO_HORN_ORIGIN_Z_RATIO,
@@ -8,6 +9,9 @@ import {
   servoHornBeamAdapterShape,
 } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
+import { resolveComponent, resolveComponentBboxMm } from './componentResolver.ts'
+import { getMeasuredCollisionExtentMm, getMeasuredCollisionCenterMm, getMeasuredVisualExtentMm, getMeasuredMeshEntry } from './meshExtents.ts'
+import type { MateConnector } from './mateConnectors'
 import { getMeshVisualMetadata } from './richVisuals/meshOverrides'
 import { findRichGenerator } from './richVisuals/generators'
 import { getComponentColor } from './richVisuals/materials'
@@ -30,15 +34,19 @@ export interface ComponentVisualPresetLike {
   physical: {
     mass_kg?: number
     mass_kg_per_100mm?: number
+    bbox_mm?: number[]
     bounding_box_mm?: number[]
+    parametric?: {
+      axis?: unknown
+      cross_section_mm?: unknown
+    }
     cross_section_mm?: number[]
     inertia_primitive?: string
-    outer_diameter_mm?: number
-    inner_diameter_mm?: number
-    wall_thickness_mm?: number
     collision_mesh?: string
   }
   mechanical_electrical: Record<string, unknown>
+  mounting_logic?: Record<string, unknown>
+  connectors?: MateConnector[]
 }
 
 export interface ComponentVisualInstanceLike {
@@ -72,6 +80,9 @@ export interface ResolvedComponentVisual {
     bounds: ComponentVisualBounds
     meshFile?: string
   }
+  connectors: MateConnector[]
+  ports: AttachmentNodeDef[]
+  warnings: string[]
   renderedBodySize?: THREE.Vector3 | null
   fallbackReason?: string
 }
@@ -90,7 +101,6 @@ export interface ResolveComponentVisualArgs {
   preset: ComponentVisualPresetLike
   category: string
   instance?: ComponentVisualInstanceLike
-  mode?: 'carry' | 'render' | 'collision' | 'diagnostic'
   linkName?: string
   materialCache?: Map<string, THREE.MeshStandardMaterial>
   castShadow?: boolean
@@ -99,11 +109,12 @@ export interface ResolveComponentVisualArgs {
 
 export function resolveComponentVisual(args: ResolveComponentVisualArgs): ResolvedComponentVisual {
   const preset = buildVisualPreset(args.preset, args.instance)
-  const visuals = generateVisuals(preset as Parameters<typeof generateVisuals>[0], args.category)
+  const visuals = generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
   const visualBounds = visualBoundsFromDescriptors(visuals)
   const boundsResult = resolveCurrentBounds(preset, visuals)
   const meshMetadata = getMeshVisualMetadata(preset.id)
   const collision = resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
+  const resolvedLogical = resolveComponent({ spec: preset, instance: args.instance, category: args.category })
   const meshOverride = !!meshMetadata
   const meshUsable = !!meshMetadata && !meshMetadata.blacklisted
   const meshPreview = meshUsable ? buildCachedMeshPreviewGroup(preset, {
@@ -128,13 +139,25 @@ export function resolveComponentVisual(args: ResolveComponentVisualArgs): Resolv
     boundsSource: boundsResult.boundsSource,
     status,
     frame: 'urdf-z-up',
-    authoredFrame: source === 'rich' ? 'y_up' : 'z_up',
+    // Authored-frame unification: previewGroups are now Z-up regardless of
+    // source — rich output is wrapped at construction time in
+    // buildRichPreviewGroup, GLBs are Z-up natively. The dual-frame branch
+    // that used to live here was the root of the carry-vs-placed rotation
+    // mismatch when the live render swapped sources mid-flight.
+    authoredFrame: 'z_up',
     scalePolicy: boundsResult.scalePolicy,
     previewGroup,
     visuals,
     bounds: boundsResult.bounds,
     visualBounds,
     collision,
+    connectors: resolvedLogical.connectors,
+    ports: resolvedLogical.ports,
+    warnings: [
+      ...resolvedLogical.warnings,
+      ...buildResolverWarnings(meshOverride, meshUsable, meshPreview !== undefined),
+      ...buildMeshDivergenceWarnings(preset.id, boundsResult.scalePolicy),
+    ],
     renderedBodySize: meshPreview?.renderedBodySize ?? null,
     fallbackReason: meshOverride && !meshPreview
       ? (meshUsable ? 'mesh override is not cached yet' : 'mesh override is blacklisted')
@@ -154,6 +177,27 @@ export function resolveSplitServoVisual(args: {
   const d = bb[1] / 1000
   const h = bb[2] / 1000
   const bodyBase = servoBodyShape(w, h, d, args.category)
+  // Phase 5 step 2: when an authored collision mesh has been measured, replace
+  // the body box (servoBodyShape's first descriptor — the h*0.76 primitive)
+  // with one matching the canonical collision envelope. The placement compiler
+  // reads collision.bounds, so URDF-loader-only viewers (no rich GLB) would
+  // otherwise see a body box offset from where the joint origin sits.
+  const collisionExtentMm = preset.physical.collision_mesh
+    ? getMeasuredCollisionExtentMm(preset.id) : undefined
+  const collisionCenterMm = preset.physical.collision_mesh
+    ? getMeasuredCollisionCenterMm(preset.id) : undefined
+  if (collisionExtentMm && bodyBase.length > 0 && bodyBase[0].geometry.type === 'box') {
+    const bodyBox = bodyBase[0]
+    const cz = collisionCenterMm ? collisionCenterMm[2] / 1000 : 0
+    const cx = collisionCenterMm ? collisionCenterMm[0] / 1000 : 0
+    const cy = collisionCenterMm ? collisionCenterMm[1] / 1000 : 0
+    bodyBase[0] = {
+      origin_xyz: [cx, cy, cz],
+      origin_rpy: bodyBox.origin_rpy,
+      geometry: { type: 'box', size: [collisionExtentMm[0] / 1000, collisionExtentMm[1] / 1000, collisionExtentMm[2] / 1000] },
+      color_rgba: bodyBox.color_rgba,
+    }
+  }
   const hornBase = servoHornShape(w, h, d, args.category)
   const bodyVisuals = args.includeSideYoke
     ? [...bodyBase, ...servoSideYokeShape(w, h, d, args.category)]
@@ -196,9 +240,26 @@ function resolveCollisionEnvelope(
   visualBounds: ComponentVisualBounds | null,
 ): ResolvedComponentVisual['collision'] {
   if (preset.physical.collision_mesh) {
+    // Phase 1 contract: when an authored collision mesh exists, collision.bounds
+    // is the AABB of that mesh (measured at build time), not the preset bbox.
+    const measuredExtent = getMeasuredCollisionExtentMm(preset.id)
+    const measuredCenter = getMeasuredCollisionCenterMm(preset.id)
+    const collisionShape: 'box' | 'cylinder' =
+      preset.physical.inertia_primitive === 'cylinder' ? 'cylinder' : 'box'
+    const meshBounds = measuredExtent
+      ? {
+        hx: measuredExtent[0] / 2000,
+        hy: measuredExtent[1] / 2000,
+        hz: measuredExtent[2] / 2000,
+        cx: measuredCenter ? measuredCenter[0] / 1000 : 0,
+        cy: measuredCenter ? measuredCenter[1] / 1000 : 0,
+        cz: measuredCenter ? measuredCenter[2] / 1000 : 0,
+        shape: collisionShape,
+      }
+      : bounds
     return {
       source: 'authored_mesh',
-      bounds,
+      bounds: meshBounds,
       meshFile: preset.physical.collision_mesh,
     }
   }
@@ -214,28 +275,101 @@ function resolveCollisionEnvelope(
   }
 }
 
+// Phase 5 step 4: visual divergence is meaningful only when the GLB renders at
+// its native size (scalePolicy === 'none'). 'per-axis' and 'uniform' scale the
+// mesh into the bbox by design, so divergence there is expected, not a bug.
+// The collision side has no such scaling, so it gates unconditionally.
+const COLLISION_DIVERGENCE_LIMIT = 0.15
+const VISUAL_DIVERGENCE_LIMIT = 0.05
+
+export function computeMeshDivergence(
+  componentId: string,
+  scalePolicy: ComponentVisualScalePolicy,
+): { visualWorst: number; collisionWorst: number; errors: string[] } {
+  const entry = getMeasuredMeshEntry(componentId)
+  if (!entry) return { visualWorst: 0, collisionWorst: 0, errors: [] }
+  const declared = entry.declared_bbox_mm
+  const errors: string[] = []
+  let visualWorst = 0
+  let collisionWorst = 0
+  if (declared) {
+    if (scalePolicy === 'none') {
+      const visualMeasured = getMeasuredVisualExtentMm(componentId)
+      if (visualMeasured) {
+        for (let i = 0; i < 3; i++) {
+          if (declared[i] === 0) continue
+          const d = Math.abs(visualMeasured[i] - declared[i]) / declared[i]
+          if (d > visualWorst) visualWorst = d
+        }
+        if (visualWorst > VISUAL_DIVERGENCE_LIMIT) {
+          errors.push(
+            `${componentId}: visual mesh extent diverges from declared bbox by ${(visualWorst * 100).toFixed(1)}% (limit ${VISUAL_DIVERGENCE_LIMIT * 100}%, scalePolicy=none)`,
+          )
+        }
+      }
+    }
+    const collisionMeasured = getMeasuredCollisionExtentMm(componentId)
+    if (collisionMeasured) {
+      for (let i = 0; i < 3; i++) {
+        if (declared[i] === 0) continue
+        const d = Math.abs(collisionMeasured[i] - declared[i]) / declared[i]
+        if (d > collisionWorst) collisionWorst = d
+      }
+      if (collisionWorst > COLLISION_DIVERGENCE_LIMIT) {
+        errors.push(
+          `${componentId}: collision mesh extent diverges from declared bbox by ${(collisionWorst * 100).toFixed(1)}% (limit ${COLLISION_DIVERGENCE_LIMIT * 100}%)`,
+        )
+      }
+    }
+  }
+  return { visualWorst, collisionWorst, errors }
+}
+
+function buildMeshDivergenceWarnings(
+  componentId: string,
+  scalePolicy: ComponentVisualScalePolicy,
+): string[] {
+  return computeMeshDivergence(componentId, scalePolicy).errors
+}
+
+function buildResolverWarnings(
+  hasMeshOverride: boolean,
+  meshUsable: boolean,
+  meshReady: boolean,
+): string[] {
+  const warnings: string[] = []
+  if (hasMeshOverride && !meshUsable) {
+    warnings.push('mesh override is blacklisted; using fallback visual source')
+  } else if (hasMeshOverride && !meshReady) {
+    warnings.push('mesh override is not cached yet; placement-relevant fields remain deterministic')
+  }
+  return warnings
+}
+
 export function buildVisualPreset<T extends ComponentVisualPresetLike>(
   preset: T,
   instance?: ComponentVisualInstanceLike,
 ): T {
   const phys = preset.physical
-  const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-  if (instance?.length_mm && phys.cross_section_mm) {
-    return {
-      ...preset,
-      physical: {
-        ...phys,
-        bounding_box_mm: [bb[0] ?? 40, bb[1] ?? 40, instance.length_mm],
-      },
-    }
+  const bb = resolveComponentBboxMm(preset, instance)
+  if (
+    phys.bounding_box_mm?.[0] === bb[0]
+    && phys.bounding_box_mm?.[1] === bb[1]
+    && phys.bounding_box_mm?.[2] === bb[2]
+  ) {
+    return preset
   }
-  return preset
+  return {
+    ...preset,
+    physical: {
+      ...phys,
+      bounding_box_mm: bb,
+    },
+  }
 }
 
 function presetBboxMm(preset: ComponentVisualPresetLike): [number, number, number] {
-  const phys = preset.physical
-  const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-  return [bb[0] ?? 40, bb[1] ?? 40, bb[2] ?? 40]
+  return resolveComponentBboxMm(preset)
 }
 
 function boundsFromBboxMm(bb: [number, number, number]): ComponentVisualBounds {
@@ -306,7 +440,16 @@ function buildRichPreviewGroup(
         if (opts.linkName) (child.userData as Record<string, unknown>).urdfLinkName = opts.linkName
       }
     })
-    return group
+    // Authored-frame unification: rich generators are written Y-up internally,
+    // GLBs are authored Z-up. Wrap the rich output in +90° X here so the
+    // returned previewGroup is Z-up authored regardless of source. Single
+    // outer group lets the carry/render adapter set its quaternion without
+    // disturbing the wrap. See PLACEMENT_REWRITE_PLAN.md authored-frame
+    // section.
+    const wrapper = new THREE.Group()
+    group.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ'))
+    wrapper.add(group)
+    return wrapper
   } catch (e) {
     console.warn(`[componentVisualResolver] Rich preview failed for ${preset.id}:`, e)
     return undefined
@@ -371,9 +514,12 @@ function resolveCurrentBounds(
   scalePolicy: ComponentVisualScalePolicy
 } {
   const meshMetadata = getMeshVisualMetadata(preset.id)
+  // Both 'per-axis' and 'uniform' scale the GLB to fit the bbox envelope —
+  // 'uniform' may leave a small gap on non-binding axes, but the bbox still
+  // describes the carry footprint and joint geometry, so bounds derive from it.
   const glbScalesToBbox = !!meshMetadata
     && !meshMetadata.blacklisted
-    && meshMetadata.scalePolicy === 'per-axis'
+    && (meshMetadata.scalePolicy === 'per-axis' || meshMetadata.scalePolicy === 'uniform')
   if (glbScalesToBbox) {
     const bb = presetBboxMm(preset)
     const shaftOverlay = meshMetadata.shaftOverlay
@@ -387,11 +533,11 @@ function resolveCurrentBounds(
         shape: 'box',
       },
       boundsSource: 'mesh_target_bbox',
-      scalePolicy: 'per-axis',
+      scalePolicy: meshMetadata.scalePolicy,
     }
   }
 
-  const primitive = legacyPrimitiveBounds(visuals)
+  const primitive = visualBoundsFromDescriptors(visuals)
   if (primitive) {
     return { bounds: primitive, boundsSource: 'urdf_primitives', scalePolicy: 'none' }
   }
@@ -401,50 +547,5 @@ function resolveCurrentBounds(
     bounds: boundsFromBboxMm(bb),
     boundsSource: 'preset_bbox',
     scalePolicy: 'none',
-  }
-}
-
-function legacyPrimitiveBounds(visuals: UrdfVisualDesc[]): ComponentVisualBounds | null {
-  let minX = Infinity, maxX = -Infinity
-  let minY = Infinity, maxY = -Infinity
-  let minZ = Infinity, maxZ = -Infinity
-  let allCylinders = visuals.length > 0
-
-  for (const vis of visuals) {
-    const [ox, oy, oz] = vis.origin_xyz
-    const g = vis.geometry
-    let ex = 0, ey = 0, ez = 0
-    if (g.type === 'box') {
-      ex = g.size[0] / 2
-      ey = g.size[1] / 2
-      ez = g.size[2] / 2
-      allCylinders = false
-    } else if (g.type === 'cylinder') {
-      ex = g.radius
-      ey = g.radius
-      ez = g.length / 2
-    } else {
-      ex = g.radius
-      ey = g.radius
-      ez = g.radius
-      allCylinders = false
-    }
-    if (vis.origin_rpy[0] !== 0 || vis.origin_rpy[1] !== 0 || vis.origin_rpy[2] !== 0) {
-      allCylinders = false
-    }
-    minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
-    minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
-    minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
-  }
-
-  if (!isFinite(minX)) return null
-  return {
-    hx: (maxX - minX) / 2,
-    hy: (maxY - minY) / 2,
-    hz: (maxZ - minZ) / 2,
-    cx: (maxX + minX) / 2,
-    cy: (maxY + minY) / 2,
-    cz: (maxZ + minZ) / 2,
-    shape: allCylinders ? 'cylinder' : 'box',
   }
 }

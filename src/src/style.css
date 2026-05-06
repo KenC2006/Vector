@@ -599,6 +599,9 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   flex-shrink: 0;
 }
 #sim-bar.hidden { display: none; }
+/* Hide mesh-stat counters while sim is active — irrelevant to runtime physics. */
+body:has(#sim-toggle.running) #vi-verts,
+body:has(#sim-toggle.running) #vi-faces { display: none; }
 
 .sim-btn {
   width: 26px; height: 22px;
@@ -2734,12 +2737,14 @@ html.theme-tokyo-night {
 
 /* AI-busy lockout — applied while a generation is in flight; cleared as soon as
    the apply/dismiss prompt is on screen so the user can't fight the model.
-   Viewport (3D camera + sim controls) stays interactive on purpose. */
+   3D camera stays interactive; the simulate toggle is locked out so the user
+   can't kick off a sim while the model is mutating the URDF. */
 body.ai-busy #activity-bar,
 body.ai-busy #sidebar,
 body.ai-busy #editor-panel,
 body.ai-busy #tab-bar,
-body.ai-busy #statusbar {
+body.ai-busy #statusbar,
+body.ai-busy #sim-toggle {
   pointer-events: none;
   opacity: 0.55;
   filter: saturate(0.7);

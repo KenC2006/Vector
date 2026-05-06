@@ -13,7 +13,22 @@
     "test:alignment-corpus": "node --experimental-strip-types src/alignmentCorpus.ts",
     "test:mate-corpus": "node --experimental-strip-types src/mateCorpus.ts",
     "test:visual-parity": "node scripts/run-vite-module.mjs src/componentVisualParityCorpus.ts",
-    "diagnose:visuals": "node ../scripts/component-visual-diagnostics.js"
+    "validate:component-specs": "node ../scripts/validate-component-specs.mjs",
+    "check:coordinates-seam": "node ../scripts/check-coordinates-seam.mjs",
+    "diagnose:visuals": "node ../scripts/component-visual-diagnostics.js",
+    "measure:mesh-extents": "node ../scripts/measure-mesh-extents.mjs",
+    "check:mesh-extents": "node ../scripts/measure-mesh-extents.mjs --strict",
+    "preset:check": "node ../scripts/preset-check.mjs",
+    "triage:mesh-rotations": "node ../scripts/triage-mesh-rotations.mjs",
+    "install-hooks": "git -C .. config core.hooksPath .githooks",
+    "test:semantic-graph": "python ../core/test_semantic_graph.py",
+    "test:placement-compiler": "node --experimental-strip-types src/placementCompilerCorpus.ts",
+    "test:rotation-parity": "node --experimental-strip-types src/rotationParityCorpus.ts",
+    "test:rotation-parity-py": "pushd .. && python -m core.sim.tests.test_rotation_parity && popd",
+    "test:collision-envelope-py": "pushd .. && python -m core.sim.tests.test_collision_envelope && popd",
+    "test:quadruped-contact-py": "pushd .. && python -m core.sim.tests.test_quadruped_contact && popd",
+    "test:compiler-client": "pushd .. && python -m core.ai.test_compiler_client && popd",
+    "check": "npm run validate:component-specs && npm run check:coordinates-seam && tsc --noEmit && npm run test:mate-corpus && npm run test:validator && npm run test:visual-parity && npm run check:mesh-extents && npm run test:semantic-graph && npm run test:placement-compiler && npm run test:rotation-parity && npm run test:rotation-parity-py && npm run test:collision-envelope-py && npm run test:quadruped-contact-py && npm run test:compiler-client"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

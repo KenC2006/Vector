@@ -1011,6 +1011,11 @@ class JSONRPCServer:
                 response["assembly_graph"] = result["assembly_graph"]
             if "topology_ops" in result:
                 response["topology_ops"] = result["topology_ops"]
+            # Phase 3: surface owner-routed diagnostics to the frontend so the
+            # chat panel can display AI-fixable issues (and developer logs can
+            # show compiler/exporter ones) instead of swallowing them silently.
+            if result.get("diagnostics"):
+                response["diagnostics"] = result["diagnostics"]
             return response
         except Exception as e:
             raise ValueError(f"AI edit failed: {e}")

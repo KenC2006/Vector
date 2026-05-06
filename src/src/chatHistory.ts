@@ -1,4 +1,8 @@
-// chatHistory.ts — Chat history management (CRUD, localStorage, UI rendering)
+// chatHistory.ts — Chat history management (CRUD, localStorage, UI rendering).
+// Storage is keyed per-file: each URDF/XML tab has its own list of chats and
+// its own current-chat pointer. Switching the active file swaps the visible
+// chat list. The legacy flat list is migrated under a "__legacy__" bucket on
+// first load so a user upgrading mid-session doesn't lose history.
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -28,9 +32,20 @@ export interface ChatHistoryApi {
   rewindChatTo(msgIndex: number, mode: 'conversation' | 'code' | 'both'): void
   attachRewindButton(msgEl: HTMLElement, msgIndex: number): void
   exportForBackend(chatId?: string): Array<{ role: string; content: string }>
+  setActiveFile(fileKey: string): void
+  getActiveFile(): string
+  removeFile(fileKey: string): void
 }
 
-const MAX_CHATS = 20
+const MAX_CHATS_PER_FILE = 20
+const STORAGE_KEY = 'vector_chats_v2'
+const LEGACY_STORAGE_KEY = 'vector_chats'
+const CURRENT_KEY = 'vector_chat_current_v2'
+const LEGACY_BUCKET = '__legacy__'
+const ORPHAN_BUCKET = '__orphan__'
+
+type ChatsByFile = Record<string, ChatConversation[]>
+type CurrentByFile = Record<string, string>
 
 export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -40,7 +55,43 @@ export function initChatHistory(deps: {
   getEditorValue(): string
   setEditorValue(v: string): void
 }): ChatHistoryApi {
-  let chatHistory: ChatConversation[] = JSON.parse(localStorage.getItem('vector_chats') || '[]')
+  // ── Storage migration ──
+  // First load after upgrade: if we have a flat list under the legacy key but
+  // nothing under the new key, file the flat list under "__legacy__" so it
+  // remains accessible (visible only when the legacy bucket is the active
+  // file — which never happens through normal UI, but the data is preserved).
+  let chatsByFile: ChatsByFile = {}
+  try {
+    const v2 = localStorage.getItem(STORAGE_KEY)
+    if (v2) {
+      chatsByFile = JSON.parse(v2)
+    } else {
+      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
+      if (legacy) {
+        const flat: ChatConversation[] = JSON.parse(legacy)
+        if (Array.isArray(flat) && flat.length > 0) {
+          chatsByFile[LEGACY_BUCKET] = flat
+          console.log(`[chatHistory] Migrated ${flat.length} legacy chat(s) into "${LEGACY_BUCKET}" bucket`)
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[chatHistory] Failed to load chat storage:', e)
+    chatsByFile = {}
+  }
+
+  let currentByFile: CurrentByFile = {}
+  try {
+    const raw = localStorage.getItem(CURRENT_KEY)
+    if (raw) currentByFile = JSON.parse(raw)
+  } catch { /* ignore */ }
+
+  // The active file's chats and current-chat-id are mirrored into these
+  // working variables so existing call sites that read getChatHistory() etc.
+  // see "the chats relevant right now". On setActiveFile() we flush these
+  // back into the per-file map and re-hydrate from the new file.
+  let activeFileKey = ''
+  let chatHistory: ChatConversation[] = []
   let currentChatId = ''
   let currentChatMessages: ChatMessage[] = []
 
@@ -48,34 +99,46 @@ export function initChatHistory(deps: {
     return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   }
 
-  function saveChatHistory() {
-    while (chatHistory.length > MAX_CHATS) chatHistory.shift()
-    // Cap persisted snapshots: a 50-component robot's URDF is ~85KB and
-    // retry storms can record 5+ system + assistant messages in seconds,
-    // blowing the ~5MB localStorage quota mid-session. We keep the most
-    // recent N snapshots per chat (rewind still works for recent turns)
-    // and try once more after evicting the oldest chat on quota failure.
-    const serialized = serializeForStorage(chatHistory)
+  function flushActiveToMap() {
+    if (!activeFileKey) return
+    chatsByFile[activeFileKey] = chatHistory
+    if (currentChatId) {
+      currentByFile[activeFileKey] = currentChatId
+    } else {
+      delete currentByFile[activeFileKey]
+    }
+  }
+
+  function persistAll() {
+    flushActiveToMap()
+    // Cap each bucket at MAX_CHATS_PER_FILE.
+    for (const k of Object.keys(chatsByFile)) {
+      while (chatsByFile[k].length > MAX_CHATS_PER_FILE) chatsByFile[k].shift()
+    }
+    const serialized = serializeForStorage(chatsByFile)
     try {
-      localStorage.setItem('vector_chats', serialized)
+      localStorage.setItem(STORAGE_KEY, serialized)
+      localStorage.setItem(CURRENT_KEY, JSON.stringify(currentByFile))
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
-        // Evict oldest chat and retry once. If we're already down to 1, drop snapshots from it too.
-        if (chatHistory.length > 1) {
-          chatHistory.shift()
+        // Quota recovery: drop the oldest chat from the largest bucket; retry.
+        // Then strip all snapshots if still failing.
+        const buckets = Object.entries(chatsByFile)
+          .map(([k, v]) => [k, v.length] as [string, number])
+          .sort((a, b) => b[1] - a[1])
+        if (buckets.length > 0 && buckets[0][1] > 1) {
+          chatsByFile[buckets[0][0]].shift()
           try {
-            localStorage.setItem('vector_chats', serializeForStorage(chatHistory))
-            console.warn('[chatHistory] localStorage quota hit; evicted oldest chat to recover')
+            localStorage.setItem(STORAGE_KEY, serializeForStorage(chatsByFile))
+            console.warn(`[chatHistory] Quota hit — evicted oldest chat from "${buckets[0][0]}"`)
             return
-          } catch {/* fall through to snapshot strip */}
+          } catch { /* fall through */ }
         }
-        // Last resort: strip ALL snapshots from the persisted form. In-memory snapshots
-        // still work for the current session — only cross-session rewind is lost.
         try {
-          localStorage.setItem('vector_chats', serializeForStorage(chatHistory, 0))
-          console.warn('[chatHistory] localStorage quota hit; persisted form has no URDF snapshots (in-memory rewind still works this session)')
+          localStorage.setItem(STORAGE_KEY, serializeForStorage(chatsByFile, 0))
+          console.warn('[chatHistory] Quota hit — persisted form has no URDF snapshots (rewind still works in-session)')
         } catch {
-          console.error('[chatHistory] localStorage save failed even after stripping snapshots — cross-session history will not persist')
+          console.error('[chatHistory] Save failed even after stripping snapshots')
         }
       } else {
         throw e
@@ -83,15 +146,16 @@ export function initChatHistory(deps: {
     }
   }
 
-  /** Serialize chat history with at most `keepSnapshots` URDF snapshots per chat
-   *  (most recent first). System messages never carry a snapshot in the persisted
-   *  form — they're transient status indicators, never rewound to. */
-  function serializeForStorage(chats: ChatConversation[], keepSnapshots = 10): string {
-    const trimmed = chats.map(chat => ({
-      ...chat,
-      messages: stripOldSnapshots(chat.messages, keepSnapshots),
-    }))
-    return JSON.stringify(trimmed)
+  /** Per-bucket snapshot strip: cap each chat to N most-recent snapshots. */
+  function serializeForStorage(buckets: ChatsByFile, keepSnapshots = 10): string {
+    const out: ChatsByFile = {}
+    for (const [k, list] of Object.entries(buckets)) {
+      out[k] = list.map(chat => ({
+        ...chat,
+        messages: stripOldSnapshots(chat.messages, keepSnapshots),
+      }))
+    }
+    return JSON.stringify(out)
   }
 
   function stripOldSnapshots(messages: ChatMessage[], keep: number): ChatMessage[] {
@@ -100,7 +164,6 @@ export function initChatHistory(deps: {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
       if (m.role === 'system') {
-        // System messages are status; never persist their snapshot.
         const { urdfSnapshot: _drop, ...rest } = m
         void _drop
         result.unshift(rest as ChatMessage)
@@ -122,6 +185,15 @@ export function initChatHistory(deps: {
     return chatHistory.find(c => c.id === currentChatId)
   }
 
+  function renderEmptyMessages() {
+    const vcMsgs = document.getElementById('vc-messages')
+    if (vcMsgs) {
+      vcMsgs.innerHTML = `<div class="ai-msg system">
+        <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
+      </div>`
+    }
+  }
+
   function updateChatDropdown() {
     const select = document.getElementById('vc-chat-select') as HTMLSelectElement | null
     if (select) {
@@ -141,7 +213,12 @@ export function initChatHistory(deps: {
     if (!label || !list) return
 
     const current = chatHistory.find(c => c.id === currentChatId)
-    label.textContent = current?.title || 'New Chat'
+    // Prefix with file name so the user can tell at a glance which scope
+    // they're chatting in. Falls back to chat title alone if no active file.
+    const filePrefix = activeFileKey && activeFileKey !== LEGACY_BUCKET && activeFileKey !== ORPHAN_BUCKET
+      ? `${activeFileKey} · `
+      : ''
+    label.textContent = `${filePrefix}${current?.title || 'New Chat'}`
 
     list.innerHTML = ''
     for (let i = chatHistory.length - 1; i >= 0; i--) {
@@ -178,7 +255,6 @@ export function initChatHistory(deps: {
     const idx = chatHistory.findIndex(c => c.id === chatId)
     if (idx === -1) return
     chatHistory.splice(idx, 1)
-    saveChatHistory()
 
     if (chatId === currentChatId) {
       if (chatHistory.length > 0) {
@@ -186,8 +262,10 @@ export function initChatHistory(deps: {
       } else {
         startNewChat()
       }
+    } else {
+      persistAll()
+      updateChatDropdown()
     }
-    updateChatDropdown()
   }
 
   function startNewChat() {
@@ -202,15 +280,9 @@ export function initChatHistory(deps: {
     chatHistory.push(chat)
     currentChatId = id
     currentChatMessages = chat.messages
-    saveChatHistory()
+    persistAll()
     updateChatDropdown()
-
-    const vcMsgs = document.getElementById('vc-messages')
-    if (vcMsgs) {
-      vcMsgs.innerHTML = `<div class="ai-msg system">
-        <div class="ai-msg-content">Describe changes to your robot in natural language. I'll edit the URDF, show you a diff, and highlight changes inline in the editor.</div>
-      </div>`
-    }
+    renderEmptyMessages()
   }
 
   function loadChat(chatId: string) {
@@ -235,6 +307,7 @@ export function initChatHistory(deps: {
       vcMsgs.appendChild(el)
     }
     vcMsgs.scrollTop = vcMsgs.scrollHeight
+    persistAll()
     updateChatDropdown()
   }
 
@@ -250,7 +323,7 @@ export function initChatHistory(deps: {
         const firstUser = currentChatMessages.find(m => m.role === 'user')
         if (firstUser) chat.title = firstUser.content.slice(0, 50)
       }
-      saveChatHistory()
+      persistAll()
       updateChatDropdown()
     }
   }
@@ -272,7 +345,7 @@ export function initChatHistory(deps: {
       currentChatMessages.length = msgIndex + 1
       chat.messages = currentChatMessages
       chat.updatedAt = Date.now()
-      saveChatHistory()
+      persistAll()
       loadChat(currentChatId)
     }
   }
@@ -327,13 +400,51 @@ export function initChatHistory(deps: {
     document.querySelectorAll('.chat-rewind-popover').forEach(p => p.classList.add('hidden'))
   })
 
-  // Initialize: load most recent chat or create new one
-  if (chatHistory.length > 0) {
-    const latest = chatHistory[chatHistory.length - 1]
-    currentChatId = latest.id
-    currentChatMessages = latest.messages
-  } else {
-    startNewChat()
+  /** Swap the visible chat scope to the given file. Persists current state
+   *  back to its bucket, then hydrates working state from the new bucket. If
+   *  the new bucket is empty, starts a fresh chat for it. */
+  function setActiveFile(fileKey: string) {
+    if (fileKey === activeFileKey) return
+    flushActiveToMap()
+    activeFileKey = fileKey
+    chatHistory = chatsByFile[fileKey] ?? []
+    chatsByFile[fileKey] = chatHistory
+    const savedCurrent = currentByFile[fileKey] || ''
+    if (savedCurrent && chatHistory.find(c => c.id === savedCurrent)) {
+      currentChatId = savedCurrent
+      const chat = chatHistory.find(c => c.id === savedCurrent)!
+      currentChatMessages = chat.messages
+      // Render the visible chat scrollback.
+      loadChat(currentChatId)
+    } else if (chatHistory.length > 0) {
+      const latest = chatHistory[chatHistory.length - 1]
+      currentChatId = latest.id
+      currentChatMessages = latest.messages
+      loadChat(currentChatId)
+    } else {
+      currentChatId = ''
+      currentChatMessages = []
+      startNewChat()
+    }
+  }
+
+  function getActiveFile(): string {
+    return activeFileKey
+  }
+
+  /** Remove all chats associated with a deleted/closed file. No-op if there
+   *  are none. Does not touch the active-file pointer. */
+  function removeFile(fileKey: string) {
+    if (!(fileKey in chatsByFile)) return
+    delete chatsByFile[fileKey]
+    delete currentByFile[fileKey]
+    if (fileKey === activeFileKey) {
+      activeFileKey = ''
+      chatHistory = []
+      currentChatId = ''
+      currentChatMessages = []
+    }
+    persistAll()
   }
 
   function exportForBackend(chatId?: string): Array<{ role: string; content: string }> {
@@ -344,6 +455,9 @@ export function initChatHistory(deps: {
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
   }
+
+  // No file is active at construction time. main.ts calls setActiveFile()
+  // once the first file is opened/created. Until then chatHistory is empty.
 
   return {
     getChatHistory: () => chatHistory,
@@ -358,5 +472,8 @@ export function initChatHistory(deps: {
     rewindChatTo,
     attachRewindButton,
     exportForBackend,
+    setActiveFile,
+    getActiveFile,
+    removeFile,
   }
 }

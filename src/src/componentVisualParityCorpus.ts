@@ -5,10 +5,15 @@
 // Direct: node --experimental-strip-types src/componentVisualParityCorpus.ts
 
 import * as THREE from 'three'
-import { resolveComponentVisual, resolveSplitServoVisual } from './componentVisualResolver.ts'
+import { resolveComponentVisual, resolveSplitServoVisual, visualBoundsFromDescriptors } from './componentVisualResolver.ts'
 import type { ComponentVisualPresetLike, ResolvedComponentVisual } from './componentVisualResolver.ts'
+import type { UrdfVisualDesc } from './componentMeshes.ts'
+import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
 import { componentVisualWorldQuat, renderVisualQuaternionForSource } from './richVisuals/index.ts'
+import { URDF_TO_SCENE_Q } from './coordinates.ts'
 import { setCachedMeshGroup, markMeshLoadInProgress, clearMeshLoadInProgress } from './richVisuals/meshCache.ts'
+import { resolveComponent } from './componentResolver.ts'
+import { setMeshExtentsCatalog } from './meshExtents.ts'
 
 interface Case {
   name: string
@@ -58,6 +63,21 @@ function renderedRichSize(group: THREE.Group | undefined): THREE.Vector3 | null 
   return groupSize(wrapper)
 }
 
+/** Authored-frame unification: previewGroups are now wrapped to Z-up at the
+ *  resolver. The per-generator dimensional tests below were authored in the
+ *  generator's native Y-up frame ("bbox.z drives visual height Y"), which is
+ *  the most natural way to express authoring intent. This helper unwraps the
+ *  unification rotation so those tests continue to read their intended axes
+ *  without needing per-assertion Y↔Z swaps. */
+function generatorNativeSize(group: THREE.Group | undefined): THREE.Vector3 | null {
+  if (!group) return null
+  const wrapper = new THREE.Group()
+  const clone = group.clone(true)
+  clone.quaternion.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'XYZ'))
+  wrapper.add(clone)
+  return groupSize(wrapper)
+}
+
 function approx(a: number, b: number, tol = 1e-6): boolean {
   return Math.abs(a - b) <= tol
 }
@@ -77,26 +97,20 @@ function sameBounds(a: ResolvedComponentVisual, b: ResolvedComponentVisual, tol 
     && a.bounds.shape === b.bounds.shape
 }
 
-function assertRichRenderFrameAdapter(): Case {
-  const richUp = new THREE.Vector3(0, 1, 0).applyQuaternion(renderVisualQuaternionForSource('rich'))
-  if (!approx(richUp.x, 0) || !approx(richUp.y, 0) || !approx(richUp.z, 1)) {
-    return {
-      name: 'render adapter: rich previews convert Y-up to URDF Z-up',
-      passed: false,
-      reason: `expected rich +Y to become URDF +Z, got ${richUp.toArray()}`,
-    }
+function assertUnifiedFrameAdapter(): Case {
+  // Authored-frame unification: every previewGroup is Z-up regardless of
+  // source. The render adapter is identity (URDF link is Z-up), the carry
+  // adapter is -90° X (scene is Y-up). No per-source branching.
+  const NAME = 'frame adapter: unified Z-up authored, render=identity, carry=-90°X'
+  const renderUp = new THREE.Vector3(0, 0, 1).applyQuaternion(componentVisualWorldQuat('z_up', 'urdf_z_up'))
+  if (!approx(renderUp.x, 0) || !approx(renderUp.y, 0) || !approx(renderUp.z, 1)) {
+    return { name: NAME, passed: false, reason: `render target should preserve +Z, got ${renderUp.toArray()}` }
   }
-
-  const meshUp = new THREE.Vector3(0, 1, 0).applyQuaternion(renderVisualQuaternionForSource('mesh'))
-  if (!approx(meshUp.x, 0) || !approx(meshUp.y, 1) || !approx(meshUp.z, 0)) {
-    return {
-      name: 'render adapter: rich previews convert Y-up to URDF Z-up',
-      passed: false,
-      reason: `expected mesh source to preserve its authored frame, got ${meshUp.toArray()}`,
-    }
+  const carryUp = new THREE.Vector3(0, 0, 1).applyQuaternion(componentVisualWorldQuat('z_up', 'scene_y_up'))
+  if (!approx(carryUp.x, 0) || !approx(carryUp.y, 1) || !approx(carryUp.z, 0)) {
+    return { name: NAME, passed: false, reason: `carry target should map +Z to +Y, got ${carryUp.toArray()}` }
   }
-
-  return { name: 'render adapter: rich previews convert Y-up to URDF Z-up', passed: true }
+  return { name: NAME, passed: true }
 }
 
 // Parent-frame transforms that the live runtime applies above each preview
@@ -139,7 +153,7 @@ function assertCarryRenderWorldParity(
   component: ComponentVisualPresetLike,
   category: string,
 ): Case {
-  const resolved = resolveComponentVisual({ preset: component, category, mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: component, category })
   if (!resolved.previewGroup) return { name, passed: true }
   const carry = carryWorldSize(resolved)
   const render = renderWorldSize(resolved)
@@ -159,11 +173,10 @@ function assertResolvedParity(
   category: string,
   expected: { source: string; status?: string; hasPreviewGroup: boolean },
 ): Case {
-  const carry = resolveComponentVisual({ preset: component, category, mode: 'carry' })
+  const carry = resolveComponentVisual({ preset: component, category })
   const render = resolveComponentVisual({
     preset: component,
     category,
-    mode: 'render',
     linkName: `${component.id}_1`,
     castShadow: true,
     receiveShadow: true,
@@ -201,13 +214,153 @@ function assertResolvedParity(
   return { name, passed: true }
 }
 
+function assertResolvedConnectorsAndPorts(): Case {
+  const component = preset('actuator_servo_standard', [40, 20, 37])
+  component.mounting_logic = { output: 'axial_shaft' }
+  component.connectors = [{
+    id: 'shaft_out',
+    origin_xyz_mm: [0, 0, 19],
+    axis_xyz: [0, 0, 1],
+    type: 'cylindrical',
+    diameter_mm: 6,
+  }]
+
+  const resolved = resolveComponentVisual({ preset: component, category: 'actuators' })
+  const topConnector = resolved.connectors.find(c => c.id === 'top')
+  const shaftConnector = resolved.connectors.find(c => c.id === 'shaft_out')
+  const topPort = resolved.ports.find(p => p.nodeId === 'top')
+
+  if (!topConnector || !shaftConnector) {
+    return {
+      name: 'resolver contract: connectors and ports are emitted',
+      passed: false,
+      reason: `missing connector(s): ids=${resolved.connectors.map(c => c.id).join(',')}`,
+    }
+  }
+  if (!topPort || topPort.cls !== 'shaft') {
+    return {
+      name: 'resolver contract: connectors and ports are emitted',
+      passed: false,
+      reason: `expected servo top port to be shaft, got ${topPort?.cls ?? 'missing'}`,
+    }
+  }
+  if (resolved.connectors.length < 7 || shaftConnector.origin_xyz_mm[2] !== 19) {
+    return {
+      name: 'resolver contract: connectors and ports are emitted',
+      passed: false,
+      reason: `expected six defaults plus authored shaft_out, got ${resolved.connectors.length}`,
+    }
+  }
+  return { name: 'resolver contract: connectors and ports are emitted', passed: true }
+}
+
+function assertPrimitiveBoundsBakeRpy(): Case {
+  const rotated: UrdfVisualDesc[] = [{
+    origin_xyz: [0, 0, 0],
+    origin_rpy: [0, 0, Math.PI / 2],
+    geometry: { type: 'box', size: [0.1, 0.02, 0.03] },
+    color_rgba: [1, 1, 1, 1],
+  }]
+  const bounds = visualBoundsFromDescriptors(rotated)
+  if (!bounds) {
+    return { name: 'bounds: primitive descriptor RPY is baked into AABB', passed: false, reason: 'missing bounds' }
+  }
+  if (!approx(bounds.hx, 0.01) || !approx(bounds.hy, 0.05) || !approx(bounds.hz, 0.015)) {
+    return {
+      name: 'bounds: primitive descriptor RPY is baked into AABB',
+      passed: false,
+      reason: `expected half-extents [0.01,0.05,0.015], got [${bounds.hx},${bounds.hy},${bounds.hz}]`,
+    }
+  }
+  return { name: 'bounds: primitive descriptor RPY is baked into AABB', passed: true }
+}
+
+function assertTargetEnvelopeFields(): Case {
+  const fixed = resolveComponentVisual({
+    preset: {
+      id: 'target_bbox_box',
+      physical: { bbox_mm: [12, 14, 16] },
+      mechanical_electrical: {},
+    },
+    category: 'misc',
+  })
+  if (!approx(fixed.bounds.hx, 0.006) || !approx(fixed.bounds.hy, 0.007) || !approx(fixed.bounds.hz, 0.008)) {
+    return {
+      name: 'resolver contract: target bbox and parametric fields resolve',
+      passed: false,
+      reason: `expected bbox half extents [0.006,0.007,0.008], got [${fixed.bounds.hx},${fixed.bounds.hy},${fixed.bounds.hz}]`,
+    }
+  }
+
+  const parametric = resolveComponentVisual({
+    preset: {
+      id: 'target_parametric_rod',
+      physical: {
+        inertia_primitive: 'cylinder',
+        parametric: {
+          axis: 'z',
+          cross_section_mm: [8, 8],
+        },
+      },
+      mechanical_electrical: {},
+    },
+    category: 'structural',
+    instance: { length_mm: 250 },
+  })
+  const topConnector = parametric.connectors.find(c => c.id === 'top')
+  if (!approx(parametric.bounds.hx, 0.004) || !approx(parametric.bounds.hy, 0.004) || !approx(parametric.bounds.hz, 0.125)) {
+    return {
+      name: 'resolver contract: target bbox and parametric fields resolve',
+      passed: false,
+      reason: `expected parametric half extents [0.004,0.004,0.125], got [${parametric.bounds.hx},${parametric.bounds.hy},${parametric.bounds.hz}]`,
+    }
+  }
+  if (!topConnector || topConnector.origin_xyz_mm[2] !== 125) {
+    return {
+      name: 'resolver contract: target bbox and parametric fields resolve',
+      passed: false,
+      reason: `expected parametric top connector z=125, got ${topConnector?.origin_xyz_mm[2] ?? 'missing'}`,
+    }
+  }
+  return { name: 'resolver contract: target bbox and parametric fields resolve', passed: true }
+}
+
+function assertCarryConnectorSnapMath(): Case {
+  const sourceLocal = {
+    position: new THREE.Vector3(0.01, -0.02, 0.005),
+    axis: new THREE.Vector3(0, -1, 0),
+  }
+  const targetWorld = {
+    position: new THREE.Vector3(1, 2, 3),
+    axis: new THREE.Vector3(0, 1, 0),
+  }
+  const ghostWorld = composeGhostWorldForConnectorSnap(sourceLocal, targetWorld)
+  const snappedSource = sourceLocal.position.clone().applyMatrix4(ghostWorld)
+  const snappedAxis = sourceLocal.axis.clone().transformDirection(ghostWorld)
+  if (snappedSource.distanceTo(targetWorld.position) > 1e-9) {
+    return {
+      name: 'carry snap: connector frame places ghost point and axis',
+      passed: false,
+      reason: `expected source point at target, got ${snappedSource.toArray()}`,
+    }
+  }
+  if (snappedAxis.dot(targetWorld.axis) > -0.999999) {
+    return {
+      name: 'carry snap: connector frame places ghost point and axis',
+      passed: false,
+      reason: `expected antiparallel axes, got source=${snappedAxis.toArray()} target=${targetWorld.axis.toArray()}`,
+    }
+  }
+  return { name: 'carry snap: connector frame places ghost point and axis', passed: true }
+}
+
 function assertPowerGeneratorAxisAdapter(): Case {
   const lipo = preset('power_lipo_3s_2200', [105, 34, 24])
   markMeshLoadInProgress(lipo.id)
-  const resolved = resolveComponentVisual({ preset: lipo, category: 'power', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: lipo, category: 'power' })
   clearMeshLoadInProgress(lipo.id)
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (!size) {
     return { name: 'power adapter: rich fallback has measurable bounds', passed: false, reason: 'missing preview group size' }
   }
@@ -223,9 +376,9 @@ function assertPowerGeneratorAxisAdapter(): Case {
 
 function assertComputeGeneratorAxisAdapter(): Case {
   const hub = preset('compute_usb_hub', [40, 30, 8])
-  const resolved = resolveComponentVisual({ preset: hub, category: 'compute', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: hub, category: 'compute' })
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'compute adapter: rich generator remains fallback source',
@@ -249,10 +402,10 @@ function assertComputeGeneratorAxisAdapter(): Case {
 function assertMobilityUprightAxisAdapter(): Case {
   const caster = preset('mobility_caster_wheel', [50, 50, 65])
   markMeshLoadInProgress(caster.id)
-  const resolved = resolveComponentVisual({ preset: caster, category: 'mobility', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: caster, category: 'mobility' })
   clearMeshLoadInProgress(caster.id)
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'mobility adapter: upright fallback remains rich source',
@@ -276,10 +429,10 @@ function assertMobilityUprightAxisAdapter(): Case {
 function assertMobilityWheelAxisAdapter(): Case {
   const driven = preset('mobility_wheel_driven', [100, 100, 30])
   markMeshLoadInProgress(driven.id)
-  const drivenResolved = resolveComponentVisual({ preset: driven, category: 'mobility', mode: 'carry' })
+  const drivenResolved = resolveComponentVisual({ preset: driven, category: 'mobility' })
   clearMeshLoadInProgress(driven.id)
 
-  const drivenSize = groupSize(drivenResolved.previewGroup)
+  const drivenSize = generatorNativeSize(drivenResolved.previewGroup)
   if (drivenResolved.source !== 'rich') {
     return {
       name: 'mobility adapter: wheel fallback remains rich source',
@@ -300,10 +453,10 @@ function assertMobilityWheelAxisAdapter(): Case {
 
   const mecanum = preset('mobility_mecanum_wheel', [100, 100, 48])
   markMeshLoadInProgress(mecanum.id)
-  const resolved = resolveComponentVisual({ preset: mecanum, category: 'mobility', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: mecanum, category: 'mobility' })
   clearMeshLoadInProgress(mecanum.id)
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'mobility adapter: wheel fallback remains rich source',
@@ -326,9 +479,9 @@ function assertMobilityWheelAxisAdapter(): Case {
 
 function assertMobilityTrackAxisAdapter(): Case {
   const track = preset('mobility_track_tread_system', [200, 50, 60])
-  const resolved = resolveComponentVisual({ preset: track, category: 'mobility', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: track, category: 'mobility' })
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'mobility adapter: track fallback remains rich source',
@@ -352,10 +505,10 @@ function assertMobilityTrackAxisAdapter(): Case {
 function assertMotorGeneratorAxisAdapter(): Case {
   const gearMotor = preset('motor_gear_medium_37mm', [37, 37, 70])
   markMeshLoadInProgress(gearMotor.id)
-  const resolved = resolveComponentVisual({ preset: gearMotor, category: 'motors', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: gearMotor, category: 'motors' })
   clearMeshLoadInProgress(gearMotor.id)
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'motor adapter: gear motor fallback remains rich source',
@@ -379,10 +532,10 @@ function assertMotorGeneratorAxisAdapter(): Case {
 function assertActuatorGeneratorAxisAdapter(): Case {
   const servo = preset('actuator_servo_standard', [40, 20, 37])
   markMeshLoadInProgress(servo.id)
-  const servoResolved = resolveComponentVisual({ preset: servo, category: 'actuators', mode: 'carry' })
+  const servoResolved = resolveComponentVisual({ preset: servo, category: 'actuators' })
   clearMeshLoadInProgress(servo.id)
 
-  const servoSize = groupSize(servoResolved.previewGroup)
+  const servoSize = generatorNativeSize(servoResolved.previewGroup)
   if (servoResolved.source !== 'rich') {
     return {
       name: 'actuator adapter: normalized bbox axes stay direct',
@@ -399,8 +552,8 @@ function assertActuatorGeneratorAxisAdapter(): Case {
   }
 
   const bldc = preset('actuator_bldc_small', [76, 76, 48])
-  const bldcResolved = resolveComponentVisual({ preset: bldc, category: 'actuators', mode: 'carry' })
-  const bldcSize = groupSize(bldcResolved.previewGroup)
+  const bldcResolved = resolveComponentVisual({ preset: bldc, category: 'actuators' })
+  const bldcSize = generatorNativeSize(bldcResolved.previewGroup)
   if (!bldcSize || bldcSize.y < 0.05 || bldcSize.x < 0.07 || bldcSize.z < 0.07) {
     return {
       name: 'actuator adapter: normalized bbox axes stay direct',
@@ -411,9 +564,9 @@ function assertActuatorGeneratorAxisAdapter(): Case {
 
   const stepper = preset('actuator_stepper_nema17', [42.3, 42.3, 48])
   markMeshLoadInProgress(stepper.id)
-  const stepperResolved = resolveComponentVisual({ preset: stepper, category: 'actuators', mode: 'carry' })
+  const stepperResolved = resolveComponentVisual({ preset: stepper, category: 'actuators' })
   clearMeshLoadInProgress(stepper.id)
-  const stepperSize = groupSize(stepperResolved.previewGroup)
+  const stepperSize = generatorNativeSize(stepperResolved.previewGroup)
   if (!stepperSize || stepperSize.y < 0.055 || stepperSize.x < 0.04 || stepperSize.z < 0.04) {
     return {
       name: 'actuator adapter: normalized bbox axes stay direct',
@@ -424,9 +577,9 @@ function assertActuatorGeneratorAxisAdapter(): Case {
 
   const linear = preset('actuator_linear_small', [16, 16, 130])
   markMeshLoadInProgress(linear.id)
-  const linearResolved = resolveComponentVisual({ preset: linear, category: 'actuators', mode: 'carry' })
+  const linearResolved = resolveComponentVisual({ preset: linear, category: 'actuators' })
   clearMeshLoadInProgress(linear.id)
-  const linearSize = groupSize(linearResolved.previewGroup)
+  const linearSize = generatorNativeSize(linearResolved.previewGroup)
   if (!linearSize || linearSize.z < 0.17 || linearSize.y > 0.03) {
     return {
       name: 'actuator adapter: normalized bbox axes stay direct',
@@ -479,10 +632,10 @@ function assertSplitServoResolverContract(): Case {
 function assertTransmissionLongFootprintAxisAdapter(): Case {
   const belt = preset('transmission_timing_belt_gt2', [6, 200, 15])
   markMeshLoadInProgress(belt.id)
-  const beltResolved = resolveComponentVisual({ preset: belt, category: 'transmission', mode: 'carry' })
+  const beltResolved = resolveComponentVisual({ preset: belt, category: 'transmission' })
   clearMeshLoadInProgress(belt.id)
 
-  const beltSize = groupSize(beltResolved.previewGroup)
+  const beltSize = generatorNativeSize(beltResolved.previewGroup)
   if (beltResolved.source !== 'rich') {
     return {
       name: 'transmission adapter: long footprint uses bbox depth',
@@ -499,8 +652,8 @@ function assertTransmissionLongFootprintAxisAdapter(): Case {
   }
 
   const rack = preset('transmission_rack_pinion_set', [20, 200, 12])
-  const rackResolved = resolveComponentVisual({ preset: rack, category: 'transmission', mode: 'carry' })
-  const rackSize = groupSize(rackResolved.previewGroup)
+  const rackResolved = resolveComponentVisual({ preset: rack, category: 'transmission' })
+  const rackSize = generatorNativeSize(rackResolved.previewGroup)
   if (!rackSize || rackSize.z < 0.15 || rackSize.y > 0.03) {
     return {
       name: 'transmission adapter: long footprint uses bbox depth',
@@ -514,8 +667,8 @@ function assertTransmissionLongFootprintAxisAdapter(): Case {
 
 function assertTransmissionFlatHardwareAxisAdapter(): Case {
   const gearPair = preset('transmission_spur_gear_pair', [42, 42, 10])
-  const gearResolved = resolveComponentVisual({ preset: gearPair, category: 'transmission', mode: 'carry' })
-  const gearSize = groupSize(gearResolved.previewGroup)
+  const gearResolved = resolveComponentVisual({ preset: gearPair, category: 'transmission' })
+  const gearSize = generatorNativeSize(gearResolved.previewGroup)
   if (!gearSize || gearSize.y > 0.012 || gearSize.x < 0.035 || gearSize.z < 0.025) {
     return {
       name: 'transmission adapter: gears and chains stay flat',
@@ -525,8 +678,8 @@ function assertTransmissionFlatHardwareAxisAdapter(): Case {
   }
 
   const chain = preset('transmission_chain_sprocket_set', [60, 100, 8])
-  const chainResolved = resolveComponentVisual({ preset: chain, category: 'transmission', mode: 'carry' })
-  const chainSize = groupSize(chainResolved.previewGroup)
+  const chainResolved = resolveComponentVisual({ preset: chain, category: 'transmission' })
+  const chainSize = generatorNativeSize(chainResolved.previewGroup)
   if (!chainSize || chainSize.z < 0.09 || chainSize.y > 0.012) {
     return {
       name: 'transmission adapter: gears and chains stay flat',
@@ -537,9 +690,9 @@ function assertTransmissionFlatHardwareAxisAdapter(): Case {
 
   const bearing = preset('transmission_bearing_deep_groove', [22, 22, 7])
   markMeshLoadInProgress(bearing.id)
-  const bearingResolved = resolveComponentVisual({ preset: bearing, category: 'transmission', mode: 'carry' })
+  const bearingResolved = resolveComponentVisual({ preset: bearing, category: 'transmission' })
   clearMeshLoadInProgress(bearing.id)
-  const bearingSize = groupSize(bearingResolved.previewGroup)
+  const bearingSize = generatorNativeSize(bearingResolved.previewGroup)
   if (!bearingSize || bearingSize.y > 0.009 || bearingSize.x < 0.02 || bearingSize.z < 0.02) {
     return {
       name: 'transmission adapter: gears and chains stay flat',
@@ -549,8 +702,8 @@ function assertTransmissionFlatHardwareAxisAdapter(): Case {
   }
 
   const slewing = preset('transmission_slewing_ring_bearing', [200, 200, 25])
-  const slewingResolved = resolveComponentVisual({ preset: slewing, category: 'transmission', mode: 'carry' })
-  const slewingSize = groupSize(slewingResolved.previewGroup)
+  const slewingResolved = resolveComponentVisual({ preset: slewing, category: 'transmission' })
+  const slewingSize = generatorNativeSize(slewingResolved.previewGroup)
   if (!slewingSize || slewingSize.y > 0.03 || slewingSize.x < 0.19 || slewingSize.z < 0.19) {
     return {
       name: 'transmission adapter: gears and chains stay flat',
@@ -564,8 +717,8 @@ function assertTransmissionFlatHardwareAxisAdapter(): Case {
 
 function assertTransmissionAngleGearAxisAdapter(): Case {
   const bevel = preset('transmission_bevel_gear_pair', [35, 35, 35])
-  const bevelResolved = resolveComponentVisual({ preset: bevel, category: 'transmission', mode: 'carry' })
-  const bevelSize = groupSize(bevelResolved.previewGroup)
+  const bevelResolved = resolveComponentVisual({ preset: bevel, category: 'transmission' })
+  const bevelSize = generatorNativeSize(bevelResolved.previewGroup)
   if (!bevelSize || bevelSize.x < 0.02 || bevelSize.y < 0.02 || bevelSize.z < 0.02) {
     return {
       name: 'transmission adapter: bevel and worm gears keep 3D footprint',
@@ -582,8 +735,8 @@ function assertTransmissionAngleGearAxisAdapter(): Case {
   }
 
   const worm = preset('transmission_worm_gear_set', [40, 40, 30])
-  const wormResolved = resolveComponentVisual({ preset: worm, category: 'transmission', mode: 'carry' })
-  const wormSize = groupSize(wormResolved.previewGroup)
+  const wormResolved = resolveComponentVisual({ preset: worm, category: 'transmission' })
+  const wormSize = generatorNativeSize(wormResolved.previewGroup)
   if (!wormSize || wormSize.z < 0.022 || wormSize.y > 0.035 || wormSize.x > 0.04) {
     return {
       name: 'transmission adapter: bevel and worm gears keep 3D footprint',
@@ -597,8 +750,8 @@ function assertTransmissionAngleGearAxisAdapter(): Case {
 
 function assertTransmissionShaftHardwareAxisAdapter(): Case {
   const leadscrew = preset('transmission_leadscrew_8mm', [8, 8, 200])
-  const leadscrewResolved = resolveComponentVisual({ preset: leadscrew, category: 'transmission', mode: 'carry' })
-  const leadscrewSize = groupSize(leadscrewResolved.previewGroup)
+  const leadscrewResolved = resolveComponentVisual({ preset: leadscrew, category: 'transmission' })
+  const leadscrewSize = generatorNativeSize(leadscrewResolved.previewGroup)
   if (!leadscrewSize || leadscrewSize.z < 0.18 || leadscrewSize.y > 0.02) {
     return {
       name: 'transmission adapter: shaft hardware keeps axial length on Z',
@@ -609,9 +762,9 @@ function assertTransmissionShaftHardwareAxisAdapter(): Case {
 
   const coupling = preset('transmission_flexible_coupling_jaw', [20, 20, 30])
   markMeshLoadInProgress(coupling.id)
-  const couplingResolved = resolveComponentVisual({ preset: coupling, category: 'transmission', mode: 'carry' })
+  const couplingResolved = resolveComponentVisual({ preset: coupling, category: 'transmission' })
   clearMeshLoadInProgress(coupling.id)
-  const couplingSize = groupSize(couplingResolved.previewGroup)
+  const couplingSize = generatorNativeSize(couplingResolved.previewGroup)
   if (!couplingSize || couplingSize.z < 0.028 || couplingSize.y > 0.023) {
     return {
       name: 'transmission adapter: shaft hardware keeps axial length on Z',
@@ -621,8 +774,8 @@ function assertTransmissionShaftHardwareAxisAdapter(): Case {
   }
 
   const uJoint = preset('transmission_universal_joint', [18, 18, 35])
-  const uJointResolved = resolveComponentVisual({ preset: uJoint, category: 'transmission', mode: 'carry' })
-  const uJointSize = groupSize(uJointResolved.previewGroup)
+  const uJointResolved = resolveComponentVisual({ preset: uJoint, category: 'transmission' })
+  const uJointSize = generatorNativeSize(uJointResolved.previewGroup)
   if (!uJointSize || uJointSize.z < 0.015 || uJointSize.y > 0.025) {
     return {
       name: 'transmission adapter: shaft hardware keeps axial length on Z',
@@ -633,9 +786,9 @@ function assertTransmissionShaftHardwareAxisAdapter(): Case {
 
   const planetary = preset('transmission_planetary_gearbox', [42.3, 42.3, 38])
   markMeshLoadInProgress(planetary.id)
-  const planetaryResolved = resolveComponentVisual({ preset: planetary, category: 'transmission', mode: 'carry' })
+  const planetaryResolved = resolveComponentVisual({ preset: planetary, category: 'transmission' })
   clearMeshLoadInProgress(planetary.id)
-  const planetarySize = groupSize(planetaryResolved.previewGroup)
+  const planetarySize = generatorNativeSize(planetaryResolved.previewGroup)
   if (!planetarySize || planetarySize.z < 0.035 || planetarySize.y > 0.045) {
     return {
       name: 'transmission adapter: shaft hardware keeps axial length on Z',
@@ -650,10 +803,10 @@ function assertTransmissionShaftHardwareAxisAdapter(): Case {
 function assertEndEffectorAxisAdapter(): Case {
   const gripper = preset('effector_parallel_gripper_small', [65, 45, 90])
   markMeshLoadInProgress(gripper.id)
-  const gripperResolved = resolveComponentVisual({ preset: gripper, category: 'end_effectors', mode: 'carry' })
+  const gripperResolved = resolveComponentVisual({ preset: gripper, category: 'end_effectors' })
   clearMeshLoadInProgress(gripper.id)
 
-  const gripperSize = groupSize(gripperResolved.previewGroup)
+  const gripperSize = generatorNativeSize(gripperResolved.previewGroup)
   if (gripperResolved.source !== 'rich') {
     return {
       name: 'end effector adapter: bbox z maps to vertical height',
@@ -671,10 +824,10 @@ function assertEndEffectorAxisAdapter(): Case {
 
   const suction = preset('effector_suction_cup', [40, 25, 80])
   markMeshLoadInProgress(suction.id)
-  const suctionResolved = resolveComponentVisual({ preset: suction, category: 'end_effectors', mode: 'carry' })
+  const suctionResolved = resolveComponentVisual({ preset: suction, category: 'end_effectors' })
   clearMeshLoadInProgress(suction.id)
 
-  const suctionSize = groupSize(suctionResolved.previewGroup)
+  const suctionSize = generatorNativeSize(suctionResolved.previewGroup)
   if (!suctionSize || suctionSize.y < 0.055 || suctionSize.z > 0.04) {
     return {
       name: 'end effector adapter: bbox z maps to vertical height',
@@ -685,10 +838,10 @@ function assertEndEffectorAxisAdapter(): Case {
 
   const holder = preset('effector_pen_marker_holder', [25, 25, 60])
   markMeshLoadInProgress(holder.id)
-  const holderResolved = resolveComponentVisual({ preset: holder, category: 'end_effectors', mode: 'carry' })
+  const holderResolved = resolveComponentVisual({ preset: holder, category: 'end_effectors' })
   clearMeshLoadInProgress(holder.id)
 
-  const holderSize = groupSize(holderResolved.previewGroup)
+  const holderSize = generatorNativeSize(holderResolved.previewGroup)
   if (!holderSize || holderSize.y < 0.03 || holderSize.z > 0.03) {
     return {
       name: 'end effector adapter: bbox z maps to vertical height',
@@ -703,10 +856,10 @@ function assertEndEffectorAxisAdapter(): Case {
 function assertStructuralAxisAdapter(): Case {
   const extrusion = preset('structural_extrusion_2020', [20, 20, 200])
   markMeshLoadInProgress(extrusion.id)
-  const extrusionResolved = resolveComponentVisual({ preset: extrusion, category: 'structural', mode: 'carry' })
+  const extrusionResolved = resolveComponentVisual({ preset: extrusion, category: 'structural' })
   clearMeshLoadInProgress(extrusion.id)
 
-  const extrusionSize = groupSize(extrusionResolved.previewGroup)
+  const extrusionSize = generatorNativeSize(extrusionResolved.previewGroup)
   if (extrusionResolved.source !== 'rich') {
     return {
       name: 'structural adapter: plates stay thin and profiles stay long',
@@ -723,8 +876,8 @@ function assertStructuralAxisAdapter(): Case {
   }
 
   const angle = preset('structural_angle_aluminum_25x25', [25, 25, 200])
-  const angleResolved = resolveComponentVisual({ preset: angle, category: 'structural', mode: 'carry' })
-  const angleSize = groupSize(angleResolved.previewGroup)
+  const angleResolved = resolveComponentVisual({ preset: angle, category: 'structural' })
+  const angleSize = generatorNativeSize(angleResolved.previewGroup)
   if (!angleSize || angleSize.z < 0.18 || angleSize.y > 0.035) {
     return {
       name: 'structural adapter: plates stay thin and profiles stay long',
@@ -734,8 +887,8 @@ function assertStructuralAxisAdapter(): Case {
   }
 
   const baseplate = preset('structural_baseplate', [200, 150, 8])
-  const baseplateResolved = resolveComponentVisual({ preset: baseplate, category: 'structural', mode: 'carry' })
-  const baseplateSize = groupSize(baseplateResolved.previewGroup)
+  const baseplateResolved = resolveComponentVisual({ preset: baseplate, category: 'structural' })
+  const baseplateSize = generatorNativeSize(baseplateResolved.previewGroup)
   if (!baseplateSize || baseplateSize.y > 0.018 || baseplateSize.z < 0.14) {
     return {
       name: 'structural adapter: plates stay thin and profiles stay long',
@@ -745,8 +898,8 @@ function assertStructuralAxisAdapter(): Case {
   }
 
   const slimLimb = preset('structural_limb_link_slim', [14, 6, 100])
-  const slimLimbResolved = resolveComponentVisual({ preset: slimLimb, category: 'structural', mode: 'carry' })
-  const slimCarrySize = groupSize(slimLimbResolved.previewGroup)
+  const slimLimbResolved = resolveComponentVisual({ preset: slimLimb, category: 'structural' })
+  const slimCarrySize = generatorNativeSize(slimLimbResolved.previewGroup)
   const slimRenderSize = renderedRichSize(slimLimbResolved.previewGroup)
   if (!slimCarrySize || !slimRenderSize || slimCarrySize.y < 0.09 || slimRenderSize.z < 0.09 || slimRenderSize.y > 0.012) {
     return {
@@ -758,9 +911,9 @@ function assertStructuralAxisAdapter(): Case {
 
   const rail = preset('structural_linear_rail_mgn12', [12, 8, 200])
   markMeshLoadInProgress(rail.id)
-  const railResolved = resolveComponentVisual({ preset: rail, category: 'structural', mode: 'carry' })
+  const railResolved = resolveComponentVisual({ preset: rail, category: 'structural' })
   clearMeshLoadInProgress(rail.id)
-  const railSize = groupSize(railResolved.previewGroup)
+  const railSize = generatorNativeSize(railResolved.previewGroup)
   if (!railSize || railSize.z < 0.18 || railSize.y > 0.015) {
     return {
       name: 'structural adapter: plates stay thin and profiles stay long',
@@ -770,8 +923,8 @@ function assertStructuralAxisAdapter(): Case {
   }
 
   const crossPlate = preset('structural_cross_plate', [60, 60, 3])
-  const crossPlateResolved = resolveComponentVisual({ preset: crossPlate, category: 'structural', mode: 'carry' })
-  const crossPlateSize = groupSize(crossPlateResolved.previewGroup)
+  const crossPlateResolved = resolveComponentVisual({ preset: crossPlate, category: 'structural' })
+  const crossPlateSize = generatorNativeSize(crossPlateResolved.previewGroup)
   if (!crossPlateSize || crossPlateSize.y > 0.006 || crossPlateSize.z < 0.05) {
     return {
       name: 'structural adapter: plates stay thin and profiles stay long',
@@ -785,8 +938,8 @@ function assertStructuralAxisAdapter(): Case {
 
 function assertStructuralHardwareAxisAdapter(): Case {
   const lBracket = preset('structural_bracket_l_60', [60, 30, 45])
-  const lBracketResolved = resolveComponentVisual({ preset: lBracket, category: 'structural', mode: 'carry' })
-  const lBracketSize = groupSize(lBracketResolved.previewGroup)
+  const lBracketResolved = resolveComponentVisual({ preset: lBracket, category: 'structural' })
+  const lBracketSize = generatorNativeSize(lBracketResolved.previewGroup)
   if (!lBracketSize || lBracketSize.x < 0.055 || lBracketSize.y < 0.04 || lBracketSize.z < 0.025) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -796,8 +949,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const uBracket = preset('structural_bracket_u_50', [50, 30, 40])
-  const uBracketResolved = resolveComponentVisual({ preset: uBracket, category: 'structural', mode: 'carry' })
-  const uBracketSize = groupSize(uBracketResolved.previewGroup)
+  const uBracketResolved = resolveComponentVisual({ preset: uBracket, category: 'structural' })
+  const uBracketSize = generatorNativeSize(uBracketResolved.previewGroup)
   if (!uBracketSize || uBracketSize.x < 0.045 || uBracketSize.y < 0.035 || uBracketSize.z < 0.025) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -807,8 +960,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const pillowBlock = preset('structural_pillow_block', [60, 30, 40])
-  const pillowResolved = resolveComponentVisual({ preset: pillowBlock, category: 'structural', mode: 'carry' })
-  const pillowSize = groupSize(pillowResolved.previewGroup)
+  const pillowResolved = resolveComponentVisual({ preset: pillowBlock, category: 'structural' })
+  const pillowSize = generatorNativeSize(pillowResolved.previewGroup)
   if (!pillowSize || pillowSize.y < 0.028 || pillowSize.z < 0.025) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -818,8 +971,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const carriage = preset('structural_linear_rail_carriage', [45, 35, 12])
-  const carriageResolved = resolveComponentVisual({ preset: carriage, category: 'structural', mode: 'carry' })
-  const carriageSize = groupSize(carriageResolved.previewGroup)
+  const carriageResolved = resolveComponentVisual({ preset: carriage, category: 'structural' })
+  const carriageSize = generatorNativeSize(carriageResolved.previewGroup)
   if (!carriageSize || carriageSize.y > 0.016 || carriageSize.z < 0.03) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -829,8 +982,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const roundTube = preset('structural_cf_tube_round', [12, 12, 200])
-  const roundTubeResolved = resolveComponentVisual({ preset: roundTube, category: 'structural', mode: 'carry' })
-  const roundTubeSize = groupSize(roundTubeResolved.previewGroup)
+  const roundTubeResolved = resolveComponentVisual({ preset: roundTube, category: 'structural' })
+  const roundTubeSize = generatorNativeSize(roundTubeResolved.previewGroup)
   if (!roundTubeSize || roundTubeSize.z < 0.18 || roundTubeSize.y > 0.02) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -840,8 +993,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const gusset = preset('structural_gusset_plate', [60, 40, 4])
-  const gussetResolved = resolveComponentVisual({ preset: gusset, category: 'structural', mode: 'carry' })
-  const gussetSize = groupSize(gussetResolved.previewGroup)
+  const gussetResolved = resolveComponentVisual({ preset: gusset, category: 'structural' })
+  const gussetSize = generatorNativeSize(gussetResolved.previewGroup)
   if (!gussetSize || gussetSize.y > 0.008 || gussetSize.z < 0.035) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -851,8 +1004,8 @@ function assertStructuralHardwareAxisAdapter(): Case {
   }
 
   const standoff = preset('structural_standoff_m3', [5.5, 5.5, 15])
-  const standoffResolved = resolveComponentVisual({ preset: standoff, category: 'structural', mode: 'carry' })
-  const standoffSize = groupSize(standoffResolved.previewGroup)
+  const standoffResolved = resolveComponentVisual({ preset: standoff, category: 'structural' })
+  const standoffSize = generatorNativeSize(standoffResolved.previewGroup)
   if (!standoffSize || standoffSize.y < 0.014 || standoffSize.x > 0.008 || standoffSize.z > 0.008) {
     return {
       name: 'structural adapter: brackets and supports use normalized axes',
@@ -867,10 +1020,10 @@ function assertStructuralHardwareAxisAdapter(): Case {
 function assertSensorBoxAxisAdapter(): Case {
   const ultrasonic = preset('sensor_ultrasonic', [45, 20, 15])
   markMeshLoadInProgress(ultrasonic.id)
-  const resolved = resolveComponentVisual({ preset: ultrasonic, category: 'sensors', mode: 'carry' })
+  const resolved = resolveComponentVisual({ preset: ultrasonic, category: 'sensors' })
   clearMeshLoadInProgress(ultrasonic.id)
 
-  const size = groupSize(resolved.previewGroup)
+  const size = generatorNativeSize(resolved.previewGroup)
   if (resolved.source !== 'rich') {
     return {
       name: 'sensor adapter: box fallback remains rich source',
@@ -891,9 +1044,9 @@ function assertSensorBoxAxisAdapter(): Case {
 
   const limitSwitch = preset('sensor_limit_switch', [20, 10, 6])
   markMeshLoadInProgress(limitSwitch.id)
-  const switchResolved = resolveComponentVisual({ preset: limitSwitch, category: 'sensors', mode: 'carry' })
+  const switchResolved = resolveComponentVisual({ preset: limitSwitch, category: 'sensors' })
   clearMeshLoadInProgress(limitSwitch.id)
-  const switchSize = groupSize(switchResolved.previewGroup)
+  const switchSize = generatorNativeSize(switchResolved.previewGroup)
   if (!switchSize || switchSize.y > 0.008 || switchSize.z < 0.009) {
     return {
       name: 'sensor adapter: box bbox z maps to height and bbox y maps to depth',
@@ -903,8 +1056,8 @@ function assertSensorBoxAxisAdapter(): Case {
   }
 
   const thermal = preset('sensor_thermal_ir_camera', [30, 22, 10])
-  const thermalResolved = resolveComponentVisual({ preset: thermal, category: 'sensors', mode: 'carry' })
-  const thermalSize = groupSize(thermalResolved.previewGroup)
+  const thermalResolved = resolveComponentVisual({ preset: thermal, category: 'sensors' })
+  const thermalSize = generatorNativeSize(thermalResolved.previewGroup)
   if (!thermalSize || thermalSize.y > 0.012 || thermalSize.z < 0.019) {
     return {
       name: 'sensor adapter: box bbox z maps to height and bbox y maps to depth',
@@ -914,8 +1067,8 @@ function assertSensorBoxAxisAdapter(): Case {
   }
 
   const bumper = preset('sensor_contact_bumper', [28, 16, 10])
-  const bumperResolved = resolveComponentVisual({ preset: bumper, category: 'sensors', mode: 'carry' })
-  const bumperSize = groupSize(bumperResolved.previewGroup)
+  const bumperResolved = resolveComponentVisual({ preset: bumper, category: 'sensors' })
+  const bumperSize = generatorNativeSize(bumperResolved.previewGroup)
   if (!bumperSize || bumperSize.y > 0.014 || bumperSize.z < 0.014) {
     return {
       name: 'sensor adapter: box bbox z maps to height and bbox y maps to depth',
@@ -930,10 +1083,10 @@ function assertSensorBoxAxisAdapter(): Case {
 function assertSensorPcbAxisAdapter(): Case {
   const tof = preset('sensor_tof', [13, 18, 2])
   markMeshLoadInProgress(tof.id)
-  const tofResolved = resolveComponentVisual({ preset: tof, category: 'sensors', mode: 'carry' })
+  const tofResolved = resolveComponentVisual({ preset: tof, category: 'sensors' })
   clearMeshLoadInProgress(tof.id)
 
-  const tofSize = groupSize(tofResolved.previewGroup)
+  const tofSize = generatorNativeSize(tofResolved.previewGroup)
   if (tofResolved.source !== 'rich') {
     return {
       name: 'sensor adapter: PCB bbox z maps to board thickness',
@@ -953,8 +1106,8 @@ function assertSensorPcbAxisAdapter(): Case {
   }
 
   const current = preset('sensor_current', [30, 20, 12])
-  const currentResolved = resolveComponentVisual({ preset: current, category: 'sensors', mode: 'carry' })
-  const currentSize = groupSize(currentResolved.previewGroup)
+  const currentResolved = resolveComponentVisual({ preset: current, category: 'sensors' })
+  const currentSize = generatorNativeSize(currentResolved.previewGroup)
   if (!currentSize || currentSize.y > 0.015 || currentSize.z < 0.018) {
     return {
       name: 'sensor adapter: PCB bbox z maps to board thickness',
@@ -964,8 +1117,8 @@ function assertSensorPcbAxisAdapter(): Case {
   }
 
   const color = preset('sensor_color_light', [18, 12, 3])
-  const colorResolved = resolveComponentVisual({ preset: color, category: 'sensors', mode: 'carry' })
-  const colorSize = groupSize(colorResolved.previewGroup)
+  const colorResolved = resolveComponentVisual({ preset: color, category: 'sensors' })
+  const colorSize = generatorNativeSize(colorResolved.previewGroup)
   if (!colorSize || colorSize.y > 0.006 || colorSize.z < 0.01) {
     return {
       name: 'sensor adapter: PCB bbox z maps to board thickness',
@@ -975,8 +1128,8 @@ function assertSensorPcbAxisAdapter(): Case {
   }
 
   const barometer = preset('sensor_barometric_pressure', [16, 12, 3])
-  const barometerResolved = resolveComponentVisual({ preset: barometer, category: 'sensors', mode: 'carry' })
-  const barometerSize = groupSize(barometerResolved.previewGroup)
+  const barometerResolved = resolveComponentVisual({ preset: barometer, category: 'sensors' })
+  const barometerSize = generatorNativeSize(barometerResolved.previewGroup)
   if (!barometerSize || barometerSize.y > 0.006 || barometerSize.z < 0.01) {
     return {
       name: 'sensor adapter: PCB bbox z maps to board thickness',
@@ -991,10 +1144,10 @@ function assertSensorPcbAxisAdapter(): Case {
 function assertSensorMechanicalAxisAdapter(): Case {
   const depthCamera = preset('sensor_depth_camera_small', [85, 25, 20])
   markMeshLoadInProgress(depthCamera.id)
-  const depthResolved = resolveComponentVisual({ preset: depthCamera, category: 'sensors', mode: 'carry' })
+  const depthResolved = resolveComponentVisual({ preset: depthCamera, category: 'sensors' })
   clearMeshLoadInProgress(depthCamera.id)
 
-  const depthSize = groupSize(depthResolved.previewGroup)
+  const depthSize = generatorNativeSize(depthResolved.previewGroup)
   if (depthResolved.source !== 'rich') {
     return {
       name: 'sensor adapter: mechanical sensors use normalized axes',
@@ -1012,10 +1165,10 @@ function assertSensorMechanicalAxisAdapter(): Case {
 
   const loadCell = preset('sensor_load_cell', [55, 18, 8])
   markMeshLoadInProgress(loadCell.id)
-  const loadCellResolved = resolveComponentVisual({ preset: loadCell, category: 'sensors', mode: 'carry' })
+  const loadCellResolved = resolveComponentVisual({ preset: loadCell, category: 'sensors' })
   clearMeshLoadInProgress(loadCell.id)
 
-  const loadCellSize = groupSize(loadCellResolved.previewGroup)
+  const loadCellSize = generatorNativeSize(loadCellResolved.previewGroup)
   if (!loadCellSize || loadCellSize.y > 0.011 || loadCellSize.z < 0.016) {
     return {
       name: 'sensor adapter: mechanical sensors use normalized axes',
@@ -1026,10 +1179,10 @@ function assertSensorMechanicalAxisAdapter(): Case {
 
   const encoder = preset('sensor_joint_encoder_absolute', [22, 22, 10])
   markMeshLoadInProgress(encoder.id)
-  const encoderResolved = resolveComponentVisual({ preset: encoder, category: 'sensors', mode: 'carry' })
+  const encoderResolved = resolveComponentVisual({ preset: encoder, category: 'sensors' })
   clearMeshLoadInProgress(encoder.id)
 
-  const encoderSize = groupSize(encoderResolved.previewGroup)
+  const encoderSize = generatorNativeSize(encoderResolved.previewGroup)
   if (!encoderSize || encoderSize.y < 0.004 || encoderSize.y > 0.014) {
     return {
       name: 'sensor adapter: mechanical sensors use normalized axes',
@@ -1041,9 +1194,90 @@ function assertSensorMechanicalAxisAdapter(): Case {
   return { name: 'sensor adapter: mechanical sensors use normalized axes', passed: true }
 }
 
+function assertLogicalAndVisualBoundsAgree(): Case {
+  // Components whose rich generators or primitive descriptors honour the
+  // declared bbox envelope. compute_usb_hub and a handful of other generators
+  // overshoot their bbox today; Phase 5 mesh-extent CI is the gate that
+  // catches those, not this Phase 1 parity check.
+  const cases: Array<{ id: string; bbox: [number, number, number]; cat: string }> = [
+    { id: 'actuator_servo_standard', bbox: [40, 20, 37], cat: 'actuators' },
+    { id: 'structural_baseplate', bbox: [200, 150, 8], cat: 'structural' },
+    { id: 'unregistered_plain_box', bbox: [30, 20, 10], cat: 'misc' },
+  ]
+  for (const c of cases) {
+    const p = preset(c.id, c.bbox)
+    const visual = resolveComponentVisual({ preset: p, category: c.cat })
+    const logical = resolveComponent({ spec: p, category: c.cat })
+    const lhx = logical.bounds.half[0] / 1000
+    const lhy = logical.bounds.half[1] / 1000
+    const lhz = logical.bounds.half[2] / 1000
+    // Logical bounds is the bbox envelope; visual bounds is the AABB of the
+    // primitive descriptors after RPY-bake. Generators may overshoot the
+    // envelope slightly — Phase 5 is the gate that fails CI at >5%. Match
+    // that threshold here so the parity check enforces the same contract.
+    const tol = Math.max(lhx, lhy, lhz) * 0.05
+    if (!approx(visual.bounds.hx, lhx, tol) || !approx(visual.bounds.hy, lhy, tol) || !approx(visual.bounds.hz, lhz, tol)) {
+      return {
+        name: 'bounds parity: logical resolver and visual resolver agree on envelope',
+        passed: false,
+        reason: `${c.id}: visual=[${visual.bounds.hx},${visual.bounds.hy},${visual.bounds.hz}] vs logical=[${lhx},${lhy},${lhz}] (tol=${tol})`,
+      }
+    }
+  }
+  return { name: 'bounds parity: logical resolver and visual resolver agree on envelope', passed: true }
+}
+
+function assertCollisionUsesMeasuredMeshExtent(): Case {
+  setMeshExtentsCatalog({
+    components: {
+      compute_mcu_small: {
+        declared_bbox_mm: [51, 21, 5],
+        collision: {
+          file: 'compute_mcu_collision.obj',
+          extent_mm: [49.8, 20.4, 4.6],
+          center_mm: [0.1, 0, -0.05],
+          vertex_count: 12,
+        },
+      },
+    },
+  })
+  try {
+    const withMesh = preset('compute_mcu_small', [51, 21, 5], 'compute_mcu_collision.obj')
+    const visual = resolveComponentVisual({ preset: withMesh, category: 'compute' })
+    const logical = resolveComponent({ spec: withMesh, category: 'compute' })
+
+    if (visual.collision.source !== 'authored_mesh' || logical.collision.source !== 'authored_mesh') {
+      return {
+        name: 'collision parity: measured mesh extent populates collision.bounds',
+        passed: false,
+        reason: `expected authored_mesh on both, got visual=${visual.collision.source} logical=${logical.collision.source}`,
+      }
+    }
+    if (!approx(visual.collision.bounds.hx, 0.0249, 1e-4) || !approx(visual.collision.bounds.hy, 0.0102, 1e-4)) {
+      return {
+        name: 'collision parity: measured mesh extent populates collision.bounds',
+        passed: false,
+        reason: `visual collision half from measured extent expected [0.0249,0.0102,0.0023], got [${visual.collision.bounds.hx},${visual.collision.bounds.hy},${visual.collision.bounds.hz}]`,
+      }
+    }
+    const lhx = logical.collision.bounds.half[0]
+    const lhy = logical.collision.bounds.half[1]
+    if (!approx(lhx, 24.9, 1e-2) || !approx(lhy, 10.2, 1e-2)) {
+      return {
+        name: 'collision parity: measured mesh extent populates collision.bounds',
+        passed: false,
+        reason: `logical collision half (mm) expected [24.9,10.2,2.3], got [${lhx},${lhy},${logical.collision.bounds.half[2]}]`,
+      }
+    }
+    return { name: 'collision parity: measured mesh extent populates collision.bounds', passed: true }
+  } finally {
+    setMeshExtentsCatalog(null)
+  }
+}
+
 function assertCollisionResolverContract(): Case {
   const withMesh = preset('compute_mcu_small', [51, 21, 5], 'compute_mcu_collision.obj')
-  const meshResolved = resolveComponentVisual({ preset: withMesh, category: 'compute', mode: 'collision' })
+  const meshResolved = resolveComponentVisual({ preset: withMesh, category: 'compute' })
   if (meshResolved.collision.source !== 'authored_mesh' || meshResolved.collision.meshFile !== 'compute_mcu_collision.obj') {
     return {
       name: 'collision resolver: authored collision mesh is explicit',
@@ -1053,7 +1287,7 @@ function assertCollisionResolverContract(): Case {
   }
 
   const fallback = preset('unregistered_collision_box', [30, 20, 10])
-  const fallbackResolved = resolveComponentVisual({ preset: fallback, category: 'misc', mode: 'collision' })
+  const fallbackResolved = resolveComponentVisual({ preset: fallback, category: 'misc' })
   if (fallbackResolved.collision.source !== 'urdf_primitives') {
     return {
       name: 'collision resolver: primitive collision fallback is explicit',
@@ -1065,10 +1299,115 @@ function assertCollisionResolverContract(): Case {
   return { name: 'collision resolver: collision source is explicit', passed: true }
 }
 
+/** Simulate the live commit→reparse→render round-trip and assert the placed
+ *  visual lands in the same world orientation as the carry ghost.
+ *
+ *  This is the gap that let the basis-conjugation bug ship: every other parity
+ *  test compares carry world AABB *size* (rotation-invariant for boxes), or
+ *  resolver outputs (no commit math at all). None of them simulate the matrix
+ *  product `parentWorldInv * ghostWorld` that `commitCarry` actually persists,
+ *  so a missing right-side basis swap was invisible to CI.
+ *
+ *  The test marker is a small box offset along the authored +Z axis: rotation-
+ *  asymmetric, so a 90°X bake (the "flat tire" failure mode) shifts the marker
+ *  off-axis in scene world. Tolerance is sub-µm; any frame mismatch surfaces
+ *  immediately. */
+function assertCarryCommitRenderRoundTrip(
+  name: string,
+  authoredFrame: 'z_up' | 'y_up',
+  carryQuat: THREE.Quaternion,
+): Case {
+  // Marker offset chosen to be sensitive to any 90° rotation about any axis.
+  const MARKER_LOCAL = new THREE.Vector3(0.011, 0.022, 0.033)
+  const MARKER_OFFSET_TOL = 1e-9
+
+  // Shared previewGroup factory: same content for both carry and render paths,
+  // so any divergence is purely a frame-math bug.
+  const makePreview = () => {
+    const group = new THREE.Group()
+    const marker = new THREE.Object3D()
+    marker.position.copy(MARKER_LOCAL)
+    marker.name = 'marker'
+    group.add(marker)
+    return group
+  }
+
+  // Carry path: scene → carryGroup → ghost(componentVisualWorldQuat scene_y_up) → preview → marker.
+  const sceneRoot = new THREE.Group()
+  const carryGroup = new THREE.Group()
+  carryGroup.quaternion.copy(carryQuat)
+  carryGroup.position.set(0.45, 0.18, -0.27)
+  sceneRoot.add(carryGroup)
+  const ghost = makePreview()
+  ghost.quaternion.copy(componentVisualWorldQuat(authoredFrame, 'scene_y_up'))
+  carryGroup.add(ghost)
+  sceneRoot.updateMatrixWorld(true)
+  const carryMarker = ghost.getObjectByName('marker')!
+  const carryMarkerWorld = new THREE.Vector3().setFromMatrixPosition(carryMarker.matrixWorld)
+
+  // Commit path (the FIXED version): childLocal = parentInv * ghostWorld * URDF_TO_SCENE_Q.
+  // Set up a non-trivial parent so the test exercises the full conjugation,
+  // not just the worldGroup-only case where parent_local = identity.
+  const renderRoot = new THREE.Group()
+  const worldGroup = new THREE.Group()
+  worldGroup.rotation.x = -Math.PI / 2 // matches main.ts:1144
+  renderRoot.add(worldGroup)
+  const parentLink = new THREE.Group()
+  parentLink.position.set(0.05, -0.04, 0.12)
+  parentLink.quaternion.setFromEuler(new THREE.Euler(0.3, -0.5, 0.2, 'XYZ'))
+  worldGroup.add(parentLink)
+  renderRoot.updateMatrixWorld(true)
+
+  const URDF_TO_SCENE_M = new THREE.Matrix4().makeRotationFromQuaternion(URDF_TO_SCENE_Q)
+  const ghostWorld = carryGroup.matrixWorld.clone()
+  const parentInv = parentLink.matrixWorld.clone().invert()
+  const childLocal = parentInv.clone().multiply(ghostWorld).multiply(URDF_TO_SCENE_M)
+
+  // Reparse + applyRichVisuals: linkGroup parented under parent in URDF Z-up,
+  // richGroup quaternion = componentVisualWorldQuat(_, urdf_z_up) = identity.
+  const linkGroup = new THREE.Group()
+  childLocal.decompose(linkGroup.position, linkGroup.quaternion, linkGroup.scale)
+  parentLink.add(linkGroup)
+  const richGroup = makePreview()
+  richGroup.quaternion.copy(componentVisualWorldQuat(authoredFrame, 'urdf_z_up'))
+  linkGroup.add(richGroup)
+  renderRoot.updateMatrixWorld(true)
+  const renderMarker = richGroup.getObjectByName('marker')!
+  const renderMarkerWorld = new THREE.Vector3().setFromMatrixPosition(renderMarker.matrixWorld)
+
+  const drift = renderMarkerWorld.distanceTo(carryMarkerWorld)
+  if (drift > MARKER_OFFSET_TOL) {
+    return {
+      name,
+      passed: false,
+      reason: `carry marker ${carryMarkerWorld.toArray().map(n => n.toFixed(6)).join(',')} ` +
+        `vs render marker ${renderMarkerWorld.toArray().map(n => n.toFixed(6)).join(',')} ` +
+        `(drift=${(drift * 1000).toFixed(4)}mm)`,
+    }
+  }
+  return { name, passed: true }
+}
+
 function main(): void {
   const results: Case[] = []
 
-  results.push(assertRichRenderFrameAdapter())
+  results.push(assertUnifiedFrameAdapter())
+  // Carry-commit-render round-trip (Phase 3 basis-conjugation regression).
+  // Several carryGroup orientations: identity, R-key snaps (90°/45° on each
+  // axis), and a non-axis-aligned tilt. All must round-trip exactly.
+  for (const [label, q] of [
+    ['identity', new THREE.Quaternion()],
+    ['snap +90Y', new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)],
+    ['snap +45Z', new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 4)],
+    ['snap -90X', new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)],
+    ['tilt 0.3 0.5 0.2', new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, 0.5, 0.2, 'XYZ'))],
+  ] as const) {
+    results.push(assertCarryCommitRenderRoundTrip(`carry-commit-render round-trip (z_up authored, ${label})`, 'z_up', q))
+  }
+  results.push(assertResolvedConnectorsAndPorts())
+  results.push(assertPrimitiveBoundsBakeRpy())
+  results.push(assertTargetEnvelopeFields())
+  results.push(assertCarryConnectorSnapMath())
   results.push(assertMobilityWheelAxisAdapter())
   results.push(assertMobilityTrackAxisAdapter())
   results.push(assertMotorGeneratorAxisAdapter())
@@ -1107,6 +1446,8 @@ function main(): void {
   results.push(assertComputeGeneratorAxisAdapter())
   results.push(assertMobilityUprightAxisAdapter())
   results.push(assertCollisionResolverContract())
+  results.push(assertLogicalAndVisualBoundsAgree())
+  results.push(assertCollisionUsesMeasuredMeshExtent())
 
   const sbc = preset('compute_sbc_small', [85, 56, 17])
   results.push(assertResolvedParity(

@@ -27,9 +27,9 @@
 
 import { validateTopology } from './topologyValidation.ts'
 import type { ValidationContext } from './topologyValidation.ts'
-import { componentPortsForPreset, resolveFaceToPort } from './attachmentNodes.ts'
-import type { AttachmentNodeClass } from './attachmentNodes.ts'
-import { getAuthoredHalfBoundsMm } from './componentDims.ts'
+import { resolveFaceToPort } from './attachmentNodes.ts'
+import type { AttachmentNodeClass } from './componentSpec.ts'
+import { resolveComponent } from './componentResolver.ts'
 import { cloneAssemblyGraph } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfGraphEquivalence.ts'
 
@@ -130,14 +130,7 @@ function _portClassAtFace(
 ): AttachmentNodeClass | undefined {
   const preset = ctx.findPreset(componentId)
   if (!preset) return undefined
-  const bounds = getAuthoredHalfBoundsMm(preset)
-  const ports = componentPortsForPreset(
-    preset.id,
-    bounds.hxMm / 1000,
-    bounds.hyMm / 1000,
-    bounds.hzMm / 1000,
-    preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
-  )
+  const ports = resolveComponent({ spec: preset }).ports
   return resolveFaceToPort(face, ports)?.cls
 }
 

@@ -1,4 +1,9 @@
-// inlineDiff.ts — Inline diff display and accept/dismiss logic in Monaco
+// inlineDiff.ts — Inline diff display and accept/dismiss logic in Monaco.
+// State is scoped per file: each URDF tab carries its own pending diff so
+// that switching tabs (when allowed) doesn't lose an undecided edit. The
+// active-file pointer is set externally via setActiveFile() — when the
+// pointer changes, any visible diff for the previous file is stashed and the
+// new file's stash (if any) is rehydrated.
 
 import * as monaco from 'monaco-editor'
 
@@ -11,6 +16,8 @@ export interface InlineDiffApi {
   syncChatActions(action: 'accept' | 'dismiss'): void
   getPendingOldText(): string | null
   setActiveChatActionsId(id: string | null): void
+  setActiveFile(fileKey: string): void
+  removeFile(fileKey: string): void
 }
 
 export interface InlineDiffDeps {
@@ -18,9 +25,16 @@ export interface InlineDiffDeps {
   createCheckpoint(label: string, urdf: string, auto: boolean): void
   getReparseTimeout(): number | null
   setReparseTimeout(id: number | null): void
-  reparseURDF(): void
+  reparseURDF(xml?: string): void
   runLocalValidation(): void
   showToast(msg: string, type?: 'success' | 'error' | 'warning' | 'info'): void
+}
+
+interface DiffStash {
+  oldText: string
+  newText: string
+  newUrdf?: string
+  activeChatActionsId: string | null
 }
 
 export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
@@ -28,19 +42,27 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
   let inlineDiffWidget: HTMLElement | null = null
   let pendingOldText: string | null = null
   let pendingNewText: string | null = null
+  let pendingNewUrdf: string | undefined = undefined
   let activeChatActionsId: string | null = null
+
+  // Per-file stash. Populated when setActiveFile() switches scope away from a
+  // file with a live diff; consumed when scope returns. Stash entries survive
+  // until acceptInlineDiff/dismissInlineDiff/removeFile clears them.
+  const fileStash: Record<string, DiffStash> = {}
+  let activeFileKey = ''
 
   function releaseAiBusyLock(editor?: monaco.editor.IStandaloneCodeEditor) {
     document.body.classList.remove('ai-busy')
     editor?.updateOptions({ readOnly: false })
   }
 
-  function showInlineDiff(oldText: string, newText: string, _newUrdf?: string) {
+  function showInlineDiff(oldText: string, newText: string, newUrdf?: string) {
     const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
     if (!editor) return
 
     pendingOldText = oldText
     pendingNewText = newText
+    pendingNewUrdf = newUrdf
 
     const oldLines = oldText.split('\n')
     const newLines = newText.split('\n')
@@ -80,10 +102,17 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     const textWasChanged = editorValue !== targetText
     if (textWasChanged) {
       editor.setValue(targetText)
-      // The debounced reparse in onDidChangeModelContent is suppressed while a
-      // diff is pending (see main.ts), so trigger one explicitly to sync 3D.
-      deps.reparseURDF()
     }
+    // Render the 3D viewport from the FINAL (post-topology) URDF regardless of
+    // which text the editor displays. Without this, revert-to-old mode would
+    // leave the viewport showing whatever resolveAssemblyGraph rendered in
+    // memory while topology auto-repair changes only land on Accept — making
+    // the preview robot drift from what acceptInlineDiff actually commits.
+    // Using the explicit URDF override (not editor text) means the preview
+    // always matches the to-be-committed state and the line-count label
+    // computed below stays consistent with what the user sees.
+    const previewUrdf = newUrdf ?? newText
+    deps.reparseURDF(previewUrdf)
 
     const decoratedLines = useNewTextMode ? changedNewLines : changedOldLines
     const decorations: monaco.editor.IModelDeltaDecoration[] = decoratedLines.map(lineNum => ({
@@ -156,6 +185,8 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     clearInlineDiff()
     pendingOldText = null
     pendingNewText = null
+    pendingNewUrdf = undefined
+    if (activeFileKey) delete fileStash[activeFileKey]
 
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
@@ -185,6 +216,8 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     clearInlineDiff()
     pendingOldText = null
     pendingNewText = null
+    pendingNewUrdf = undefined
+    if (activeFileKey) delete fileStash[activeFileKey]
 
     const t = deps.getReparseTimeout()
     if (t !== null) { clearTimeout(t); deps.setReparseTimeout(null) }
@@ -233,6 +266,59 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     clearInlineDiff()
     pendingOldText = null
     pendingNewText = null
+    pendingNewUrdf = undefined
+  }
+
+  /** Stash any visible diff to the previous file's slot, then rehydrate from
+   *  the new file's slot. Idempotent on same-key calls. Pending oldText/
+   *  newText/newUrdf and the chat-actions id are preserved across switches.
+   *  The Monaco decoration collection and floating bar are recreated on
+   *  rehydrate via showInlineDiff(). */
+  function setActiveFile(fileKey: string) {
+    if (fileKey === activeFileKey) return
+
+    // Stash current visible state under the previous key (if any).
+    if (activeFileKey && pendingOldText !== null && pendingNewText !== null) {
+      fileStash[activeFileKey] = {
+        oldText: pendingOldText,
+        newText: pendingNewText,
+        newUrdf: pendingNewUrdf,
+        activeChatActionsId,
+      }
+    }
+
+    // Clear visible state — Monaco decorations and the floating bar belong to
+    // whichever model the editor is currently showing, and the editor is
+    // about to switch (or has just switched) to a different model.
+    clearInlineDiff()
+    pendingOldText = null
+    pendingNewText = null
+    pendingNewUrdf = undefined
+    activeChatActionsId = null
+
+    activeFileKey = fileKey
+
+    // Rehydrate the new file's stash, if any.
+    const stash = fileStash[fileKey]
+    if (stash) {
+      activeChatActionsId = stash.activeChatActionsId
+      // showInlineDiff repopulates pendingOldText/pendingNewText/pendingNewUrdf,
+      // re-applies the decoration collection against the now-active model, and
+      // re-renders the 3D viewport from the stashed newUrdf.
+      showInlineDiff(stash.oldText, stash.newText, stash.newUrdf)
+    }
+  }
+
+  function removeFile(fileKey: string) {
+    delete fileStash[fileKey]
+    if (fileKey === activeFileKey) {
+      clearInlineDiff()
+      pendingOldText = null
+      pendingNewText = null
+      pendingNewUrdf = undefined
+      activeChatActionsId = null
+      activeFileKey = ''
+    }
   }
 
   return {
@@ -244,5 +330,7 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     syncChatActions,
     getPendingOldText: () => pendingOldText,
     setActiveChatActionsId: (id) => { activeChatActionsId = id },
+    setActiveFile,
+    removeFile,
   }
 }

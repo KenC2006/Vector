@@ -3090,13 +3090,20 @@
           "description": "Pultruded or wrapped CF tube for lightweight booms and struts. 12mm OD, 10mm ID.",
           "physical": {
             "mass_kg_per_100mm": 0.008,
-            "outer_diameter_mm": 12,
-            "inner_diameter_mm": 10,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                12,
+                12
+              ]
+            },
             "inertia_primitive": "cylinder",
             "material": "carbon_fiber_pultruded",
             "density_kg_per_m3": 1600
           },
           "mechanical_electrical": {
+            "outer_diameter_mm": 12,
+            "inner_diameter_mm": 10,
             "tensile_strength_mpa": 1500,
             "elastic_modulus_gpa": 135,
             "moment_of_inertia_cm4": 0.052
@@ -3124,12 +3131,12 @@
               15,
               15
             ],
-            "wall_thickness_mm": 1.5,
             "inertia_primitive": "box",
             "material": "carbon_fiber_pultruded",
             "density_kg_per_m3": 1600
           },
           "mechanical_electrical": {
+            "wall_thickness_mm": 1.5,
             "tensile_strength_mpa": 1200,
             "elastic_modulus_gpa": 120
           },
@@ -3923,7 +3930,13 @@
           "description": "Solid aluminum round bar, 10mm diameter. For shafts, axles, and custom pins.",
           "physical": {
             "mass_kg_per_100mm": 0.021,
-            "diameter_mm": 10,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                10,
+                10
+              ]
+            },
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6",
             "density_kg_per_m3": 2700
@@ -3953,7 +3966,13 @@
           "description": "Solid steel round bar, 12mm diameter. For load-bearing shafts and heavy axles.",
           "physical": {
             "mass_kg_per_100mm": 0.089,
-            "diameter_mm": 12,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                12,
+                12
+              ]
+            },
             "inertia_primitive": "cylinder",
             "material": "steel_1045",
             "density_kg_per_m3": 7850
@@ -3983,12 +4002,19 @@
           "description": "M8 fully threaded rod, zinc-plated steel. For structural ties, tensioners, and adjustable joints.",
           "physical": {
             "mass_kg_per_100mm": 0.031,
-            "diameter_mm": 8,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                8,
+                8
+              ]
+            },
             "inertia_primitive": "cylinder",
             "material": "steel_grade_4.8",
             "density_kg_per_m3": 7850
           },
           "mechanical_electrical": {
+            "diameter_mm": 8,
             "thread_pitch_mm": 1.25,
             "tensile_strength_mpa": 420,
             "proof_load_kn": 16.6
@@ -4013,12 +4039,19 @@
           "description": "M12 fully threaded rod, zinc-plated steel. For heavy structural connections.",
           "physical": {
             "mass_kg_per_100mm": 0.069,
-            "diameter_mm": 12,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                12,
+                12
+              ]
+            },
             "inertia_primitive": "cylinder",
             "material": "steel_grade_4.8",
             "density_kg_per_m3": 7850
           },
           "mechanical_electrical": {
+            "diameter_mm": 12,
             "thread_pitch_mm": 1.75,
             "tensile_strength_mpa": 420,
             "proof_load_kn": 38.4
@@ -4043,7 +4076,11 @@
           "description": "Aluminum sheet panel, 1mm thick. Mass per 100x100mm panel. For enclosures, mounting plates, and covers.",
           "physical": {
             "mass_kg_per_100x100mm": 0.027,
-            "thickness_mm": 1,
+            "bbox_mm": [
+              100,
+              100,
+              1
+            ],
             "inertia_primitive": "box",
             "material": "aluminum_5052_h32",
             "density_kg_per_m3": 2680
@@ -4074,7 +4111,11 @@
           "description": "Mild steel sheet panel, 1.5mm thick. Mass per 100x100mm panel. For heavy enclosures and armor.",
           "physical": {
             "mass_kg_per_100x100mm": 0.118,
-            "thickness_mm": 1.5,
+            "bbox_mm": [
+              100,
+              100,
+              1.5
+            ],
             "inertia_primitive": "box",
             "material": "steel_cold_rolled_1008",
             "density_kg_per_m3": 7850
@@ -4588,11 +4629,18 @@
           "description": "Tr8x2 trapezoidal leadscrew with brass nut for linear motion. 2mm lead per revolution.",
           "physical": {
             "mass_kg_per_100mm": 0.032,
-            "diameter_mm": 8,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                8,
+                8
+              ]
+            },
             "inertia_primitive": "cylinder",
             "collision_mesh": "transmission_leadscrew_collision.obj"
           },
           "mechanical_electrical": {
+            "diameter_mm": 8,
             "lead_mm": 2,
             "pitch_mm": 2,
             "starts": 1,
@@ -4619,10 +4667,17 @@
           "description": "Precision ball screw for high-efficiency linear motion. 5mm lead.",
           "physical": {
             "mass_kg_per_100mm": 0.068,
-            "diameter_mm": 12,
+            "parametric": {
+              "axis": "z",
+              "cross_section_mm": [
+                12,
+                12
+              ]
+            },
             "inertia_primitive": "cylinder"
           },
           "mechanical_electrical": {
+            "diameter_mm": 12,
             "lead_mm": 5,
             "max_axial_load_n": 3000,
             "efficiency_percent": 90,

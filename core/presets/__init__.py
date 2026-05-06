@@ -103,34 +103,100 @@ def compute_sphere_inertia(mass_kg: float, radius_m: float) -> Dict:
     return {"ixx": i, "ixy": 0, "ixz": 0, "iyy": i, "iyz": 0, "izz": i}
 
 
+def _number_tuple(value, length: int) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == length
+        and all(isinstance(item, (int, float)) and math.isfinite(item) for item in value)
+    )
+
+
+def _resolved_bbox_mm(phys: Dict, instance: Optional[Dict] = None) -> List[float]:
+    if _number_tuple(phys.get("bbox_mm"), 3):
+        return list(phys["bbox_mm"])
+    if _number_tuple(phys.get("bounding_box_mm"), 3):
+        return list(phys["bounding_box_mm"])
+
+    instance_length = None
+    if isinstance(instance, dict):
+        raw = instance.get("length_mm")
+        if isinstance(raw, (int, float)) and math.isfinite(raw) and raw > 0:
+            instance_length = float(raw)
+
+    parametric = phys.get("parametric")
+    if isinstance(parametric, dict) and parametric.get("axis") in ("x", "y", "z") and _number_tuple(parametric.get("cross_section_mm"), 2):
+        cross = parametric["cross_section_mm"]
+        length = instance_length if instance_length is not None else phys.get("length_mm", 100)
+        if parametric["axis"] == "x":
+            return [length, cross[0], cross[1]]
+        if parametric["axis"] == "y":
+            return [cross[0], length, cross[1]]
+        return [cross[0], cross[1], length]
+
+    cross_section = phys.get("cross_section_mm")
+    if _number_tuple(cross_section, 3):
+        return list(cross_section)
+    if _number_tuple(cross_section, 2):
+        length = instance_length if instance_length is not None else 40
+        return [cross_section[0], cross_section[1], length]
+    return [40, 40, 40]
+
+
+def resolve_component_bounds_mm(preset: Dict, instance: Optional[Dict] = None) -> List[float]:
+    """Single source of truth for component outer-envelope dimensions on the
+    Python side (Phase 3 of COMPONENT_UNIFICATION_PLAN.md). Mirrors the TS
+    `resolveComponentHalfBoundsMm` contract: bbox_mm wins, parametric splice
+    consumes instance.length_mm, legacy cross_section_mm falls through.
+
+    Returns full extents in mm: [x, y, z]. Use resolve_component_bounds_m
+    for meters."""
+    if not isinstance(preset, dict):
+        return [10, 10, 10]
+    return _resolved_bbox_mm(preset.get("physical", {}) or {}, instance)
+
+
+def resolve_component_bounds_m(preset: Dict, instance: Optional[Dict] = None) -> List[float]:
+    """Meters convenience wrapper around resolve_component_bounds_mm."""
+    return [v / 1000.0 for v in resolve_component_bounds_mm(preset, instance)]
+
+
+def is_parametric_spec(preset: Dict) -> bool:
+    """True when the preset defines a per-instance length axis. Mirrors the TS
+    `isParametricSpec` predicate (Phase 3 of COMPONENT_UNIFICATION_PLAN.md)."""
+    if not isinstance(preset, dict):
+        return False
+    phys = preset.get("physical", {}) or {}
+    parametric = phys.get("parametric")
+    if (
+        isinstance(parametric, dict)
+        and parametric.get("axis") in ("x", "y", "z")
+        and _number_tuple(parametric.get("cross_section_mm"), 2)
+    ):
+        return True
+    if _number_tuple(phys.get("cross_section_mm"), 2):
+        return True
+    return False
+
+
 def inertia_for_component(component: Dict) -> Dict:
     """Auto-calculate inertia tensor for a component from its physical spec."""
     phys = component["physical"]
     mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm", 0)
     shape = phys.get("inertia_primitive", "box")
+    bb = _resolved_bbox_mm(phys)
 
     if shape == "box":
-        bb = phys.get("bounding_box_mm") or phys.get("cross_section_mm", [10, 10]) + [10]
         dims_m = [d / 1000.0 for d in bb]
         return compute_box_inertia(mass, *dims_m[:3])
     elif shape == "cylinder":
-        if "outer_diameter_mm" in phys:
-            r = phys["outer_diameter_mm"] / 2000.0
-        elif "bounding_box_mm" in phys:
-            r = phys["bounding_box_mm"][0] / 2000.0
-        else:
-            r = 0.01
-        h = (phys.get("bounding_box_mm", [0, 0, 10])[2]) / 1000.0
+        r = bb[0] / 2000.0
+        h = bb[2] / 1000.0
         return compute_cylinder_inertia(mass, r, h)
     elif shape == "sphere":
-        if "bounding_box_mm" in phys:
-            r = phys["bounding_box_mm"][0] / 2000.0
-        else:
-            r = 0.01
+        r = bb[0] / 2000.0
         return compute_sphere_inertia(mass, r)
     else:
         # Fallback: treat as box
-        bb = phys.get("bounding_box_mm", [10, 10, 10])
         dims_m = [d / 1000.0 for d in bb]
         return compute_box_inertia(mass, *dims_m[:3])
 

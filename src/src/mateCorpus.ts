@@ -18,7 +18,6 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  generateDefaultConnectors,
   resolveMate,
   mergeConnectors,
   findConnector,
@@ -31,7 +30,20 @@ import {
   type MateParams,
   type ConnectorBoundingBoxMm,
 } from './mateConnectors.ts'
-import { getAuthoredHalfBoundsMm } from './componentDims.ts'
+import { resolveComponent } from './componentResolver.ts'
+
+// Test-fixture helper: produce default connectors for a hand-typed bbox by
+// going through the unified resolver, instead of calling _resolverInternal_generateDefaultConnectors
+// directly. Locks in the contract that resolver-derived defaults match the
+// canonical bbox math the corpus asserts against.
+function defaultConnectorsForBbox(bbox: ConnectorBoundingBoxMm): MateConnector[] {
+  return resolveComponent({
+    spec: {
+      id: 'fixture',
+      physical: { bbox_mm: [bbox.hxMm * 2, bbox.hyMm * 2, bbox.hzMm * 2] },
+    },
+  }).connectors
+}
 
 // ── Preset loader (for integration fixtures) ───────────────────────────────
 // Parses the shipping catalog so integration fixtures exercise the
@@ -47,6 +59,8 @@ interface CorpusPresetPhysical {
 interface CorpusPreset {
   id: string
   physical: CorpusPresetPhysical
+  mechanical_electrical: Record<string, unknown>
+  mounting_logic?: Record<string, unknown>
   connectors?: MateConnector[]
 }
 interface CorpusPresetFile {
@@ -65,13 +79,13 @@ function loadPresets(): Map<string, CorpusPreset> {
   return byId
 }
 
-function presetBboxMm(p: CorpusPreset): ConnectorBoundingBoxMm {
-  return getAuthoredHalfBoundsMm(p)
+function resolvedConnectors(p: CorpusPreset): MateConnector[] {
+  return resolveComponent({ spec: p }).connectors
 }
 
 /** Mimic the urdfAssembly.computeMatePlacement merge-then-find path:
- *  generateDefaultConnectors(bbox) + mergeConnectors(defaults, preset.connectors)
- *  + findConnector(merged, id). Any drift between this path and the runtime
+ *  resolveComponent(preset).connectors + findConnector(merged, id).
+ *  Any drift between this path and the runtime
  *  path = drift between corpus and production; keep them in sync. */
 function resolveFromPresets(
   parentPreset: CorpusPreset,
@@ -81,8 +95,8 @@ function resolveFromPresets(
   mateType: MateType,
   params: MateParams = {},
 ): THREE.Matrix4 {
-  const pConnectors = mergeConnectors(generateDefaultConnectors(presetBboxMm(parentPreset)), parentPreset.connectors)
-  const cConnectors = mergeConnectors(generateDefaultConnectors(presetBboxMm(childPreset)),  childPreset.connectors)
+  const pConnectors = resolvedConnectors(parentPreset)
+  const cConnectors = resolvedConnectors(childPreset)
   const pConn = findConnector(pConnectors, parentConnId)
   const cConn = findConnector(cConnectors, childConnId)
   if (!pConn) throw new Error(`preset "${parentPreset.id}" missing connector "${parentConnId}"`)
@@ -175,8 +189,8 @@ interface Fixture {
 
 const parentBbox: ConnectorBoundingBoxMm = { hxMm: 100, hyMm: 75, hzMm: 20 }
 const childBbox:  ConnectorBoundingBoxMm = { hxMm: 15,  hyMm: 15, hzMm: 15 }
-const pDefs = generateDefaultConnectors(parentBbox)
-const cDefs = generateDefaultConnectors(childBbox)
+const pDefs = defaultConnectorsForBbox(parentBbox)
+const cDefs = defaultConnectorsForBbox(childBbox)
 
 function pickConn(list: MateConnector[], id: string): MateConnector {
   const c = findConnector(list, id)
@@ -569,8 +583,8 @@ const fixtures: Fixture[] = [
       const coupler = presets.get('structural_servo_coupler_disc')!
       return {
         parentWorld: new THREE.Matrix4(),
-        parentConn: findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(servo)),   servo.connectors),   'shaft_out')!,
-        childConn:  findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(coupler)), coupler.connectors), 'shaft_hole')!,
+        parentConn: findConnector(resolvedConnectors(servo), 'shaft_out')!,
+        childConn:  findConnector(resolvedConnectors(coupler), 'shaft_hole')!,
         mateType:   'concentric',
       }
     },
@@ -589,7 +603,7 @@ const fixtures: Fixture[] = [
     setup: () => {
       const presets = loadPresets()
       const bracket = presets.get('structural_bracket_l')!
-      const merged = mergeConnectors(generateDefaultConnectors(presetBboxMm(bracket)), bracket.connectors)
+      const merged = resolvedConnectors(bracket)
       // Verify data shape up-front — a missing/renamed connector fails loudly.
       if (!findConnector(merged, 'plate_top'))  throw new Error('L-bracket JSON missing plate_top')
       if (!findConnector(merged, 'wall_inner')) throw new Error('L-bracket JSON missing wall_inner')
@@ -625,8 +639,8 @@ const fixtures: Fixture[] = [
       resolveFromPresets(bracket, camera, 'plate_top', 'mount_back', 'fastened')
       return {
         parentWorld: new THREE.Matrix4(),
-        parentConn: findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(bracket)), bracket.connectors), 'plate_top')!,
-        childConn:  findConnector(mergeConnectors(generateDefaultConnectors(presetBboxMm(camera)),  camera.connectors),  'mount_back')!,
+        parentConn: findConnector(resolvedConnectors(bracket), 'plate_top')!,
+        childConn:  findConnector(resolvedConnectors(camera),  'mount_back')!,
         mateType:   'fastened',
       }
     },

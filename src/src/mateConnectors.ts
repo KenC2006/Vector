@@ -81,8 +81,12 @@ export interface MateConstraint {
  *  legacy `attach_face` names in urdfAssembly.ts exactly, so on the backward-
  *  compat path `attach_face: "top"` is equivalent to
  *  `attach_connector: "top"` + `mate_connector: "bottom"` + `mate_type: "fastened"`.
- *  Axes point OUTWARD from the face (away from the link body). */
-export function generateDefaultConnectors(bbox: ConnectorBoundingBoxMm): MateConnector[] {
+ *  Axes point OUTWARD from the face (away from the link body).
+ *
+ *  @internal — only `componentResolver.resolveComponent` should call this.
+ *  External code must read merged connectors from
+ *  `ResolvedComponentRecord.connectors` so authored overlays are merged in. */
+export function _resolverInternal_generateDefaultConnectors(bbox: ConnectorBoundingBoxMm): MateConnector[] {
   const { hxMm: hx, hyMm: hy, hzMm: hz } = bbox
   return [
     { id: 'top',    origin_xyz_mm: [0,  0,  hz], axis_xyz: [0,  0,  1], type: 'planar' },

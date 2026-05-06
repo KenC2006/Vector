@@ -94,6 +94,12 @@ function computeLowestRenderedMeshY(robotGroup: THREE.Group): number | null {
  * cars visually sank into the editor floor between the moment the URDF was
  * committed and the moment the user explicitly re-grounded.
  */
+// Set whenever liftAboveFloor actually lifts. Cleared by reconcilePostMeshLoadFloor
+// after async meshes settle. Used as a guard so we only re-ground when the lift
+// was driven by a parser-time measurement (which may be stale if a GLB hadn't
+// loaded yet) — never when the assembly is floating because the user dragged it.
+let _liftAppliedSinceLastReground = false
+
 function liftAboveFloor(robotGroup: THREE.Group) {
   const minY = computeLowestRenderedMeshY(robotGroup)
   if (minY === null) return
@@ -102,6 +108,28 @@ function liftAboveFloor(robotGroup: THREE.Group) {
   robotGroup.position.y -= worldFloorY
   robotGroup.updateMatrixWorld(true)
   urdfAssemblyApi?.refreshMountNodeTransforms()
+  _liftAppliedSinceLastReground = true
+}
+
+/** Called once after async mesh loads settle. If liftAboveFloor over-lifted using
+ *  a parametric fallback (because the real GLB wasn't cached yet), the assembly
+ *  ends up floating above floor with no chance to re-settle — liftAboveFloor only
+ *  raises. Here we re-measure with the now-loaded geometry and lower the assembly
+ *  back down to the floor when needed. Guarded by _liftAppliedSinceLastReground
+ *  so user-positioned floating designs aren't disturbed. */
+function reconcilePostMeshLoadFloor(robotGroup: THREE.Group) {
+  if (!_liftAppliedSinceLastReground) return
+  const minY = computeLowestRenderedMeshY(robotGroup)
+  if (minY === null) return
+  const worldFloorY = robotGroup.position.y + minY
+  // Only correct meaningful drift (> 1mm). Floor lift only — never raises here
+  // (liftAboveFloor handles raising on its own).
+  if (worldFloorY > 0.001) {
+    robotGroup.position.y -= worldFloorY
+    robotGroup.updateMatrixWorld(true)
+    urdfAssemblyApi?.refreshMountNodeTransforms()
+  }
+  _liftAppliedSinceLastReground = false
 }
 
 /**
@@ -603,6 +631,15 @@ function switchToFile(filename: string) {
   if (filename === activeFile) return
   if (!monacoModels[filename]) return
 
+  // Block tab switching while the AI is mid-generation. Each file owns its
+  // own chat session, pending diff, and assembly state — a switch mid-flight
+  // would either silently abandon the in-progress edit or land its result on
+  // the wrong file. Cleaner to make the user wait for Accept/Dismiss.
+  if (document.body.classList.contains('ai-busy')) {
+    showToast('Wait for the AI to finish (or Cancel) before switching files', 'warning')
+    return
+  }
+
   // Save current 3D state so we can restore it when switching back
   if (activeFile && isUrdfLike(activeFile)) {
     tabRobotCache[activeFile] = {
@@ -627,11 +664,10 @@ function switchToFile(filename: string) {
   activeFile = filename
   fileTypeLabel.textContent = getFileType(filename)
 
-  // Clear any pending inline diff and debounced reparse from the previous file —
-  // they shouldn't block rendering of the new file
-  if (inlineDiffApi.getPendingOldText() !== null) {
-    inlineDiffApi.clearPendingDiff()
-  }
+  // Pending inline diffs are now stashed per-file by setActiveFile() at the
+  // end of this function — don't clear them here. Just drop the debounced
+  // reparse from the previous file so the new file's first render isn't
+  // racing it.
   if (reparseTimeout !== null) {
     clearTimeout(reparseTimeout)
     reparseTimeout = null
@@ -707,6 +743,13 @@ function switchToFile(filename: string) {
       setTimeout(focusOnRobot, 100) // slight delay for meshes to load
     }
   }
+
+  // Swap the chat panel scope to this file. chatApi flushes the previous
+  // file's chat list back to its bucket and hydrates from this file's bucket,
+  // creating a fresh chat if none exists. Inline-diff state is similarly
+  // stashed per-file so a pending Accept/Dismiss survives a tab round-trip.
+  chatApi?.setActiveFile(filename)
+  inlineDiffApi?.setActiveFile(filename)
 }
 
 // ── Recent files ────────────────────────────────────────────────────────────
@@ -1089,9 +1132,14 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       _rebuildNodesTimer = null
       if (parsedRobot !== robotEpoch) return  // stale: robot was replaced
       if (simApi.isSimActive()) return          // don't disturb sim joint state
-      // Re-fire alignment after async meshes settle. Do not auto-ground here:
+      // Re-fire alignment after async meshes settle. Avoid full groundRobot here:
       // grounding on every mesh load makes existing components jump when the
       // newly loaded mesh becomes the assembly's lowest point.
+      // reconcilePostMeshLoadFloor is the targeted version: it only lowers when
+      // the most recent liftAboveFloor over-lifted using a stale parametric
+      // measurement (first-of-type carry, GLB not yet cached).
+      try { reconcilePostMeshLoadFloor(robot) }
+      catch (e) { console.warn('[reconcile] post-mesh-load floor pass failed:', e) }
       try { urdfAssemblyApi?.reconcileNodePlacement() }
       catch (e) { console.warn('[reconcile] post-mesh-load pass failed:', e) }
       urdfAssemblyApi?.rebuildMountNodes()

@@ -355,13 +355,12 @@ def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
     sim_metadata = preset.get("sim_metadata", {})
     if sim_metadata.get("mjcf_geom_type") != "cylinder":
         return None
-    bbox = preset.get("physical", {}).get("bounding_box_mm")
-    if not isinstance(bbox, list) or len(bbox) < 3:
-        return None
+    # Phase 3 (COMPONENT_UNIFICATION_PLAN.md): route through resolver instead
+    # of reading raw preset bbox — keeps wheel cylinder dims consistent with
+    # the same envelope the placement compiler sees.
+    from core.presets import resolve_component_bounds_m
     try:
-        x_m = float(bbox[0]) / 1000.0
-        y_m = float(bbox[1]) / 1000.0
-        z_m = float(bbox[2]) / 1000.0
+        x_m, y_m, z_m = resolve_component_bounds_m(preset)
     except (TypeError, ValueError):
         return None
     radius = max(x_m, y_m) / 2.0

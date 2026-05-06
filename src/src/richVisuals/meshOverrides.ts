@@ -217,6 +217,10 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // preset [100,100,48] vs GLB [100,50,110]
   'mobility_mecanum_wheel': [Math.PI / 2, 0, 0],
 
+  // Lidar housing height on Y in STEP, preset puts it on Z. Rotate X by 90°: Y→Z.
+  // preset [70,70,41] vs GLB [75.64, 41.3, 75.7] → rotated [75.64, 75.7, 41.3].
+  'sensor_lidar_2d': [Math.PI / 2, 0, 0],
+
   // Driven wheel GLB has hub face at +Z but wheels are placed along drivetrain
   // local +Z (outboard), so the hub ends up facing outboard instead of inboard.
   // Rx(π) flips the hub from +Z to −Z so it faces the motor correctly.
@@ -239,6 +243,25 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // Authored GLB axes already match the preset envelope exactly.
   // preset [66,58,40] vs GLB [66,58,40]
   'structural_hip_housing_2dof': [0, 0, 0],
+
+  // Servo GLBs are authored with body length on Y; preset frame puts length on X
+  // (with shaft along +Z for axis-z servos). Without these, per-axis scaling
+  // squishes/stretches the mesh and the rendered body's mount face lands far
+  // from the URDF link origin → split servos appear detached from their parent.
+  // Rotations sourced from `scripts/propose-mesh-rotations.mjs`.
+  // preset [40,20,37] vs GLB [28.5,46.5,41] — Rz(π/2) maps GLB Y→preset X.
+  'actuator_servo_standard': [0, 0, Math.PI / 2],
+  'actuator_continuous_rotation_servo': [0, 0, Math.PI / 2],
+  // preset [54,42,54] vs GLB [33.5,58.5,54.3] — Rz(π/2): GLB Y→X, X→-Y.
+  'actuator_servo_heavy_duty': [0, 0, Math.PI / 2],
+  // preset [46.5,36,34] vs GLB [33.5,58.5,54.3] — cycle XYZ→YZX so shaft (Y)
+  // becomes preset Z and body length (Y) becomes preset X.
+  'actuator_servo_high_torque': [Math.PI / 2, 0, Math.PI / 2],
+  // preset [32,16,30] vs GLB [29,46.5,38.3] — Rz(π/2) maps GLB Y→preset X.
+  'actuator_high_speed_mini_servo': [0, 0, Math.PI / 2],
+  // preset [23,12.2,29] vs GLB [29,46.5,38.3] — cycle XYZ→ZXY so shaft lands
+  // along +Z and body length on X.
+  'actuator_servo_micro': [0, Math.PI / 2, Math.PI / 2],
 }
 
 /**
@@ -273,7 +296,26 @@ export const SHAFT_OVERLAYS: Record<string, { shaft_length_mm: number; shaft_rad
   'actuator_servo_heavy_duty':  { shaft_length_mm: 5, shaft_radius_mm: 6 },
 }
 
+/**
+ * Components whose GLB shape is close enough to the preset bbox (after rotation)
+ * that uniform scaling preserves the model's proportions. Per-axis would deform
+ * a near-correct mesh; uniform keeps it honest at the cost of a small bbox gap.
+ *
+ * Eligibility: post-rotation extent must be within ~5% of bbox per axis. Verify
+ * with `node ../scripts/propose-mesh-rotations.mjs` (ROTATE+SCALE bucket).
+ */
+export const EXPLICIT_SCALE_POLICY: Record<string, MeshVisualScalePolicy> = {
+  // GLB raw [100.2, 49.99, 109.82] → rotX 90° → [100.2, 109.82, 49.99]
+  // bbox [100, 100, 48]. Uniform scale 0.952 → divergence 4.6%.
+  'mobility_mecanum_wheel': 'uniform',
+  // GLB raw [75.64, 41.3, 75.7] → rotX 90° → [75.64, 75.7, 41.3]
+  // bbox [70, 70, 41]. Uniform scale 0.957 → divergence 3.5%.
+  'sensor_lidar_2d': 'uniform',
+}
+
 function scalePolicyForComponent(componentId: string): MeshVisualScalePolicy {
+  const explicit = EXPLICIT_SCALE_POLICY[componentId]
+  if (explicit) return explicit
   const perAxisBlacklist = ['gripper', 'effector', 'claw', 'suction']
   return perAxisBlacklist.some(k => componentId.includes(k)) ? 'none' : 'per-axis'
 }

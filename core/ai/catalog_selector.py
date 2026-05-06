@@ -338,8 +338,11 @@ def _render_preset_line(comp: dict[str, Any]) -> str:
         mass_str = f"{mass}kg"
     else:
         mass_str = f"{round(mass*1000)}g"
-    bb = phys.get("bounding_box_mm", [])
-    bb_str = f"{bb[0]}x{bb[1]}x{bb[2]}mm" if len(bb) >= 3 else ""
+    # Phase 3: catalog rendering reads through resolver so parametric extrusions
+    # show their resolved envelope (default length splice) instead of "?x?x?mm".
+    from core.presets import resolve_component_bounds_mm
+    bb = resolve_component_bounds_mm(comp)
+    bb_str = f"{int(bb[0])}x{int(bb[1])}x{int(bb[2])}mm" if len(bb) >= 3 else ""
     shape = phys.get("inertia_primitive", "box")
     me = comp.get("mechanical_electrical", {})
     spec = ""

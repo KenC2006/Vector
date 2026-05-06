@@ -1,0 +1,2059 @@
+[
+  {
+    "id": "actuator_continuous_rotation_servo",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_standard.glb",
+    "shared_with": [
+      "actuator_servo_standard"
+    ],
+    "bbox_mm": [
+      40,
+      20,
+      37
+    ],
+    "raw_extent_mm": [
+      28.5,
+      46.5,
+      41
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        46.5,
+        28.5,
+        41
+      ],
+      "divergence": 0.425
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 0.7895,
+      "divergence": 0.1251
+    },
+    "baseline_div": 1.325
+  },
+  {
+    "id": "actuator_high_speed_mini_servo",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_small.glb",
+    "shared_with": [
+      "actuator_servo_micro"
+    ],
+    "bbox_mm": [
+      32,
+      16,
+      30
+    ],
+    "raw_extent_mm": [
+      29,
+      46.5,
+      38.3
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        46.5,
+        29,
+        38.3
+      ],
+      "divergence": 0.8125
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 0.6474,
+      "divergence": 0.1735
+    },
+    "baseline_div": 1.9063
+  },
+  {
+    "id": "actuator_linear_heavy",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "linear_actuator.glb",
+    "shared_with": [
+      "actuator_linear_small",
+      "actuator_micro_linear_servo"
+    ],
+    "bbox_mm": [
+      30,
+      30,
+      350
+    ],
+    "raw_extent_mm": [
+      27.05,
+      79.66,
+      15
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        27.05,
+        15,
+        79.66
+      ],
+      "divergence": 0.7724
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 1.7711,
+      "divergence": 0.5969
+    },
+    "baseline_div": 1.6554
+  },
+  {
+    "id": "actuator_linear_small",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "linear_actuator.glb",
+    "shared_with": [
+      "actuator_linear_heavy",
+      "actuator_micro_linear_servo"
+    ],
+    "bbox_mm": [
+      16,
+      16,
+      130
+    ],
+    "raw_extent_mm": [
+      27.05,
+      79.66,
+      15
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        27.05,
+        15,
+        79.66
+      ],
+      "divergence": 0.6906
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.8683,
+      "divergence": 0.4679
+    },
+    "baseline_div": 3.9789
+  },
+  {
+    "id": "actuator_micro_linear_servo",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "linear_actuator.glb",
+    "shared_with": [
+      "actuator_linear_heavy",
+      "actuator_linear_small"
+    ],
+    "bbox_mm": [
+      23,
+      12,
+      32
+    ],
+    "raw_extent_mm": [
+      27.05,
+      79.66,
+      15
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        27.05,
+        15,
+        79.66
+      ],
+      "divergence": 1.4894
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.5456,
+      "divergence": 0.3583
+    },
+    "baseline_div": 5.6385
+  },
+  {
+    "id": "actuator_servo_heavy_duty",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_high_torque.glb",
+    "shared_with": [
+      "actuator_servo_high_torque"
+    ],
+    "bbox_mm": [
+      54,
+      42,
+      54
+    ],
+    "raw_extent_mm": [
+      33.5,
+      58.5,
+      54.3
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        58.5,
+        33.5,
+        54.3
+      ],
+      "divergence": 0.2024
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 1.0633,
+      "divergence": 0.1519
+    },
+    "baseline_div": 0.3929
+  },
+  {
+    "id": "actuator_servo_high_torque",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_high_torque.glb",
+    "shared_with": [
+      "actuator_servo_heavy_duty"
+    ],
+    "bbox_mm": [
+      46.5,
+      36,
+      34
+    ],
+    "raw_extent_mm": [
+      33.5,
+      58.5,
+      54.3
+    ],
+    "rotation_only": {
+      "perm": "cycle XYZ→YZX",
+      "rpy": "[Math.PI / 2, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        58.5,
+        54.3,
+        33.5
+      ],
+      "divergence": 0.5083
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→YZX",
+      "rpy": "[Math.PI / 2, 0, Math.PI / 2]",
+      "scale": 0.802,
+      "divergence": 0.2098
+    },
+    "baseline_div": 0.625
+  },
+  {
+    "id": "actuator_servo_micro",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_small.glb",
+    "shared_with": [
+      "actuator_high_speed_mini_servo"
+    ],
+    "bbox_mm": [
+      23,
+      12.2,
+      29
+    ],
+    "raw_extent_mm": [
+      29,
+      46.5,
+      38.3
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        46.5,
+        29,
+        38.3
+      ],
+      "divergence": 1.377
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "scale": 0.5024,
+      "divergence": 0.1943
+    },
+    "baseline_div": 2.8115
+  },
+  {
+    "id": "actuator_servo_standard",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "servo_standard.glb",
+    "shared_with": [
+      "actuator_continuous_rotation_servo"
+    ],
+    "bbox_mm": [
+      40,
+      20,
+      37
+    ],
+    "raw_extent_mm": [
+      28.5,
+      46.5,
+      41
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        46.5,
+        28.5,
+        41
+      ],
+      "divergence": 0.425
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 0.7895,
+      "divergence": 0.1251
+    },
+    "baseline_div": 1.325
+  },
+  {
+    "id": "actuator_stepper_nema17",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "stepper_nema17.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      42.3,
+      42.3,
+      48
+    ],
+    "raw_extent_mm": [
+      47,
+      72.15,
+      42
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        47,
+        42,
+        72.15
+      ],
+      "divergence": 0.5031
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.8013,
+      "divergence": 0.2044
+    },
+    "baseline_div": 0.7057
+  },
+  {
+    "id": "actuator_stepper_nema23",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "stepper_nema23.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      57.15,
+      57.15,
+      56
+    ],
+    "raw_extent_mm": [
+      56.4,
+      64.5,
+      75.1
+    ],
+    "rotation_only": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "rotated_extent_mm": [
+        75.1,
+        64.5,
+        56.4
+      ],
+      "divergence": 0.3141
+    },
+    "rotation_plus_scale": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "scale": 0.8616,
+      "divergence": 0.1322
+    },
+    "baseline_div": 0.3411
+  },
+  {
+    "id": "compute_can_transceiver",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "compute_can_transceiver.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      25,
+      18,
+      8
+    ],
+    "raw_extent_mm": [
+      39.9,
+      28.2,
+      14.4
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        39.9,
+        28.2,
+        14.4
+      ],
+      "divergence": 0.8
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.5941,
+      "divergence": 0.0693
+    },
+    "baseline_div": 0.8
+  },
+  {
+    "id": "compute_fpga_dev_board",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "compute_fpga.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      50,
+      35,
+      10
+    ],
+    "raw_extent_mm": [
+      111.22,
+      86.36,
+      20
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        111.22,
+        86.36,
+        20
+      ],
+      "divergence": 1.4674
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.4477,
+      "divergence": 0.1046
+    },
+    "baseline_div": 1.4674
+  },
+  {
+    "id": "compute_gps_gnss",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "compute_gps.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      25,
+      25,
+      8
+    ],
+    "raw_extent_mm": [
+      26.34,
+      35.56,
+      11.94
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        26.34,
+        35.56,
+        11.94
+      ],
+      "divergence": 0.4923
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.7856,
+      "divergence": 0.1723
+    },
+    "baseline_div": 0.4923
+  },
+  {
+    "id": "compute_mcu_small",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "compute_mcu.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      51,
+      21,
+      5
+    ],
+    "raw_extent_mm": [
+      44.19,
+      17.78,
+      14.14
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        44.19,
+        17.78,
+        14.14
+      ],
+      "divergence": 1.8272
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.5444,
+      "divergence": 0.5391
+    },
+    "baseline_div": 1.8272
+  },
+  {
+    "id": "compute_motor_driver_dual",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "compute_motor_driver.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      43,
+      43,
+      15
+    ],
+    "raw_extent_mm": [
+      43,
+      28,
+      43
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        43,
+        43,
+        28
+      ],
+      "divergence": 0.8667
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.6977,
+      "divergence": 0.3023
+    },
+    "baseline_div": 0.8667
+  },
+  {
+    "id": "compute_sbc_small",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sbc_small.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      85,
+      56,
+      17
+    ],
+    "raw_extent_mm": [
+      88.99,
+      19.9,
+      58.4
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        88.99,
+        58.4,
+        19.9
+      ],
+      "divergence": 0.1706
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.9036,
+      "divergence": 0.0577
+    },
+    "baseline_div": 0.1706
+  },
+  {
+    "id": "effector_3finger_adaptive",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "effector_3finger.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      120,
+      120,
+      90
+    ],
+    "raw_extent_mm": [
+      233.29,
+      211.46,
+      130.18
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        233.29,
+        211.46,
+        130.18
+      ],
+      "divergence": 0.9441
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.5899,
+      "divergence": 0.1468
+    },
+    "baseline_div": 0.9441
+  },
+  {
+    "id": "effector_parallel_gripper_large",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "gripper_parallel.glb",
+    "shared_with": [
+      "effector_parallel_gripper_small"
+    ],
+    "bbox_mm": [
+      100,
+      100,
+      55
+    ],
+    "raw_extent_mm": [
+      74.65,
+      117.9,
+      11
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        74.65,
+        117.9,
+        11
+      ],
+      "divergence": 0.8
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.4503,
+      "divergence": 0.7099
+    },
+    "baseline_div": 0.8
+  },
+  {
+    "id": "effector_parallel_gripper_small",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "gripper_parallel.glb",
+    "shared_with": [
+      "effector_parallel_gripper_large"
+    ],
+    "bbox_mm": [
+      65,
+      65,
+      40
+    ],
+    "raw_extent_mm": [
+      74.65,
+      117.9,
+      11
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        74.65,
+        117.9,
+        11
+      ],
+      "divergence": 0.8139
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.9574,
+      "divergence": 0.7367
+    },
+    "baseline_div": 0.8139
+  },
+  {
+    "id": "effector_pen_marker_holder",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "effector_pen_holder.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      25,
+      25,
+      60
+    ],
+    "raw_extent_mm": [
+      9.15,
+      9.2,
+      150.14
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        9.15,
+        9.2,
+        150.14
+      ],
+      "divergence": 1.5023
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.6973,
+      "divergence": 0.7448
+    },
+    "baseline_div": 1.5023
+  },
+  {
+    "id": "effector_suction_cup",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "effector_suction_cup.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      40,
+      40,
+      50
+    ],
+    "raw_extent_mm": [
+      21.59,
+      15,
+      21.59
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        21.59,
+        15,
+        21.59
+      ],
+      "divergence": 0.625
+    },
+    "rotation_plus_scale": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "scale": 2.1863,
+      "divergence": 0.1801
+    },
+    "baseline_div": 0.625
+  },
+  {
+    "id": "mobility_caster_wheel",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "wheel_caster.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      50,
+      50,
+      65
+    ],
+    "raw_extent_mm": [
+      67,
+      101.25,
+      77
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        67,
+        77,
+        101.25
+      ],
+      "divergence": 0.5577
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.6902,
+      "divergence": 0.0751
+    },
+    "baseline_div": 1.025
+  },
+  {
+    "id": "mobility_mecanum_wheel",
+    "status": "ROTATE+SCALE",
+    "visual_file": "wheel_mecanum.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      100,
+      100,
+      48
+    ],
+    "raw_extent_mm": [
+      100.2,
+      49.99,
+      109.82
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        100.2,
+        109.82,
+        49.99
+      ],
+      "divergence": 0.0982
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.9523,
+      "divergence": 0.0458
+    },
+    "baseline_div": 0.0982
+  },
+  {
+    "id": "mobility_omni_wheel",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "wheel_omni.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      60,
+      60,
+      25
+    ],
+    "raw_extent_mm": [
+      59.69,
+      59.69,
+      15.21
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        59.69,
+        59.69,
+        15.21
+      ],
+      "divergence": 0.3916
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.2475,
+      "divergence": 0.241
+    },
+    "baseline_div": 0.3916
+  },
+  {
+    "id": "mobility_rubber_foot_pad",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "mobility_rubber_foot.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      25,
+      25,
+      15
+    ],
+    "raw_extent_mm": [
+      33,
+      50,
+      33
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        33,
+        50,
+        33
+      ],
+      "divergence": 1.2
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.5682,
+      "divergence": 0.25
+    },
+    "baseline_div": 1.2
+  },
+  {
+    "id": "mobility_wheel_driven",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "wheel_driven.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      100,
+      100,
+      30
+    ],
+    "raw_extent_mm": [
+      70,
+      70,
+      36
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        70,
+        70,
+        36
+      ],
+      "divergence": 0.3
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.0526,
+      "divergence": 0.2632
+    },
+    "baseline_div": 0.3
+  },
+  {
+    "id": "motor_coreless_dc",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_coreless.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      8,
+      8,
+      16
+    ],
+    "raw_extent_mm": [
+      10,
+      10,
+      26
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        10,
+        10,
+        26
+      ],
+      "divergence": 0.625
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.6957,
+      "divergence": 0.1304
+    },
+    "baseline_div": 0.625
+  },
+  {
+    "id": "motor_dc_large_775",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_dc_large.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      42,
+      42,
+      66
+    ],
+    "raw_extent_mm": [
+      52,
+      52,
+      108.1
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        52,
+        52,
+        108.1
+      ],
+      "divergence": 0.6379
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.6954,
+      "divergence": 0.139
+    },
+    "baseline_div": 0.6379
+  },
+  {
+    "id": "motor_dc_medium_540",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_dc_medium.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      36,
+      36,
+      54
+    ],
+    "raw_extent_mm": [
+      37.19,
+      75.13,
+      36.97
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        37.19,
+        36.97,
+        75.13
+      ],
+      "divergence": 0.3912
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.827,
+      "divergence": 0.1506
+    },
+    "baseline_div": 1.0868
+  },
+  {
+    "id": "motor_dc_small_130",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_dc_small.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      27.5,
+      20,
+      25
+    ],
+    "raw_extent_mm": [
+      20.1,
+      38,
+      17.17
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        38,
+        20.1,
+        17.17
+      ],
+      "divergence": 0.3818
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→YZX",
+      "rpy": "[Math.PI / 2, 0, Math.PI / 2]",
+      "scale": 0.915,
+      "divergence": 0.2644
+    },
+    "baseline_div": 0.9
+  },
+  {
+    "id": "motor_gear_heavy_50mm",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_gear_heavy.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      50,
+      50,
+      95
+    ],
+    "raw_extent_mm": [
+      157.5,
+      45,
+      44.42
+    ],
+    "rotation_only": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "rotated_extent_mm": [
+        44.42,
+        45,
+        157.5
+      ],
+      "divergence": 0.6579
+    },
+    "rotation_plus_scale": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "scale": 0.7855,
+      "divergence": 0.3022
+    },
+    "baseline_div": 2.15
+  },
+  {
+    "id": "motor_gear_medium_37mm",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_gear_medium.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      37,
+      37,
+      70
+    ],
+    "raw_extent_mm": [
+      37,
+      37,
+      78.38
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        37,
+        37,
+        78.38
+      ],
+      "divergence": 0.1197
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.9435,
+      "divergence": 0.0565
+    },
+    "baseline_div": 0.1197
+  },
+  {
+    "id": "motor_gear_small_n20",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_gear_small.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      12,
+      10,
+      25
+    ],
+    "raw_extent_mm": [
+      48.01,
+      15.5,
+      18.9
+    ],
+    "rotation_only": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "rotated_extent_mm": [
+        18.9,
+        15.5,
+        48.01
+      ],
+      "divergence": 0.9205
+    },
+    "rotation_plus_scale": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "scale": 0.5763,
+      "divergence": 0.1068
+    },
+    "baseline_div": 3.0011
+  },
+  {
+    "id": "motor_worm_gear",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "motor_worm_gear.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      40,
+      32,
+      65
+    ],
+    "raw_extent_mm": [
+      32,
+      39.47,
+      80
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        39.47,
+        32,
+        80
+      ],
+      "divergence": 0.2308
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 0.9019,
+      "divergence": 0.1101
+    },
+    "baseline_div": 0.2334
+  },
+  {
+    "id": "power_buck_converter_12v",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "power_buck_converter.glb",
+    "shared_with": [
+      "power_buck_converter_5v"
+    ],
+    "bbox_mm": [
+      40,
+      22,
+      12
+    ],
+    "raw_extent_mm": [
+      43,
+      14,
+      21
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        43,
+        21,
+        14
+      ],
+      "divergence": 0.1667
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.9429,
+      "divergence": 0.1
+    },
+    "baseline_div": 0.75
+  },
+  {
+    "id": "power_buck_converter_5v",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "power_buck_converter.glb",
+    "shared_with": [
+      "power_buck_converter_12v"
+    ],
+    "bbox_mm": [
+      22,
+      17,
+      8
+    ],
+    "raw_extent_mm": [
+      43,
+      14,
+      21
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        43,
+        21,
+        14
+      ],
+      "divergence": 0.9545
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.627,
+      "divergence": 0.2255
+    },
+    "baseline_div": 1.625
+  },
+  {
+    "id": "power_distribution_unit",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "power_pdu.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      65,
+      45,
+      15
+    ],
+    "raw_extent_mm": [
+      36,
+      36,
+      4.1
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        36,
+        36,
+        4.1
+      ],
+      "divergence": 0.7267
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.8634,
+      "divergence": 0.4907
+    },
+    "baseline_div": 0.7267
+  },
+  {
+    "id": "power_estop_switch",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "power_estop.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      40,
+      40,
+      55
+    ],
+    "raw_extent_mm": [
+      68,
+      68,
+      72
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        68,
+        68,
+        72
+      ],
+      "divergence": 0.7
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.6647,
+      "divergence": 0.1299
+    },
+    "baseline_div": 0.7
+  },
+  {
+    "id": "power_lipo_3s_2200",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "battery_lipo.glb",
+    "shared_with": [
+      "power_lipo_4s_5000",
+      "power_lipo_6s_10000"
+    ],
+    "bbox_mm": [
+      105,
+      34,
+      24
+    ],
+    "raw_extent_mm": [
+      24,
+      23.02,
+      102.79
+    ],
+    "rotation_only": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "rotated_extent_mm": [
+        102.79,
+        24,
+        23.02
+      ],
+      "divergence": 0.2941
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "scale": 1.1871,
+      "divergence": 0.1621
+    },
+    "baseline_div": 2.0232
+  },
+  {
+    "id": "power_lipo_4s_5000",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "battery_lipo.glb",
+    "shared_with": [
+      "power_lipo_3s_2200",
+      "power_lipo_6s_10000"
+    ],
+    "bbox_mm": [
+      137,
+      42,
+      30
+    ],
+    "raw_extent_mm": [
+      24,
+      23.02,
+      102.79
+    ],
+    "rotation_only": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "rotated_extent_mm": [
+        102.79,
+        24,
+        23.02
+      ],
+      "divergence": 0.4286
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "scale": 1.4938,
+      "divergence": 0.1464
+    },
+    "baseline_div": 1.4473
+  },
+  {
+    "id": "power_lipo_6s_10000",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "battery_lipo.glb",
+    "shared_with": [
+      "power_lipo_3s_2200",
+      "power_lipo_4s_5000"
+    ],
+    "bbox_mm": [
+      165,
+      65,
+      42
+    ],
+    "raw_extent_mm": [
+      24,
+      23.02,
+      102.79
+    ],
+    "rotation_only": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "rotated_extent_mm": [
+        102.79,
+        24,
+        23.02
+      ],
+      "divergence": 0.6308
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "scale": 2.0157,
+      "divergence": 0.2557
+    },
+    "baseline_div": 0.8605
+  },
+  {
+    "id": "power_solar_panel_small",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "power_solar_panel.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      110,
+      60,
+      3
+    ],
+    "raw_extent_mm": [
+      53,
+      30,
+      2.56
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        53,
+        30,
+        2.56
+      ],
+      "divergence": 0.5182
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.498,
+      "divergence": 0.2783
+    },
+    "baseline_div": 0.5182
+  },
+  {
+    "id": "sensor_depth_camera_wide",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "depth_camera.glb",
+    "shared_with": [
+      "sensor_depth_camera_small"
+    ],
+    "bbox_mm": [
+      124,
+      29,
+      26
+    ],
+    "raw_extent_mm": [
+      89.91,
+      25,
+      25.05
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        89.91,
+        25,
+        25.05
+      ],
+      "divergence": 0.2749
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 1.1858,
+      "divergence": 0.1402
+    },
+    "baseline_div": 0.2749
+  },
+  {
+    "id": "sensor_force_torque_6axis",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_force_torque.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      50,
+      50,
+      20
+    ],
+    "raw_extent_mm": [
+      43.38,
+      73.61,
+      14
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        43.38,
+        73.61,
+        14
+      ],
+      "divergence": 0.4722
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.9207,
+      "divergence": 0.3555
+    },
+    "baseline_div": 0.4722
+  },
+  {
+    "id": "sensor_imu_6dof",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "imu_board.glb",
+    "shared_with": [
+      "sensor_imu_9dof"
+    ],
+    "bbox_mm": [
+      16,
+      16,
+      3
+    ],
+    "raw_extent_mm": [
+      21,
+      16,
+      3.8
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        21,
+        16,
+        3.8
+      ],
+      "divergence": 0.3125
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.8649,
+      "divergence": 0.1351
+    },
+    "baseline_div": 0.3125
+  },
+  {
+    "id": "sensor_imu_9dof",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "imu_board.glb",
+    "shared_with": [
+      "sensor_imu_6dof"
+    ],
+    "bbox_mm": [
+      25,
+      18,
+      4
+    ],
+    "raw_extent_mm": [
+      21,
+      16,
+      3.8
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        21,
+        16,
+        3.8
+      ],
+      "divergence": 0.16
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 1.1173,
+      "divergence": 0.0615
+    },
+    "baseline_div": 0.16
+  },
+  {
+    "id": "sensor_joint_encoder_absolute",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_encoder.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      22,
+      22,
+      10
+    ],
+    "raw_extent_mm": [
+      55.9,
+      38,
+      53
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        55.9,
+        53,
+        38
+      ],
+      "divergence": 2.7996
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.3221,
+      "divergence": 0.224
+    },
+    "baseline_div": 4.3
+  },
+  {
+    "id": "sensor_lidar_2d",
+    "status": "ROTATE+SCALE",
+    "visual_file": "lidar_2d.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      70,
+      70,
+      41
+    ],
+    "raw_extent_mm": [
+      75.64,
+      41.3,
+      75.7
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        75.64,
+        75.7,
+        41.3
+      ],
+      "divergence": 0.0814
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.9575,
+      "divergence": 0.0355
+    },
+    "baseline_div": 0.8463
+  },
+  {
+    "id": "sensor_lidar_3d",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "lidar_3d.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      103.3,
+      103.3,
+      71.7
+    ],
+    "raw_extent_mm": [
+      147.64,
+      71.7,
+      103.27
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        147.64,
+        103.27,
+        71.7
+      ],
+      "divergence": 0.4292
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.8234,
+      "divergence": 0.1768
+    },
+    "baseline_div": 0.4404
+  },
+  {
+    "id": "sensor_limit_switch",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_limit_switch.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      20,
+      10,
+      6
+    ],
+    "raw_extent_mm": [
+      13.02,
+      14.08,
+      5.9
+    ],
+    "rotation_only": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "rotated_extent_mm": [
+        14.08,
+        13.02,
+        5.9
+      ],
+      "divergence": 0.3016
+    },
+    "rotation_plus_scale": {
+      "perm": "rotZ 90  (XY swap)",
+      "rpy": "[0, 0, Math.PI / 2]",
+      "scale": 0.9971,
+      "divergence": 0.2978
+    },
+    "baseline_div": 0.4084
+  },
+  {
+    "id": "sensor_load_cell",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_load_cell.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      55,
+      12,
+      12
+    ],
+    "raw_extent_mm": [
+      80,
+      22,
+      15
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        80,
+        22,
+        15
+      ],
+      "divergence": 0.8333
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.6486,
+      "divergence": 0.1892
+    },
+    "baseline_div": 0.8333
+  },
+  {
+    "id": "sensor_tof",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_tof.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      13,
+      18,
+      2
+    ],
+    "raw_extent_mm": [
+      24.7,
+      3.5,
+      11
+    ],
+    "rotation_only": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "rotated_extent_mm": [
+        11,
+        24.7,
+        3.5
+      ],
+      "divergence": 0.75
+    },
+    "rotation_plus_scale": {
+      "perm": "cycle XYZ→ZXY",
+      "rpy": "[0, Math.PI / 2, Math.PI / 2]",
+      "scale": 0.7704,
+      "divergence": 0.3481
+    },
+    "baseline_div": 4.5
+  },
+  {
+    "id": "sensor_ultrasonic",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "sensor_ultrasonic.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      45,
+      20,
+      15
+    ],
+    "raw_extent_mm": [
+      45,
+      26,
+      18.46
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        45,
+        26,
+        18.46
+      ],
+      "divergence": 0.3
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.8696,
+      "divergence": 0.1304
+    },
+    "baseline_div": 0.3
+  },
+  {
+    "id": "structural_bracket_l",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "structural_bracket_l.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      40,
+      40,
+      40
+    ],
+    "raw_extent_mm": [
+      146,
+      72,
+      90
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        146,
+        72,
+        90
+      ],
+      "divergence": 2.65
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.367,
+      "divergence": 0.3394
+    },
+    "baseline_div": 2.65
+  },
+  {
+    "id": "structural_bracket_u",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "structural_bracket_u.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      50,
+      30,
+      40
+    ],
+    "raw_extent_mm": [
+      72.5,
+      46.25,
+      30
+    ],
+    "rotation_only": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "rotated_extent_mm": [
+        72.5,
+        30,
+        46.25
+      ],
+      "divergence": 0.45
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.8163,
+      "divergence": 0.1837
+    },
+    "baseline_div": 0.5417
+  },
+  {
+    "id": "structural_shaft_collar",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "structural_shaft_collar.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      18,
+      18,
+      9
+    ],
+    "raw_extent_mm": [
+      60.33,
+      60.63,
+      25.4
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        60.33,
+        60.63,
+        25.4
+      ],
+      "divergence": 2.3681
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.3231,
+      "divergence": 0.0882
+    },
+    "baseline_div": 2.3681
+  },
+  {
+    "id": "transmission_flexible_coupling_jaw",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "transmission_coupling.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      20,
+      20,
+      30
+    ],
+    "raw_extent_mm": [
+      25,
+      25,
+      30
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        25,
+        25,
+        30
+      ],
+      "divergence": 0.25
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.8889,
+      "divergence": 0.1111
+    },
+    "baseline_div": 0.25
+  },
+  {
+    "id": "transmission_planetary_gearbox",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "transmission_planetary_gearbox.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      42.3,
+      42.3,
+      38
+    ],
+    "raw_extent_mm": [
+      52,
+      51.94,
+      75.41
+    ],
+    "rotation_only": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "rotated_extent_mm": [
+        75.41,
+        51.94,
+        52
+      ],
+      "divergence": 0.7826
+    },
+    "rotation_plus_scale": {
+      "perm": "rotX 90  (YZ swap)",
+      "rpy": "[Math.PI / 2, 0, 0]",
+      "scale": 0.664,
+      "divergence": 0.1837
+    },
+    "baseline_div": 0.9844
+  },
+  {
+    "id": "transmission_rigid_shaft_coupling",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "transmission_rigid_coupling.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      18,
+      18,
+      25
+    ],
+    "raw_extent_mm": [
+      24,
+      20,
+      20
+    ],
+    "rotation_only": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "rotated_extent_mm": [
+        20,
+        20,
+        24
+      ],
+      "divergence": 0.1111
+    },
+    "rotation_plus_scale": {
+      "perm": "rotY 90  (XZ swap)",
+      "rpy": "[0, Math.PI / 2, 0]",
+      "scale": 0.9657,
+      "divergence": 0.073
+    },
+    "baseline_div": 0.3333
+  },
+  {
+    "id": "transmission_timing_belt_gt2",
+    "status": "SHAPE-MISMATCH",
+    "visual_file": "pulley_gt2.glb",
+    "shared_with": [],
+    "bbox_mm": [
+      6,
+      200,
+      15
+    ],
+    "raw_extent_mm": [
+      14,
+      15,
+      15
+    ],
+    "rotation_only": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "rotated_extent_mm": [
+        14,
+        15,
+        15
+      ],
+      "divergence": 1.3333
+    },
+    "rotation_plus_scale": {
+      "perm": "identity",
+      "rpy": "[0, 0, 0]",
+      "scale": 0.8304,
+      "divergence": 0.9377
+    },
+    "baseline_div": 1.3333
+  }
+]

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { GeneratorDims } from './generators'
 import { getComponentColor, getMaterial, getTintedMaterial } from './materials'
-import { getRotationOverride, getShaftOverlay } from './meshOverrides'
+import { getMeshVisualMetadata, getRotationOverride, getShaftOverlay } from './meshOverrides'
 
 export interface PreparedMeshVisual {
   group: THREE.Group
@@ -51,18 +51,25 @@ export function prepareMeshVisualGroup(
       meshGroup.updateMatrixWorld(true)
     }
 
-    const perAxisBlacklist = ['gripper', 'effector', 'claw', 'suction']
-    const skipPerAxis = perAxisBlacklist.some(k => compId.includes(k))
+    const scalePolicy = getMeshVisualMetadata(compId)?.scalePolicy ?? 'per-axis'
     const shaftOverlay = getShaftOverlay(compId)
     const shaftLenM = shaftOverlay ? shaftOverlay.shaft_length_mm / 1000 : 0
     const targetZ = shaftOverlay ? Math.max(0.001, dims.z - shaftLenM) : dims.z
-    if (!skipPerAxis) {
+    if (scalePolicy === 'per-axis' || scalePolicy === 'uniform') {
       meshBox.setFromObject(meshGroup)
       meshBox.getSize(meshSize)
       if (meshSize.x > 0.0001 && meshSize.y > 0.0001 && meshSize.z > 0.0001) {
-        meshGroup.scale.x *= dims.x / meshSize.x
-        meshGroup.scale.y *= dims.y / meshSize.y
-        meshGroup.scale.z *= targetZ / meshSize.z
+        if (scalePolicy === 'uniform') {
+          // Fit GLB inside bbox; preserve proportions. Visible model may be
+          // slightly smaller than bbox along non-fitting axes — that's the
+          // honest signal under "bbox is the source of truth."
+          const s = Math.min(dims.x / meshSize.x, dims.y / meshSize.y, targetZ / meshSize.z)
+          meshGroup.scale.multiplyScalar(s)
+        } else {
+          meshGroup.scale.x *= dims.x / meshSize.x
+          meshGroup.scale.y *= dims.y / meshSize.y
+          meshGroup.scale.z *= targetZ / meshSize.z
+        }
       }
     }
 

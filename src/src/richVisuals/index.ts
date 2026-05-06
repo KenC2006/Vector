@@ -21,12 +21,11 @@ import type {
 } from '../componentVisualResolver'
 import {
   clearMeshLoadInProgress,
+  hasCachedMeshGroup,
   isMeshLoadInProgress,
   markMeshLoadInProgress,
   setCachedMeshGroup,
 } from './meshCache'
-
-
 interface ParsedRobotLike {
   group: THREE.Group
   linkGroups: Map<string, THREE.Group>
@@ -119,9 +118,6 @@ export { getCachedMeshGroup } from './meshCache'
 // Cleared on each applyRichVisuals call to prevent stale material leaks.
 const _tintedMatCache = new Map<string, THREE.MeshStandardMaterial>()
 
-const RICH_Y_UP_TO_URDF_Z_UP = new THREE.Quaternion().setFromEuler(
-  new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ'),
-)
 const URDF_Z_UP_TO_SCENE_Y_UP = new THREE.Quaternion().setFromEuler(
   new THREE.Euler(-Math.PI / 2, 0, 0, 'XYZ'),
 )
@@ -132,36 +128,34 @@ export type ComponentVisualTargetFrame = 'urdf_z_up' | 'scene_y_up'
  * Compute the local-quaternion to apply to a resolved component's
  * `previewGroup` so it lands oriented in the requested target frame.
  *
- * Carry and render paths share this single adapter — the only difference is
- * which target they pick (carry parents into the scene Y-up world, render
- * parents into the URDF Z-up link group). Together with the resolver's
- * `authoredFrame` declaration, this guarantees both paths produce identical
- * world orientations by construction, so a generator can no longer drift one
- * path against the other.
+ * Authored-frame unification: every previewGroup is Z-up authored — rich
+ * outputs are wrapped at construction time, GLBs are Z-up natively. So this
+ * adapter is a function of `target` only; `authoredFrame` is accepted for
+ * API stability but no longer branches behavior. Carry parents into the
+ * scene Y-up world (apply -90° X), render parents into the URDF Z-up link
+ * group (identity).
  */
 export function componentVisualWorldQuat(
-  authoredFrame: ComponentVisualAuthoredFrame,
+  _authoredFrame: ComponentVisualAuthoredFrame,
   target: ComponentVisualTargetFrame,
 ): THREE.Quaternion {
-  if (authoredFrame === 'y_up') {
-    if (target === 'urdf_z_up') return RICH_Y_UP_TO_URDF_Z_UP.clone()
-    return new THREE.Quaternion()
-  }
+  void _authoredFrame
   if (target === 'urdf_z_up') return new THREE.Quaternion()
   return URDF_Z_UP_TO_SCENE_Y_UP.clone()
 }
 
 /**
  * Backwards-compatible alias used by the parity corpus and any caller that
- * still thinks in source-rather-than-frame terms. New code should call
- * `componentVisualWorldQuat(resolved.authoredFrame, target)` directly.
+ * still thinks in source-rather-than-frame terms. After unification both
+ * sources are Z-up authored, so this always returns identity (the URDF
+ * link-frame target).
  */
 export function renderVisualQuaternionForSource(
-  source: ComponentVisualSource,
+  _source: ComponentVisualSource,
   _visualQuat?: THREE.Quaternion,
 ): THREE.Quaternion {
-  void _visualQuat
-  return componentVisualWorldQuat(source === 'rich' ? 'y_up' : 'z_up', 'urdf_z_up')
+  void _source; void _visualQuat
+  return new THREE.Quaternion()
 }
 
 export function applyRichVisuals(
@@ -179,6 +173,12 @@ export function applyRichVisuals(
   for (const mat of _tintedMatCache.values()) mat.dispose()
   _tintedMatCache.clear()
   for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
+    // Split-servo body/horn links (`<id>_<N>_body` / `_horn`) intentionally
+    // skip the rich-visual replacement: the URDF primitives emitted by
+    // `resolveSplitServoVisual` (servoBodyShape + servoHornShape) are the
+    // single source of truth for split servos, and the carry ghost is forced
+    // down the same primitive path in `computeCarryGhostPreview`. Replacing
+    // them here would re-create the carry-vs-placed mismatch.
     const compId = extractComponentId(linkName)
     if (!compId) continue
 
@@ -193,7 +193,6 @@ export function applyRichVisuals(
     const resolved = resolveComponentVisual({
       preset: makeResolverPreset(compId, dims),
       category: inferComponentCategory(compId),
-      mode: 'render',
       linkName,
       materialCache: _tintedMatCache,
       castShadow: true,
@@ -306,7 +305,6 @@ function resolveAndApplyLoadedMesh(
   const resolved = resolveComponentVisual({
     preset: makeResolverPreset(compId, dims),
     category: inferComponentCategory(compId),
-    mode: 'render',
     linkName,
     materialCache: _tintedMatCache,
     castShadow: true,
@@ -410,6 +408,55 @@ async function loadMeshOverride(
     console.warn(`[richVisuals] Mesh failed for ${compId}, parametric fallback:`, e)
     clearMeshLoadInProgress(compId)
   }
+}
+
+/** Warm the mesh cache for a single component without applying it to any link.
+ *  Call when the user enters carry mode for a new part — by the time they click
+ *  to commit, the GLB is in cache so the carry ghost and the placed model use
+ *  the same geometry. Without this, first-of-type carry shows the parametric
+ *  fallback while the placed component renders the (later-loaded) GLB, and the
+ *  parametric's larger envelope causes liftAboveFloor to over-lift on commit.
+ *
+ *  Does NOT touch markMeshLoadInProgress — that flag is owned by loadMeshOverride
+ *  so applyRichVisuals can correctly decide whether to start its own load. If the
+ *  preload and a live load race, both write to the same cache; the redundant
+ *  network round-trip is the price of not blocking the live applyRichVisuals path
+ *  (which needs to drive the link-application + onMeshLoaded callback chain).
+ *
+ *  `onReady` fires once the cache is populated (preload success OR a concurrent
+ *  load completing first). Lets the carry ghost rebuild itself with the GLB
+ *  geometry mid-carry — without it, the ghost stays as parametric while the
+ *  eventual placed model uses the GLB, producing a visible rotation/shape
+ *  mismatch between ghost and placed. */
+export function preloadComponentMesh(compId: string, onReady?: () => void): void {
+  if (SLOW_MESH_BLACKLIST.has(compId)) { onReady?.(); return }
+  if (hasCachedMeshGroup(compId)) { onReady?.(); return }
+  const meshUrl = getMeshOverrideUrl(compId)
+  if (!meshUrl) { onReady?.(); return }
+  const ext = meshUrl.split('.').pop()?.toLowerCase() || ''
+  const loader = ext === 'glb' || ext === 'gltf' ? loadGLB(meshUrl) : loadSTEP(meshUrl)
+  loader
+    .then(group => {
+      // Don't clobber if a concurrent live load already cached it — the live
+      // load's applied mesh is already wired into a real link, ours isn't.
+      if (!hasCachedMeshGroup(compId)) setCachedMeshGroup(compId, group)
+      onReady?.()
+    })
+    .catch(async e => {
+      if (ext === 'glb' || ext === 'gltf') {
+        const stepUrl = getStepFallbackUrl(compId)
+        if (stepUrl) {
+          try {
+            const group = await loadSTEP(stepUrl)
+            if (!hasCachedMeshGroup(compId)) setCachedMeshGroup(compId, group)
+            onReady?.()
+            return
+          } catch {/* fall through */}
+        }
+      }
+      console.warn(`[richVisuals] preload failed for ${compId}:`, e)
+      onReady?.()
+    })
 }
 
 /** Load a GLB file and return a Three.js Group. */

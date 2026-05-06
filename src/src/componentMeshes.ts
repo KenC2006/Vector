@@ -22,6 +22,8 @@ export interface UrdfVisualDesc {
 // ── Category colour palette ──────────────────────────────────────────────────
 
 import { getComponentColor } from './richVisuals/materials'
+import { resolveComponentBboxMm } from './componentResolver.ts'
+import type { ComponentSpec } from './componentSpec.ts'
 
 export const CATEGORY_COLORS: Record<string, [number, number, number, number]> = {
   actuators:      [0.90, 0.49, 0.13, 1],  // orange
@@ -1270,18 +1272,14 @@ function shaftCollarShape(
 
 // ── Master dispatcher ────────────────────────────────────────────────────────
 
-export function generateVisuals(comp: {
-  id: string
-  physical: { mass_kg?: number; mass_kg_per_100mm?: number; bounding_box_mm?: number[]; cross_section_mm?: number[]; inertia_primitive?: string; outer_diameter_mm?: number; inner_diameter_mm?: number; wall_thickness_mm?: number }
-  mechanical_electrical: Record<string, unknown>
-}, category: string): UrdfVisualDesc[] {
+export function generateVisuals(comp: ComponentSpec, category: string): UrdfVisualDesc[] {
   _currentCompId = comp.id
   try {
   const p = comp.physical
-  const bb = p.bounding_box_mm ?? p.cross_section_mm ?? [40, 40, 40]
-  const xm = mm(bb[0] ?? 40)
-  const ym = mm(bb[1] ?? 40)
-  const zm = mm(bb[2] ?? 40)
+  const bb = resolveComponentBboxMm(comp)
+  const xm = mm(bb[0])
+  const ym = mm(bb[1])
+  const zm = mm(bb[2])
   const id = comp.id
 
   // ── Actuators ──────────────────────────────────────────────────────────────
@@ -1370,7 +1368,7 @@ export function generateVisuals(comp: {
     return [box(xm, ym, zm, 0, 0, 0, catColor(category))]
   }
   if (id.includes('cf_tube')) {
-    if (id.includes('round')) return [cyl(mm(p.outer_diameter_mm ?? 12) / 2, zm, 0, 0, 0, catColor(category))]
+    if (id.includes('round')) return [cyl(xm / 2, zm, 0, 0, 0, catColor(category))]
     return [box(xm, ym, zm, 0, 0, 0, catColor(category))]
   }
   if (id.includes('standoff') || id.includes('hex_standoff')) return standoffShape(xm / 2, zm, category)
@@ -1381,11 +1379,11 @@ export function generateVisuals(comp: {
   if (id.includes('linear_rail')) return linearRailShape(xm, ym, zm, category)
   if (id.includes('din_rail')) return dinRailShape(xm, ym, zm, category)
   if (id.includes('pillow_block')) return pillowBlockShape(mm(4), xm, category)
-  if (id.includes('shaft_collar')) return shaftCollarShape(xm, mm(p.inner_diameter_mm ?? 8) ?? xm * 0.5, zm, category)
+  if (id.includes('shaft_collar')) return shaftCollarShape(xm, mm((comp.mechanical_electrical.bore_mm as number) ?? 8) ?? xm * 0.5, zm, category)
 
   // ── Transmission ───────────────────────────────────────────────────────────
   if (id.includes('timing_belt')) return beltDriveShape(category)
-  if (id.includes('leadscrew') || id.includes('ballscrew')) return leadscrewShape(mm(p.outer_diameter_mm ?? bb[0] ?? 8) / 2, zm, category)
+  if (id.includes('leadscrew') || id.includes('ballscrew')) return leadscrewShape(xm / 2, zm, category)
   if (id.includes('bearing_deep') || id.includes('bearing_large') || id.includes('crossed_roller')) {
     const od = mm((comp.mechanical_electrical.outer_diameter_mm as number) ?? bb[0] ?? 22)
     const bore = mm((comp.mechanical_electrical.bore_mm as number) ?? 8)

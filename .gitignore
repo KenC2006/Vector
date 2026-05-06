@@ -31,4 +31,5 @@ Thumbs.db
 
 # Markdown
 *.md
+!src/public/COMPONENT_PRESETS.md
 *.urdf

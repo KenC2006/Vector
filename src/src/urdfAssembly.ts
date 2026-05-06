@@ -10,21 +10,26 @@ import {
   makeMountLinkName,
   nodesCompatible,
   incompatibleReason,
-  componentPortsForPreset,
   resolveFaceToPort,
   resolveConnectionJoint,
-  isTireComponentId,
-  isDrivetrainComponentId,
 } from './attachmentNodes'
-import type { AttachmentNodeRuntime, AttachmentNodeClass } from './attachmentNodes'
+import type { AttachmentNodeRuntime } from './attachmentNodes'
+import type { AttachmentNodeClass, ComponentSpec } from './componentSpec.ts'
+import { reportComponentSpecDeprecations } from './componentSpec.ts'
+import { ensureMeshExtentsLoaded } from './meshExtents.ts'
 import { hasMeshOverride, SLOW_MESH_BLACKLIST } from './richVisuals/meshOverrides'
-import { componentVisualWorldQuat } from './richVisuals'
+import { componentVisualWorldQuat, preloadComponentMesh } from './richVisuals'
 import { nudgeAlongNormal, shouldApplyRuntimeNudge, NUDGE_MIN_MM, type NudgeDiagnostics } from './contactCleanup'
 import { quatToRpy, rpyToQuat } from './rotationIO'
-import { resolveComponentVisual, resolveSplitServoVisual } from './componentVisualResolver'
+import { resolveComponentVisual, resolveSplitServoVisual, visualBoundsFromDescriptors } from './componentVisualResolver'
 import type { ComponentVisualBounds, ResolvedComponentVisual } from './componentVisualResolver'
+import { isParametricSpec, resolveComponent, resolveComponentBboxMm, resolveComponentMassKg } from './componentResolver.ts'
+import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
+import { urdfVecToSceneVec, URDF_TO_SCENE_Q } from './coordinates.ts'
 import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
+import { normalizeAssembly, formatDiagnosticForPrompt } from './archetypeNormalizer.ts'
+import type { RequestedFeatures } from './archetypeNormalizer.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
 // Mate-connector resolver (Phase 1/2, docs/MATE_CONNECTOR_MIGRATION.md). Pure
@@ -32,15 +37,9 @@ import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from '.
 // with `fastened` — see mateCorpus.ts for the parity proof. Feature-flagged
 // so the legacy path can still be exercised for A/B comparison.
 import {
-  generateDefaultConnectors,
-  mergeConnectors,
-  resolveMate,
   findConnector,
   childConnectorIdForAttachFace,
-  faceUVToWorldOffset,
-  tangentBasisFromAxis,
   type MateConnector,
-  type MateType,
 } from './mateConnectors.ts'
 import { applyMutation as runApplyMutation } from './graphMutations.ts'
 import type { GraphMutation, MutationResult } from './graphMutations.ts'
@@ -93,35 +92,13 @@ export interface UrdfAssemblyContext {
 }
 
 // ── Preset types ──────────────────────────────────────────────────────────────
+//
+// `PresetComponent` is an alias for the unified `ComponentSpec` (Phase 6).
+// The local name is retained for callsite readability — every preset object
+// flowing through this file IS a ComponentSpec, just with `sim_metadata` and
+// `mounting_logic` typed loosely via the index signature.
 
-interface PresetPhysical {
-  mass_kg?: number
-  mass_kg_per_100mm?: number
-  bounding_box_mm?: number[]
-  cross_section_mm?: number[]
-  inertia_primitive: string
-  /** Step 4 of docs/ENGINE_NEXT_STEPS.md — convex-hull collision OBJ
-   *  filename (under src/public/meshes/collision/). When set, URDF
-   *  emission replaces per-visual primitive <box>/<cylinder>/<sphere>
-   *  collision with a single <mesh filename="package://meshes/collision/{file}"/>.
-   *  Generated one-shot by scripts/generate-collision-meshes.mjs. */
-  collision_mesh?: string
-}
-
-interface PresetComponent {
-  id: string
-  name: string
-  description: string
-  physical: PresetPhysical
-  mechanical_electrical: Record<string, unknown>
-  mounting_logic: Record<string, unknown>
-  sim_metadata: Record<string, unknown>
-  /** Phase 3 mate-connector authorship (docs/MATE_CONNECTOR_MIGRATION.md).
-   *  Optional; merged OVER the 6 auto-generated defaults by id so a preset
-   *  can add new connectors (shaft_out, plate_top) or override a default
-   *  whose bbox-derived pose doesn't match the rendered mesh. */
-  connectors?: MateConnector[]
-}
+type PresetComponent = ComponentSpec
 
 interface PresetCategory {
   description: string
@@ -132,297 +109,33 @@ interface PresetData {
   categories: Record<string, PresetCategory>
 }
 
-type AssemblyJointType = 'fixed' | 'revolute' | 'continuous' | 'prismatic'
-
-function componentIdFromLinkName(linkName: string): string {
-  const match = linkName.match(/^(.+)_\d+$/)
-  return match ? match[1] : linkName
-}
-
-function isSplitServoComponentId(componentId: string): boolean {
-  return (
-    componentId.startsWith('actuator_servo') ||
-    componentId.startsWith('actuator_continuous_rotation_servo') ||
-    componentId.startsWith('actuator_high_speed')
-  )
-}
-
-const DEFAULT_REVOLUTE_LIMIT_RAD = Math.PI / 2
-
-function resolveJointLimitsRad(preset: any): [number, number] {
-  const sim = preset?.sim_metadata || {}
-  const me = preset?.mechanical_electrical || {}
-  const deg = sim.mjcf_joint_limits_deg || me.angle_range_deg
-  if (Array.isArray(deg) && deg.length === 2) {
-    const lo = (Number(deg[0]) || 0) * Math.PI / 180
-    const hi = (Number(deg[1]) || 0) * Math.PI / 180
-    if (hi > lo) return [lo, hi]
-  }
-  return [-DEFAULT_REVOLUTE_LIMIT_RAD, DEFAULT_REVOLUTE_LIMIT_RAD]
-}
-
-function parseRpyString(rpy: string): [number, number, number] {
-  const parts = rpy.split(/\s+/).map(Number)
-  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
-}
-
-function formatRpyTuple(rpy: [number, number, number]): string {
-  return rpy.map(v => Number(v).toFixed(4)).join(' ')
-}
-
-function parseXyzString(xyz: string): [number, number, number] {
-  const parts = xyz.split(/\s+/).map(Number)
-  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
-}
-
-function rpyMatrix(rpy: string): THREE.Matrix4 {
-  return new THREE.Matrix4().makeRotationFromQuaternion(rpyToQuat(parseRpyString(rpy)))
-}
-
-function transformFromXyzRpy(xyz: string, rpy: string): THREE.Matrix4 {
-  const [x, y, z] = parseXyzString(xyz)
-  const rot = rpyMatrix(rpy)
-  rot.setPosition(x, y, z)
-  return rot
-}
-
-function formatRpyFromMatrix(m: THREE.Matrix4): string {
-  const q = new THREE.Quaternion().setFromRotationMatrix(m)
-  return formatRpyTuple(quatToRpy(q))
-}
-
-function worldLevelRpyForParent(parentWorld: THREE.Matrix4 | undefined): string {
-  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
-  parentRot.setPosition(0, 0, 0)
-  return formatRpyFromMatrix(parentRot.invert())
-}
-
-function axisNameFromUrdf(axis: string): 'x' | 'y' | 'z' {
-  const values = axis.split(/\s+/).map(Number)
-  const ax = Math.abs(values[0] || 0)
-  const ay = Math.abs(values[1] || 0)
-  const az = Math.abs(values[2] || 0)
-  if (ax >= ay && ax >= az) return 'x'
-  if (ay >= ax && ay >= az) return 'y'
-  return 'z'
-}
-
-function axisNameFromComponentAxis(axis?: string): 'x' | 'y' | 'z' {
-  const v = (axis || 'z').trim().toLowerCase()
-  if (v === 'x' || v === 'y' || v === 'z') return v
-  return axisNameFromUrdf(v)
-}
-
-function servoShaftAlignRpy(axisName: 'x' | 'y' | 'z'): string {
-  if (axisName === 'x') return '0 1.5708 0'
-  if (axisName === 'y') return '-1.5708 0 0'
-  return '0 0 0'
-}
-
-function servoDesiredWorldRotation(axisName: 'x' | 'y' | 'z', axisSign = 1): THREE.Matrix4 {
-  // Split servos always rotate about local +Z. The graph's joint_axis is a
-  // robot-frame semantic axis, so do not interpret it in the already-rotated
-  // parent horn frame. These rotations also pick a stable radial zero:
-  // for Y-pitch servos local +Y points down in world space, so limb links hang
-  // below the horn before rest-pose spin is applied.
-  if (axisName === 'y' && axisSign < 0) {
-    const mirrored = new THREE.Matrix4()
-    // Mirror the physical shaft onto world -Y while keeping local +Y as the
-    // radial-down zero for leg chains.
-    mirrored.set(
-      -1,  0,  0, 0,
-       0,  0, -1, 0,
-       0, -1,  0, 0,
-       0,  0,  0, 1,
-    )
-    return mirrored
-  }
-  return rpyMatrix(servoShaftAlignRpy(axisName))
-}
-
-function servoAxisSignFromParentWorld(parentWorld: THREE.Matrix4 | undefined, axisName: 'x' | 'y' | 'z'): number {
-  if (axisName !== 'y' || !parentWorld) return 1
-  const parentPos = new THREE.Vector3().setFromMatrixPosition(parentWorld)
-  return parentPos.y < -1e-6 ? -1 : 1
-}
-
-function servoMountRpyForParentWorld(parentWorld: THREE.Matrix4 | undefined, axisName: 'x' | 'y' | 'z'): string {
-  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
-  parentRot.setPosition(0, 0, 0)
-  const axisSign = servoAxisSignFromParentWorld(parentWorld, axisName)
-  const localRot = new THREE.Matrix4().multiplyMatrices(
-    parentRot.invert(),
-    servoDesiredWorldRotation(axisName, axisSign),
-  )
-  return formatRpyFromMatrix(localRot)
-}
-
-function servoPlanarMountRpyForParentWorld(parentWorld: THREE.Matrix4 | undefined, attachFace: string | null | undefined, fallbackRpy: string): string {
-  if (attachFace !== 'top' && attachFace !== 'bottom') return fallbackRpy
-  const [, , yaw] = parseRpyString(fallbackRpy)
-  const desiredWorld = rpyMatrix(attachFace === 'bottom'
-    ? `${Math.PI} 0 ${yaw || 0}`
-    : `0 0 ${yaw || 0}`)
-  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
-  parentRot.setPosition(0, 0, 0)
-  const localRot = new THREE.Matrix4().multiplyMatrices(parentRot.invert(), desiredWorld)
-  return formatRpyFromMatrix(localRot)
-}
-
-function servoLocalRestRpyFromJointRpy(rpy: [number, number, number], axisName: 'x' | 'y' | 'z', axisSign = 1): string {
-  const axisIndex = axisName === 'x' ? 0 : axisName === 'y' ? 1 : 2
-  // Authored attach_rpy is a semantic joint-axis rest angle. Side-axis servos
-  // are mirrored left/right in hardware, so convert that semantic angle into
-  // the split servo's local +Z horn frame.
-  return formatRpyTuple([0, 0, -(rpy[axisIndex] || 0) * axisSign])
-}
-
-function worldOffsetFromParent(parentWorld: THREE.Matrix4 | undefined, localOffset: [number, number, number]): THREE.Vector3 {
-  const parentRot = (parentWorld ?? new THREE.Matrix4()).clone()
-  parentRot.setPosition(0, 0, 0)
-  return new THREE.Vector3(localOffset[0], localOffset[1], localOffset[2]).applyMatrix4(parentRot)
-}
-
-function servoDrivenStructuralLimbPlacement(
-  parentAxisName: 'x' | 'y' | 'z',
-  attachFace: string | null | undefined,
-  childBodyHY: number,
-  childBodyHZ: number,
-  parentWorld?: THREE.Matrix4,
-): { xyz: string; rpy: string } | null {
-  const adapterGap = 0.008
-  const offset = adapterGap + childBodyHZ
-  const desiredWorldZ = attachFace === 'top' ? 1 : -1
-  const signedRadial = (axis: [number, number, number]) => {
-    const baseSign = attachFace === 'top' ? -1 : 1
-    const radial = worldOffsetFromParent(parentWorld, [
-      axis[0] * baseSign,
-      axis[1] * baseSign,
-      axis[2] * baseSign,
-    ])
-    return radial.z * desiredWorldZ < 0 ? -baseSign : baseSign
-  }
-
-  if (parentAxisName === 'x') {
-    const sign = signedRadial([1, 0, 0])
-    const x = sign * offset
-    const pitch = sign >= 0 ? Math.PI / 2 : -Math.PI / 2
-    return {
-      xyz: `${x.toFixed(4)} 0.0000 ${childBodyHY.toFixed(4)}`,
-      // Slim links are thin plates: length is local Z, broad face normal is
-      // local Y. Map local Z to the radial direction and local Y onto the horn
-      // shaft normal so the plate seats on its broad face instead of edge-on.
-      rpy: `${(Math.PI / 2).toFixed(4)} ${pitch.toFixed(4)} 0`,
-    }
-  }
-
-  if (parentAxisName === 'y') {
-    const sign = signedRadial([0, 1, 0])
-    const y = sign * offset
-    const roll = sign >= 0 ? -Math.PI / 2 : Math.PI / 2
-    return {
-      xyz: `0.0000 ${y.toFixed(4)} ${childBodyHY.toFixed(4)}`,
-      rpy: `${roll.toFixed(4)} 0 0`,
-    }
-  }
-
-  const sign = signedRadial([0, 0, 1])
-  return {
-    xyz: `0.0000 0.0000 ${(sign * offset).toFixed(4)}`,
-    rpy: '0 0 0',
-  }
-}
-
-function isDistalBeamComponentId(componentId: string | null | undefined): boolean {
-  return componentId === 'structural_limb_link_slim'
-    || componentId?.startsWith('structural_extrusion_') === true
-}
-
-function servoDrivenChildPlacement(
-  parentAxisName: 'x' | 'y' | 'z',
-  attachFace: string | null | undefined,
-  _childBodyHX: number,
-  _childBodyHY: number,
-  childBodyHZ: number,
-  invertRadialSide = false,
-  childIsServo = false,
-): { xyz: string; rpy: string } | null {
-  const adapterGap = 0.008
-  if (parentAxisName === 'z') {
-    const offset = adapterGap + childBodyHZ
-    return { xyz: `0.0000 0.0000 ${offset.toFixed(4)}`, rpy: '0 0 0' }
-  }
-  const offset = childIsServo ? Math.max(adapterGap + childBodyHZ, 0.060) : adapterGap + childBodyHZ
-  const sign = childIsServo && parentAxisName === 'x' ? 1 : (attachFace === 'top' ? -1 : 1)
-  if (parentAxisName === 'x') {
-    const x = sign * offset
-    const rpy = sign > 0 ? '0 1.5708 0' : '0 -1.5708 0'
-    return { xyz: `${x.toFixed(4)} 0.0000 0.0000`, rpy }
-  }
-  const y = sign * offset
-  const roll = (invertRadialSide ? sign : -sign) * Math.PI / 2
-  const rpy = `${roll.toFixed(4)} 0 0`
-  return { xyz: `0.0000 ${y.toFixed(4)} 0.0000`, rpy }
-}
-
-function servoCompoundCarrierVisuals(xm: number, ym: number, zm: number, reach = 0): UrdfVisualDesc[] {
-  const plateT = Math.max(Math.min(xm, ym) * 0.075, 0.0025)
-  const sideY = ym / 2 + plateT * 4.2
-  const sideSize: [number, number, number] = [xm * 1.18, plateT, zm * 1.18]
-  const tieSize: [number, number, number] = [plateT * 1.2, ym + plateT * 8.4, plateT * 1.2]
-  const color: [number, number, number, number] = [0.42, 0.46, 0.50, 1]
-  const dark: [number, number, number, number] = [0.31, 0.34, 0.38, 1]
-  const visuals: UrdfVisualDesc[] = [
-    { origin_xyz: [0, sideY, 0], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: sideSize }, color_rgba: color },
-    { origin_xyz: [0, -sideY, 0], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: sideSize }, color_rgba: color },
-    { origin_xyz: [-xm * 0.42, 0, -zm * 0.42], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: tieSize }, color_rgba: dark },
-  ]
-  const bridgeLen = Math.max(reach - ym * 0.25, 0)
-  if (bridgeLen > plateT * 2) {
-    visuals.push({
-      origin_xyz: [xm * 0.38, -bridgeLen / 2, 0],
-      origin_rpy: [0, 0, 0],
-      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
-      color_rgba: dark,
-    })
-    visuals.push({
-      origin_xyz: [-xm * 0.38, -bridgeLen / 2, 0],
-      origin_rpy: [0, 0, 0],
-      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
-      color_rgba: dark,
-    })
-  }
-  return visuals
-}
-
-function normalizeJointType(value?: string): AssemblyJointType {
-  const jointType = (value || '').toLowerCase()
-  if (
-    jointType === 'revolute' ||
-    jointType === 'continuous' ||
-    jointType === 'prismatic'
-  ) {
-    return jointType
-  }
-  return 'fixed'
-}
-
-function axisNameToTuple(axis?: string): [number, number, number] {
-  switch ((axis || 'z').toLowerCase()) {
-    case 'x': return [1, 0, 0]
-    case 'y': return [0, 1, 0]
-    default: return [0, 0, 1]
-  }
-}
-
-function axisTupleToUrdf(axis: [number, number, number]): string {
-  return axis.map(v => (Math.abs(v) < 1e-9 ? 0 : v)).join(' ')
-}
-
-function presetContactClass(preset: PresetComponent | null | undefined): string {
-  const contactClass = preset?.sim_metadata?.contact_class
-  return typeof contactClass === 'string' ? contactClass : ''
-}
+// AssemblyJointType + pure transform / joint / naming helpers moved to the
+// placement-compiler subtree (Phase 3b.1). Re-imported here so existing call
+// sites inside this file keep working with no behavior change.
+import {
+  parseXyzString,
+  transformFromXyzRpy,
+  axisNameFromUrdf,
+  axisNameFromComponentAxis,
+} from './placementCompiler/transforms.ts'
+import {
+  resolveJointLimitsRad,
+  normalizeJointType,
+  axisNameToTuple,
+  axisTupleToUrdf,
+} from './placementCompiler/joints.ts'
+import {
+  componentIdFromLinkName,
+  isSplitServoComponentId,
+} from './placementCompiler/componentNaming.ts'
+import {
+  faceUVHalfExtents,
+  _resetMultiChildPositionsCache,
+} from './placementCompiler/multiChild.ts'
+import {
+  servoCompoundCarrierVisuals,
+} from './placementCompiler/servoSplit.ts'
+import { compileAssembly } from './placementCompiler/index.ts'
 
 // AssemblyComponent / AssemblyGraph are defined in ./urdfGraphEquivalence.ts
 // and re-exported at the top of this file (keeps the pure-from-Node test harness
@@ -693,6 +406,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   // `localPos` is the face center in the parent link's local frame.
   interface MountNodeEntry extends AttachmentNodeRuntime {
     localPos: THREE.Vector3
+    localAxis: THREE.Vector3 | null
+    worldAxis: THREE.Vector3 | null
     frameLinkName: string
   }
   let mountNodes: MountNodeEntry[] = []
@@ -1060,13 +775,20 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       } else {
         const componentId = componentIdFromLinkName(linkName)
         const preset = findPresetById(componentId)
-        if (frameLinkName !== linkName && preset && isSplitServoComponentId(componentId)) {
-          const resolved = resolveComponentVisual({ preset, category: findCategory(preset), mode: 'collision' })
+        if (preset) {
+          // PLACEMENT_REWRITE_PLAN.md Phase 4c — resolver-driven bbox is the
+          // source of truth for every preset-backed link. The resolver's AABB
+          // is zero-centered around the link origin (post-parametric, pre-
+          // rotation), which matches what the placement compiler reads. Using
+          // it here makes mount-node positions independent of async mesh load
+          // state and identical to placement-compiler inputs.
+          const resolved = resolveComponentVisual({ preset, category: findCategory(preset) })
           localBox = new THREE.Box3(
             new THREE.Vector3(-resolved.bounds.hx, -resolved.bounds.hy, -resolved.bounds.hz),
             new THREE.Vector3(resolved.bounds.hx, resolved.bounds.hy, resolved.bounds.hz),
           )
         } else {
+          // No preset (custom / unknown link) — fall back to scene-walk.
           localBox = computeLinkLocalBoundingBox(lg)
         }
         linkBBoxCache.set(linkName, localBox)
@@ -1074,9 +796,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (!localBox || localBox.isEmpty()) continue
 
       const center = localBox.getCenter(new THREE.Vector3())
-      const size = localBox.getSize(new THREE.Vector3())
-      const half = new THREE.Vector3(size.x / 2, size.y / 2, size.z / 2)
-
       // Gather child-joint origin xyz in parent-local frame, used to determine occupancy.
       const childOriginsLocal: THREE.Vector3[] = []
       for (const j of Object.values(kinJoints)) {
@@ -1098,17 +817,17 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
       const componentId = componentIdFromLinkName(linkName)
       const preset = findPresetById(componentId)
-      const faceDefs = componentPortsForPreset(
-        componentId,
-        half.x, half.y, half.z,
-        preset?.mounting_logic,
-      ).map(f => (
-        isTireComponentId(componentId) && f.nodeId === 'hub_bore'
-          ? { ...f, origin_xyz: [-center.x, -center.y, -center.z] as [number, number, number] }
-          : f
-      ))
+      const connectors = preset ? resolveComponentConnectors(preset) : []
+      // PLACEMENT_REWRITE_PLAN.md Phase 4c — with the resolver-driven
+      // (zero-centered) bbox above, the previous hub_bore center-compensation
+      // for tires (`origin_xyz: [-center, -center, -center]`) collapses to
+      // `[0, 0, 0]`, which is already what `resolveComponentPortsForBounds`
+      // declares for tire hub_bore. The branch is no longer needed.
+      const faceDefs = preset ? resolveComponentPorts(preset) : []
 
       for (const f of faceDefs) {
+        const connector = findConnectorForNode(connectors, f.nodeId)
+        const localAxis = axisFromPortOrConnector(f.origin_xyz, connector, false)
         const localPos = new THREE.Vector3(
           center.x + f.origin_xyz[0],
           center.y + f.origin_xyz[1],
@@ -1117,6 +836,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const nodeKey = makeMountLinkName(linkName, f.nodeId)
         const worldPosition = localPos.clone().applyMatrix4(lg.matrixWorld)
         const worldQuaternion = linkWorldQuat.clone()
+        const worldAxis = localAxis ? localAxis.clone().applyQuaternion(linkWorldQuat).normalize() : null
 
         // Occupancy: is there a child joint whose origin sits near this face?
         let occupied = false
@@ -1134,6 +854,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           single: f.single,
           frameLinkName,
           localPos,
+          localAxis,
+          worldAxis,
           worldPosition,
           worldQuaternion,
         })
@@ -1181,6 +903,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       lg.matrixWorld.decompose(worldPosTmp, worldQuatTmp, worldScaleTmp)
       n.worldQuaternion.copy(worldQuatTmp)
       n.worldPosition.copy(n.localPos).applyMatrix4(lg.matrixWorld)
+      if (n.localAxis) {
+        n.worldAxis = n.localAxis.clone().applyQuaternion(worldQuatTmp).normalize()
+      }
 
       const mesh = nodeMeshByMount.get(n.mountLink)
       if (mesh) {
@@ -1932,81 +1657,71 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { ixx: i, iyy: i, izz: i }
   }
 
-  function getParentBounds(doc: Document, parentLinkName: string): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
-    // Iterate ALL <visual> elements in the URDF, accounting for each element's
-    // <origin xyz> offset. This handles multi-piece shapes (body + shaft, body + horn, etc.)
-    // where previously only the first visual was read, missing protrusions in URDF Z (up).
-    const linkEl = doc.querySelector(`link[name="${parentLinkName}"]`)
-    if (!linkEl) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
+  // Phase 2 of COMPONENT_UNIFICATION_PLAN.md: placement reads parent bounds
+  // from the resolver, not from a re-parsed URDF visual AABB. Returns bounds
+  // in METERS — matching the contract callers expect from the retired
+  // (Phase 2) getParentBounds DOM-read path.
+  //
+  // Lookup strategy:
+  //   1. If the caller already has the parent preset (the AI assembly path
+  //      always does), they pass it in. Otherwise we strip the trailing
+  //      _N suffix from the link name and look it up in the catalog.
+  //   2. Split-servo `_body`/`_horn` link suffixes route to
+  //      resolveSplitServoVisual so a child mounted on the body sees body
+  //      bounds, not the whole-servo envelope.
+  //   3. Unknown link names (base_link, synthetic carriers, presets that
+  //      haven't loaded yet) get the same 50 mm cube fallback the old URDF
+  //      path returned.
+  function parentBoundsFromLink(
+    parentLinkName: string,
+    options?: { preset?: PresetComponent | null; instanceLengthMm?: number },
+  ): { hx: number; hy: number; hz: number; cx: number; cy: number; cz: number } {
+    const FALLBACK = { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
+    const isBody = parentLinkName.endsWith('_body')
+    const isHorn = parentLinkName.endsWith('_horn')
+    const baseLinkName = isBody || isHorn
+      ? parentLinkName.slice(0, parentLinkName.lastIndexOf('_'))
+      : parentLinkName
 
-    const visuals = linkEl.querySelectorAll('visual')
-    if (!visuals.length) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
+    let preset = options?.preset ?? null
+    if (!preset) {
+      preset = findPresetById(componentIdFromLinkName(baseLinkName))
+    }
+    if (!preset) return FALLBACK
 
-    // Compute the full axis-aligned bounding box across all visuals, then derive
-    // half-extents.  Previous code used `abs(offset) + half_extent` which equals a
-    // full extent from the link origin, not a half-extent — causing over-sized bounds
-    // for multi-visual links with offset pieces (e.g. servo horn, motor shaft).
-    let minX = Infinity, maxX = -Infinity
-    let minY = Infinity, maxY = -Infinity
-    let minZ = Infinity, maxZ = -Infinity
-
-    for (const visual of Array.from(visuals)) {
-      const originEl = visual.querySelector('origin')
-      const xyz = (originEl?.getAttribute('xyz') || '0 0 0').split(/\s+/).map(Number)
-      const ox = xyz[0] || 0, oy = xyz[1] || 0, oz = xyz[2] || 0
-
-      const geom = visual.querySelector('geometry')
-      if (!geom) continue
-
-      const boxEl = geom.querySelector('box')
-      const cylEl = geom.querySelector('cylinder')
-      const sphEl = geom.querySelector('sphere')
-
-      let ex = 0, ey = 0, ez = 0
-      if (boxEl) {
-        const size = (boxEl.getAttribute('size') || '0 0 0').split(/\s+/).map(Number)
-        ex = (size[0] || 0) / 2; ey = (size[1] || 0) / 2; ez = (size[2] || 0) / 2
-      } else if (cylEl) {
-        const r = Number(cylEl.getAttribute('radius')) || 0
-        const h = Number(cylEl.getAttribute('length')) || 0
-        ex = r; ey = r; ez = h / 2
-      } else if (sphEl) {
-        const r = Number(sphEl.getAttribute('radius')) || 0
-        ex = r; ey = r; ez = r
-      }
-
-      minX = Math.min(minX, ox - ex); maxX = Math.max(maxX, ox + ex)
-      minY = Math.min(minY, oy - ey); maxY = Math.max(maxY, oy + ey)
-      minZ = Math.min(minZ, oz - ez); maxZ = Math.max(maxZ, oz + ez)
+    if ((isBody || isHorn) && isSplitServoComponentId(preset.id)) {
+      const split = resolveSplitServoVisual({
+        preset: preset as Parameters<typeof resolveSplitServoVisual>[0]['preset'],
+        category: 'actuators',
+        instance: options?.instanceLengthMm ? { length_mm: options.instanceLengthMm } : undefined,
+      })
+      const b = isBody ? split.bodyCollision.bounds : split.hornCollision.bounds
+      return { hx: b.hx, hy: b.hy, hz: b.hz, cx: b.cx, cy: b.cy, cz: b.cz }
     }
 
-    if (!isFinite(minX)) return { hx: 0.05, hy: 0.05, hz: 0.05, cx: 0, cy: 0, cz: 0 }
-    // Guard against degenerate zero-extent dims only; legitimate thin parts
-    // (6mm coupler disc, 3mm IMU, PCBs) must report their real half-extent or
-    // placement stacks the next child above a phantom gap.
-    const xExtent = (maxX - minX) / 2
-    const yExtent = (maxY - minY) / 2
-    const zExtent = (maxZ - minZ) / 2
-    // AABB center offset from link origin — non-zero when the link has asymmetric
-    // protrusions (e.g. a servo's shaft sticks up beyond the body's symmetric ±half).
-    // Placement uses this to distinguish "body face distance" from "AABB half".
+    const resolved = resolveComponent({
+      spec: preset as Parameters<typeof resolveComponent>[0]['spec'],
+      instance: options?.instanceLengthMm ? { length_mm: options.instanceLengthMm } : undefined,
+    })
+    const [hxMm, hyMm, hzMm] = resolved.bounds.half
+    const [cxMm, cyMm, czMm] = resolved.bounds.center
     return {
-      hx: xExtent > 0 ? xExtent : 0.005,
-      hy: yExtent > 0 ? yExtent : 0.005,
-      hz: zExtent > 0 ? zExtent : 0.005,
-      cx: xExtent > 0 ? (maxX + minX) / 2 : 0,
-      cy: yExtent > 0 ? (maxY + minY) / 2 : 0,
-      cz: zExtent > 0 ? (maxZ + minZ) / 2 : 0,
+      hx: hxMm / 1000,
+      hy: hyMm / 1000,
+      hz: hzMm / 1000,
+      cx: cxMm / 1000,
+      cy: cyMm / 1000,
+      cz: czMm / 1000,
     }
   }
 
   function computePlacement(
-    doc: Document, parentLinkName: string,
+    _doc: Document, parentLinkName: string,
     comp: PresetComponent,
     childX: number, _childY: number, childZ: number,
     childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
   ): { xyz: string; rpy: string } {
-    const parent = getParentBounds(doc, parentLinkName)
+    const parent = parentBoundsFromLink(parentLinkName)
     const mount = (comp.mounting_logic?.primary as string) || 'face_mount'
     const gap = 0
     // Body half-extents (see computeFacePlacement for rationale) — use these for
@@ -2066,43 +1781,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { xyz: `0 0 ${oz.toFixed(4)}`, rpy: '0 0 0' }
   }
 
-  /**
-   * Returns the appropriate splay angle (radians) for a given number of limbs on the bottom face.
-   * Scales from a gentle tilt for bipods up to a wide stance for hexapods and beyond.
-   */
-  function splayAngleForLegCount(n: number): number {
-    if (n <= 2)  return 0.262  // ~15°
-    if (n === 3) return 0.436  // ~25°
-    if (n === 4) return 0.524  // ~30°
-    if (n <= 6)  return 0.611  // ~35°
-    return 0.698               // ~40° for 7+
-  }
-
-  /**
-   * Face-based placement for AI assembly resolver.
-   * Uses the explicit attach_face from Claude's topology instead of mounting_logic.
-   * Supports multiple children on the same face with automatic offset distribution.
-   *
-   * @param childIndex - which child this is on this face (0-based)
-   * @param totalOnFace - total children that will be on this face
-   */
-  // Which pre-rotation half-extent ends up vertical after an axis-aligned
-  // RPY rotation. Only ±90° roll or pitch swap an axis onto Z; smaller angles
-  // (e.g. leg splay) leave Z dominant, so they keep childZ.
-  //
-  // Without this, a sideways cylinder (wheel, roller, caster, horizontal
-  // bearing) is placed using its pre-rotation thickness rather than its
-  // post-rotation radius, and the part clips into its parent by (radius − thickness)/2.
-  function verticalExtentForRotation(
-    childX: number, childY: number, childZ: number,
-    rollRad: number, pitchRad: number,
-  ): number {
-    const RIGHT_ANGLE = Math.PI / 2
-    const nearRight = (v: number) => Math.abs(Math.abs(v) - RIGHT_ANGLE) < 0.1
-    if (nearRight(rollRad)) return childY   // ±90° roll: Y → vertical
-    if (nearRight(pitchRad)) return childX  // ±90° pitch: X → vertical
-    return childZ
-  }
+  // splayAngleForLegCount + verticalExtentForRotation moved to
+  // placementCompiler/multiChild.ts (Phase 3b.2). Imported below.
 
   // ── Phase 2 connector branch (docs/MATE_CONNECTOR_MIGRATION.md) ───────────
   // Feature flag. Defaults on: when no preset has authored connectors, the new
@@ -2115,9 +1795,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       .VECTOR_USE_MATE_CONNECTORS
     return g !== false
   }
-  function hasMateConnectorFields(c: AssemblyComponent): boolean {
-    return !!(c.attach_connector || c.mate_connector || c.mate_type)
-  }
+  // hasMateConnectorFields moved to placementCompiler/mate.ts (Phase 3b.2).
 
   // ── Scene-level ICP contact cleanup (Step 2 — docs/ENGINE_NEXT_STEPS.md) ──
   // Runs AFTER reparse + rich-visuals + reconcileNodePlacement so it can
@@ -2139,35 +1817,40 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return null
   }
 
+  // Phase 2c of COMPONENT_UNIFICATION_PLAN.md: contact cleanup is now an
+  // analytic check against resolved.collision, not a scene raycast. With
+  // resolver-driven placement (Phase 2a) and resolver-driven collision
+  // bounds (Phase 1), the gap between mating faces is determined by the
+  // authored connector geometry — there is no measurement to take.
+  //
+  // The function still returns shifts/icpEntries for the validator payload,
+  // but it never moves a pivot. Persistent non-zero analytic gaps are logged
+  // as warnings so the spec author can fix the bbox or connector authoring
+  // (the plan §3.6 calls this out as the shaft_out=17 vs hz=14.5 case).
+  //
+  // The raycast utility `nudgeAlongNormal` lives on for the alignmentCorpus
+  // unit tests; production no longer wires it.
   function runContactCleanupPass(): { adjustedCount: number; shifts: Array<{ linkName: string; dMm: number }>; icpEntries: EngineIcpEntry[] } {
+    void shouldApplyRuntimeNudge // Phase 2c: kept exported for the corpus, no longer wired here
+    void nudgeAlongNormal
+    void NUDGE_MIN_MM
+    const _unusedDiag: NudgeDiagnostics | null = null; void _unusedDiag
+
     const graphSnap = _lastAssemblyGraph
     const shifts: Array<{ linkName: string; dMm: number }> = []
     const icpEntries: EngineIcpEntry[] = []
     if (!graphSnap) return { adjustedCount: 0, shifts, icpEntries }
 
-    const parsed = ctx.getParsedRobot()
-    const pivotGroups = new Set<THREE.Object3D>()
-    for (const [, j] of parsed.joints) pivotGroups.add(j.group)
-
     for (const comp of graphSnap.components) {
       if (!comp.attach_to) continue
-      const parentLg = parsed.linkGroups.get(comp.attach_to)
-      const childLg = parsed.linkGroups.get(comp.link_name)
-      if (!parentLg || !childLg) continue
-      const pivot = childLg.parent as THREE.Group | null
-      if (!pivot) continue
-
       const parentComp = graphSnap.components.find(c => c.link_name === comp.attach_to)
       if (!parentComp) continue
       const parentPreset = _findPresetForCleanup(parentComp.component_id)
       const childPreset = _findPresetForCleanup(comp.component_id)
       if (!parentPreset || !childPreset) continue
 
-      // the default-top connector lands at (0, 0, +length/2) — matches the
-      const parentDefaults = generateDefaultConnectors(resolveVisualHalfBoundsMm(parentPreset, parentComp))
-      const childDefaults = generateDefaultConnectors(resolveVisualHalfBoundsMm(childPreset, comp))
-      const pAll = mergeConnectors(parentDefaults, parentPreset.connectors)
-      const cAll = mergeConnectors(childDefaults, childPreset.connectors)
+      const pAll = resolveComponentConnectors(parentPreset, parentComp)
+      const cAll = resolveComponentConnectors(childPreset, comp)
       const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
       const inferredChildId = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
       const childConnectorId = comp.mate_connector ?? inferredChildId ?? 'bottom'
@@ -2175,691 +1858,70 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const childConn = findConnector(cAll, childConnectorId)
       if (!parentConn || !childConn) continue
 
-      if (!shouldApplyRuntimeNudge(parentConn.engagement_depth_mm)) {
-        console.log(`[icp][trace] ${comp.link_name}: skip — ${parentPreset.id}.${parentConnectorId}.engagement_depth_mm=${parentConn.engagement_depth_mm}mm authored (Step 1 path)`)
-        icpEntries.push({
-          linkName: comp.link_name,
-          parentConnector: `${parentPreset.id}.${parentConnectorId}`,
-          childConnector: `${childPreset.id}.${childConnectorId}`,
-          pairedCount: 0,
-          sampleCount: 0,
-          gapP50Mm: null,
-          gapP90Mm: null,
-          gapMinMm: null,
-          gapMaxMm: null,
-          nudgeMm: 0,
-          reason: `authored-engagement-depth=${parentConn.engagement_depth_mm}mm (Step 1 path)`,
-          confidence: 'high',
-        })
-        continue
+      // Analytic gap along the parent connector axis. With resolver-driven
+      // placement, parent connector world origin equals child connector world
+      // origin, and the parent collision face along +axis is at:
+      //   parentColl.center · axis + parentColl.half · |axis| − parentConn.origin · axis
+      // Same expression on the child side (with axis negated for antiparallel
+      // mate). Sum them and the result is the residual gap; under correct
+      // authoring it is 0.
+      const parentColl = resolveComponent({
+        spec: parentPreset as Parameters<typeof resolveComponent>[0]['spec'],
+        instance: parentComp.length_mm ? { length_mm: parentComp.length_mm } : undefined,
+      }).collision.bounds
+      const childColl = resolveComponent({
+        spec: childPreset as Parameters<typeof resolveComponent>[0]['spec'],
+        instance: comp.length_mm ? { length_mm: comp.length_mm } : undefined,
+      }).collision.bounds
+      const ax = parentConn.axis_xyz
+      const axLen = Math.hypot(ax[0], ax[1], ax[2]) || 1
+      const aU = [ax[0] / axLen, ax[1] / axLen, ax[2] / axLen] as const
+      const dot3 = (a: readonly number[], b: readonly number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+      const absDot3 = (a: readonly number[], b: readonly number[]) => Math.abs(a[0]) * Math.abs(b[0]) + Math.abs(a[1]) * Math.abs(b[1]) + Math.abs(a[2]) * Math.abs(b[2])
+
+      const pFaceMm = dot3(parentColl.center, aU) + absDot3(parentColl.half, aU) - dot3(parentConn.origin_xyz_mm, aU)
+      // Child connector axis is antiparallel by mate convention; treat both as outward.
+      const cAxisMag = Math.hypot(childConn.axis_xyz[0], childConn.axis_xyz[1], childConn.axis_xyz[2]) || 1
+      const cAU = [childConn.axis_xyz[0] / cAxisMag, childConn.axis_xyz[1] / cAxisMag, childConn.axis_xyz[2] / cAxisMag] as const
+      const cFaceMm = dot3(childColl.center, cAU) + absDot3(childColl.half, cAU) - dot3(childConn.origin_xyz_mm, cAU)
+      const analyticGapMm = -(pFaceMm + cFaceMm)
+
+      let reason = 'resolver-deterministic placement; no nudge needed'
+      let confidence: 'high' | 'low' = 'high'
+      if (Math.abs(analyticGapMm) > 1.0) {
+        reason = `analytic gap ${analyticGapMm.toFixed(2)}mm — author bbox/connector mismatch (Phase 5 will gate)`
+        confidence = 'low'
+        console.warn(`[icp][analytic] ${comp.link_name} ${parentPreset.id}.${parentConnectorId}→${childPreset.id}.${childConnectorId} ${reason}`)
       }
 
-      // THREE.Raycaster operates in WORLD coordinates; transform the
-      // authored LOCAL-frame connector data (mm) up into world before
-      // passing it to nudgeAlongNormal. Axes transform as DIRECTIONS
-      // (rotation only); origins transform as POINTS (rotation + translation).
-      parentLg.updateMatrixWorld(true)
-      childLg.updateMatrixWorld(true)
-      const pOriginWorld = new THREE.Vector3(
-        parentConn.origin_xyz_mm[0] / 1000,
-        parentConn.origin_xyz_mm[1] / 1000,
-        parentConn.origin_xyz_mm[2] / 1000,
-      ).applyMatrix4(parentLg.matrixWorld)
-      const pAxisWorld = new THREE.Vector3(
-        parentConn.axis_xyz[0], parentConn.axis_xyz[1], parentConn.axis_xyz[2],
-      ).transformDirection(parentLg.matrixWorld).normalize()
-      const cOriginWorld = new THREE.Vector3(
-        childConn.origin_xyz_mm[0] / 1000,
-        childConn.origin_xyz_mm[1] / 1000,
-        childConn.origin_xyz_mm[2] / 1000,
-      ).applyMatrix4(childLg.matrixWorld)
-
-      const diagnostics: NudgeDiagnostics = {
-        sampleCount: 0, parentHits: 0, childHits: 0, pairedCount: 0, faceRadiusM: 0,
-        nudgeMm: 0, reason: '',
-      }
-      const nudgeM = nudgeAlongNormal(
-        parentLg,
-        childLg,
-        [pOriginWorld.x, pOriginWorld.y, pOriginWorld.z],
-        [pAxisWorld.x, pAxisWorld.y, pAxisWorld.z],
-        [cOriginWorld.x, cOriginWorld.y, cOriginWorld.z],
-        { excludeParent: pivotGroups, excludeChild: pivotGroups, diagnostics },
-      )
-
-      const gapSummary = diagnostics.pairedCount > 0
-        ? `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits} | gap(mm) min=${(diagnostics.gapMinMm ?? NaN).toFixed(2)} p50=${(diagnostics.gapP50Mm ?? NaN).toFixed(2)} p90=${(diagnostics.gapP90Mm ?? NaN).toFixed(2)} max=${(diagnostics.gapMaxMm ?? NaN).toFixed(2)}`
-        : `paired=${diagnostics.pairedCount}/${diagnostics.sampleCount} pHit=${diagnostics.parentHits} cHit=${diagnostics.childHits}`
-      console.log(`[icp][trace] ${comp.link_name} ${parentPreset.id}.${parentConnectorId}→${childPreset.id}.${childConnectorId} r=${(diagnostics.faceRadiusM * 1000).toFixed(1)}mm ${gapSummary} → nudge=${diagnostics.nudgeMm.toFixed(2)}mm (${diagnostics.reason})`)
-
-      // Confidence heuristic for the validator payload: high when the paired-
-      // sample ratio is ≥75% OR the nudge reason tripped the adaptive confident
-      // cap (tight percentile spread). Everything else is "low" — the gap
-      // estimate is real but should not be used to refute a screenshot claim.
-      const pairedRatio = diagnostics.sampleCount > 0 ? diagnostics.pairedCount / diagnostics.sampleCount : 0
-      const confident = pairedRatio >= 0.75 || /confident[- ]?cap/i.test(diagnostics.reason || '')
       icpEntries.push({
         linkName: comp.link_name,
         parentConnector: `${parentPreset.id}.${parentConnectorId}`,
         childConnector: `${childPreset.id}.${childConnectorId}`,
-        pairedCount: diagnostics.pairedCount,
-        sampleCount: diagnostics.sampleCount,
-        gapP50Mm: Number.isFinite(diagnostics.gapP50Mm as number) ? (diagnostics.gapP50Mm as number) : null,
-        gapP90Mm: Number.isFinite(diagnostics.gapP90Mm as number) ? (diagnostics.gapP90Mm as number) : null,
-        gapMinMm: Number.isFinite(diagnostics.gapMinMm as number) ? (diagnostics.gapMinMm as number) : null,
-        gapMaxMm: Number.isFinite(diagnostics.gapMaxMm as number) ? (diagnostics.gapMaxMm as number) : null,
-        nudgeMm: diagnostics.nudgeMm,
-        reason: diagnostics.reason,
-        confidence: confident ? 'high' : 'low',
+        pairedCount: 0,
+        sampleCount: 0,
+        gapP50Mm: analyticGapMm,
+        gapP90Mm: analyticGapMm,
+        gapMinMm: analyticGapMm,
+        gapMaxMm: analyticGapMm,
+        nudgeMm: 0,
+        reason,
+        confidence,
       })
-
-      if (!(nudgeM > 0)) continue
-
-      // Apply to pivot in parent-local: pivot.position -= nudgeM * parent_axis_unit.
-      const ax = parentConn.axis_xyz
-      const axLen = Math.hypot(ax[0], ax[1], ax[2]) || 1
-      pivot.position.x -= (nudgeM * ax[0]) / axLen
-      pivot.position.y -= (nudgeM * ax[1]) / axLen
-      pivot.position.z -= (nudgeM * ax[2]) / axLen
-      pivot.updateMatrixWorld(true)
-      shifts.push({ linkName: comp.link_name, dMm: nudgeM * 1000 })
     }
 
-    if (shifts.length > 0) parsed.group.updateMatrixWorld(true)
-    return { adjustedCount: shifts.length, shifts, icpEntries }
-  }
-
-  /**
-   * Resolve a child's joint origin via the mate-connector closed-form
-   * composition. Returns null to signal "fall through to legacy path" — the
-   * caller uses that to preserve bit-identical bbox math whenever the new
-   * fields aren't authored or the feature flag is off.
-   *
-   * Phase 2 scope: default face connectors only (attach_face → connector id
-   * via the opposite-face convention). Authored per-preset connectors land
-   * in Phase 3 alongside the problem-child presets (L-bracket, servo shaft).
-   * Multi-child distribution / splay / elevation / orientation keywords stay
-   * on the legacy path — the migration doc calls these out explicitly as
-   * orthogonal post-passes, not resolver concerns.
-   */
-  function computeMatePlacement(
-    comp: AssemblyComponent,
-    parentPresetBboxMm: { hxMm: number; hyMm: number; hzMm: number },
-    childPresetBboxMm:  { hxMm: number; hyMm: number; hzMm: number },
-    parentAuthored?: MateConnector[],
-    childAuthored?:  MateConnector[],
-    multiChild?: {
-      total: number
-      index: number
-      face: string
-      childSizes?: Array<{ hu: number; hv: number }>
-      insetOverride?: number
-    },
-  ): { xyz: string; rpy: string } | null {
-    if (!useMateConnectors()) return null
-    // Only fire when the COMPONENT opts in (attach_connector/mate_connector/
-    // mate_type). Authored preset connectors are vocabulary, not behavior —
-    // they sit available for Claude/auto-repair to reference by name via
-    // mate_connector. Auto-firing whenever a preset ships authored connectors
-    // would bypass legacy splay/multi-child distribution/orientation for every
-    // child of the parent, which is exactly the risk flagged by the migration
-    // doc "Multi-child distribution" note.
-    if (!hasMateConnectorFields(comp)) return null
-
-    // Defaults first, authored-on-preset overrides by id (mergeConnectors contract).
-    const parentDefaults = generateDefaultConnectors(parentPresetBboxMm)
-    const childDefaults  = generateDefaultConnectors(childPresetBboxMm)
-    const parentConnectors = mergeConnectors(parentDefaults, parentAuthored)
-    const childConnectors  = mergeConnectors(childDefaults,  childAuthored)
-
-    // Infer connector ids from attach_face when the new fields are partial.
-    // "top" on the parent implies "bottom" on the child, matching the default-
-    // connector naming. An explicitly authored attach_connector/mate_connector
-    // wins; the legacy attach_face is only consulted as a fallback.
-    const parentConnectorId = comp.attach_connector ?? comp.attach_face ?? 'top'
-    const inferredChildId   = comp.attach_face ? childConnectorIdForAttachFace(comp.attach_face) : null
-    const childConnectorId  = comp.mate_connector ?? inferredChildId ?? 'bottom'
-
-    const parentConn = findConnector(parentConnectors, parentConnectorId)
-    const childConn  = findConnector(childConnectors,  childConnectorId)
-    if (!parentConn || !childConn) {
-      const details = `${comp.link_name}: parent="${parentConnectorId}" (${parentConn ? 'ok' : 'MISS'}), ` +
-        `child="${childConnectorId}" (${childConn ? 'ok' : 'MISS'})`
-      const explicitGraphConnectorMiss =
-        (!!comp.attach_connector && !parentConn) ||
-        (!!comp.mate_connector && !childConn)
-      if (explicitGraphConnectorMiss) {
-        console.warn(
-          `[mate][sanitize] Invalid explicit connector on ${details}. Falling through to legacy bbox path.`,
-        )
-        return null
-      }
-      // C1 (docs/ENGINE_EXECUTION_PLAN.md): dev builds hard-error on a
-      // connector miss. A silent fall-through is how structural_baseplate_
-      // large shipped without authored connectors — the legacy path accepted
-      // it and nothing flagged the coverage hole until the 21mm reconcile
-      // shifts showed up in smoke. Prod keeps the fall-through so end users
-      // aren't stranded, but the warning is tagged [ENGINE-REGRESSION] so
-      // bug reports surface the class without having to parse the message.
-      if (import.meta.env?.DEV) {
-        throw new Error(`[ENGINE-REGRESSION] Connector miss: ${details}`)
-      }
-      console.warn(
-        `[ENGINE-REGRESSION][mate] connector lookup failed for ${details}. Falling through to legacy bbox path.`,
-      )
-      return null
-    }
-
-    const mateType: MateType = ((comp.mate_type as MateType) ?? 'fastened')
-    if (mateType !== 'fastened' && mateType !== 'planar' && mateType !== 'concentric') {
-      console.warn(`[mate] unknown mate_type="${mateType}" for ${comp.link_name}; falling through to legacy`)
-      return null
-    }
-
-    const childLocal = resolveMate(new THREE.Matrix4(), parentConn, childConn, mateType, {})
-    const pos = new THREE.Vector3()
-    const quat = new THREE.Quaternion()
-    const scl = new THREE.Vector3()
-    childLocal.decompose(pos, quat, scl)
-
-    // Multi-child tangential distribution (task #8/#9 — addresses the risk
-    // flagged in docs/MATE_CONNECTOR_MIGRATION.md "Multi-child distribution").
-    // Without this, N children all mating via the same connector id collapse
-    // to the same world point — four legs on baseplate.bottom would stack.
-    // Skipped for concentric mates because SHAFT_FANOUT validator enforces
-    // single-child-per-shaft, so the case doesn't arise there; spreading
-    // would also be wrong (a shaft-in-hole mate is supposed to be concentric).
-    if (multiChild && multiChild.total > 1 && mateType !== 'concentric') {
-      const parentMeters = {
-        hx: parentPresetBboxMm.hxMm / 1000,
-        hy: parentPresetBboxMm.hyMm / 1000,
-        hz: parentPresetBboxMm.hzMm / 1000,
-      }
-      // Pass the resolved face connector so multi-child distribution projects
-      // the parent AABB onto the connector's tangent axes rather than the
-      // face-name lookup. parentConn was resolved above by id (usually equal
-      // to multiChild.face); reuse it directly when so, otherwise re-search.
-      const faceConnector = parentConn.id === multiChild.face
-        ? parentConn
-        : (findConnector(parentConnectors, multiChild.face) ?? null)
-      const offsets = _computeMultiChildOffsets(
-        multiChild.total,
-        multiChild.index,
-        parentMeters,
-        multiChild.face,
-        multiChild.insetOverride,
-        multiChild.childSizes,
-        faceConnector,
-      )
-      const { dx, dy, dz } = faceUVToWorldOffset(multiChild.face, offsets.u, offsets.v)
-      pos.x += dx
-      pos.y += dy
-      pos.z += dz
-    }
-
-    const [r, p, y] = quatToRpy(quat)
-    return {
-      xyz: `${pos.x.toFixed(4)} ${pos.y.toFixed(4)} ${pos.z.toFixed(4)}`,
-      rpy: `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`,
-    }
-  }
-
-  function computeFacePlacement(
-    doc: Document, parentLinkName: string,
-    childX: number, childY: number, childZ: number,
-    attachFace: string | null,
-    isChildElongated: boolean = false,
-    childIndex: number = 0,
-    totalOnFace: number = 1,
-    orientation: string = 'auto',
-    noSplay: boolean = false,
-    childComponentId: string = '',
-    elevationAngleDeg: number = 0,
-    childSizes?: Array<{ hu: number; hv: number }>,
-    childCenterOffset: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
-    parentConnectors?: MateConnector[],
-    outFlags?: { viaConnector: boolean },
-    childConnectors?: MateConnector[],
-    placementHints: {
-      parentIsDrivetrain?: boolean
-      childIsTire?: boolean
-      childIsDrivetrain?: boolean
-      childUsesRollingBottomPose?: boolean
-    } = {},
-    parentParametricLengthMm?: number,
-  ): { xyz: string; rpy: string } {
-    const parent = getParentBounds(doc, parentLinkName)
-    const gap = 0
-    // Distance from parent's link origin to its body face along each axis.
-    // For a symmetric part this equals hz; for a servo (shaft on +Z, body
-    // centered at origin) it collapses to the body half-height.
-    // Formula: body_face_distance = axis_half_extent - |axis_center_offset|.
-    const parentBodyHX = parent.hx - Math.abs(parent.cx)
-    const parentBodyHY = parent.hy - Math.abs(parent.cy)
-    // For parametric extrusions (length_mm + cross_section_mm), the body's
-    // Z tip is at length_mm/2 — but the URDF visual AABB also includes pivot
-    // bosses/axle caps perpendicular to the extrusion axis. Those bosses live
-    // ON the end face, not past it, so the extruded body tip is the true
-    // end-mount surface for end-of-limb children (foot pads, etc.).
-    const parentBodyHZ = (parentParametricLengthMm && parentParametricLengthMm > 0)
-      ? parentParametricLengthMm / 2000
-      : parent.hz - Math.abs(parent.cz)
-    // Child's link-origin-to-body-face distance along each axis. Lets the
-    // child's body (not the tip of an off-center protrusion) sit flush.
-    const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
-    const childBodyHY = childY / 2 - Math.abs(childCenterOffset.cy)
-    const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
-    console.log(`[placement] ${childComponentId || '?'} on ${parentLinkName} face=${attachFace || 'top'} | parent hx=${parent.hx.toFixed(4)} hy=${parent.hy.toFixed(4)} hz=${parent.hz.toFixed(4)} | child ${childX.toFixed(4)}×${childY.toFixed(4)}×${childZ.toFixed(4)}`)
-
-    const face = attachFace || 'top'
-
-    // ── Hub-motor → tire: axial mount along drivetrain-local +Z ──
-    // After the drivetrain's Rx(-π/2) on the baseplate bottom, drivetrain-local
-    // +Z maps to world +Y (outboard for the +Y chassis half; the -Y half gets a
-    // 180° yaw flip so its +Z also points outboard). Offsetting the tire by
-    // (motorHalfZ + tireHalfAxle) along +Z seats the tire's inboard face flush
-    // against the motor's outboard end. Do NOT use parent.hy (the motor radius)
-    // here — that direction is world -Z (downward) after the drivetrain roll and
-    // would place the tire below the motor instead of beside it.
-    const parentIsDrivetrain = placementHints.parentIsDrivetrain
-      ?? isDrivetrainComponentId(componentIdFromLinkName(parentLinkName))
-    const childIsTire = placementHints.childIsTire
-      ?? isTireComponentId(childComponentId)
-    if (parentIsDrivetrain && childIsTire) {
-      const motorHalfZ = parent.hz   // axle half-length along drivetrain local Z
-      const tireHalfAxle = childZ / 2
-      const dz = motorHalfZ + tireHalfAxle
-      return { xyz: `0.0000 0.0000 ${dz.toFixed(4)}`, rpy: '0 0 0' }
-    }
-    // Layer 2 — multi-child mount_face → mount_face was bypassing the parent's
-    // authored connectors (computeMatePlacement only fires when the component
-    // opts in via attach_connector/mate_connector/mate_type). When the parent
-    // has an authored connector for this face, override face-normal coord and
-    // tangential center with the connector's origin so e.g. four IMU/lipo/SBC
-    // children on a baseplate land at connector_top.z + child/2 instead of
-    // bbox_hz + child/2. For symmetric meshes the two agree (Layer 1 made
-    // bbox match rendered for the 5 parametric plates); for asymmetric or
-    // recessed connectors the connector wins. Defaults from the bbox are NOT
-    // consulted here — that path already matches the legacy bbox math, so
-    // only authored entries trigger the override.
-    const authoredConn = parentConnectors?.find(c => c.id === face) ?? null
-    const connOriginM = authoredConn
-      ? [
-          authoredConn.origin_xyz_mm[0] / 1000,
-          authoredConn.origin_xyz_mm[1] / 1000,
-          authoredConn.origin_xyz_mm[2] / 1000,
-        ] as const
-      : null
-    // Engagement depth: child sinks INTO parent along this connector's axis at
-    // mate time. Per-face branches below subtract this along the face normal
-    // (+axis for top/front/right, -axis for bottom/back/left), shrinking the
-    // contact gap. Closes chamfer-vs-flat visible gaps on chamfered tops
-    // without per-GLB edits. See docs/ENGINE_NEXT_STEPS.md Step 1.
-    const engagementM = (authoredConn?.engagement_depth_mm ?? 0) / 1000
-    // Same idea on the child side. The child contacts the parent face with
-    // its OPPOSITE face (top↔bottom etc). When the child has an authored
-    // connector for that opposite face, prefer its origin over childBodyHZ —
-    // this is what closes the servo body-vs-shaft gap. The bbox-derived
-    // childBodyHZ uses the FULL AABB half (which on a servo includes the
-    // shaft tip), so the servo body sits 4-5mm BELOW the parent's mating
-    // face. An authored `top` at body_top puts the body flush instead.
-    const oppositeFaceMap: Record<string, string> = {
-      top: 'bottom', bottom: 'top',
-      front: 'back', back: 'front',
-      left: 'right', right: 'left',
-    }
-    const childFace = oppositeFaceMap[face]
-    const childAuthoredConn = childFace
-      ? (childConnectors?.find(c => c.id === childFace) ?? null)
-      : null
-    const childConnOriginM = childAuthoredConn
-      ? [
-          childAuthoredConn.origin_xyz_mm[0] / 1000,
-          childAuthoredConn.origin_xyz_mm[1] / 1000,
-          childAuthoredConn.origin_xyz_mm[2] / 1000,
-        ] as const
-      : null
-    if (outFlags && (connOriginM || childConnOriginM)) outFlags.viaConnector = true
-
-    // ── 1a/1d: Pre-compute splay and splay-aware inset for bottom-face legs ──
-    // Rolling assemblies and their tire children skip leg splay and use the
-    // lateral bottom-face pose.
-    const childIsDrivetrain = placementHints.childIsDrivetrain
-      ?? isDrivetrainComponentId(childComponentId)
-    const usesRollingBottomPose = placementHints.childUsesRollingBottomPose
-      ?? (childIsDrivetrain || childIsTire || childComponentId.startsWith('mobility_swerve_'))
-    let splayAngle = 0
-    let insetOverride: number | undefined
-    if (face === 'bottom' && !usesRollingBottomPose && !noSplay && totalOnFace >= 2) {
-      splayAngle = splayAngleForLegCount(totalOnFace)
-      // Shrink the corner inset proportionally so post-splay tips stay within parent footprint.
-      // At 0 splay inset=0.7; at ~40° (max) inset≈0.51.
-      insetOverride = Math.max(0.4, 0.7 - (splayAngle / (Math.PI / 2)) * 0.3)
-    }
-
-    // ── Multi-child tangential offsets (uses splay-corrected inset on bottom face) ──
-    // When the parent has an authored connector for this face, project the
-    // AABB onto the connector's tangent (u,v) axes for the face extent.
-    // authoredConn was already resolved above for engagement_depth_mm.
-    let tu = 0, tv = 0
-    if (totalOnFace > 1) {
-      const offsets = _computeMultiChildOffsets(totalOnFace, childIndex, parent, face, insetOverride, childSizes, authoredConn)
-      tu = offsets.u
-      tv = offsets.v
-    }
-    // Connector-relative tangential offset: distribute children around the
-    // connector origin's tangent components, not the bbox face center. For
-    // baseplate-class connectors centered at (0,0,*) this is a no-op.
-    if (connOriginM) {
-      switch (face) {
-        case 'top': case 'bottom':  tu += connOriginM[0]; tv += connOriginM[1]; break
-        case 'front': case 'back':  tu += connOriginM[1]; tv += connOriginM[2]; break
-        case 'left': case 'right':  tu += connOriginM[0]; tv += connOriginM[2]; break
-      }
-    }
-
-    // ── 1c: Numeric orientation — yaw rotation around the face normal ──
-    // If orientation is a number string (e.g. '45'), treat it as degrees of yaw on the face.
-    const orientDeg = parseFloat(orientation)
-    const hasNumericOrient = !isNaN(orientDeg) && orientDeg !== 0
-
-    // ── 1c: Horizontal/vertical keyword handling (elongated components on top face) ──
-    let shouldRotateHorizontal = false
-    if (isChildElongated) {
-      if (orientation === 'horizontal') {
-        shouldRotateHorizontal = true
-      }
-      // 'vertical' and 'auto' keep shouldRotateHorizontal = false (no accumulated rotation)
-    }
-
-    if (shouldRotateHorizontal && face === 'top') {
-      // Pitch-90° only helps when the long axis is Z (e.g. vertical extrusions). For
-      // components whose long axis is already X or Y (batteries, sensor packs), pitching
-      // stands them up — fall through to the normal 'top' case, applying just yaw.
-      // Use sortedDims.indexOf(longest) so a tied axis (e.g. childX === childZ) resolves
-      // to the original index of the first match, not Z.
-      const dims = [childX, childY, childZ]
-      const sortedDims = [...dims].sort((a, b) => a - b)
-      const longest = sortedDims[2]
-      const longestAxisIdx = dims.indexOf(longest)
-      if (longestAxisIdx === 2) {
-        // Pitch 90° swings X onto Z — use childX as the vertical extent.
-        // Skip child-connector override here: this branch already rebuilds the
-        // contact extent via verticalExtentForRotation against the rotated dims,
-        // so a static `bottom` authored connector wouldn't be the right value.
-        const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-        const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap - engagementM
-        const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
-      }
-    }
-
-    // ── 1b: Elevation angle for side faces (degrees → radians) ──
-    const elevRad = elevationAngleDeg * (Math.PI / 180)
-
-    // ── Face normal offset + tangential multi-child offset ──
-    // Normal-direction offsets use BODY half-extents (hz - |cz|, etc.), so asymmetric
-    // protrusions (servo shaft) don't inflate the stack spacing and leave visible gaps.
-    // Tangential offsets (tu, tv) and face-distribution still use AABB half-extents — a
-    // protrusion's footprint is real when arranging multiple children.
-    switch (face) {
-      case 'top': {
-        // Child contact distance: an authored child `bottom` connector wins over
-        // childBodyHZ. The connector z is negative (e.g. coupler.bottom = -4mm),
-        // so contact distance from pivot = -childConnZ = +abs(childConnZ).
-        const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
-        const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap - engagementM
-        // 1c: numeric orientation → yaw (Z-rotation) on top face
-        // elevation_angle: sign-consistent with front (`0 -elevRad 0`) — negative elev
-        // pitches the sensor forward/down so a top-mounted camera can look toward +X and down.
-        const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
-        const rpy = elevRad !== 0 || hasNumericOrient
-          ? `0 ${(-elevRad).toFixed(4)} ${yawRad.toFixed(4)}`
-          : '0 0 0'
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy }
-      }
-      case 'bottom': {
-        // Compute rotation first — vertical extent depends on it.
-        // 1a: topology-aware splay — splayAngle was pre-computed above
-        let rollRad = 0
-        let pitchRad = 0
-        if (usesRollingBottomPose) {
-          // Wheels need -90° roll to orient the cylinder laterally (axle along Y)
-          // Standard ROS convention: rpy="-pi/2 0 0" with axis="0 0 1"
-          rollRad = -Math.PI / 2
-        } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
-          // Roll tilts along X (forward/back based on tv), Pitch tilts along Y (left/right based on tu)
-          rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
-          pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-        }
-        // 6b: numeric orientation → yaw (Z-rotation) on bottom face, matching top/side
-        // behavior. AI emitting orientation:"45" on hip-abduction servos to point each
-        // hip toward its corner now lands instead of being silently dropped.
-        let yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
-        // Drivetrain side-flip: the coaxial tire-on-drivetrain branch offsets the
-        // tire in drivetrain-local +Y (the bore-facing direction). Without a flip,
-        // every drivetrain's tire ends up on the same world side. Yaw drivetrains
-        // on the baseplate's -Y half by 180° so their bore points the opposite
-        // world direction — both sides of the chassis then get outboard wheels.
-        if (childIsDrivetrain && tv < 0) {
-          yawRad += Math.PI
-        }
-        // elevation_angle on bottom: flips the top-face sign so negative elev still
-        // pitches the sensor forward/down from its parent's perspective.
-        if (elevRad !== 0) pitchRad += elevRad
-        const rpyStr = `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}`
-        // Rotation-aware vertical extent uses body half-extents so a rolled wheel
-        // or pitched bracket snaps to the body, not to a shaft/horn tip.
-        // When the child has an authored `top` connector AND the child is not
-        // rotated (no splay/wheel/orient), prefer the connector. Authored body
-        // tops on servos (top connector at body_top, not bbox_top) close the
-        // shaft-vs-body gap that AABB-based vExtent leaves visible.
-        const vExtent = verticalExtentForRotation(childBodyHX * 2, childBodyHY * 2, childBodyHZ * 2, rollRad, pitchRad)
-        const isRotated = usesRollingBottomPose || splayAngle > 0
-        const childContact = (childConnOriginM && !isRotated) ? childConnOriginM[2] : vExtent / 2
-        const oz = (connOriginM ? connOriginM[2] : -parentBodyHZ) - childContact - gap + engagementM
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: rpyStr }
-      }
-      case 'front': {
-        // 1b: elevation_angle tilts the component upward (positive) or downward (negative)
-        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
-        const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
-        const childContact = childConnOriginM ? -childConnOriginM[0] : childBodyHX
-        const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap - engagementM
-        return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
-      }
-      case 'back': {
-        const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
-        // Back face pitches the opposite direction (component faces -X, so positive pitch is still up)
-        const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
-        const childContact = childConnOriginM ? childConnOriginM[0] : childBodyHX
-        const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap + engagementM
-        return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
-      }
-      case 'right': {
-        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
-        // Right face: elevation is a roll about X
-        const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
-        const childContact = childConnOriginM ? -childConnOriginM[1] : childBodyHY
-        const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap - engagementM
-        return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
-      }
-      case 'left': {
-        const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
-        // Left face: elevation is an inverted roll about X
-        const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
-        const childContact = childConnOriginM ? childConnOriginM[1] : childBodyHY
-        const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap + engagementM
-        return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
-      }
-      case 'coaxial':
-        // Explicit coaxial: child is concentric with parent (same center), rotated to align axis.
-        // For tire-on-drivetrain this is handled by the pre-check above; this branch
-        // handles any other explicit coaxial annotation the AI may emit.
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} 0.0000`, rpy: '-1.5708 0.0000 0.0000' }
-      default:
-        return { xyz: `0 0 ${(parentBodyHZ + childBodyHZ + gap).toFixed(4)}`, rpy: '0 0 0' }
-    }
-  }
-
-  /** Map a face name to its two tangent half-extents (U and V axes on that face). */
-  function faceUVHalfExtents(b: { hx: number; hy: number; hz: number }, face: string): { hu: number; hv: number } {
-    switch (face) {
-      case 'top': case 'bottom': return { hu: b.hx, hv: b.hy }
-      case 'front': case 'back': return { hu: b.hy, hv: b.hz }
-      case 'left': case 'right': return { hu: b.hx, hv: b.hz }
-      default: return { hu: b.hx, hv: b.hy }
-    }
-  }
-
-  /** Project parent AABB half-extents onto the tangent plane of a connector's
-   *  axis. For axis-aligned connectors the result equals `faceUVHalfExtents`;
-   *  tilted-axis connectors get the AABB extent along their actual (u,v)
-   *  tangent basis. Support along unit w: hx*|wx|+hy*|wy|+hz*|wz|. */
-  function faceUVHalfExtentsFromConnector(
-    b: { hx: number; hy: number; hz: number },
-    connector: MateConnector,
-  ): { hu: number; hv: number } {
-    const axis = new THREE.Vector3(
-      connector.axis_xyz[0],
-      connector.axis_xyz[1],
-      connector.axis_xyz[2],
-    )
-    const { u, v } = tangentBasisFromAxis(axis)
-    const hu = b.hx * Math.abs(u.x) + b.hy * Math.abs(u.y) + b.hz * Math.abs(u.z)
-    const hv = b.hx * Math.abs(v.x) + b.hy * Math.abs(v.y) + b.hz * Math.abs(v.z)
-    return { hu, hv }
+    return { adjustedCount: 0, shifts, icpEntries }
   }
 
   /** Build a preset with length_mm override applied to bounding_box_mm (for extrusions). */
   function buildVisPreset(preset: PresetComponent, comp: { length_mm?: number }): PresetComponent {
-    const phys = preset.physical
-    const bb = phys.bounding_box_mm ?? phys.cross_section_mm ?? [40, 40, 40]
-    if (comp.length_mm && phys.cross_section_mm) {
-      return { ...preset, physical: { ...phys, bounding_box_mm: [bb[0] ?? 40, bb[1] ?? 40, comp.length_mm] } } as PresetComponent
+    if (comp.length_mm && isParametricSpec(preset)) {
+      const bb = resolveComponentBboxMm(preset)
+      return { ...preset, physical: { ...preset.physical, bounding_box_mm: [bb[0], bb[1], comp.length_mm] } } as PresetComponent
     }
     return preset
   }
 
-  /**
-   * Build the resolved positions array for all children on a face.
-   * Cached per face group key to avoid recomputing for each child.
-   */
-  const _multiChildPositionsCache = new Map<string, Array<{ u: number; v: number }>>()
-
-  function _buildMultiChildPositions(
-    total: number,
-    parent: { hx: number; hy: number; hz: number },
-    face: string,
-    inset: number,
-    childSizes?: Array<{ hu: number; hv: number }>,
-    parentConnector?: MateConnector | null,
-  ): Array<{ u: number; v: number }> {
-    // When a parent connector is supplied, project the AABB onto its tangent
-    // axes; otherwise fall back to the face-name bbox-component lookup.
-    const { hu: extU, hv: extV } = parentConnector
-      ? faceUVHalfExtentsFromConnector(parent, parentConnector)
-      : faceUVHalfExtents(parent, face)
-    // Cache key keys off the resolved (extU,extV) so the connector-derived
-    // and face-name paths don't collide when they would diverge (tilted axes).
-    const cacheKey = `${total}:${face}:${extU.toFixed(6)},${extV.toFixed(6)}:${inset}:${childSizes ? childSizes.map(s => `${s.hu},${s.hv}`).join(';') : ''}`
-    const cached = _multiChildPositionsCache.get(cacheKey)
-    if (cached) return cached
-    let positions: Array<{ u: number; v: number }>
-
-    if (total === 2) {
-      positions = [
-        { u: -inset * extU, v: 0 },
-        { u: inset * extU, v: 0 },
-      ]
-    } else if (total === 3) {
-      positions = [
-        { u: 0, v: inset * extV },
-        { u: -inset * extU, v: -inset * 0.5 * extV },
-        { u: inset * extU, v: -inset * 0.5 * extV },
-      ]
-    } else if (total === 4) {
-      positions = [
-        { u: inset * extU, v: inset * extV },
-        { u: -inset * extU, v: inset * extV },
-        { u: inset * extU, v: -inset * extV },
-        { u: -inset * extU, v: -inset * extV },
-      ]
-    } else if (total >= 5) {
-      positions = [
-        { u: inset * extU, v: inset * extV },
-        { u: -inset * extU, v: inset * extV },
-        { u: inset * extU, v: -inset * extV },
-        { u: -inset * extU, v: -inset * extV },
-      ]
-      const extras = [
-        { u: 0, v: 0 },
-        { u: 0, v: inset * extV },
-        { u: 0, v: -inset * extV },
-        { u: inset * extU, v: 0 },
-        { u: -inset * extU, v: 0 },
-      ]
-      for (let i = 4; i < total; i++) positions.push(extras[(i - 4) % extras.length])
-    } else {
-      positions = []
-      const step = (2 * inset * extU) / Math.max(total - 1, 1)
-      for (let i = 0; i < total; i++) {
-        positions.push({ u: -inset * extU + i * step, v: 0 })
-      }
-    }
-
-    // ── Overlap resolution: push apart positions that would cause child AABBs to clip ──
-    if (childSizes && childSizes.length === total) {
-      const margin = 0.002
-      for (let pass = 0; pass < 3; pass++) {
-        for (let i = 0; i < total; i++) {
-          for (let j = i + 1; j < total; j++) {
-            const du = positions[j].u - positions[i].u
-            const dv = positions[j].v - positions[i].v
-            const minSepU = childSizes[i].hu + childSizes[j].hu + margin
-            const minSepV = childSizes[i].hv + childSizes[j].hv + margin
-            const overlapU = minSepU - Math.abs(du)
-            const overlapV = minSepV - Math.abs(dv)
-            if (overlapU > 0 && overlapV > 0) {
-              if (overlapU <= overlapV) {
-                const push = overlapU / 2 + 0.001
-                const signU = du >= 0 ? 1 : -1
-                positions[i].u -= signU * push
-                positions[j].u += signU * push
-              } else {
-                const push = overlapV / 2 + 0.001
-                const signV = dv >= 0 ? 1 : -1
-                positions[i].v -= signV * push
-                positions[j].v += signV * push
-              }
-            }
-          }
-        }
-      }
-      console.log(`[placement] Multi-child overlap resolution: ${total} children, positions:`, positions.map((p, i) => `${i}:(${p.u.toFixed(4)},${p.v.toFixed(4)}) size(${childSizes[i].hu.toFixed(4)},${childSizes[i].hv.toFixed(4)})`))
-    }
-
-    _multiChildPositionsCache.set(cacheKey, positions)
-    return positions
-  }
-
-  /**
-   * Compute tangential UV offset for a single child on a shared face.
-   * Delegates to _buildMultiChildPositions (cached) and returns the position for this index.
-   */
-  function _computeMultiChildOffsets(
-    total: number, index: number,
-    parent: { hx: number; hy: number; hz: number },
-    face: string,
-    insetOverride?: number,
-    childSizes?: Array<{ hu: number; hv: number }>,
-    parentConnector?: MateConnector | null,
-  ): { u: number; v: number } {
-    const inset = insetOverride ?? 0.7
-    const safeIndex = Math.min(index, Math.max(total - 1, 0))
-    const positions = _buildMultiChildPositions(total, parent, face, inset, childSizes, parentConnector)
-    return positions[safeIndex] || { u: 0, v: 0 }
-  }
 
   // Resolve which category a component belongs to
   function findCategory(comp: PresetComponent): string {
@@ -2880,7 +1942,30 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function computeCarryGhostPreview(comp: PresetComponent): CarryGhostPreview {
     const catName = findCategory(comp)
-    const resolved = resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' })
+    // Split servos: the placed body/horn links render the URDF primitives
+    // emitted by resolveSplitServoVisual (servoBodyShape + servoHornShape).
+    // Force the carry ghost down the same primitive path — merging body and
+    // horn descriptors with the horn's z=hornOriginZ offset so the ghost
+    // outline matches the placed silhouette piece-for-piece. Without this
+    // override the resolver's previewGroup (rich NURBS or cached mesh) wins
+    // and the ghost renders a shape that doesn't exist anywhere in the
+    // placed component.
+    const resolved = resolveComponentVisual({ preset: comp, category: catName })
+    if (isSplitServoComponentId(comp.id)) {
+      const split = resolveSplitServoVisual({
+        preset: comp as Parameters<typeof resolveSplitServoVisual>[0]['preset'],
+        category: catName,
+      })
+      const merged: UrdfVisualDesc[] = [
+        ...split.bodyVisuals,
+        ...split.hornVisuals.map(v => ({
+          ...v,
+          origin_xyz: [v.origin_xyz[0], v.origin_xyz[1], v.origin_xyz[2] + split.hornOriginZ] as [number, number, number],
+        })),
+      ]
+      const bounds = visualBoundsFromDescriptors(merged) ?? resolved.bounds
+      return { bounds, visuals: merged, previewGroup: undefined, authoredFrame: resolved.authoredFrame }
+    }
     const bounds = resolved.previewGroup ? resolved.bounds : (resolved.visualBounds ?? resolved.bounds)
     return { bounds, visuals: resolved.visuals, previewGroup: resolved.previewGroup, authoredFrame: resolved.authoredFrame }
   }
@@ -2955,25 +2040,60 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
    *  rotations and multi-primitive outlines instead of drawing a generic box. */
   function computeCarryGhostBounds(comp: PresetComponent): CarryGhostBounds {
     const catName = findCategory(comp)
-    return resolveComponentVisual({ preset: comp, category: catName, mode: 'carry' }).bounds
+    return resolveComponentVisual({ preset: comp, category: catName }).bounds
   }
 
   function resolveVisualHalfBoundsMm(
     preset: PresetComponent,
     instance?: { length_mm?: number },
   ): { hxMm: number; hyMm: number; hzMm: number } {
-    const catName = findCategory(preset)
-    const resolved = resolveComponentVisual({
-      preset,
-      category: catName,
-      mode: 'collision',
-      instance,
-    })
+    const resolved = resolveComponent({ spec: preset, instance, category: findCategory(preset) })
     return {
-      hxMm: resolved.bounds.hx * 1000,
-      hyMm: resolved.bounds.hy * 1000,
-      hzMm: resolved.bounds.hz * 1000,
+      hxMm: resolved.bounds.half[0],
+      hyMm: resolved.bounds.half[1],
+      hzMm: resolved.bounds.half[2],
     }
+  }
+
+  function resolveComponentConnectors(
+    preset: PresetComponent,
+    instance?: { length_mm?: number },
+  ): MateConnector[] {
+    return resolveComponent({ spec: preset, instance, category: findCategory(preset) }).connectors
+  }
+
+  function connectorIdForNodeId(nodeId: string): string {
+    const mapped: Record<string, string> = {
+      x_plus: 'front',
+      x_minus: 'back',
+      y_plus: 'right',
+      y_minus: 'left',
+    }
+    return mapped[nodeId] ?? nodeId
+  }
+
+  function findConnectorForNode(connectors: MateConnector[], nodeId: string): MateConnector | undefined {
+    return findConnector(connectors, nodeId) ?? findConnector(connectors, connectorIdForNodeId(nodeId)) ?? undefined
+  }
+
+  function axisFromPortOrConnector(
+    portOrigin: [number, number, number],
+    connector?: MateConnector,
+    remapToSceneLocal = false,
+  ): THREE.Vector3 | null {
+    const raw = connector
+      ? new THREE.Vector3(connector.axis_xyz[0], connector.axis_xyz[1], connector.axis_xyz[2])
+      : new THREE.Vector3(portOrigin[0], portOrigin[1], portOrigin[2])
+    if (!(raw.length() > 1e-9)) return null
+    const axis = remapToSceneLocal ? urdfVecToSceneVec(raw) : raw
+    return axis.length() > 1e-9 ? axis.normalize() : null
+  }
+
+  function resolveComponentPorts(
+    preset: PresetComponent,
+    instance?: { length_mm?: number },
+  ) {
+    return resolveComponent({ spec: preset, instance, category: findCategory(preset) }).ports
   }
 
   function addVisualElement(doc: Document, link: Element, vis: UrdfVisualDesc, matIdx: number) {
@@ -3035,68 +2155,149 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
-  // Step 4 of docs/ENGINE_NEXT_STEPS.md: when a preset declares
-  // physical.collision_mesh, emit one <mesh> collision element instead
-  // of per-visual primitives. The OBJ lives under
-  // src/public/meshes/collision/ and is referenced via the standard
-  // ROS package:// URI. Origin matches the visual primitives' frame
-  // (link-local 0,0,0) — the convex hull is in the GLB's authoring
-  // coords, same frame the rendered visuals share.
-  function addMeshCollisionElement(doc: Document, link: Element, meshFile: string) {
-    const collision = doc.createElement('collision')
-    const co = doc.createElement('origin')
-    co.setAttribute('xyz', '0 0 0')
-    co.setAttribute('rpy', '0 0 0')
-    const geometry = doc.createElement('geometry')
-    const mesh = doc.createElement('mesh')
-    mesh.setAttribute('filename', `package://meshes/collision/${meshFile}`)
-    geometry.appendChild(mesh)
-    collision.appendChild(co)
-    collision.appendChild(geometry)
-    link.appendChild(collision)
-  }
-
   function addBoundsCollisionElement(doc: Document, link: Element, bounds: ComponentVisualBounds) {
     const collision = doc.createElement('collision')
     const co = doc.createElement('origin')
     co.setAttribute('xyz', [bounds.cx, bounds.cy, bounds.cz].map(v => v.toFixed(6)).join(' '))
     co.setAttribute('rpy', '0 0 0')
     const geometry = doc.createElement('geometry')
-    const boxEl = doc.createElement('box')
-    boxEl.setAttribute('size', [
-      bounds.hx * 2,
-      bounds.hy * 2,
-      bounds.hz * 2,
-    ].map(v => v.toFixed(6)).join(' '))
-    geometry.appendChild(boxEl)
+    if (bounds.shape === 'cylinder') {
+      // AABB convention for cylinders: hz is the half-length along the
+      // symmetry axis, hx/hy are the radius. URDF's cylinder primitive defaults
+      // its axis to local Z, which matches.
+      const cylEl = doc.createElement('cylinder')
+      cylEl.setAttribute('radius', Math.max(bounds.hx, bounds.hy).toFixed(6))
+      cylEl.setAttribute('length', (bounds.hz * 2).toFixed(6))
+      geometry.appendChild(cylEl)
+    } else {
+      const boxEl = doc.createElement('box')
+      boxEl.setAttribute('size', [
+        bounds.hx * 2,
+        bounds.hy * 2,
+        bounds.hz * 2,
+      ].map(v => v.toFixed(6)).join(' '))
+      geometry.appendChild(boxEl)
+    }
     collision.appendChild(co)
     collision.appendChild(geometry)
     link.appendChild(collision)
   }
 
+  // Phase 5b: URDF collision is always the canonical AABB envelope the placement
+  // compiler reads (resolved.collision.bounds). MJCF inherits the same envelope,
+  // so contact and placement agree by construction. The authored mesh file is
+  // still tracked on the resolver (and used for the rich visual), but it is
+  // intentionally NOT emitted as a collision shape — its convex hull can drift
+  // from the AABB by up to the 15 % collision-divergence ceiling, which would
+  // mean MuJoCo contacts wouldn't line up with where children were placed.
   function addResolvedCollisionElements(doc: Document, link: Element, resolved: ResolvedComponentVisual) {
-    if (resolved.collision.source === 'authored_mesh' && resolved.collision.meshFile) {
-      addMeshCollisionElement(doc, link, resolved.collision.meshFile)
-    } else if (resolved.collision.source === 'urdf_primitives') {
-      resolved.visuals.forEach(vis => addCollisionElement(doc, link, vis))
-    } else {
-      addBoundsCollisionElement(doc, link, resolved.collision.bounds)
-    }
+    addBoundsCollisionElement(doc, link, resolved.collision.bounds)
   }
 
   function addResolvedCollisionSourceElements(
     doc: Document,
     link: Element,
     collision: ResolvedComponentVisual['collision'],
-    primitiveVisuals: UrdfVisualDesc[],
+    _primitiveVisuals: UrdfVisualDesc[],
   ) {
-    if (collision.source === 'authored_mesh' && collision.meshFile) {
-      addMeshCollisionElement(doc, link, collision.meshFile)
-    } else if (collision.source === 'urdf_primitives') {
-      primitiveVisuals.forEach(vis => addCollisionElement(doc, link, vis))
-    } else {
-      addBoundsCollisionElement(doc, link, collision.bounds)
+    addBoundsCollisionElement(doc, link, collision.bounds)
+  }
+
+  // PLACEMENT_REWRITE_PLAN.md Phase 3 — carry-ghost ↔ commit invariant.
+  // The user-visible carry ghost is rendered at `carryGroup.matrixWorld`; the
+  // commit path decomposes that matrix in the parent's local frame, formats
+  // the result as URDF xyz/rpy strings, and feeds them to addComponentCore.
+  // The invariant: reconstructing the predicted world from those strings
+  // (parentWorld · transformFromXyzRpy(xyzStr, rpyStr)) must match the ghost
+  // world the user just saw, within a tolerance comfortably above the
+  // `fmt`/`quatToRpy` round-trip noise floor. Drift past this means the
+  // ghost is rendering one pose while we're persisting another — exactly
+  // the "visible jump on commit" symptom Phase 3 was scoped to catch.
+  //
+  // This is observability only: a warning, not a throw, so a real drift
+  // surfaces in the console (and, if needed, can be promoted to a hard
+  // failure later) without breaking the user's commit mid-action.
+  function _assertCarryCommitInvariant(
+    label: string,
+    ghostWorld: THREE.Matrix4,
+    parentWorld: THREE.Matrix4,
+    xyzStr: string,
+    rpyStr: string,
+  ): void {
+    const predicted = parentWorld.clone().multiply(transformFromXyzRpy(xyzStr, rpyStr))
+    // Carry frame ≠ link frame: the carry ghost has the URDF→scene basis swap
+    // baked in below `carryGroup` (the -90°X on its child), while the render
+    // path applies that swap one level higher on `worldGroup`. So the correct
+    // link-frame pose is `ghostWorld * URDF_TO_SCENE_Q`. Compare against that
+    // — comparing against ghostWorld directly would warn on every commit.
+    const URDF_TO_SCENE_M = new THREE.Matrix4().makeRotationFromQuaternion(URDF_TO_SCENE_Q)
+    const ghostLinkFrame = ghostWorld.clone().multiply(URDF_TO_SCENE_M)
+    const gp = new THREE.Vector3(); const gq = new THREE.Quaternion()
+    ghostLinkFrame.decompose(gp, gq, new THREE.Vector3())
+    const pp = new THREE.Vector3(); const pq = new THREE.Quaternion()
+    predicted.decompose(pp, pq, new THREE.Vector3())
+    const posErr = pp.distanceTo(gp)              // metres
+    // angle between unit quaternions, |dot|=1 means same orientation
+    const dot = Math.min(1, Math.abs(gq.dot(pq)))
+    const angErr = 2 * Math.acos(dot)             // radians
+    const POS_TOL_M = 0.0015                      // 1.5 mm — toFixed(4) is 0.1mm, leave headroom
+    const ANG_TOL_RAD = 0.01                      // ~0.57°
+    if (posErr > POS_TOL_M || angErr > ANG_TOL_RAD) {
+      console.warn(
+        `[carry-commit-drift] ${label}: posErr=${(posErr * 1000).toFixed(3)}mm ` +
+        `angErr=${((angErr * 180) / Math.PI).toFixed(3)}° (xyz="${xyzStr}" rpy="${rpyStr}")`
+      )
     }
+  }
+
+  // PLACEMENT_REWRITE_PLAN.md Phase 3 — post-reparse drift check.
+  // After `commitUrdf` rewrites the document and `reparseUrdf` rebuilds the
+  // scene graph, downstream passes (reconcileAlignment, contactCleanup,
+  // resolveAssemblyGraph) can shift the persisted link. If that shift is
+  // larger than the user-visible noise floor we want to know: the user
+  // committed at one pose and is now seeing another, which is the actual
+  // "visible jump on commit" bug Phase 3 was scoped against.
+  //
+  // The check is scheduled via a 2-rAF chain so the reparse (itself
+  // potentially rAF-deferred) and at least one render pass have completed
+  // before we look up the link group. Pure observability — warns to
+  // console only.
+  function _scheduleCarryReparseDriftCheck(
+    label: string,
+    physicalLinkName: string,
+    ghostWorld: THREE.Matrix4,
+  ): void {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const linkGroup = ctx.getParsedRobot().linkGroups.get(physicalLinkName)
+      if (!linkGroup) {
+        // Common when the link got renamed / split; not a drift signal.
+        return
+      }
+      linkGroup.updateMatrixWorld(true)
+      // See `_assertCarryCommitInvariant`: link frame = ghost frame conjugated
+      // by the basis swap, not ghost frame directly.
+      const URDF_TO_SCENE_M = new THREE.Matrix4().makeRotationFromQuaternion(URDF_TO_SCENE_Q)
+      const ghostLinkFrame = ghostWorld.clone().multiply(URDF_TO_SCENE_M)
+      const gp = new THREE.Vector3(); const gq = new THREE.Quaternion()
+      ghostLinkFrame.decompose(gp, gq, new THREE.Vector3())
+      const lp = new THREE.Vector3(); const lq = new THREE.Quaternion()
+      linkGroup.matrixWorld.decompose(lp, lq, new THREE.Vector3())
+      const posErr = lp.distanceTo(gp)
+      const dot = Math.min(1, Math.abs(gq.dot(lq)))
+      const angErr = 2 * Math.acos(dot)
+      // Slightly looser than the algebraic check — reconcile/contact-cleanup
+      // can legitimately nudge by ~1 mm; we want to know about jumps the
+      // user would actually perceive.
+      const POS_TOL_M = 0.003                     // 3 mm
+      const ANG_TOL_RAD = 0.02                    // ~1.15°
+      if (posErr > POS_TOL_M || angErr > ANG_TOL_RAD) {
+        console.warn(
+          `[carry-reparse-drift] ${label} (link=${physicalLinkName}): ` +
+          `posErr=${(posErr * 1000).toFixed(2)}mm ` +
+          `angErr=${((angErr * 180) / Math.PI).toFixed(2)}°`,
+        )
+      }
+    }))
   }
 
   // Core URDF mutation shared by addComponent (heuristic) and addComponentWithSnap (exact pose).
@@ -3105,6 +2306,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     parentLink: string,
     xyzStr: string,
     rpyStr: string,
+    /** Optional debug hook — receives the base child link name BEFORE
+     *  commitUrdf triggers reparse. Used by the carry-commit drift check
+     *  to schedule a post-reparse pose comparison. Split servos still get
+     *  the un-suffixed `${comp.id}_${idx}` here; the hook can append
+     *  `_body` if it wants to look up the physical link. */
+    onLinkCommitted?: (baseLinkName: string, isSplitServo: boolean) => void,
   ): boolean {
     const graph = ctx.getKinematicGraph()
     const nextIdx = Object.keys(graph).length + 1
@@ -3112,9 +2319,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const jointName = `joint_${comp.id}_${nextIdx}`
 
     const phys = comp.physical
-    const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
+    const mass = resolveComponentMassKg(comp)
     const catName = findCategory(comp)
-    const resolvedForSizing = resolveComponentVisual({ preset: comp, category: catName, mode: 'collision' })
+    const resolvedForSizing = resolveComponentVisual({ preset: comp, category: catName })
     const shape = phys.inertia_primitive || 'box'
     const xm = resolvedForSizing.bounds.hx * 2
     const ym = resolvedForSizing.bounds.hy * 2
@@ -3249,6 +2456,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     if (changed) {
       ctx.showToast(`Added ${comp.name} as "${childName}"`, 'success')
       selectLink(displayName)
+      onLinkCommitted?.(childName, isActuated)
     }
     return changed
   }
@@ -3381,6 +2589,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     )
   }
 
+  /** Swap the carry ghost's visual contents with the freshly-resolved preview
+   *  (mesh path now that the GLB is cached) while preserving the carryGroup's
+   *  current world transform — so the in-flight carry pose isn't lost when the
+   *  GLB load completes mid-carry. Bounds may also change between rich and mesh
+   *  paths; refreshed too. */
+  function rebuildCarryGhostVisual(comp: PresetComponent) {
+    if (!carryGroup) return
+    const preview = computeCarryGhostPreview(comp)
+    while (carryGroup.children.length > 0) {
+      const child = carryGroup.children[0]
+      carryGroup.remove(child)
+    }
+    carryGroup.add(preview.previewGroup
+      ? makeCarryGhostPreviewGroup(preview.previewGroup, preview.authoredFrame)
+      : makeCarryGhostVisualGroup(preview.visuals))
+    carryGhostBounds = preview.bounds
+  }
+
   function enterCarryMode(comp: PresetComponent) {
     if (carryGroup) exitCarryMode()
     // Deselect any active link so the gizmo is detached and OrbitControls
@@ -3393,6 +2619,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     carryUserAxis = 'z'
     carrySnapCandidates = []
     carrySnapIdx = 0
+
+    // Warm the mesh cache so first-of-type carry doesn't fall back to the
+    // parametric placeholder (whose AABB differs from the GLB and triggers
+    // an over-lift on commit). When the load completes mid-carry, rebuild the
+    // ghost so its orientation/shape matches what the placed component will
+    // render with — without the rebuild, ghost stays parametric (Y-up authored)
+    // while the placed model uses the GLB (Z-up authored) and the user sees a
+    // visible rotation mismatch between the two.
+    preloadComponentMesh(comp.id, () => {
+      if (carryComp?.id !== comp.id || !carryGroup) return
+      rebuildCarryGhostVisual(comp)
+    })
 
     const preview = computeCarryGhostPreview(comp)
     const bounds = preview.bounds
@@ -3441,23 +2679,26 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function getCarrySourceNodes() {
     if (!carryComp || !carryGroup) return []
-    const { hx, hy, hz, cx, cy, cz } = carryGhostBounds ?? computeCarryGhostPreview(carryComp).bounds
+    const { cx, cy, cz } = carryGhostBounds ?? computeCarryGhostPreview(carryComp).bounds
+    const sourcePorts = resolveComponentPorts(carryComp)
+    const sourceConnectors = resolveComponentConnectors(carryComp)
     carryGroup.updateMatrixWorld(true)
-    return componentPortsForPreset(
-      carryComp.id,
-      hx, hy, hz,
-      carryComp.mounting_logic,
-    ).map(f => {
-      // f.origin_xyz is in URDF Z-up convention; carryGroup lives in Three.js Y-up world space.
-      // Remap: URDF X→ThreeJS X, URDF Z (height)→ThreeJS Y, URDF Y (depth)→ThreeJS -Z.
-      const lx = cx + f.origin_xyz[0]
-      const ly = cz + f.origin_xyz[2]   // URDF Z (height) → Three.js Y
-      const lz = -(cy + f.origin_xyz[1]) // URDF Y (depth) → Three.js -Z
-      const localFacePos = new THREE.Vector3(lx, ly, lz)
+    return sourcePorts.map(f => {
+      const connector = findConnectorForNode(sourceConnectors, f.nodeId)
+      // bounds center + port origin live in URDF Z-up; carryGroup is Three.js Y-up.
+      // Single seam: coordinates.urdfVecToSceneVec.
+      const localFacePos = urdfVecToSceneVec([
+        cx + f.origin_xyz[0],
+        cy + f.origin_xyz[1],
+        cz + f.origin_xyz[2],
+      ])
+      const lx = localFacePos.x, ly = localFacePos.y, lz = localFacePos.z
+      const localAxis = axisFromPortOrConnector(f.origin_xyz, connector, true)
       const worldPos = localFacePos.clone().applyMatrix4(carryGroup!.matrixWorld)
       const worldQuat = new THREE.Quaternion().setFromRotationMatrix(carryGroup!.matrixWorld)
       const localToGhost = new THREE.Matrix4().makeTranslation(lx, ly, lz)
-      return { nodeId: f.nodeId, cls: f.cls, worldPos, worldQuat, localToGhost }
+      const worldAxis = localAxis ? localAxis.clone().applyQuaternion(worldQuat).normalize() : null
+      return { nodeId: f.nodeId, cls: f.cls, worldPos, worldQuat, localToGhost, localFacePos, localAxis, worldAxis }
     })
   }
 
@@ -3469,15 +2710,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Collect all valid candidates, sorted closest-first
     const candidates: SnapCandidate[] = []
     for (const src of sourceNodes) {
-      _snapScratchInv.copy(src.localToGhost).invert()
       for (const target of mountNodes) {
         if (isMountOccupied(target.mountLink)) continue
         const dist = target.worldPosition.distanceTo(src.worldPos)
         if (dist > snapRadiusM) continue
         if (!nodesCompatible(src.cls, target.cls)) continue
         // No angle check for carry mode — the ghost can be freely rotated with R key.
-        _snapScratchMat.compose(target.worldPosition, target.worldQuaternion, _snapScratchScale)
-        const desiredGhostWorld = _snapScratchMat.clone().multiply(_snapScratchInv)
+        const desiredGhostWorld = composeGhostWorldForConnectorSnap(
+          { position: src.localFacePos, axis: src.localAxis, quaternion: src.worldQuat },
+          { position: target.worldPosition, axis: target.worldAxis, quaternion: target.worldQuaternion },
+        )
         candidates.push({ mountLink: target.mountLink, targetParentLink: target.parentLink, dist, desiredGhostWorld, srcNodeId: src.nodeId, targetNodeId: target.nodeId })
       }
     }
@@ -3568,15 +2810,44 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
-      // Use carryGroup's actual matrixWorld (which already includes userQuat).
-      const childLocal = parentWorldInv.clone().multiply(ghostWorldSnap ?? mount.desiredGhostWorld)
+      // PLACEMENT_REWRITE_PLAN.md Phase 3 / carry-frame fix.
+      // The ghost child carries a `componentVisualWorldQuat(z_up, scene_y_up)`
+      // (-90°X) so its Z-up authored content displays correctly in scene Y-up.
+      // The render path applies that swap one level higher, on `worldGroup`,
+      // so the link group has identity quaternion below it. Result: at the
+      // matrixWorld layer, `linkGroup.matrixWorld * inner * content` must
+      // equal `carryGroup.matrixWorld * (-90X) * inner * content` for ghost
+      // and placed visual to match — i.e. the link frame must be the carry
+      // frame conjugated by the basis swap. `parentWorldInv` already supplies
+      // the left side (worldGroup's +90X via inversion); the right side has
+      // to be applied here, otherwise the persisted RPY bakes in a 90° flip
+      // and tires lie flat / beams stand on end after commit.
+      const URDF_TO_SCENE_M = new THREE.Matrix4().makeRotationFromQuaternion(URDF_TO_SCENE_Q)
+      const childLocal = parentWorldInv.clone()
+        .multiply(ghostWorldSnap ?? mount.desiredGhostWorld)
+        .multiply(URDF_TO_SCENE_M)
       const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
       const localQuat = new THREE.Quaternion()
       childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
       const [lr, lp, ly] = quatToRpy(localQuat)
-      addComponentCore(comp, mount.targetParentLink,
-        `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
-        `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`)
+      const xyzStr = `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`
+      const rpyStr = `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`
+      const capturedGhostWorld = ghostWorldSnap ?? mount.desiredGhostWorld
+      _assertCarryCommitInvariant(
+        `mount→${mount.targetParentLink}`,
+        capturedGhostWorld,
+        parentLinkGroup.matrixWorld,
+        xyzStr, rpyStr,
+      )
+      addComponentCore(comp, mount.targetParentLink, xyzStr, rpyStr,
+        (childName, isSplit) => {
+          // Servo body is the link the mount joint connects to (Three.js
+          // parent of horn). For non-splits the link IS childName.
+          const physical = isSplit ? `${childName}_body` : childName
+          _scheduleCarryReparseDriftCheck(
+            `mount→${mount.targetParentLink}`, physical, capturedGhostWorld,
+          )
+        })
     } else if (ghostWorldFree) {
       // Free-space: joint pose from ghost in world → parent link frame (carry mode does not depend on selection)
       const graph = ctx.getKinematicGraph()
@@ -3598,18 +2869,32 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const ghostAdjusted = clampCarryMatrixAboveFloor(ghostWorldFree, ghx, ghz, ghy, gcx, gcz, -gcy)
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
-      const childLocal = parentWorldInv.clone().multiply(ghostAdjusted)
+      // Same basis-conjugation fix as the snapped branch — see comment above.
+      const URDF_TO_SCENE_M_FREE = new THREE.Matrix4().makeRotationFromQuaternion(URDF_TO_SCENE_Q)
+      const childLocal = parentWorldInv.clone()
+        .multiply(ghostAdjusted)
+        .multiply(URDF_TO_SCENE_M_FREE)
       const localPos = new THREE.Vector3().setFromMatrixPosition(childLocal)
       const localQuat = new THREE.Quaternion()
       childLocal.decompose(new THREE.Vector3(), localQuat, new THREE.Vector3())
       const [lr, lp, ly] = quatToRpy(localQuat)
-      addComponentCore(comp, parent,
-        `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`,
-        `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`)
+      const xyzStr = `${fmt(localPos.x)} ${fmt(localPos.y)} ${fmt(localPos.z)}`
+      const rpyStr = `${fmt(lr)} ${fmt(lp)} ${fmt(ly)}`
+      _assertCarryCommitInvariant(
+        `free→${parent}`,
+        ghostAdjusted,
+        parentLinkGroup.matrixWorld,
+        xyzStr, rpyStr,
+      )
+      addComponentCore(comp, parent, xyzStr, rpyStr,
+        (childName, isSplit) => {
+          const physical = isSplit ? `${childName}_body` : childName
+          _scheduleCarryReparseDriftCheck(`free→${parent}`, physical, ghostAdjusted)
+        })
     } else {
       const graph = ctx.getKinematicGraph()
       const parent = resolveFreePlacementParent(graph)
-      const resolved = resolveComponentVisual({ preset: comp, category: findCategory(comp), mode: 'collision' })
+      const resolved = resolveComponentVisual({ preset: comp, category: findCategory(comp) })
       const xm = resolved.bounds.hx * 2
       const ym = resolved.bounds.hy * 2
       const zm = resolved.bounds.hz * 2
@@ -3688,7 +2973,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const comps = cat.components.filter(c => {
         if (!hasMeshOverride(c.id)) return false
         if (SLOW_MESH_BLACKLIST.has(c.id)) return false
-        return !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
+        return !q || (c.name ?? '').toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || (c.description ?? '').toLowerCase().includes(q)
       })
       if (comps.length === 0) continue
 
@@ -3758,6 +3043,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then((data: PresetData) => {
       presetData = data
+      reportComponentSpecDeprecations(data as unknown as Parameters<typeof reportComponentSpecDeprecations>[0])
+      void ensureMeshExtentsLoaded()
       // Log the connector setup per preset — 6 default face connectors plus
       // any Phase 3 authored connectors (shaft_out, plate_top, wall_inner,
       // mount_back, etc.). This is the load-time signal that JSON authoring
@@ -4374,7 +3661,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary } {
-    _multiChildPositionsCache.clear()
+    _resetMultiChildPositionsCache()
     console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
     console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
     if (!presetData) {
@@ -4398,6 +3685,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       findPreset: (id: string): ValidationPreset | null => findPreset(id) as ValidationPreset | null,
     }
 
+    // Phase 3 (COMPONENT_UNIFICATION_PLAN.md §3.8): archetype normalizer runs
+    // before topology auto-repair so cosmetic-tail removal happens at the
+    // semantic-graph layer, and the AI sees structured `[ai_topology/...]`
+    // diagnostics in the redesign prompt instead of free-text post-hoc errors.
+    const requestedFeatures: RequestedFeatures = (graph as { requested_features?: RequestedFeatures })
+      .requested_features ?? {}
+    const archResult = normalizeAssembly(graph.components, requestedFeatures)
+    if (archResult.diagnostics.length > 0) {
+      for (const d of archResult.diagnostics) console.log(`[assembly][archetype] ${formatDiagnosticForPrompt(d)}`)
+      graph.components = archResult.components
+    }
+
     console.log(`[assembly][autorepair] Scanning ${graph.components.length} components for auto-repairable issues...`)
     console.log(`[assembly][autorepair] Input link_names: [${graph.components.map(c => c.link_name).join(', ')}]`)
     const { repairs } = runAutoRepair(graph, validationCtx)
@@ -4409,6 +3708,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     const { errors: topologyErrors, warnings: topologyWarnings } = runValidateTopology(graph.components, validationCtx)
+    // Surface archetype diagnostics on the same channel the retry/redesign
+    // prompt already pulls from (viewportChat.formatWarningsForPrompt). The
+    // owner tag in `formatDiagnosticForPrompt` lets the AI distinguish its
+    // own topology mistakes from spec/compiler/exporter issues.
+    for (const d of archResult.diagnostics) {
+      if (d.severity === 'info') continue
+      topologyWarnings.push(formatDiagnosticForPrompt(d))
+    }
     if (topologyWarnings.length > 0) {
       for (const w of topologyWarnings) console.warn(`[assembly][topology][warning] ${w}`)
     }
@@ -4454,13 +3761,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     const rootResolved = resolveComponentVisual({
       preset: rootPreset,
       category: catName,
-      mode: 'collision',
       instance: root,
     })
     const xm = rootResolved.bounds.hx * 2
     const ym = rootResolved.bounds.hy * 2
     const zm = rootResolved.bounds.hz * 2
-    const mass = phys.mass_kg ?? phys.mass_kg_per_100mm ?? 0.1
+    const mass = resolveComponentMassKg({ id: root.component_id, physical: phys }, root)
     const shape = phys.inertia_primitive || 'box'
     let inertia: { ixx: number; iyy: number; izz: number }
     if (shape === 'cylinder') inertia = computeCylinderInertia(mass, Math.max(xm, ym) / 2, zm)
@@ -4486,30 +3792,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     </visual>`
     })
 
-    // Collision geometry — one mesh element when the preset has a
-    // convex-hull OBJ (Step 4 of docs/ENGINE_NEXT_STEPS.md), else one
-    // primitive element per visual piece.
+    // Phase 5b: collision is always the canonical AABB envelope (collision.bounds),
+    // matching what the placement compiler and split-link emitter use.
     let collisionsXml = ''
-    if (rootResolved.collision.source === 'authored_mesh' && rootResolved.collision.meshFile) {
-      collisionsXml += `
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry><mesh filename="package://meshes/collision/${rootResolved.collision.meshFile}"/></geometry>
-    </collision>`
-    } else if (rootResolved.collision.source === 'urdf_primitives') {
-      visuals.forEach(vis => {
-        const cGeomXml = vis.geometry.type === 'box'
-          ? `<box size="${vis.geometry.size.map(v => v.toFixed(6)).join(' ')}"/>`
-          : vis.geometry.type === 'cylinder'
-          ? `<cylinder radius="${vis.geometry.radius.toFixed(6)}" length="${vis.geometry.length.toFixed(6)}"/>`
-          : `<sphere radius="${vis.geometry.radius.toFixed(6)}"/>`
-        collisionsXml += `
-    <collision>
-      <origin xyz="${vis.origin_xyz.map(v => v.toFixed(6)).join(' ')}" rpy="${vis.origin_rpy.map(v => v.toFixed(6)).join(' ')}"/>
-      <geometry>${cGeomXml}</geometry>
-    </collision>`
-      })
-    } else {
+    {
       const bounds = rootResolved.collision.bounds
       collisionsXml += `
     <collision>
@@ -4551,6 +3837,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // the final return (which runs outside the try) can read it.
     const placementEntries: EnginePlacementEntry[] = []
 
+    // Hoisted above the try so the shadow-compile parity harness (Phase 3b.4.A)
+    // can read the world-transform map after the try/finally without a
+    // separate channel. Reset on every resolve.
+    const linkWorldTransforms = new Map<string, THREE.Matrix4>()
+
     // try/finally is load-bearing: if the loop throws we MUST clear _bulkMode,
     // else every future commitUrdf in the session writes to an orphaned buffer.
     setBulkAssemblyMode(true)
@@ -4559,7 +3850,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     nameMap.set(root.link_name, rootLinkName)
     processed.add(root.link_name)
     placedCount++
-    const linkWorldTransforms = new Map<string, THREE.Matrix4>()
     linkWorldTransforms.set(rootLinkName, new THREE.Matrix4())
     console.log(`[assembly] Root placed: ${rootLinkName} (${root.component_id})`)
 
@@ -4609,11 +3899,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     console.log('[assembly] Face child distribution:', Object.fromEntries(faceChildCounts))
 
-    // Track arm chain depth: how many revolute-Y-on-top joints in sequence
-    // Used to apply default rest pose angles (shoulder=45°, elbow=-90°)
-    const armDepth = new Map<string, number>()
-    armDepth.set(root.link_name, 0)
-
     // Track port occupancy: how many children are connected to each parent port
     // Key format: "parent_link_name::face_name"
     const portOccupancy = new Map<string, number>()
@@ -4624,6 +3909,53 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       front: 'back', back: 'front',
       left: 'right', right: 'left',
     }
+
+    // Phase 3b.4.K — sub-step A. Build the CompiledGraph upfront so the
+    // emit loop can override its inline-computed placement values with
+    // compiler-derived ones. This is the source of truth from this point on;
+    // sub-step B replaces the inline math, sub-step C deletes it.
+    const compileInputForEmit: AssemblyGraph = {
+      base_link: graph.base_link,
+      ground_offset: graph.ground_offset,
+      components: components.map(c => ({ ...c })),
+    }
+    const compiledForEmit = compileAssembly(compileInputForEmit, {
+      useMateConnectors: useMateConnectors(),
+      resolveComponent: (componentId, instance) => {
+        const preset = findPreset(componentId)
+        if (!preset) return null
+        const resolved = resolveComponentVisual({
+          preset,
+          category: findCategory(preset),
+          instance,
+        })
+        // Phase 5: placement compiler reads the collision envelope (authored
+        // mesh AABB + measured center when present, preset bbox otherwise).
+        // resolved.bounds is mesh-target-bbox with cz=0 — fine for rendering
+        // but loses the collision mesh's center offset, which is what makes
+        // the body's mount face land where the GLB renders it. See Phase 5
+        // notes in the unification plan.
+        const b = resolved.collision.bounds
+        return {
+          componentId,
+          bounds: { half: [b.hx, b.hy, b.hz], center: [b.cx, b.cy, b.cz], shape: b.shape },
+          connectors: resolveComponentConnectors(preset, instance),
+          presetConnectors: preset.connectors,
+          assembledOuterRadiusM: typeof preset.mounting_logic?.assembled_outer_radius_mm === 'number'
+            ? preset.mounting_logic.assembled_outer_radius_mm / 1000 : undefined,
+          parametricLengthMm: (instance?.length_mm && isParametricSpec(preset))
+            ? instance.length_mm : undefined,
+          jointLimitsRad: resolveJointLimitsRad(preset),
+          maxTorqueNm: typeof preset.mechanical_electrical?.max_torque_nm === 'number'
+            ? preset.mechanical_electrical.max_torque_nm
+            : (typeof preset.mechanical_electrical?.holding_torque_nm === 'number'
+              ? preset.mechanical_electrical.holding_torque_nm : undefined),
+        }
+      },
+    })
+    const compiledByLogical = new Map<string, typeof compiledForEmit.links[number]>()
+    for (const l of compiledForEmit.links) compiledByLogical.set(l.logicalName, l)
+    console.log(`[assembly] compileAssembly produced ${compiledForEmit.links.length} links (skipped=${compiledForEmit.skippedClasses.length})`)
 
     // Now iterate remaining components in dependency order
     const remaining = components.filter(c => c.attach_to !== null)
@@ -4654,7 +3986,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // different-length instance (cache is keyed by component ID).  Always use the
       // explicit length when specified.
       let czm = childBounds.hz * 2
-      if (comp.length_mm && cPhys.cross_section_mm) {
+      if (comp.length_mm && isParametricSpec(preset)) {
         czm = comp.length_mm / 1000
       }
 
@@ -4670,26 +4002,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       let childPort: ReturnType<typeof resolveFaceToPort> = undefined
 
       if (parentPreset) {
-        const parentHalfBounds = resolveVisualHalfBoundsMm(parentPreset, parentCompDef ?? undefined)
-        const parentPorts = componentPortsForPreset(
-          parentPreset.id,
-          parentHalfBounds.hxMm / 1000,
-          parentHalfBounds.hyMm / 1000,
-          parentHalfBounds.hzMm / 1000,
-          parentPreset.mounting_logic
-        )
+        const parentPorts = resolveComponentPorts(parentPreset, parentCompDef ?? undefined)
         parentPort = resolveFaceToPort(attachFace, parentPorts)
         console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
 
         if (childPreset) {
-          const childHalfBounds = resolveVisualHalfBoundsMm(childPreset, comp)
-          const childPorts = componentPortsForPreset(
-            childPreset.id,
-            childHalfBounds.hxMm / 1000,
-            childHalfBounds.hyMm / 1000,
-            childHalfBounds.hzMm / 1000,
-            childPreset.mounting_logic
-          )
+          const childPorts = resolveComponentPorts(childPreset, comp)
           childPort = resolveFaceToPort(childFace, childPorts)
           console.log(`[assembly][ports] Child port resolved: ${childPreset.id}.${childFace} → ${childPort ? `${childPort.nodeId}(${childPort.cls}:${childPort.label})` : 'NOT FOUND'}`)
         } else {
@@ -4740,132 +4058,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const jointType = connectionJoint.joint_type
       comp.joint_type = jointType
 
-      // Get multi-child placement info
-      const faceKey = `${comp.attach_to}:${comp.attach_face || 'top'}`
-      const totalOnFace = faceChildCounts.get(faceKey) || 1
-      const childIdx = faceChildIndex.get(faceKey) || 0
-      faceChildIndex.set(faceKey, childIdx + 1)
-
-      const doc = new DOMParser().parseFromString(getCurrentUrdfText(), 'application/xml')
-      const sortedDims = [cxm, cym, czm].sort((a, b) => a - b)
-      const isElongated = sortedDims[2] > sortedDims[0] * 2.5 && sortedDims[1] < sortedDims[0] * 2.0
-      const orientation = comp.orientation || 'auto'
-      const childContactClass = presetContactClass(preset)
-      const parentContactClass = presetContactClass(parentPreset)
-      const parentIsDrivetrain = parentContactClass === 'drivetrain' || isDrivetrainComponentId(parentPreset?.id ?? '')
-      const childIsTire = childContactClass === 'wheel' || isTireComponentId(preset.id)
-      const childIsDrivetrain = childContactClass === 'drivetrain' || isDrivetrainComponentId(preset.id)
-      const hasTireChild = components.some(c => c.attach_to === comp.link_name && isTireComponentId(c.component_id))
-      const isShaftBoreConnection = !!(
-        parentPort && childPort &&
-        ((parentPort.cls === 'shaft' && childPort.cls === 'bore') ||
-         (parentPort.cls === 'bore' && childPort.cls === 'shaft'))
-      )
-      const childUsesRollingBottomPose = childIsDrivetrain || childIsTire || preset.id.startsWith('mobility_swerve_')
-      const isRollingHardware = childUsesRollingBottomPose || hasTireChild || isShaftBoreConnection
-      // Splay is the outward roll/pitch tilt on the bottom face for multi-child legs.
-      // Skip for wheels/drivetrain (usesRollingBottomPose) and passive stacks (brackets,
-      // coupler discs, sensors…) — not for revolute hip servos: they are revolute joints
-      // and still need splay so quadruped legs aim outward instead of bunching inward.
-      const isPassiveHardware = comp.component_id.startsWith('structural_bracket')
-        || comp.component_id.startsWith('structural_joint_plate')
-        || comp.component_id.startsWith('structural_sheet')
-        || comp.component_id.startsWith('structural_servo_coupler')
-        || comp.component_id.startsWith('power_')
-        || comp.component_id.startsWith('sensor_')
-        || comp.component_id.startsWith('compute_')
-      const noSplay = isRollingHardware || isPassiveHardware || isSplitServoComponentId(preset.id)
-      const elevAngle = comp.elevation_angle ?? 0
-
-      // Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
-      // so the tire clears the baseplate instead of clipping through it.
-      let effectiveCym = cym
-      if (childIsDrivetrain && comp.attach_face === 'bottom') {
-        const aor = preset.mounting_logic.assembled_outer_radius_mm
-        if (typeof aor === 'number') effectiveCym = aor / 1000
-      }
-
-      const parentParametricLengthMm = (parentCompDef?.length_mm && parentPreset?.physical.cross_section_mm)
-        ? parentCompDef.length_mm
-        : undefined
-      let placement = computeFacePlacement(
-        doc, parentLinkName,
-        cxm, effectiveCym, czm,
-        comp.attach_face,
-        isElongated,
-        childIdx,
-        totalOnFace,
-        orientation,
-        noSplay,
-        comp.component_id,
-        elevAngle,
-        faceChildSizes.get(faceKey),
-        { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz },
-        undefined,
-        undefined,
-        undefined,
-        { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
-        parentParametricLengthMm,
-      )
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${jointType} axis=${comp.joint_axis}`)
-      // Phase 2/3: if this component has authored mate-connector fields OR
-      // either preset carries authored connectors, AND the feature flag is on,
-      // resolve via closed-form frame composition instead of the bbox half-
-      // extent math. Returns null to fall through to legacy whenever neither
-      // side opts in.
-      // Connector-aware placement below may override the fallback placement.
-      const parentComp = components.find(c => c.link_name === parentLinkName)
-      const parentHalfBounds = parentPreset
-        ? resolveVisualHalfBoundsMm(parentPreset, parentComp ?? undefined)
-        : { hxMm: 20, hyMm: 20, hzMm: 20 }
-      const matePlacement = (parentPreset && childPreset)
-        ? computeMatePlacement(
-            comp,
-            parentHalfBounds,
-            { hxMm: cxm * 500,                hyMm: effectiveCym * 500,       hzMm: czm * 500 },
-            parentPreset.connectors,
-            childPreset.connectors,
-            totalOnFace > 1
-              ? {
-                  total: totalOnFace,
-                  index: childIdx,
-                  face: comp.attach_face || 'top',
-                  childSizes: faceChildSizes.get(faceKey),
-                }
-              : undefined,
-          )
-        : null
-
-      if (matePlacement) {
-        placement = matePlacement
-        viaConnectorMap.set(comp.link_name, true)
-        console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${comp.attach_connector ?? comp.attach_face}, child=${comp.mate_connector ?? '(default)'}, type=${comp.mate_type ?? 'fastened'} → ${JSON.stringify(placement)}`)
-      } else {
-        const placeFlags = { viaConnector: false }
-        placement = computeFacePlacement(doc, parentLinkName, cxm, effectiveCym, czm, comp.attach_face, isElongated, childIdx, totalOnFace, orientation, noSplay, comp.component_id, elevAngle, faceChildSizes.get(faceKey), { cx: childBounds.cx, cy: childBounds.cy, cz: childBounds.cz }, parentPreset?.connectors, placeFlags, childPreset?.connectors, { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose }, parentParametricLengthMm)
-        if (placeFlags.viaConnector) {
-          viaConnectorMap.set(comp.link_name, true)
-          const oppositeFaceLog: Record<string, string> = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' }
-          const childFaceLog = comp.attach_face ? (oppositeFaceLog[comp.attach_face] ?? '?') : '?'
-          console.log(`[mate] Placed ${comp.link_name} via connector path: parent=${parentPreset!.id}.${comp.attach_face}, child=${childPreset?.id ?? '?'}.${childFaceLog}, type=face-distribute → ${JSON.stringify(placement)}`)
-        }
-      }
-
-      // Step 2's runtime ICP pass now runs post-reparse as a scene-level
-      // pass (see runContactCleanupPass below). The in-loop hook here was
-      // a dead-end — bulk assembly's single-reparse-at-end timing meant
-      // every mate saw an empty scene. Leave this block intentionally
-      // empty; placement xyz is what `computeMatePlacement` /
-      // `computeFacePlacement` produced, with any nudges layered on
-      // after reconcile.
-      console.log(`[assembly] Placing ${comp.component_id} -> parent=${parentLinkName}, face=${comp.attach_face}, child ${childIdx+1}/${totalOnFace}, elongated=${isElongated}, orient=${orientation}, elev=${elevAngle}°, noSplay=${noSplay}, placement=${JSON.stringify(placement)}, joint=${comp.joint_type} axis=${comp.joint_axis}`)
-
-      // Override joint type/axis from the topology
+      // Placement xyz/rpy and joint axis are sourced from the placement
+      // compiler below. Initialize placeholders consumed by the URDF emission.
+      let placement: { xyz: string; rpy: string } = { xyz: '0 0 0', rpy: '0 0 0' }
       let jointAxis = axisTupleToUrdf(connectionJoint.axis_xyz)
-      // After Rx(-90°) on bottom face, local Z = world Y (rolling axis). Remap "y" → "0 0 1".
-      if (childIsDrivetrain && comp.attach_face === 'bottom' && comp.joint_axis?.toLowerCase() === 'y') {
-        jointAxis = '0 0 1'
-      }
 
       // Use addComponentCore but we need to override joint type and axis
       // Since addComponentCore auto-determines joint type from category,
@@ -4877,7 +4073,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const childName = `${preset.id}_${nextIdx2}`
       const jointName = `joint_${preset.id}_${nextIdx2}`
 
-      const cMass = cPhys.mass_kg ?? cPhys.mass_kg_per_100mm ?? 0.1
+      const cMass = resolveComponentMassKg(preset, comp)
       const cShape = cPhys.inertia_primitive || 'box'
       let cInertia: { ixx: number; iyy: number; izz: number }
       if (cShape === 'cylinder') cInertia = computeCylinderInertia(cMass, Math.max(cxm, cym) / 2, czm)
@@ -4888,7 +4084,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const resolvedVisual = resolveComponentVisual({
         preset,
         category: cCatName,
-        mode: 'collision',
         instance: comp,
       })
       const cVisuals = resolvedVisual.visuals
@@ -4900,142 +4095,47 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         parentCompDef &&
         isSplitServoComponentId(parentCompDef.component_id)
       )
-      const parentIsServo = !!(
-        parentCompDef &&
-        isSplitServoComponentId(parentCompDef.component_id)
-      )
       const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
-      if (parentIsServo) {
-        const parentServoAxis = axisNameFromComponentAxis(parentCompDef!.joint_axis)
-        const grandParentComp = parentCompDef?.attach_to
-          ? components.find(c => c.link_name === parentCompDef.attach_to)
-          : undefined
-        const parentRestRpy = Array.isArray(parentCompDef?.attach_rpy) ? parentCompDef.attach_rpy : undefined
-        const parentRestPitch = parentRestRpy ? Number(parentRestRpy[1]) || 0 : 0
-        const invertRadialSide = parentServoAxis === 'y'
-          && (
-            (
-              !!grandParentComp
-              && isSplitServoComponentId(grandParentComp.component_id)
-              && axisNameFromComponentAxis(grandParentComp.joint_axis) === 'x'
-            )
-            || parentRestPitch < -0.001
-          )
-        const childBodyHX = Math.max(cxm / 2 - Math.abs(childBounds.cx), 0)
-        const childBodyHY = Math.max(cym / 2 - Math.abs(childBounds.cy), 0)
-        const childBodyHZ = Math.max(czm / 2 - Math.abs(childBounds.cz), 0)
-        const drivenPlacement = preset.id === 'structural_limb_link_slim'
-          ? servoDrivenStructuralLimbPlacement(parentServoAxis, comp.attach_face, childBodyHY, childBodyHZ, parentWorldTransform)
-          : servoDrivenChildPlacement(
-            parentServoAxis,
-            comp.attach_face,
-            childBodyHX,
-            childBodyHY,
-            childBodyHZ,
-            invertRadialSide,
-            cIsActuated,
-          )
-        if (drivenPlacement) {
-          placement = drivenPlacement
-          viaConnectorMap.set(comp.link_name, true)
-          console.log(`[assembly] servo driven child: ${comp.link_name} parentAxis=${parentServoAxis} placement=${JSON.stringify(placement)}`)
-        }
+
+      // ── Phase 3b.4.K — placement values sourced from CompiledGraph ────────
+      // The placement compiler is now the single owner of: face/mate/servo
+      // placement, distal-beam-bottom flip, arm rest pose, attach_rpy override,
+      // foot pad world-leveling, servo mount rpy, side-axis dz nudge. See
+      // placementCompiler/index.ts. Every component must have a CompiledLink
+      // (parity-verified: matched=N/N, unmatched=0).
+      const _cl = compiledByLogical.get(comp.link_name)
+      if (!_cl) {
+        console.warn(`[assembly] No CompiledLink for ${comp.link_name} — skipping`)
+        processed.add(comp.link_name)
+        continue
       }
-      // For split servos, placement.rpy belongs to the fixed housing mount.
-      // Rest-pose offsets belong to the body -> horn joint origin instead.
-      let finalRpy = placement.rpy
+      const _fmt4 = (t: [number, number, number]) =>
+        t.map(v => Number(v || 0).toFixed(4)).join(' ')
+      const _fmtAxis = (t: [number, number, number]) =>
+        t.map(v => Math.round(v).toString()).join(' ')
+      let finalRpy: string
       let servoHornZeroRpy = '0 0 0'
-      if (
-        isDistalBeamComponentId(parentCompDef?.component_id) &&
-        comp.attach_face === 'bottom'
-      ) {
-        const xyz = parseXyzString(placement.xyz)
-        const normalWorld = worldOffsetFromParent(parentWorldTransform, [0, 0, xyz[2]])
-        if (normalWorld.z > 0.0001) {
-          xyz[2] = -xyz[2]
-          placement = { ...placement, xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' ') }
-          console.log(`[assembly] beam distal bottom corrected: ${comp.link_name} local_z flipped so child moves downward in world`)
-        }
-      }
-      const servoAxisSign = cIsActuated ? servoAxisSignFromParentWorld(parentWorldTransform, servoAxisName) : 1
-      const isArmJoint = jointType === 'revolute'
-        && comp.joint_axis?.toLowerCase() === 'y'
-        && comp.attach_face === 'top'
-      const parentDepth = armDepth.get(comp.attach_to!) || 0
-      const applyRestPitch = (pitch: number) => {
-        if (cIsActuated) {
-          const rpyParts = parseRpyString(servoHornZeroRpy)
-          rpyParts[2] += pitch
-          servoHornZeroRpy = formatRpyTuple(rpyParts)
-          return
-        }
-        const rpyParts = parseRpyString(placement.rpy)
-        rpyParts[1] += pitch
-        finalRpy = formatRpyTuple(rpyParts)
-      }
-      if (isArmJoint) {
-        const depth = parentDepth + 1
-        armDepth.set(comp.link_name, depth)
-        const defaultPitch = depth === 1 ? 0.7854 : depth === 2 ? -1.5708 : 0
-        if (defaultPitch !== 0) {
-          applyRestPitch(defaultPitch)
-          console.log(`[assembly] Arm rest pose: ${comp.link_name} depth=${depth}, ${cIsActuated ? 'horn zero' : 'mount'} pitch += ${defaultPitch.toFixed(2)} rad`)
-        }
+      let servoBodyMountRpy: string
+      if (cIsActuated) {
+        // Servo joints[]: optional carrier (compound), mount (fixed),
+        // revolute (last). XYZ/mountRpy live on whichever fixed joint sits
+        // between parent and body — carrier when compound, mount otherwise.
+        const _revIdx = _cl.joints.length - 1
+        const _bodyMountIdx = useCompoundServoCarrier ? 0 : (_cl.joints.length === 3 ? 1 : 0)
+        const _bodyMount = _cl.joints[_bodyMountIdx]
+        const _rev = _cl.joints[_revIdx]
+        placement = { xyz: _fmt4(_bodyMount.originXyz), rpy: _fmt4(_bodyMount.originRpy) }
+        servoBodyMountRpy = _fmt4(_bodyMount.originRpy)
+        servoHornZeroRpy = _fmt4(_rev.originRpy)
+        finalRpy = placement.rpy
       } else {
-        armDepth.set(comp.link_name, comp.attach_face === 'top' ? parentDepth : 0)
+        const _j = _cl.joints[0]
+        placement = { xyz: _fmt4(_j.originXyz), rpy: _fmt4(_j.originRpy) }
+        finalRpy = _fmt4(_j.originRpy)
+        jointAxis = _fmtAxis(_j.axis)
+        servoBodyMountRpy = finalRpy   // unused for non-actuated; satisfies type
       }
-      const explicitRpy = comp.attach_rpy
-      if (Array.isArray(explicitRpy) && explicitRpy.length === 3
-          && explicitRpy.some(v => Math.abs(v) > 0.001)) {
-        const explicitRpyStr = formatRpyTuple([
-          Number(explicitRpy[0]) || 0,
-          Number(explicitRpy[1]) || 0,
-          Number(explicitRpy[2]) || 0,
-        ])
-        if (cIsActuated) {
-          const explicitTuple = parseRpyString(explicitRpyStr)
-          if (
-            servoAxisName === 'y' &&
-            isDistalBeamComponentId(parentCompDef?.component_id) &&
-            comp.attach_face === 'bottom'
-          ) {
-            const bend = Math.abs(explicitTuple[1] || 0)
-            // Mirrored Y-axis knee carriers need opposite local horn signs so
-            // both sides fold toward world -X (backward) in the dog stance.
-            servoHornZeroRpy = formatRpyTuple([0, 0, bend * servoAxisSign])
-          } else {
-            servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, servoAxisSign)
-          }
-          console.log(`[assembly] servo horn zero rpy: ${comp.link_name} axis=${servoAxisName} sign=${servoAxisSign} joint_rpy=[${explicitRpy.join(', ')}] local=${servoHornZeroRpy}`)
-        } else {
-          finalRpy = explicitRpyStr
-          console.log(`[assembly] attach_rpy override: ${comp.link_name} rpy=[${explicitRpy.join(', ')}]`)
-        }
-      }
-      const explicitRpyApplied = Array.isArray(explicitRpy) && explicitRpy.length === 3
-        && explicitRpy.some(v => Math.abs(v) > 0.001)
-      if (!cIsActuated && preset.id === 'mobility_rubber_foot_pad' && !explicitRpyApplied) {
-        finalRpy = worldLevelRpyForParent(parentWorldTransform)
-        console.log(`[assembly] level foot pad: ${comp.link_name} rpy=${finalRpy}`)
-      }
-      const servoBodyMountRpy = cIsActuated
-        ? (servoAxisName === 'z'
-          ? servoPlanarMountRpyForParentWorld(parentWorldTransform, comp.attach_face, finalRpy)
-          : servoMountRpyForParentWorld(parentWorldTransform, servoAxisName))
-        : finalRpy
-      if (cIsActuated && servoAxisName !== 'z' && (comp.attach_face === 'top' || comp.attach_face === 'bottom')) {
-        const xyz = placement.xyz.split(/\s+/).map(Number)
-        const baseHalfZ = Math.max(czm / 2 - Math.abs(childBounds.cz), 0)
-        const rotatedHalfZ = servoAxisName === 'x'
-          ? Math.max(cxm / 2 - Math.abs(childBounds.cx), 0)
-          : Math.max(cym / 2 - Math.abs(childBounds.cy), 0)
-        const dz = rotatedHalfZ - baseHalfZ
-        if (Math.abs(dz) > 1e-6) {
-          xyz[2] += comp.attach_face === 'top' ? dz : -dz
-          placement = { ...placement, xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' ') }
-          console.log(`[assembly] side-axis servo clearance: ${comp.link_name} axis=${servoAxisName} z ${dz >= 0 ? '+' : ''}${dz.toFixed(4)}m`)
-        }
-      }
+      if (_cl.placedViaConnector) viaConnectorMap.set(comp.link_name, true)
       const servoHornOriginZ = cIsActuated ? czm * SERVO_HORN_ORIGIN_Z_RATIO : 0
 
       const changed = commitUrdf(urdfDoc => {
@@ -5216,8 +4316,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         })
         console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${cIsActuated ? servoBodyMountRpy : finalRpy}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
-        // (getCurrentUrdfText reads from the buffer; getParentBounds falls back
-        // to URDF-visual dims when the rendered-mesh cache is stale).
+        // — parentBoundsFromLink reads the resolver, not the rendered-mesh cache,
+        // so the in-progress URDF buffer is sufficient.
         if (!_bulkMode) ctx.reparseUrdf()
       } else {
         console.warn(`[assembly] ✗ Failed to place ${comp.component_id} on ${parentLinkName}`)

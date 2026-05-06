@@ -5,6 +5,7 @@ import type { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { invoke } from '@tauri-apps/api/core'
 import type { ParsedRobot } from './urdfParser'
 import type { ValResult } from './validation'
+import { urdfVecToSceneVec } from './coordinates.ts'
 
 export interface SimManagerDeps {
   // Three.js objects
@@ -231,14 +232,15 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   simContactGroup.name = 'sim_contacts'
   deps.worldGroup.add(simContactGroup)
 
-  // MuJoCo world is Z-up; Three.js world is Y-up.
-  // Centralize this conversion for all sim overlays/state surfaces.
+  // MuJoCo world is Z-up; Three.js world is Y-up. MuJoCo's basis matches
+  // URDF's, so the conversion is the same `urdfVecToSceneVec` seam used by
+  // the placement / carry paths.
   function mjVecToThreeWorld(v: number[]): THREE.Vector3 {
-    return new THREE.Vector3(v[0] ?? 0, v[2] ?? 0, -(v[1] ?? 0))
+    return urdfVecToSceneVec([v[0] ?? 0, v[1] ?? 0, v[2] ?? 0])
   }
 
   function mjDirToThreeWorld(v: number[]): THREE.Vector3 {
-    return new THREE.Vector3(v[0] ?? 0, v[2] ?? 0, -(v[1] ?? 0))
+    return urdfVecToSceneVec([v[0] ?? 0, v[1] ?? 0, v[2] ?? 0])
   }
 
   function threeWorldToWorldGroupLocal(pWorld: THREE.Vector3): THREE.Vector3 {

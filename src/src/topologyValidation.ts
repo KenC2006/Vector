@@ -4,9 +4,22 @@
 // driven from a node-based corpus runner as well as from the browser-side
 // urdfAssembly pipeline.
 
-import { componentPortsForPreset, isDrivetrainComponentId, isTireComponentId, resolveFaceToPort } from './attachmentNodes.ts'
+import { resolveFaceToPort } from './attachmentNodes.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
-import { getAuthoredHalfBoundsMm } from './componentDims.ts'
+import {
+  isDrivetrainComponentId,
+  isFootPadComponentId,
+  isTireComponentId,
+  resolveComponent,
+  resolveComponentHalfBoundsMm,
+} from './componentResolver.ts'
+import type { MateConnector } from './mateConnectors.ts'
+import {
+  type Diagnostic,
+  DiagnosticOwner,
+  liftStrings,
+  routeDiagnostics,
+} from './compilerDiagnostics.ts'
 
 // Minimal shape of a preset that the validator needs. The real PresetComponent
 // in urdfAssembly.ts is a superset of this; pass anything structurally compatible.
@@ -16,8 +29,9 @@ export interface ValidationPreset {
     bounding_box_mm?: number[]
     cross_section_mm?: number[]
   }
+  mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
-  connectors?: Array<{ id: string }>
+  connectors?: MateConnector[]
 }
 
 export interface ValidationContext {
@@ -27,6 +41,26 @@ export interface ValidationContext {
 export interface ValidationResult {
   errors: string[]
   warnings: string[]
+}
+
+/**
+ * Phase 3 (COMPONENT_UNIFICATION_PLAN.md §3.8): owner-tagged view of the same
+ * validation result. Built from the legacy string lists via `liftStrings` —
+ * topology rule failures are AI-fixable (they describe wrong parents/children/
+ * placements that the next AI redesign should address), so default the bucket
+ * to `AiTopology`. Once individual rules emit structured codes themselves,
+ * this can be populated directly instead of through the lifter.
+ */
+export function validateTopologyRouted(
+  components: AssemblyComponent[],
+  ctx: ValidationContext,
+): { diagnostics: Diagnostic[]; routed: Record<DiagnosticOwner, Diagnostic[]> } {
+  const { errors, warnings } = validateTopology(components, ctx)
+  const diagnostics: Diagnostic[] = [
+    ...liftStrings(errors, 'error', DiagnosticOwner.AiTopology),
+    ...liftStrings(warnings, 'warning', DiagnosticOwner.AiTopology),
+  ]
+  return { diagnostics, routed: routeDiagnostics(diagnostics) }
 }
 
 export type RepairKind =
@@ -58,10 +92,6 @@ function isSplitServoComponentId(componentId: string): boolean {
   )
 }
 
-function isFootPadComponentId(componentId: string): boolean {
-  return componentId === 'mobility_rubber_foot_pad'
-}
-
 // Walk up from `start` to the nearest component whose id begins with `structural_`.
 // Cycle-guarded because auto-repairs run before cycle validation.
 export function findStructuralAncestor(
@@ -88,21 +118,14 @@ function directChildren(components: AssemblyComponent[], parentName: string): As
 function portsForComponent(
   preset: ValidationPreset,
 ) {
-  const bounds = resolvePresetBoundsMm(preset)
-  return componentPortsForPreset(
-    preset.id,
-    bounds.hxMm / 1000,
-    bounds.hyMm / 1000,
-    bounds.hzMm / 1000,
-    preset.mounting_logic as { primary?: string; output?: string; shaft_diameter_mm?: number } | undefined,
-  )
+  return resolveComponent({ spec: preset }).ports
 }
 
 function resolvePresetBoundsMm(
   preset: ValidationPreset,
   instance?: { length_mm?: number },
 ): { hxMm: number; hyMm: number; hzMm: number } {
-  return getAuthoredHalfBoundsMm(preset, instance)
+  return resolveComponentHalfBoundsMm(preset, instance)
 }
 
 // Mirrors the oppositeFace table in urdfAssembly.ts — the child's contact face
@@ -115,11 +138,9 @@ const OPPOSITE_FACE: Record<string, string> = {
   coaxial: 'coaxial',
 }
 
-const DEFAULT_CONNECTOR_IDS = new Set(['top', 'bottom', 'front', 'back', 'left', 'right'])
-
 function connectorIdsForPreset(preset: ValidationPreset): Set<string> {
-  const ids = new Set(DEFAULT_CONNECTOR_IDS)
-  for (const conn of preset.connectors ?? []) {
+  const ids = new Set<string>()
+  for (const conn of resolveComponent({ spec: preset }).connectors) {
     if (typeof conn?.id === 'string' && conn.id.trim()) ids.add(conn.id)
   }
   return ids

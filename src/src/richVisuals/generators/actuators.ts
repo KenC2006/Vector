@@ -14,6 +14,7 @@ import {
   cablePort, knurledRing,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
+import { SERVO_HORN_ORIGIN_Z_RATIO } from '../../componentMeshes'
 
 const DEFAULT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
 let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
@@ -172,10 +173,13 @@ function generateServoOutput(id: string, dims: ComponentVisualDims): THREE.Group
 
 function generateServo(id: string, dims: ComponentVisualDims): SplitVisual {
   const { z: h } = dims
+  // Match the URDF emitter (`addComponentCore` uses SERVO_HORN_ORIGIN_Z_RATIO
+  // for the revolute joint origin). Without this, the carry preview's horn
+  // sat ~h*0.02 below where the placed component's horn link rendered.
   return {
     body: generateServoBody(id, dims),
     horn: generateServoOutput(id, dims),
-    hornOriginLocal: new THREE.Vector3(0, h * 0.42, 0),
+    hornOriginLocal: new THREE.Vector3(0, h * SERVO_HORN_ORIGIN_Z_RATIO, 0),
   }
 }
 

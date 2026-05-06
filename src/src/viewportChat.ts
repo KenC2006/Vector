@@ -871,7 +871,19 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     scheduleCoreRestartAfterCancel()
   }
 
-  async function sendVCMessage(prompt: string, retryCount = 0, imagesOverride?: ImageAttachment[]) {
+  async function sendVCMessage(
+    prompt: string,
+    retryCount = 0,
+    imagesOverride?: ImageAttachment[],
+    /** Pre-prompt URDF captured on the outermost call. Forwarded through
+     *  validator-driven redesign retries so the diff baseline stays anchored
+     *  to what the user actually saw before sending the prompt — not to the
+     *  failed first attempt that resolveAssemblyGraph already wrote into the
+     *  editor. Without this, the inline-diff line count for a redesign turn
+     *  reports only the deltas vs. the discarded attempt, masking the bulk of
+     *  what changed since the user's original state. */
+    originalUrdfOverride?: string,
+  ) {
     if (!prompt.trim()) return
 
     if (!deps.getEditorValue()) {
@@ -923,6 +935,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       // listen may fail in dev mode without Tauri — non-critical
     }
 
+    // Hoisted out of the try block so the rate-limit catch path can forward it
+    // to its recursive sendVCMessage retry — the diff baseline must stay
+    // anchored to what the user actually typed against, not a partial state
+    // from a failed first attempt.
+    const fullUrdf = originalUrdfOverride ?? deps.getEditorValue()
+
     try {
       if (coreRestartAfterCancel) {
         await coreRestartAfterCancel
@@ -939,7 +957,6 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         if (cancelToken.cancelled) return
       }
 
-      const fullUrdf = deps.getEditorValue()
       const kinematicContext = deps.buildKinematicContext()
       const isRedesign = retryCount > 0
       const currentUrdf = isRedesign
@@ -1332,7 +1349,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
                 const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
                 unlisten?.()
-                return await sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend)
+                return await sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
               }
               // Skip-paths: we only reach here when shouldRedesign was false
               // OR retryCount already hit the cap. Log + surface remaining
@@ -1375,12 +1392,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
             const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
             unlisten?.()
-            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
           } else {
             addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
             const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components.`
             unlisten?.()
-            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
           }
         } else {
           addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. Try describing a simpler robot.</span>`)
@@ -1409,7 +1426,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
           await new Promise(r => setTimeout(r, waitSec * 1000))
           unlisten?.()
-          return await sendVCMessage(prompt, retryCount + 1, imagesForThisSend)
+          return await sendVCMessage(prompt, retryCount + 1, imagesForThisSend, fullUrdf)
         }
         addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
       } else {

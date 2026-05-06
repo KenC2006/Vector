@@ -168,19 +168,6 @@ _ALLOWED_COMPONENT_IDS = {
 }
 
 
-def _is_tire_component_id(component_id: str) -> bool:
-    return component_id.startswith((
-        "mobility_wheel_",
-        "mobility_mecanum_",
-        "mobility_omni_",
-        "mobility_caster_",
-    ))
-
-
-def _is_drivetrain_component_id(component_id: str) -> bool:
-    return component_id.startswith("drivetrain_")
-
-
 def _build_component_catalog() -> str:
     """Build a compact summary of available preset components for the AI system prompt.
     Only includes components with verified GLB meshes shown in the UI."""
@@ -199,8 +186,10 @@ def _build_component_catalog() -> str:
                 phys = c["physical"]
                 mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm")
                 mass_str = f"{mass}kg" if mass and mass >= 1 else f"{round(mass*1000)}g" if mass else "?"
-                bb = phys.get("bounding_box_mm", [])
-                bb_str = f"{bb[0]}x{bb[1]}x{bb[2]}mm" if len(bb) >= 3 else ""
+                # Phase 3: resolver as source of truth for catalog dims.
+                from core.presets import resolve_component_bounds_mm
+                bb = resolve_component_bounds_mm(c)
+                bb_str = f"{int(bb[0])}x{int(bb[1])}x{int(bb[2])}mm" if len(bb) >= 3 else ""
                 shape = phys.get("inertia_primitive", "box")
                 # Key spec
                 me = c.get("mechanical_electrical", {})
@@ -925,998 +914,15 @@ Rules:
 - Match the indentation style of the surrounding code."""
 
 
-def _assemble_from_graph(assembly: dict) -> str:
-    """
-    Given an assembly graph (Option C output from Claude), compute joint origins
-    from component bounding boxes and attach_face directions, then generate
-    a complete URDF string.
-    """
-    try:
-        from core.presets import get_component
-    except ImportError:
-        raise ValueError("Preset library not available for assembly")
-
-    components = assembly.get("components", [])
-    base_link = assembly.get("base_link", components[0]["link_name"] if components else "base_link")
-
-    # Auto-prepend a baseplate if the root component isn't a plate-shaped component
-    if components:
-        root_comp = components[0]
-        root_preset = get_component(root_comp.get("component_id", ""))
-        if root_preset:
-            root_bbox = root_preset.get("physical", {}).get("bounding_box_mm", [50, 50, 50])
-            # Check if root is plate-shaped (one dim much smaller than others)
-            if root_bbox and len(root_bbox) >= 3:
-                sorted_bb = sorted(root_bbox)
-                is_plate = sorted_bb[0] < sorted_bb[1] * 0.2  # thinnest dim < 20% of middle
-            else:
-                is_plate = False
-            if not is_plate:
-                print(f"[assembly] Root '{root_comp['component_id']}' is not a plate — auto-prepending baseplate", file=sys.stderr)
-                bp_name = "structural_baseplate_auto"
-                baseplate_comp = {
-                    "link_name": bp_name,
-                    "component_id": "structural_baseplate",
-                    "attach_to": None,
-                    "attach_face": None,
-                    "joint_type": "fixed",
-                    "joint_axis": "z",
-                }
-                # Re-parent the original root onto the baseplate
-                root_comp["attach_to"] = bp_name
-                root_comp["attach_face"] = root_comp.get("attach_face") or "top"
-                components.insert(0, baseplate_comp)
-                base_link = bp_name
-                assembly["ground_offset"] = True
-
-    def _component_is_split_servo_id(component_id: str) -> bool:
-        return (
-            component_id.startswith("actuator_servo")
-            or component_id.startswith("actuator_continuous_rotation_servo")
-            or component_id.startswith("actuator_high_speed")
-        )
-
-    # Old plans sometimes contain couplers/brackets between servo joints. With
-    # split servos, those extra spacers rotate the next servo frame again or
-    # make the next limb coaxial with the shaft. Remove them so children mount
-    # to the driven horn adapter radially.
-    for comp in list(components):
-        parent = next((c for c in components if c.get("link_name") == comp.get("attach_to")), None)
-        children = [c for c in components if c.get("attach_to") == comp.get("link_name")]
-        cid = comp.get("component_id", "")
-        is_servo_coupler = cid == "structural_servo_coupler_disc"
-        is_servo_to_servo_bracket = (
-            cid.startswith("structural_bracket_")
-            and parent is not None
-            and _component_is_split_servo_id(parent.get("component_id", ""))
-            and any(_component_is_split_servo_id(c.get("component_id", "")) for c in children)
-        )
-        if not is_servo_coupler and not is_servo_to_servo_bracket:
-            continue
-        touches_servo = (
-            (parent is not None and _component_is_split_servo_id(parent.get("component_id", ""))) or
-            any(_component_is_split_servo_id(c.get("component_id", "")) for c in children)
-        )
-        if not touches_servo:
-            continue
-        for child in children:
-            child["attach_to"] = comp.get("attach_to")
-            if not child.get("attach_face") and comp.get("attach_face"):
-                child["attach_face"] = comp.get("attach_face")
-        components.remove(comp)
-        print(f"[assembly] removed obsolete servo spacer {comp.get('link_name')}", file=sys.stderr)
-
-    # Claude occasionally backslides to 2020/4040 T-slot for dog thigh/shin
-    # bones even though the canonical quadruped pattern uses slim limb links.
-    # Coerce only bottom-mounted actuator/foot chains so normal chassis rails
-    # and frames still keep their extrusion presets.
-    for comp in components:
-        cid = comp.get("component_id", "")
-        if not isinstance(cid, str) or not cid.startswith("structural_extrusion_"):
-            continue
-        parent = next((c for c in components if c.get("link_name") == comp.get("attach_to")), None)
-        children = [c for c in components if c.get("attach_to") == comp.get("link_name")]
-        parent_is_pitch_servo_leg = (
-            parent is not None
-            and _component_is_split_servo_id(parent.get("component_id", ""))
-            and comp.get("attach_face") == "bottom"
-        )
-        child_is_leg_terminal = any(
-            _component_is_split_servo_id(c.get("component_id", "")) or c.get("component_id") == "mobility_rubber_foot_pad"
-            for c in children
-        )
-        if parent_is_pitch_servo_leg and child_is_leg_terminal:
-            comp["component_id"] = "structural_limb_link_slim"
-            print(f"[assembly] coerced dog leg beam {comp.get('link_name')} from {cid} to structural_limb_link_slim", file=sys.stderr)
-
-    # The prompt forbids default cosmetic tails on quadrupeds, but the model can
-    # still emit a small rear servo + limb chain. Strip non-functional rear
-    # chains deterministically while preserving real legs, sensors, and payloads.
-    def _remove_subtree(root_name: str) -> None:
-        pending = [root_name]
-        remove_names = set()
-        while pending:
-            name = pending.pop()
-            if name in remove_names:
-                continue
-            remove_names.add(name)
-            pending.extend(
-                c.get("link_name")
-                for c in components
-                if c.get("attach_to") == name and c.get("link_name")
-            )
-        components[:] = [c for c in components if c.get("link_name") not in remove_names]
-
-    def _subtree_component_ids(root_name: str) -> set:
-        pending = [root_name]
-        seen = set()
-        ids = set()
-        while pending:
-            name = pending.pop()
-            if name in seen:
-                continue
-            seen.add(name)
-            comp = next((c for c in components if c.get("link_name") == name), None)
-            if comp is not None:
-                ids.add(comp.get("component_id", ""))
-            pending.extend(
-                c.get("link_name")
-                for c in components
-                if c.get("attach_to") == name and c.get("link_name")
-            )
-        return ids
-
-    is_quadruped = sum(1 for c in components if c.get("component_id") == "mobility_rubber_foot_pad") >= 4
-    if is_quadruped:
-        base_names = {
-            c.get("link_name")
-            for c in components
-            if c.get("component_id", "").startswith("structural_baseplate")
-        }
-        for comp in list(components):
-            link_name = comp.get("link_name", "")
-            cid = comp.get("component_id", "")
-            if comp.get("attach_to") not in base_names:
-                continue
-            if comp.get("attach_face") != "back" and "tail" not in link_name.lower():
-                continue
-            subtree_ids = _subtree_component_ids(link_name)
-            has_functional_terminal = any(
-                sid == "mobility_rubber_foot_pad"
-                or sid.startswith("sensor_")
-                or sid.startswith("compute_")
-                or sid.startswith("power_")
-                for sid in subtree_ids
-            )
-            tail_like = (
-                cid.startswith("actuator_servo")
-                or cid.startswith("actuator_high_speed")
-                or cid == "structural_limb_link_slim"
-                or "tail" in link_name.lower()
-            )
-            if tail_like and not has_functional_terminal:
-                _remove_subtree(link_name)
-                print(f"[assembly] removed default quadruped tail chain {link_name}", file=sys.stderr)
-
-    # Build a lookup: link_name -> component definition
-    comp_lookup = {}
-    for comp in components:
-        cid = comp["component_id"]
-        preset = get_component(cid)
-        if not preset:
-            print(f"[assembly] WARNING: Unknown component_id '{cid}', using defaults", file=sys.stderr)
-            preset = {"id": cid, "physical": {"mass_kg": 0.1, "bounding_box_mm": [50, 50, 50], "inertia_primitive": "box"}}
-        comp_lookup[comp["link_name"]] = {**comp, "preset": preset}
-        # Debug: log what Claude sent for each component
-        rpy = comp.get("attach_rpy", "MISSING")
-        face = comp.get("attach_face", "MISSING")
-        print(f"[assembly] {comp['link_name']}: component={cid}, face={face}, rpy={rpy}", file=sys.stderr)
-
-    # Compute joint origins based on parent bbox and attach_face
-    def _get_bbox_m(preset, comp=None):
-        phys = preset.get("physical", {})
-        bb = phys.get("bounding_box_mm")
-        if bb and len(bb) >= 3:
-            return [b / 1000.0 for b in bb]
-        # Handle parametric structural links: cross_section_mm + per-component length.
-        cs = phys.get("cross_section_mm")
-        if cs and len(cs) >= 2:
-            length_mm = 100
-            if isinstance(comp, dict):
-                length_mm = float(comp.get("length_mm") or 100)
-            return [cs[0] / 1000.0, cs[1] / 1000.0, length_mm / 1000.0]
-        return [0.05, 0.05, 0.05]
-
-    def _is_elongated(bbox):
-        """Check if a component is rod-shaped (e.g., extrusion, arm link).
-        Returns True for rods (two short dims, one long), False for plates/cubes."""
-        if not bbox or len(bbox) < 3:
-            return False
-        sorted_dims = sorted(bbox)
-        # Rod: longest dim >> both short dims (both short dims are similar)
-        # Plate: shortest dim << both long dims (two long dims are similar)
-        is_long = sorted_dims[2] > sorted_dims[0] * 2.5
-        short_dims_similar = sorted_dims[1] < sorted_dims[0] * 2.0
-        return is_long and short_dims_similar
-
-    def _is_distal_beam_component_id(component_id):
-        return (
-            component_id == "structural_limb_link_slim" or
-            (isinstance(component_id, str) and component_id.startswith("structural_extrusion_"))
-        )
-
-    def _compute_origin_and_rpy(parent_preset, child_preset, attach_face, explicit_rpy=None, parent_comp=None, child_comp=None):
-        """Compute joint origin xyz AND rpy based on parent/child bounding boxes and face.
-
-        For elongated children (extrusions) attaching to 'top', auto-rotates them
-        to extend horizontally along +X instead of stacking vertically.
-        """
-        import math
-        p_bbox = _get_bbox_m(parent_preset, parent_comp)
-        c_bbox = _get_bbox_m(child_preset, child_comp)
-
-        # Hub-motor -> tire: axial mount along drivetrain-local +Z.
-        # After the drivetrain's -pi/2 X-roll on the baseplate bottom,
-        # drivetrain-local +Z maps to world +Y (outboard). Offsetting the tire
-        # by (motor_hz + tire_half_axle) along +Z seats the tire's inboard bore
-        # face flush against the motor's outboard end. Do NOT use p_bbox[1]/2
-        # (the motor radius / local-Y half-extent) — that direction is world -Z
-        # (downward) after the roll, which places the tire below the motor
-        # rather than beside it. Outboard direction for 4-wheel vehicles is
-        # handled by yawing drivetrains on the -Y half 180 deg (bottom-face branch).
-        child_id = (child_preset or {}).get("id", "")
-        parent_id = (parent_preset or {}).get("id", "")
-        _is_tire_child = _is_tire_component_id(child_id)
-        _is_drivetrain_parent = _is_drivetrain_component_id(parent_id)
-        if _is_tire_child and _is_drivetrain_parent:
-            motor_hz = p_bbox[2] / 2  # axle half-length along drivetrain local Z
-            tire_half_axle = c_bbox[2] / 2  # tire half-width along axle
-            dz = motor_hz + tire_half_axle
-            print(f"[assembly] Axial hub mount: {child_id} on {parent_id}, dz={dz:.4f}", file=sys.stderr)
-            return [0, 0, dz], [0, 0, 0]
-
-        # Use explicit rpy if provided and non-zero
-        if explicit_rpy and any(abs(v) > 0.001 for v in explicit_rpy):
-            rpy = explicit_rpy
-        else:
-            rpy = [0, 0, 0]
-            # Auto-rotate: elongated child on "top" face -> pitch 90° to extend along +X
-            if attach_face in ("top", "coaxial") and _is_elongated(c_bbox):
-                rpy = [0, math.pi/2, 0]  # pitch 90°
-                print(f"[assembly] Auto-rotating elongated child to horizontal (pitch 90°)", file=sys.stderr)
-            # Auto-roll: drivetrain assemblies on the "bottom" face need -90° roll
-            # so their output shaft lies along Y (standard ROS convention).
-            # Tires (mobility_wheel_*) attach fixed to the drivetrain and inherit
-            # the orientation; they do not need their own roll correction.
-            child_id = (child_preset or {}).get("id", "")
-            _is_drivetrain = _is_drivetrain_component_id(child_id)
-            if _is_drivetrain and attach_face == "bottom":
-                rpy = [-math.pi / 2, 0, 0]
-                print(f"[assembly] Auto-rolling {child_id} -90° for bottom-face drivetrain mount", file=sys.stderr)
-
-        # Half-extents (geometry is always centered at link frame origin)
-        px, py, pz = p_bbox[0]/2, p_bbox[1]/2, p_bbox[2]/2
-        cx, cy, cz = c_bbox[0]/2, c_bbox[1]/2, c_bbox[2]/2
-
-        child_is_rod = _is_elongated(c_bbox)
-        # Rotation-aware extents: a ±90° pitch swings X onto Z; a ±90° roll
-        # swings Y onto Z. Without this, sideways cylinders (wheels, rollers,
-        # horizontal bearings) get placed using their pre-rotation thickness
-        # instead of their post-rotation radius and clip into their parent.
-        RIGHT = math.pi / 2
-        is_pitch_rotated = abs(abs(rpy[1]) - RIGHT) < 0.1
-        is_roll_rotated = abs(abs(rpy[0]) - RIGHT) < 0.1
-
-        if child_is_rod:
-            # Rod geometry is offset in local +Z, so it extends forward from the joint.
-            # The joint only needs to clear the rod's cross-section, not half its length.
-            cx_eff = cx
-            cz_eff = cx  # cross-section, not half-length (true regardless of rotation)
-        elif is_pitch_rotated:
-            cx_eff, cz_eff = cz, cx  # ±90° pitch: old Z → X, old X → Z
-        elif is_roll_rotated:
-            cx_eff, cz_eff = cx, cy  # ±90° roll: old Y → Z (X unchanged)
-            # Drivetrain hub motors carry an assembled tire; use tire outer radius for clearance
-            if _is_drivetrain_component_id(child_id) and child_preset:
-                ml = child_preset.get("mounting_logic", {})
-                aor = ml.get("assembled_outer_radius_mm")
-                if aor:
-                    cz_eff = aor / 1000.0
-        else:
-            cx_eff, cz_eff = cx, cz
-
-        parent_is_rod = _is_elongated(p_bbox)
-
-        # For rod parents that are rotated (horizontal arms), "front" means the tip
-        # The rod extends from joint origin along rotated axis for its full length
-        if parent_is_rod:
-            rod_tip = p_bbox[2]  # full length (geometry offset means tip is at length from joint)
-            p_front = rod_tip + cx_eff
-        else:
-            p_front = px + cx_eff
-
-        face_offsets = {
-            "top":     [0, 0, pz + cz_eff],
-            "bottom":  [0, 0, -(pz + cz_eff)],
-            "front":   [p_front, 0, 0],
-            "back":    [-(p_front), 0, 0],
-            "right":   [0, py + cy, 0],
-            "left":    [0, -(py + cy), 0],
-            "coaxial": [0, 0, 0],
-        }
-        xyz = face_offsets.get(attach_face, [0, 0, pz + cz_eff])
-        return xyz, rpy
-
-    # Generate URDF XML
-    import xml.etree.ElementTree as ET
-    import math
-
-    SERVO_HORN_Z_RATIO = 0.44  # horn joint sits 44% up the servo height (URDF Z-up)
-    DEFAULT_REVOLUTE_LIMIT_RAD = math.pi / 2  # ±90° fallback for hobby servos when preset omits limits
-
-    def _resolve_joint_limits_rad(preset: dict) -> tuple:
-        """Return (lower, upper) in radians for a revolute/prismatic joint.
-
-        Order of precedence:
-        1. sim_metadata.mjcf_joint_limits_deg (authoring source of truth, in degrees)
-        2. mechanical_electrical.angle_range_deg (legacy/alt name)
-        3. ±DEFAULT_REVOLUTE_LIMIT_RAD fallback
-        Robot-agnostic: any preset can opt in by adding the field; nothing else changes.
-        """
-        sim = preset.get("sim_metadata", {}) or {}
-        me = preset.get("mechanical_electrical", {}) or {}
-        deg = sim.get("mjcf_joint_limits_deg") or me.get("angle_range_deg")
-        if isinstance(deg, list) and len(deg) == 2:
-            try:
-                lo = math.radians(float(deg[0]))
-                hi = math.radians(float(deg[1]))
-                if hi > lo:
-                    return lo, hi
-            except (TypeError, ValueError):
-                pass
-        return -DEFAULT_REVOLUTE_LIMIT_RAD, DEFAULT_REVOLUTE_LIMIT_RAD
-
-    def _is_split_servo_component_id(component_id: str) -> bool:
-        return (
-            component_id.startswith("actuator_servo")
-            or component_id.startswith("actuator_continuous_rotation_servo")
-            or component_id.startswith("actuator_high_speed")
-        )
-
-    # Identify rotary servo components for split-link emit
-    servo_link_names: set = set()
-    servo_axis_names: dict = {}
-    for comp in components:
-        p = comp_lookup[comp["link_name"]]["preset"]
-        pid = p.get("id", "")
-        if _is_split_servo_component_id(pid):
-            servo_link_names.add(comp["link_name"])
-
-    def _effective_parent(raw_attach_to: str) -> str:
-        """Return the actual URDF parent link name (remaps servo links to _horn)."""
-        if raw_attach_to in servo_link_names:
-            return raw_attach_to + "_horn"
-        return raw_attach_to
-
-    def _axis_name(raw_axis) -> str:
-        if isinstance(raw_axis, str):
-            v = raw_axis.lower()
-            return v if v in ("x", "y", "z") else "z"
-        if isinstance(raw_axis, list) and len(raw_axis) == 3:
-            vals = [abs(float(v or 0)) for v in raw_axis]
-            return ("x", "y", "z")[vals.index(max(vals))]
-        return "z"
-
-    for comp in components:
-        link_name = comp.get("link_name")
-        parent_name = comp.get("attach_to")
-        parent_info = comp_lookup.get(parent_name) if parent_name else None
-        parent_id = (parent_info or {}).get("component_id", "")
-        has_servo_child = any(
-            child.get("attach_to") == link_name and child.get("link_name") in servo_link_names
-            for child in components
-        )
-        axis_name = _axis_name(comp.get("joint_axis", "z"))
-        is_compound_hip_base_servo = (
-            link_name in servo_link_names
-            and axis_name != "z"
-            and comp.get("attach_face") in ("top", "bottom")
-            and parent_id.startswith("structural_baseplate")
-            and has_servo_child
-        )
-        if is_compound_hip_base_servo:
-            print(f"[assembly] planar hip servo axis normalized: {link_name} {comp.get('joint_axis', 'z')} -> z so horn faces down/up normal to the baseplate", file=sys.stderr)
-            comp["joint_axis"] = "z"
-            if link_name in comp_lookup:
-                comp_lookup[link_name]["joint_axis"] = "z"
-
-    for comp in components:
-        if comp["link_name"] in servo_link_names:
-            servo_axis_names[comp["link_name"]] = _axis_name(comp.get("joint_axis", "z"))
-
-    def _servo_shaft_align_rpy(axis_name: str) -> list:
-        if axis_name == "x":
-            return [0, math.pi / 2, 0]
-        if axis_name == "y":
-            return [-math.pi / 2, 0, 0]
-        return [0, 0, 0]
-
-    def _matmul3(a: list, b: list) -> list:
-        return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-
-    def _matvec3(m: list, v: list) -> list:
-        return [sum(m[i][k] * v[k] for k in range(3)) for i in range(3)]
-
-    def _vadd3(a: list, b: list) -> list:
-        return [a[i] + b[i] for i in range(3)]
-
-    def _transpose3(a: list) -> list:
-        return [[a[j][i] for j in range(3)] for i in range(3)]
-
-    def _rpy_to_mat(rpy: list) -> list:
-        roll, pitch, yaw = [float(v or 0) for v in rpy]
-        cr, sr = math.cos(roll), math.sin(roll)
-        cp, sp = math.cos(pitch), math.sin(pitch)
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        # Match the frontend assembler's Three.js Euler XYZ convention.
-        return [
-            [cp * cy, -cp * sy, sp],
-            [sr * sp * cy + cr * sy, -sr * sp * sy + cr * cy, -sr * cp],
-            [-cr * sp * cy + sr * sy, cr * sp * sy + sr * cy, cr * cp],
-        ]
-
-    def _mat_to_rpy(m: list) -> list:
-        pitch = math.asin(max(-1.0, min(1.0, m[0][2])))
-        cp = math.cos(pitch)
-        if abs(cp) > 1e-8:
-            roll = math.atan2(-m[1][2], m[2][2])
-            yaw = math.atan2(-m[0][1], m[0][0])
-        else:
-            roll = math.atan2(m[2][1], m[1][1])
-            yaw = 0.0
-        return [roll, pitch, yaw]
-
-    def _servo_desired_world_rot(axis_name: str, axis_sign: int = 1) -> list:
-        if axis_name == "y" and axis_sign < 0:
-            # Mirror the physical shaft onto world -Y while keeping local +Y as
-            # the radial-down zero for leg chains.
-            return [
-                [-1, 0, 0],
-                [0, 0, -1],
-                [0, -1, 0],
-            ]
-        return _rpy_to_mat(_servo_shaft_align_rpy(axis_name))
-
-    def _servo_mount_rpy_for_parent(parent_link_name: str, axis_name: str) -> list:
-        if axis_name == "z":
-            return None
-        parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-        parent_pos = link_world_pos.get(parent_link_name, [0, 0, 0])
-        axis_sign = -1 if axis_name == "y" and parent_pos[1] < -1e-6 else 1
-        desired_world = _servo_desired_world_rot(axis_name, axis_sign)
-        return _mat_to_rpy(_matmul3(_transpose3(parent_rot), desired_world))
-
-    def _servo_planar_mount_rpy_for_parent(parent_link_name: str, attach_face: str, computed_rpy: list) -> list:
-        if attach_face not in ("top", "bottom"):
-            return computed_rpy
-        yaw = float(computed_rpy[2] or 0)
-        desired_world = _rpy_to_mat([math.pi, 0, yaw] if attach_face == "bottom" else [0, 0, yaw])
-        parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-        return _mat_to_rpy(_matmul3(_transpose3(parent_rot), desired_world))
-
-    def _world_level_rpy_for_parent(parent_link_name: str) -> list:
-        parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-        return _mat_to_rpy(_transpose3(parent_rot))
-
-    def _servo_axis_sign_for_parent(parent_link_name: str, axis_name: str) -> int:
-        parent_pos = link_world_pos.get(parent_link_name, [0, 0, 0])
-        return -1 if axis_name == "y" and parent_pos[1] < -1e-6 else 1
-
-    def _servo_rest_rpy(explicit_rpy: list, axis_name: str, axis_sign: int = 1) -> list:
-        axis_idx = {"x": 0, "y": 1, "z": 2}.get(axis_name, 2)
-        return [0, 0, -float(explicit_rpy[axis_idx] or 0) * axis_sign]
-
-    def _servo_driven_child_origin_rpy(parent_axis_name: str, attach_face: str, child_bbox: list, invert_radial_side: bool = False, child_is_servo: bool = False, parent_link_name=None, child_component_id: str = ""):
-        """Place a child relative to the servo horn output, not the housing face."""
-        adapter_gap = 0.008
-        child_half_len = child_bbox[2] / 2
-        if child_component_id == "structural_limb_link_slim":
-            radial_offset = adapter_gap + child_half_len
-            side_clearance = child_bbox[1] / 2
-            sign = -1 if attach_face == "top" else 1
-            desired_world_z = 1 if attach_face == "top" else -1
-            parent_rot_for_sign = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0])) if parent_link_name else _rpy_to_mat([0, 0, 0])
-            if parent_axis_name == "x":
-                radial_world = _matvec3(parent_rot_for_sign, [sign, 0, 0])
-                if radial_world[2] * desired_world_z < 0:
-                    sign = -sign
-                # Slim links are thin plates: length is local Z, broad face
-                # normal is local Y.  Map local Z to the radial direction and
-                # local Y onto the horn shaft normal so the plate seats on its
-                # broad face instead of edge-on.
-                pitch = math.pi / 2 if sign > 0 else -math.pi / 2
-                return [sign * radial_offset, 0, side_clearance], [math.pi / 2, pitch, 0]
-            if parent_axis_name == "y":
-                radial_world = _matvec3(parent_rot_for_sign, [0, sign, 0])
-                if radial_world[2] * desired_world_z < 0:
-                    sign = -sign
-                roll = -math.pi / 2 if sign > 0 else math.pi / 2
-                return [0, sign * radial_offset, side_clearance], [roll, 0, 0]
-            radial_world = _matvec3(parent_rot_for_sign, [0, 0, sign])
-            if radial_world[2] * desired_world_z < 0:
-                sign = -sign
-            return [0, 0, sign * radial_offset], [0, 0, 0]
-        if parent_axis_name == "z":
-            radial_offset = adapter_gap + child_half_len
-            return [0, 0, radial_offset], [0, 0, 0]
-        radial_offset = max(adapter_gap + child_half_len, 0.060) if child_is_servo else adapter_gap + child_half_len
-        sign = 1 if (child_is_servo and parent_axis_name == "x") else (-1 if attach_face == "top" else 1)
-        if parent_axis_name == "x":
-            return [sign * radial_offset, 0, 0], [0, sign * math.pi / 2, 0]
-        roll = (sign if invert_radial_side else -sign) * math.pi / 2
-        return [0, sign * radial_offset, 0], [roll, 0, 0]
-
-    def _parent_is_servo_driven_radial_child(parent_name: str) -> bool:
-        parent_info = comp_lookup.get(parent_name)
-        if not parent_info:
-            return False
-        driver_name = parent_info.get("attach_to")
-        return bool(
-            driver_name in servo_link_names and
-            servo_axis_names.get(driver_name, "z") != "z"
-        )
-
-    robot = ET.Element("robot", name="assembled_robot")
-    link_world_rot = {}
-    link_world_pos = {}
-
-    for comp in components:
-        link_name = comp["link_name"]
-        is_actuated = link_name in servo_link_names
-        preset = comp_lookup[link_name]["preset"]
-        phys = preset.get("physical", {})
-        bbox_m = _get_bbox_m(preset, comp)
-
-        # Support custom length for extrusion-type components
-        custom_length = comp.get("length_mm")
-        if custom_length and phys.get("cross_section_mm"):
-            bbox_m[2] = custom_length / 1000.0
-            # Scale mass proportionally
-            base_mass = phys.get("mass_kg_per_100mm", 0.054)
-            mass = base_mass * (custom_length / 100.0)
-        else:
-            mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm") or 0.1
-
-        shape = phys.get("inertia_primitive", "box")
-        is_rod = _is_elongated(bbox_m)
-
-        # For rods that have a parent (i.e., attached to something), offset visual in
-        # local +Z so geometry extends forward from the joint. After the joint's rpy
-        # rotation (pitch 90°), local Z becomes world X.
-        # Root rods (no parent) should NOT be offset — they sit centered at origin.
-        has_parent = comp.get("attach_to") is not None
-        local_visual_offset = f"0 0 {bbox_m[2]/2:.4f}" if (is_rod and has_parent) else "0 0 0"
-
-        def _make_inertial(parent_el, m, shape, bm, offset="0 0 0"):
-            inertial = ET.SubElement(parent_el, "inertial")
-            ET.SubElement(inertial, "mass", value=f"{m:.4f}")
-            ET.SubElement(inertial, "origin", xyz=offset, rpy="0 0 0")
-            if shape == "cylinder":
-                r = max(bm[0], bm[1]) / 2
-                h_dim = bm[2]
-                ixx = m/12 * (3*r*r + h_dim*h_dim)
-                izz = m/2 * r*r
-                ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{ixx:.6f}", izz=f"{izz:.6f}", ixy="0", ixz="0", iyz="0")
-            elif shape == "sphere":
-                r = max(bm) / 2
-                ii = 2/5 * m * r*r
-                ET.SubElement(inertial, "inertia", ixx=f"{ii:.6f}", iyy=f"{ii:.6f}", izz=f"{ii:.6f}", ixy="0", ixz="0", iyz="0")
-            else:
-                lx, ly, lz = bm
-                ixx = m/12 * (ly*ly + lz*lz)
-                iyy = m/12 * (lx*lx + lz*lz)
-                izz_val = m/12 * (lx*lx + ly*ly)
-                ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{iyy:.6f}", izz=f"{izz_val:.6f}", ixy="0", ixz="0", iyz="0")
-
-        def _make_visual_box(parent_el, bm, offset="0 0 0", rgba="0.7 0.7 0.7 1", mat_name="mat"):
-            visual = ET.SubElement(parent_el, "visual")
-            ET.SubElement(visual, "origin", xyz=offset, rpy="0 0 0")
-            geom = ET.SubElement(visual, "geometry")
-            ET.SubElement(geom, "box", size=f"{bm[0]:.4f} {bm[1]:.4f} {bm[2]:.4f}")
-            mat = ET.SubElement(visual, "material", name=mat_name)
-            ET.SubElement(mat, "color", rgba=rgba)
-
-        if is_actuated:
-            # Split servo: body link (fixed to parent) + horn link (revolute output)
-            raw_axis = comp.get("joint_axis", "z")
-            axis_name = _axis_name(raw_axis)
-            use_side_yoke = axis_name != "z"
-            horn_z = bbox_m[2] * SERVO_HORN_Z_RATIO
-            body_name = f"{link_name}_body"
-            horn_name = f"{link_name}_horn"
-            carrier_name = f"{link_name}_compound_carrier"
-            body_mass = mass * 0.95
-            horn_mass = mass * 0.05
-
-            # Body link — housing occupies full bbox centered at mount origin
-            body_link = ET.SubElement(robot, "link", name=body_name)
-            body_bm = [bbox_m[0], bbox_m[1], bbox_m[2] * 0.76]
-            _make_inertial(body_link, body_mass, "box", bbox_m)
-            _make_visual_box(body_link, body_bm, f"0 0 {-bbox_m[2]*0.12:.4f}", rgba="0.3 0.3 0.8 1", mat_name=f"mat_{body_name}")
-            if use_side_yoke:
-                plate_t = max(min(bbox_m[0], bbox_m[1]) * 0.08, 0.002)
-                side_gap = bbox_m[1] / 2 + plate_t * 1.4
-                _make_visual_box(body_link, [bbox_m[0] * 1.18, plate_t, bbox_m[2] * 1.08],
-                                 f"0 {side_gap:.4f} 0", rgba="0.45 0.45 0.55 1", mat_name=f"mat_{body_name}_yoke_a")
-                _make_visual_box(body_link, [bbox_m[0] * 1.18, plate_t, bbox_m[2] * 1.08],
-                                 f"0 {-side_gap:.4f} 0", rgba="0.45 0.45 0.55 1", mat_name=f"mat_{body_name}_yoke_b")
-                _make_visual_box(body_link, [bbox_m[0] * 1.18, bbox_m[1] + plate_t * 3, plate_t],
-                                 f"0 0 {-bbox_m[2]*0.54:.4f}", rgba="0.35 0.35 0.42 1", mat_name=f"mat_{body_name}_yoke_bridge")
-
-            # Horn link — small cylinder at origin of horn frame
-            horn_link = ET.SubElement(robot, "link", name=horn_name)
-            horn_r = bbox_m[0] * 0.28
-            horn_h = bbox_m[2] * 0.08
-            horn_bm = [horn_r*2, horn_r*2, horn_h]
-            _make_inertial(horn_link, horn_mass, "cylinder", horn_bm)
-            horn_vis = ET.SubElement(horn_link, "visual")
-            ET.SubElement(horn_vis, "origin", xyz="0 0 0", rpy="0 0 0")
-            horn_geom = ET.SubElement(horn_vis, "geometry")
-            ET.SubElement(horn_geom, "cylinder", radius=f"{horn_r:.4f}", length=f"{horn_h:.4f}")
-            horn_mat = ET.SubElement(horn_vis, "material", name=f"mat_{horn_name}")
-            ET.SubElement(horn_mat, "color", rgba="0.8 0.8 0.8 1")
-            if use_side_yoke:
-                adapter_t = max(min(bbox_m[0], bbox_m[1]) * 0.08, 0.0025)
-                _make_visual_box(horn_link, [bbox_m[0] * 0.74, bbox_m[1] * 0.46, adapter_t],
-                                 f"0 0 {adapter_t*0.45:.4f}", rgba="0.55 0.55 0.62 1", mat_name=f"mat_{horn_name}_adapter_plate")
-                _make_visual_box(horn_link, [bbox_m[0] * 0.28, bbox_m[1] * 0.92, adapter_t * 0.75],
-                                 f"0 0 {adapter_t*1.15:.4f}", rgba="0.45 0.45 0.52 1", mat_name=f"mat_{horn_name}_adapter_lug")
-
-            # Mount joint: parent → body (fixed, carries placement rpy/xyz)
-            attach_to = comp.get("attach_to")
-            if attach_to and attach_to in comp_lookup:
-                parent_preset = comp_lookup[attach_to]["preset"]
-                attach_face = comp.get("attach_face", "top")
-                explicit_rpy = comp.get("attach_rpy", [0, 0, 0])
-                if not isinstance(explicit_rpy, list) or len(explicit_rpy) != 3:
-                    explicit_rpy = [0, 0, 0]
-                explicit_rpy = [float(v or 0) for v in explicit_rpy]
-                origin_xyz, computed_rpy = _compute_origin_and_rpy(
-                    parent_preset, preset, attach_face, [0, 0, 0], comp_lookup.get(attach_to), comp
-                )
-                if use_side_yoke and attach_face in ("top", "bottom"):
-                    base_half_z = bbox_m[2] / 2
-                    rotated_half_z = bbox_m[0] / 2 if axis_name == "x" else bbox_m[1] / 2
-                    dz = rotated_half_z - base_half_z
-                    origin_xyz[2] += dz if attach_face == "top" else -dz
-                parent_link_name = _effective_parent(attach_to)
-                if attach_to in servo_link_names:
-                    parent_axis_name = servo_axis_names.get(attach_to, "z")
-                    parent_comp_for_axis = comp_lookup.get(attach_to)
-                    grand_parent_name = parent_comp_for_axis.get("attach_to") if parent_comp_for_axis else None
-                    grand_parent_axis = servo_axis_names.get(grand_parent_name, "z")
-                    parent_rest = parent_comp_for_axis.get("attach_rpy") if parent_comp_for_axis else None
-                    parent_rest_pitch = 0.0
-                    if isinstance(parent_rest, list) and len(parent_rest) == 3:
-                        try:
-                            parent_rest_pitch = float(parent_rest[1] or 0)
-                        except (TypeError, ValueError):
-                            parent_rest_pitch = 0.0
-                    invert_radial = parent_axis_name == "y" and (
-                        (grand_parent_name in servo_link_names and grand_parent_axis == "x") or
-                        parent_rest_pitch < -0.001
-                    )
-                    driven_pose = _servo_driven_child_origin_rpy(
-                        parent_axis_name, attach_face, bbox_m, invert_radial, is_actuated,
-                        parent_link_name, preset.get("id", ""),
-                    )
-                    if driven_pose:
-                        origin_xyz, computed_rpy = driven_pose
-                    else:
-                        parent_horn_z = _get_bbox_m(comp_lookup[attach_to]["preset"], comp_lookup.get(attach_to))[2] * SERVO_HORN_Z_RATIO
-                        origin_xyz = [origin_xyz[0], origin_xyz[1], origin_xyz[2] - parent_horn_z]
-                align_rpy = _servo_shaft_align_rpy(axis_name)
-                parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-                parent_cid = parent_preset.get("id", "") if parent_preset else ""
-                if _is_distal_beam_component_id(parent_cid) and attach_face == "bottom":
-                    normal_world = _matvec3(parent_rot, [0, 0, origin_xyz[2]])
-                    if normal_world[2] > 0.0001:
-                        origin_xyz[2] = -origin_xyz[2]
-                        print(f"[assembly] beam distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
-                mounted_rpy = (
-                    _servo_planar_mount_rpy_for_parent(parent_link_name, attach_face, computed_rpy)
-                    if axis_name == "z"
-                    else (_servo_mount_rpy_for_parent(parent_link_name, axis_name) or [
-                        computed_rpy[i] + align_rpy[i] for i in range(3)
-                    ])
-                )
-                rpy_str = f"{mounted_rpy[0]:.4f} {mounted_rpy[1]:.4f} {mounted_rpy[2]:.4f}"
-                axis_sign = _servo_axis_sign_for_parent(parent_link_name, axis_name)
-                if (
-                    axis_name == "y"
-                    and _is_distal_beam_component_id(parent_cid)
-                    and attach_face == "bottom"
-                ):
-                    bend = abs(float(explicit_rpy[1] or 0))
-                    # Mirrored Y-axis knee carriers need opposite local horn
-                    # signs so both sides fold toward world -X in dog stance.
-                    horn_zero = [0, 0, bend * axis_sign]
-                else:
-                    horn_zero = _servo_rest_rpy(explicit_rpy, axis_name, axis_sign)
-                horn_zero_rpy = f"{horn_zero[0]:.4f} {horn_zero[1]:.4f} {horn_zero[2]:.4f}"
-                use_compound_carrier = attach_to in servo_link_names
-                if use_compound_carrier:
-                    carrier_mass = max(mass * 0.18, 0.025)
-                    carrier_link = ET.SubElement(robot, "link", name=carrier_name)
-                    _make_inertial(carrier_link, carrier_mass, "box", [bbox_m[0] * 1.2, bbox_m[1] * 1.4, bbox_m[2] * 1.2])
-                    carrier_plate_t = max(min(bbox_m[0], bbox_m[1]) * 0.075, 0.0025)
-                    carrier_side_y = bbox_m[1] / 2 + carrier_plate_t * 4.2
-                    _make_visual_box(
-                        carrier_link,
-                        [bbox_m[0] * 1.18, carrier_plate_t, bbox_m[2] * 1.18],
-                        f"0 {carrier_side_y:.4f} 0",
-                        rgba="0.42 0.46 0.50 1",
-                        mat_name=f"mat_{carrier_name}_side_a",
-                    )
-                    _make_visual_box(
-                        carrier_link,
-                        [bbox_m[0] * 1.18, carrier_plate_t, bbox_m[2] * 1.18],
-                        f"0 {-carrier_side_y:.4f} 0",
-                        rgba="0.42 0.46 0.50 1",
-                        mat_name=f"mat_{carrier_name}_side_b",
-                    )
-                    _make_visual_box(
-                        carrier_link,
-                        [carrier_plate_t * 1.2, bbox_m[1] + carrier_plate_t * 8.4, carrier_plate_t * 1.2],
-                        f"{-bbox_m[0] * 0.42:.4f} 0 {-bbox_m[2] * 0.42:.4f}",
-                        rgba="0.31 0.34 0.38 1",
-                        mat_name=f"mat_{carrier_name}_tie",
-                    )
-                    carrier_reach = math.sqrt(sum(float(v or 0) * float(v or 0) for v in origin_xyz))
-                    bridge_len = max(carrier_reach - bbox_m[1] * 0.25, 0)
-                    if bridge_len > carrier_plate_t * 2:
-                        for sx, suffix in ((0.38, "bridge_a"), (-0.38, "bridge_b")):
-                            _make_visual_box(
-                                carrier_link,
-                                [carrier_plate_t * 1.8, bridge_len, carrier_plate_t * 1.8],
-                                f"{bbox_m[0] * sx:.4f} {-bridge_len / 2:.4f} 0",
-                                rgba="0.31 0.34 0.38 1",
-                                mat_name=f"mat_{carrier_name}_{suffix}",
-                            )
-                    carrier_joint = ET.SubElement(robot, "joint", name=f"{link_name}_compound_carrier", type="fixed")
-                    ET.SubElement(carrier_joint, "parent", link=parent_link_name)
-                    ET.SubElement(carrier_joint, "child", link=carrier_name)
-                    ET.SubElement(carrier_joint, "origin", xyz=f"{origin_xyz[0]:.4f} {origin_xyz[1]:.4f} {origin_xyz[2]:.4f}", rpy=rpy_str)
-                mount_joint = ET.SubElement(robot, "joint", name=f"{link_name}_mount", type="fixed")
-                ET.SubElement(mount_joint, "parent", link=carrier_name if use_compound_carrier else parent_link_name)
-                ET.SubElement(mount_joint, "child", link=body_name)
-                if use_compound_carrier:
-                    ET.SubElement(mount_joint, "origin", xyz="0 0 0", rpy="0 0 0")
-                else:
-                    ET.SubElement(mount_joint, "origin", xyz=f"{origin_xyz[0]:.4f} {origin_xyz[1]:.4f} {origin_xyz[2]:.4f}", rpy=rpy_str)
-                parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-                parent_pos = link_world_pos.get(parent_link_name, [0, 0, 0])
-                body_pos = _vadd3(parent_pos, _matvec3(parent_rot, origin_xyz))
-                body_rot = _matmul3(parent_rot, _rpy_to_mat(mounted_rpy))
-                if use_compound_carrier:
-                    link_world_rot[carrier_name] = body_rot
-                    link_world_pos[carrier_name] = body_pos
-                horn_pos = _vadd3(body_pos, _matvec3(body_rot, [0, 0, horn_z]))
-                horn_rot = _matmul3(body_rot, _rpy_to_mat(horn_zero))
-                link_world_rot[body_name] = body_rot
-                link_world_rot[horn_name] = horn_rot
-                link_world_pos[body_name] = body_pos
-                link_world_pos[horn_name] = horn_pos
-            else:
-                horn_zero_rpy = "0 0 0"
-                link_world_rot[body_name] = _rpy_to_mat([0, 0, 0])
-                link_world_rot[horn_name] = _rpy_to_mat([0, 0, 0])
-                link_world_pos[body_name] = [0, 0, 0]
-                link_world_pos[horn_name] = [0, 0, horn_z]
-
-            # Revolute joint: body → horn at horn origin, axis from joint_axis
-            joint_axis_vec = [0, 0, 1]
-            me = preset.get("mechanical_electrical", {})
-            effort = me.get("max_torque_nm", me.get("holding_torque_nm", 10.0))
-            rev_joint = ET.SubElement(robot, "joint", name=link_name, type="revolute")
-            ET.SubElement(rev_joint, "parent", link=body_name)
-            ET.SubElement(rev_joint, "child", link=horn_name)
-            ET.SubElement(rev_joint, "origin", xyz=f"0 0 {horn_z:.4f}", rpy=horn_zero_rpy)
-            ET.SubElement(rev_joint, "axis", xyz=f"{joint_axis_vec[0]} {joint_axis_vec[1]} {joint_axis_vec[2]}")
-            lo_rad, hi_rad = _resolve_joint_limits_rad(preset)
-            ET.SubElement(rev_joint, "limit", lower=f"{lo_rad:.5f}", upper=f"{hi_rad:.5f}",
-                         effort=f"{effort}", velocity="1.0")
-            print(f"[assembly] servo split: {link_name} body+horn, requested_axis={axis_name}, local_axis={joint_axis_vec}, side_yoke={use_side_yoke}, horn_z={horn_z:.4f}", file=sys.stderr)
-
-        else:
-            # Non-servo component: emit single link + joint (original path)
-
-            # Link element
-            link_el = ET.SubElement(robot, "link", name=link_name)
-
-            # Inertial
-            inertial = ET.SubElement(link_el, "inertial")
-            ET.SubElement(inertial, "mass", value=f"{mass:.4f}")
-            ET.SubElement(inertial, "origin", xyz=local_visual_offset, rpy="0 0 0")
-            # Compute inertia from shape
-            if shape == "cylinder":
-                r = max(bbox_m[0], bbox_m[1]) / 2
-                h = bbox_m[2]
-                ixx = mass/12 * (3*r*r + h*h)
-                izz = mass/2 * r*r
-                ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{ixx:.6f}", izz=f"{izz:.6f}", ixy="0", ixz="0", iyz="0")
-            elif shape == "sphere":
-                r = max(bbox_m) / 2
-                ii = 2/5 * mass * r*r
-                ET.SubElement(inertial, "inertia", ixx=f"{ii:.6f}", iyy=f"{ii:.6f}", izz=f"{ii:.6f}", ixy="0", ixz="0", iyz="0")
-            else:  # box
-                lx, ly, lz = bbox_m
-                ixx = mass/12 * (ly*ly + lz*lz)
-                iyy = mass/12 * (lx*lx + lz*lz)
-                izz = mass/12 * (lx*lx + ly*ly)
-                ET.SubElement(inertial, "inertia", ixx=f"{ixx:.6f}", iyy=f"{iyy:.6f}", izz=f"{izz:.6f}", ixy="0", ixz="0", iyz="0")
-
-            # Visual
-            visual = ET.SubElement(link_el, "visual")
-            ET.SubElement(visual, "origin", xyz=local_visual_offset, rpy="0 0 0")
-            geom = ET.SubElement(visual, "geometry")
-            if shape == "cylinder":
-                r = max(bbox_m[0], bbox_m[1]) / 2
-                ET.SubElement(geom, "cylinder", radius=f"{r:.4f}", length=f"{bbox_m[2]:.4f}")
-            elif shape == "sphere":
-                r = max(bbox_m) / 2
-                ET.SubElement(geom, "sphere", radius=f"{r:.4f}")
-            else:
-                ET.SubElement(geom, "box", size=f"{bbox_m[0]:.4f} {bbox_m[1]:.4f} {bbox_m[2]:.4f}")
-
-            mat = ET.SubElement(visual, "material", name=f"mat_{link_name}")
-            ET.SubElement(mat, "color", rgba="0.7 0.7 0.7 1")
-
-            # Joint (skip for base link)
-            attach_to = comp.get("attach_to")
-            if attach_to and attach_to in comp_lookup:
-                parent_preset = comp_lookup[attach_to]["preset"]
-                child_preset = preset
-                attach_face = comp.get("attach_face", "top")
-
-                # Get explicit rpy from Claude (if provided)
-                explicit_rpy = comp.get("attach_rpy", [0, 0, 0])
-                if not isinstance(explicit_rpy, list) or len(explicit_rpy) != 3:
-                    explicit_rpy = [0, 0, 0]
-
-                origin_xyz, computed_rpy = _compute_origin_and_rpy(
-                    parent_preset, child_preset, attach_face, explicit_rpy, comp_lookup.get(attach_to), comp
-                )
-                parent_link_name = _effective_parent(attach_to)
-                # If parent is a servo, xyz is in body frame — correct to horn frame
-                if attach_to in servo_link_names:
-                    parent_axis_name = servo_axis_names.get(attach_to, "z")
-                    parent_comp_for_axis = comp_lookup.get(attach_to)
-                    grand_parent_name = parent_comp_for_axis.get("attach_to") if parent_comp_for_axis else None
-                    grand_parent_axis = servo_axis_names.get(grand_parent_name, "z")
-                    parent_rest = parent_comp_for_axis.get("attach_rpy") if parent_comp_for_axis else None
-                    parent_rest_pitch = 0.0
-                    if isinstance(parent_rest, list) and len(parent_rest) == 3:
-                        try:
-                            parent_rest_pitch = float(parent_rest[1] or 0)
-                        except (TypeError, ValueError):
-                            parent_rest_pitch = 0.0
-                    invert_radial = parent_axis_name == "y" and (
-                        (grand_parent_name in servo_link_names and grand_parent_axis == "x") or
-                        parent_rest_pitch < -0.001
-                    )
-                    driven_pose = _servo_driven_child_origin_rpy(
-                        parent_axis_name, attach_face, bbox_m, invert_radial, False,
-                        parent_link_name, child_preset.get("id", ""),
-                    )
-                    if driven_pose:
-                        origin_xyz, computed_rpy = driven_pose
-                    else:
-                        parent_horn_z = _get_bbox_m(comp_lookup[attach_to]["preset"], comp_lookup.get(attach_to))[2] * SERVO_HORN_Z_RATIO
-                        origin_xyz = [origin_xyz[0], origin_xyz[1], origin_xyz[2] - parent_horn_z]
-
-                parent_rot = link_world_rot.get(parent_link_name, _rpy_to_mat([0, 0, 0]))
-                parent_cid = parent_preset.get("id", "") if parent_preset else ""
-                if _is_distal_beam_component_id(parent_cid) and attach_face == "bottom":
-                    normal_world = _matvec3(parent_rot, [0, 0, origin_xyz[2]])
-                    if normal_world[2] > 0.0001:
-                        origin_xyz[2] = -origin_xyz[2]
-                        print(f"[assembly] beam distal bottom corrected: {link_name} local_z flipped so child moves downward in world", file=sys.stderr)
-                explicit_nonzero = any(abs(float(v or 0)) > 0.001 for v in explicit_rpy)
-                child_cid = child_preset.get("id", "") if child_preset else ""
-                if child_cid == "mobility_rubber_foot_pad" and not explicit_nonzero:
-                    computed_rpy = _world_level_rpy_for_parent(parent_link_name)
-                    print(f"[assembly] level foot pad: {link_name} rpy={computed_rpy}", file=sys.stderr)
-
-                rpy_str = f"{computed_rpy[0]:.4f} {computed_rpy[1]:.4f} {computed_rpy[2]:.4f}"
-
-                joint_type = comp.get("joint_type", "fixed")
-                raw_axis = comp.get("joint_axis", "z")
-                # Resolve string axis to vector
-                axis_map = {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}
-                if isinstance(raw_axis, str):
-                    joint_axis = axis_map.get(raw_axis.lower(), [0,0,1])
-                elif isinstance(raw_axis, list) and len(raw_axis) == 3:
-                    joint_axis = raw_axis
-                else:
-                    joint_axis = [0, 0, 1]
-                # Drivetrain motors on bottom face get Rx(-90°); after that rotation,
-                # local Z = world Y (the rolling axis). Remap "y" → [0,0,1].
-                if _is_drivetrain_component_id(child_cid) and attach_face == "bottom" and raw_axis == "y":
-                    joint_axis = [0, 0, 1]
-
-                joint_name = f"j_{link_name}"
-
-                joint_el = ET.SubElement(robot, "joint", name=joint_name, type=joint_type)
-                ET.SubElement(joint_el, "parent", link=parent_link_name)
-                ET.SubElement(joint_el, "child", link=link_name)
-                ET.SubElement(joint_el, "origin", xyz=f"{origin_xyz[0]:.4f} {origin_xyz[1]:.4f} {origin_xyz[2]:.4f}", rpy=rpy_str)
-                ET.SubElement(joint_el, "axis", xyz=f"{joint_axis[0]} {joint_axis[1]} {joint_axis[2]}")
-                parent_pos = link_world_pos.get(parent_link_name, [0, 0, 0])
-                link_world_rot[link_name] = _matmul3(parent_rot, _rpy_to_mat(computed_rpy))
-                link_world_pos[link_name] = _vadd3(parent_pos, _matvec3(parent_rot, origin_xyz))
-
-                if joint_type in ("revolute", "prismatic"):
-                    me = preset.get("mechanical_electrical", {})
-                    effort = me.get("max_torque_nm", 10.0)
-                    lo_rad, hi_rad = _resolve_joint_limits_rad(preset)
-                    ET.SubElement(joint_el, "limit", lower=f"{lo_rad:.5f}", upper=f"{hi_rad:.5f}",
-                                 effort=f"{effort}", velocity="1.0")
-                elif joint_type == "continuous":
-                    # No angle limits, but carry effort so urdf_to_mjcf gets correct ctrlrange.
-                    me = preset.get("mechanical_electrical", {})
-                    sim = preset.get("sim_metadata", {})
-                    effort = sim.get("peak_torque_nm",
-                             me.get("stall_torque_nm",
-                             me.get("peak_torque_nm", 10.0)))
-                    ET.SubElement(joint_el, "limit", effort=f"{effort}", velocity="50.0")
-            else:
-                link_world_rot[link_name] = _rpy_to_mat([0, 0, 0])
-                link_world_pos[link_name] = [0, 0, 0]
-
-    # Apply ground offset: shift root link's visual up so bottom face is at Z=0
-    if assembly.get("ground_offset", False) and base_link in comp_lookup:
-        root_preset = comp_lookup[base_link]["preset"]
-        root_bbox = _get_bbox_m(root_preset, comp_lookup.get(base_link))
-        half_h = root_bbox[2] / 2
-        # Find the root link's visual origin and shift it up
-        for link_el in robot.findall("link"):
-            if link_el.get("name") == base_link:
-                for visual in link_el.findall("visual"):
-                    origin = visual.find("origin")
-                    if origin is not None:
-                        origin.set("xyz", f"0 0 {half_h:.4f}")
-                for inertial in link_el.findall("inertial"):
-                    origin = inertial.find("origin")
-                    if origin is not None:
-                        origin.set("xyz", f"0 0 {half_h:.4f}")
-                break
-        print(f"[assembly] Applied ground_offset: shifted root up by {half_h:.4f}m", file=sys.stderr)
-
-    # Pretty-print
-    def indent(elem, level=0):
-        i = "\n" + level * "  "
-        if len(elem):
-            if not elem.text or not elem.text.strip():
-                elem.text = i + "  "
-            if not elem.tail or not elem.tail.strip():
-                elem.tail = i
-            for child in elem:
-                indent(child, level + 1)
-            if not child.tail or not child.tail.strip():
-                child.tail = i
-        else:
-            if level and (not elem.tail or not elem.tail.strip()):
-                elem.tail = i
-        if not level:
-            elem.tail = "\n"
-
-    indent(robot)
-    xml_str = '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
-    return xml_str
-
-
-# ── Tool-Use Assembly Agent ─────────────────────────────────────────────────
+# Phase 3b.7: _assemble_from_graph(assembly) was deleted (~926 LOC). It had
+# zero callers — the actual hot path runs through _extract_tool_result →
+# normalize_and_validate(), and the frontend is the single source of truth
+# for graph→URDF compilation. Phase 3b.5 will reintroduce a Python entry
+# point that calls the shared placementCompiler over a Node subprocess
+# rather than re-implementing the geometry rules in Python.
+
+
+# ───── Tool-Use Assembly Agent ─────────────────────────────────────────────────
 
 ASSEMBLY_TOOLS = [
     {
@@ -2000,7 +1006,24 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 
 
 def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
-    """Execute an add_component tool call, updating the assembly state."""
+    """Append a component to the topology and recompile via the shared compiler.
+
+    Phase 3b.6: placement geometry no longer lives in Python. The AI's
+    `add_component` tool call carries pure topology (component_id, parent,
+    attach_face, joint_type/axis, optional length_mm/orientation). Each call:
+
+      1. Allocates a deterministic link name (`{component_id}_{N}`, matching
+         the frontend's auto-naming counter).
+      2. Records the topology entry in `assembly_state["links"]`.
+      3. Calls the TypeScript placement compiler over a Node subprocess
+         (see core.ai.compiler_client) on the full graph-so-far.
+      4. Backfills every link's `origin_xyz` / `origin_rpy` / `world_xyz` /
+         `bbox_m` from the compiler output. Servo body/horn splits, multi-
+         child distribution, drivetrain side-flips, foot leveling — all
+         emerge from the compiler. The AI sees true rendered positions
+         instead of Python-heuristic approximations that diverge from the
+         frontend.
+    """
     try:
         from core.presets import get_component
     except ImportError:
@@ -2019,159 +1042,80 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
         return {"error": f"Unknown component_id: {comp_id}"}
 
     phys = preset.get("physical", {})
-    bb = phys.get("bounding_box_mm")
-    if bb and len(bb) >= 3:
-        bbox_m = [b / 1000.0 for b in bb]
-    else:
-        cs = phys.get("cross_section_mm")
-        if cs and len(cs) >= 2:
-            bbox_m = [cs[0] / 1000.0, cs[1] / 1000.0, 0.1]
-        else:
-            bbox_m = [0.05, 0.05, 0.05]
-
-    if length_mm and phys.get("cross_section_mm"):
-        bbox_m[2] = length_mm / 1000.0
-
     mass = phys.get("mass_kg") or phys.get("mass_kg_per_100mm") or 0.1
 
-    # Determine link name
     links = assembly_state.get("links", {})
     idx = len(links) + 1
     link_name = f"{comp_id}_{idx}"
 
-    # Compute placement
-    import math
     axis_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
-    joint_axis = axis_map.get(joint_axis_str, [0, 0, 1])
+    joint_axis_vec = axis_map.get(joint_axis_str, [0, 0, 1])
 
-    gap = 0.005
-    px, py, pz = 0.05, 0.05, 0.05  # default parent half-extents
-    origin_xyz = [0, 0, 0]
-    origin_rpy = [0, 0, 0]
-
-    if parent_link and parent_link in links:
-        parent_info = links[parent_link]
-        p_bbox = parent_info.get("bbox_m", [0.1, 0.1, 0.1])
-        px, py, pz = p_bbox[0] / 2, p_bbox[1] / 2, p_bbox[2] / 2
-        parent_world = parent_info.get("world_xyz", [0, 0, 0])
-    else:
-        parent_world = [0, 0, 0]
-
-    cx, cy, cz = bbox_m[0] / 2, bbox_m[1] / 2, bbox_m[2] / 2
-
-    # Check if child is elongated (rod-shaped)
-    sorted_dims = sorted(bbox_m)
-    is_elongated = sorted_dims[2] > sorted_dims[0] * 2.5 and sorted_dims[1] < sorted_dims[0] * 2.0
-
-    # Determine if we should rotate the elongated part
-    should_rotate_horizontal = False
-    if is_elongated:
-        if orientation == "horizontal":
-            should_rotate_horizontal = True
-        elif orientation == "vertical":
-            should_rotate_horizontal = False
-        else:  # auto
-            # Auto: horizontal for "top" face (arms), vertical for "bottom" face (legs)
-            should_rotate_horizontal = attach_face in ("top", "front", "back")
-
-    if should_rotate_horizontal:
-        origin_rpy = [0, math.pi / 2, 0]
-        # After rotation, Z extent maps to X, X extent maps to Z
-        cz_eff = cx  # cross-section becomes Z extent
-    else:
-        cz_eff = cz
-
-    # Count how many children are already on this face of this parent
-    face_key = f"{parent_link}:{attach_face}"
-    existing_on_face = assembly_state.get("face_counts", {}).get(face_key, 0)
-    total_on_face = existing_on_face + 1  # including this one
-
-    # Compute tangential offset for multi-child distribution
-    tu, tv = 0, 0
-    if existing_on_face > 0:
-        # Simple offset: alternate sides
-        inset = 0.7
-        if existing_on_face == 1:
-            tu = -inset * px if attach_face in ("top", "bottom") else -inset * py
-        elif existing_on_face == 2:
-            tv = inset * py if attach_face in ("top", "bottom") else inset * pz
-        elif existing_on_face == 3:
-            tu = -inset * px if attach_face in ("top", "bottom") else -inset * py
-            tv = -inset * py if attach_face in ("top", "bottom") else -inset * pz
-
-    # Face-based offset
-    face_offsets = {
-        "top":    [tu, tv, pz + cz_eff + gap],
-        "bottom": [tu, tv, -(pz + cz_eff + gap)],
-        "front":  [px + cx + gap, tu, tv],
-        "back":   [-(px + cx + gap), tu, tv],
-        "right":  [tu, py + cy + gap, tv],
-        "left":   [tu, -(py + cy + gap), tv],
-    }
-    origin_xyz = face_offsets.get(attach_face, [0, 0, pz + cz_eff + gap])
-
-    # Coaxial hub-motor mount: tire offsets along drivetrain-local +Z (the axle
-    # direction) so its inboard bore face seats against the motor's outboard end.
-    # After the drivetrain's -pi/2 X-roll, local +Z = world +Y (outboard).
-    # Do NOT offset in local +Y — that is world -Z (downward) after the roll and
-    # places the tire below the motor rather than beside it. Outboard direction
-    # is handled by the 180° yaw flip on the -Y baseplate half (below).
-    _is_tire = _is_tire_component_id(comp_id)
-    parent_comp_id = links.get(parent_link, {}).get("component_id", "") if parent_link else ""
-    _is_drivetrain_parent = _is_drivetrain_component_id(parent_comp_id)
-    if attach_face == "coaxial" and _is_tire and _is_drivetrain_parent:
-        # pz = motor axle half-length (local Z), cz = tire half-width along axle.
-        origin_xyz = [0, 0, pz + cz]
-        origin_rpy = [0, 0, 0]
-
-    # Drivetrain side-flip: yaw 180° when on baseplate -Y half so the coaxial
-    # wheel-offset ends up outboard on both sides of the chassis.
-    if _is_drivetrain_component_id(comp_id) and attach_face == "bottom" and tv < 0:
-        origin_rpy = [origin_rpy[0], origin_rpy[1], origin_rpy[2] + math.pi]
-
-    # Compute world position
-    world_xyz = [
-        parent_world[0] + origin_xyz[0],
-        parent_world[1] + origin_xyz[1],
-        parent_world[2] + origin_xyz[2],
-    ]
-
-    # Update assembly state
-    links[link_name] = {
+    # Topology-only entry. Pose fields get filled in below from the compiler.
+    entry = {
         "component_id": comp_id,
         "parent": parent_link,
         "attach_face": attach_face,
         "joint_type": joint_type,
-        "joint_axis": joint_axis,
+        "joint_axis": joint_axis_vec,
         "joint_axis_name": joint_axis_str,
-        "origin_xyz": [round(v, 4) for v in origin_xyz],
-        "origin_rpy": [round(v, 4) for v in origin_rpy],
-        "bbox_m": [round(v, 4) for v in bbox_m],
-        "world_xyz": [round(v, 4) for v in world_xyz],
         "mass_kg": mass,
+        # Pose fields populated post-compile:
+        "origin_xyz": [0.0, 0.0, 0.0],
+        "origin_rpy": [0.0, 0.0, 0.0],
+        "world_xyz": [0.0, 0.0, 0.0],
+        "bbox_m": [0.0, 0.0, 0.0],
     }
     if length_mm is not None:
-        links[link_name]["length_mm"] = length_mm
+        entry["length_mm"] = length_mm
     if orientation:
-        links[link_name]["orientation"] = orientation
+        entry["orientation"] = orientation
+    links[link_name] = entry
     assembly_state["links"] = links
 
-    # Update face counts
-    face_counts = assembly_state.get("face_counts", {})
-    face_counts[face_key] = existing_on_face + 1
-    assembly_state["face_counts"] = face_counts
+    from core.ai.compiler_client import compile_assembly, CompilerError
+    graph = _assembly_graph_from_state(assembly_state)
+    try:
+        compiled = compile_assembly(graph)
+    except CompilerError as e:
+        # Roll back the speculative add so the AI's next turn doesn't see a
+        # half-placed link.
+        del links[link_name]
+        return {"error": f"placement compiler failed: {e}"}
 
-    # Build state summary for Claude
+    by_logical = {l["logicalName"]: l for l in compiled.get("links", [])}
+    for lname, linfo in links.items():
+        cl = by_logical.get(lname)
+        if not cl:
+            continue
+        local_xyz = cl.get("localXyz") or [0.0, 0.0, 0.0]
+        local_rpy = cl.get("localRpy") or [0.0, 0.0, 0.0]
+        world_xyz = cl.get("worldXyz") or local_xyz
+        half = (cl.get("bounds") or {}).get("half") or [0.0, 0.0, 0.0]
+        linfo["origin_xyz"] = [round(float(v), 4) for v in local_xyz]
+        linfo["origin_rpy"] = [round(float(v), 4) for v in local_rpy]
+        linfo["world_xyz"] = [round(float(v), 4) for v in world_xyz]
+        linfo["bbox_m"] = [round(float(half[i]) * 2, 4) for i in range(3)]
+
+    new_entry = links[link_name]
     state_lines = []
     for lname, linfo in links.items():
         pos = linfo["world_xyz"]
         bb = linfo["bbox_m"]
-        state_lines.append(f"  {lname}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}] bbox={bb[0]:.3f}x{bb[1]:.3f}x{bb[2]:.3f}m parent={linfo.get('parent','none')}")
+        state_lines.append(
+            f"  {lname}: pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}] "
+            f"bbox={bb[0]:.3f}x{bb[1]:.3f}x{bb[2]:.3f}m "
+            f"parent={linfo.get('parent', 'none')}"
+        )
 
     return {
         "success": True,
         "link_name": link_name,
-        "placed_at": {"xyz": origin_xyz, "rpy": origin_rpy, "world_xyz": world_xyz},
+        "placed_at": {
+            "xyz": new_entry["origin_xyz"],
+            "rpy": new_entry["origin_rpy"],
+            "world_xyz": new_entry["world_xyz"],
+        },
         "total_links": len(links),
         "assembly_state": "\n".join(state_lines),
     }
@@ -2330,7 +1274,7 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
 
     first_user_content = _build_user_content(f"Build this robot: {prompt}", images)
     messages = [{"role": "user", "content": first_user_content}]
-    assembly_state = {"links": {}, "face_counts": {}}
+    assembly_state = {"links": {}}
 
     max_rounds = 30  # safety limit
     round_num = 0
@@ -2467,13 +1411,25 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
                     "ground_offset": True,
                     "components": tool_input.get("components", []),
                 }
+                # Phase 3: run the post-LLM contract pipeline (semantic-graph
+                # validator + archetype normalizer + diagnostic router) on the
+                # AI's raw output so the assembly_graph that flows downstream
+                # is already cleaned, and AI-owned diagnostics are surfaced
+                # for the next redesign turn.
+                from core.ai.semantic_graph import normalize_and_validate
+                normalize_and_validate(assembly)
                 n = len(assembly["components"])
                 print(f"[ai_edit] Tool-use design_robot: {n} components (structured output)", file=sys.stderr)
+                ai_feedback = (assembly.get("_diagnostics") or {}).get("ai_feedback")
+                explanation = tool_input.get("explanation", "Assembly designed")
+                if ai_feedback:
+                    explanation = f"{explanation}\n\n{ai_feedback}"
                 return {
-                    "explanation": tool_input.get("explanation", "Assembly designed"),
+                    "explanation": explanation,
                     "assembly_graph": assembly,
                     "new_urdf": current_urdf,
                     "stats": tool_input.get("changes_summary", f"{n} components"),
+                    "diagnostics": assembly.get("_diagnostics"),
                 }
             elif block.name == "modify_topology":
                 operations = tool_input.get("operations", [])
@@ -2499,11 +1455,19 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
 
     if "assembly" in result and result["assembly"]:
         assembly = result["assembly"]
+        # Phase 3: same post-LLM contract pipeline as the tool-use path.
+        from core.ai.semantic_graph import normalize_and_validate
+        normalize_and_validate(assembly)
+        ai_feedback = (assembly.get("_diagnostics") or {}).get("ai_feedback")
+        explanation = result.get("explanation", "Assembly designed")
+        if ai_feedback:
+            explanation = f"{explanation}\n\n{ai_feedback}"
         return {
-            "explanation": result.get("explanation", "Assembly designed"),
+            "explanation": explanation,
             "assembly_graph": assembly,
             "new_urdf": current_urdf,
             "stats": result.get("changes_summary", "Assembly ready"),
+            "diagnostics": assembly.get("_diagnostics"),
         }
     elif "full_urdf" in result and result["full_urdf"]:
         return {

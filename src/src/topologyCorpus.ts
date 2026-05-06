@@ -429,7 +429,7 @@ const fixtures: Fixture[] = [
 
   // DIRECT_SERVO_STACK (warning) ----------------------------------------------
   {
-    name: 'DIRECT_SERVO_STACK: servo on servo emits warning',
+    name: 'DIRECT_SERVO_STACK: actuator on servo emits warning',
     kind: 'validate',
     expected_pass: true,
     expected_warnings: ['[DIRECT_SERVO_STACK]'],
@@ -438,7 +438,7 @@ const fixtures: Fixture[] = [
       components: [
         { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
         { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate',  attach_face: 'top' },
-        { link_name: 'servo2', component_id: 'actuator_servo_standard', attach_to: 'servo1', attach_face: 'top' },
+        { link_name: 'motor1', component_id: 'actuator_bldc_small', attach_to: 'servo1', attach_face: 'top' },
       ],
     },
   },

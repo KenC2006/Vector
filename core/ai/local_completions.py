@@ -37,13 +37,11 @@ def _find_preset_by_partial(partial: str) -> Optional[Dict]:
 
 def _preset_link_snippet(comp: Dict, idx: int) -> str:
     """Generate a full URDF link+joint snippet from a preset component."""
+    from core.presets import resolve_component_bounds_m
     phys = comp['physical']
     mass = phys.get('mass_kg') or phys.get('mass_kg_per_100mm', 0.1)
-    bb = phys.get('bounding_box_mm', [40, 40, 40])
     shape = phys.get('inertia_primitive', 'box')
-    xm = bb[0] / 1000 if len(bb) > 0 else 0.04
-    ym = bb[1] / 1000 if len(bb) > 1 else 0.04
-    zm = bb[2] / 1000 if len(bb) > 2 else 0.04
+    xm, ym, zm = resolve_component_bounds_m(comp)
 
     # Inertia
     if shape == 'cylinder':
