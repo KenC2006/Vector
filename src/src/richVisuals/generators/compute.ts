@@ -22,7 +22,7 @@ function catPcb(strength = 0.4) {
 
 // ── MCU Small ───────────────────────────────────────────────────────────────
 
-function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
+function generateMCU(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
@@ -113,7 +113,7 @@ function generateMCU(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── SBC Small ───────────────────────────────────────────────────────────────
 
-function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
+function generateSBCSmall(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
@@ -215,7 +215,7 @@ function generateSBCSmall(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── SBC GPU ─────────────────────────────────────────────────────────────────
 
-function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
+function generateSBCGPU(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
@@ -300,7 +300,7 @@ function generateSBCGPU(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Motor Driver Dual ───────────────────────────────────────────────────────
 
-function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
+function generateMotorDriver(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
@@ -375,7 +375,7 @@ function generateMotorDriver(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── FOC Controller ──────────────────────────────────────────────────────────
 
-function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
+function generateFOCController(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 
@@ -456,7 +456,7 @@ function generateFOCController(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── FPGA Dev Board ──────────────────────────────────────────────────────────
 
-function generateFPGA(id: string, dims: GeneratorDims): THREE.Group {
+function generateFPGA(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
 

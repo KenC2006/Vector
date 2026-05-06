@@ -383,11 +383,11 @@ def _extract_sim_joint_context(urdf_content: str) -> tuple:
 
     # ── Leg kinematic analysis ──────────────────────────────────────────────
     # Annotate non-wheel revolute joints that form leg groups with:
-    #   is_leg, leg_id (FR/FL/RR/RL/...), leg_depth (0=rootward, increasing outward),
-    #   leg_role ("swing", "bend", "swing_bend", or "aux"),
-    #   swing_sign (+1 = positive angle swings foot forward, assigned to joint with largest fwd Jacobian),
-    #   bend_sign  (+1 = positive angle bends knee into stance, foot moves -Z).
-    # Signs are computed via the Jacobian:  delta_tip = cross(axis_world, tip - center)
+    # is_leg, leg_id (FR/FL/RR/RL/...), leg_depth (0=rootward, increasing outward),
+    # leg_role ("swing", "bend", "swing_bend", or "aux"),
+    # swing_sign (+1 = positive angle swings foot forward, assigned to joint with largest fwd Jacobian),
+    # bend_sign (+1 = positive angle bends knee into stance, foot moves -Z).
+    # Signs are computed via the Jacobian: delta_tip = cross(axis_world, tip - center)
 
     # Compute revolute depth for each joint (# revolute ancestors from root).
     rev_depth_map: Dict[str, int] = {}
@@ -1169,7 +1169,7 @@ class JSONRPCServer:
         # through so Gemini compares the rendered output against the reference
         # the user originally gave Claude (G3 fix).
         reference_images = params.get("reference_images") or []
-        # Engine-computed ground truth (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md
+        # Engine-computed ground truth (
         # Layer 1). Shape: {placements: [...], icpGaps: [...]}. Forwarded to
         # the Gemini prompt so screenshot misreads can be refuted with the
         # actual xyz/rpy the placement engine wrote and the ICP gap it measured.

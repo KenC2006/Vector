@@ -1,4 +1,4 @@
-// Render-time alignment pass (Option C from docs/ENGINE_ARCHITECTURE.md).
+// Render-time alignment pass.
 //
 // Kept in its own module so node --experimental-strip-types can load it
 // without pulling in the DOM/tauri/richVisuals graph that urdfAssembly.ts
@@ -41,7 +41,7 @@ export interface ReconcileInputs {
   /** Ignore deltas below this (meters). Default 0.0005 m = 0.5 mm. */
   epsMeters?: number
   /** Cap per-link shift (meters). Any larger delta is logged and skipped — protects
-   *  against absurd shifts from measurement failures. Default 0.5 m (500 mm). */
+   * against absurd shifts from measurement failures. Default 0.5 m (500 mm). */
   maxShiftMeters?: number
   /** Suppress per-link console.log (still logs skips/warnings). */
   silent?: boolean
@@ -74,7 +74,7 @@ function faceNormal(face: string): THREE.Vector3 | null {
 }
 
 /** AABB of a link's own geometry in its link-local frame, excluding any
- *  descendant pivot subtrees (their meshes belong to other links). */
+ * descendant pivot subtrees (their meshes belong to other links). */
 function linkLocalAABBExcludingPivots(
   linkGroup: THREE.Group,
   pivotGroups: Set<THREE.Object3D>,
@@ -106,8 +106,8 @@ function linkLocalAABBExcludingPivots(
 }
 
 /** Pure render-time alignment pass. Mutates pivot positions in-place inside
- *  the provided scene. Idempotent: re-running with the same scene state is a
- *  no-op (the EPS guard stops already-aligned pairs from re-shifting). */
+ * the provided scene. Idempotent: re-running with the same scene state is a
+ * no-op (the EPS guard stops already-aligned pairs from re-shifting). */
 export function reconcileNodePlacement(inputs: ReconcileInputs): ReconcileResult {
   const eps = inputs.epsMeters ?? 0.0005
   const maxShift = inputs.maxShiftMeters ?? 0.5

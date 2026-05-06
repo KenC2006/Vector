@@ -248,7 +248,6 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // (with shaft along +Z for axis-z servos). Without these, per-axis scaling
   // squishes/stretches the mesh and the rendered body's mount face lands far
   // from the URDF link origin → split servos appear detached from their parent.
-  // Rotations sourced from `scripts/propose-mesh-rotations.mjs`.
   // preset [40,20,37] vs GLB [28.5,46.5,41] — Rz(π/2) maps GLB Y→preset X.
   'actuator_servo_standard': [0, 0, Math.PI / 2],
   'actuator_continuous_rotation_servo': [0, 0, Math.PI / 2],
@@ -301,8 +300,7 @@ export const SHAFT_OVERLAYS: Record<string, { shaft_length_mm: number; shaft_rad
  * that uniform scaling preserves the model's proportions. Per-axis would deform
  * a near-correct mesh; uniform keeps it honest at the cost of a small bbox gap.
  *
- * Eligibility: post-rotation extent must be within ~5% of bbox per axis. Verify
- * with `node ../scripts/propose-mesh-rotations.mjs` (ROTATE+SCALE bucket).
+ * Eligibility: post-rotation extent must be within ~5% of bbox per axis.
  */
 export const EXPLICIT_SCALE_POLICY: Record<string, MeshVisualScalePolicy> = {
   // GLB raw [100.2, 49.99, 109.82] → rotX 90° → [100.2, 109.82, 49.99]

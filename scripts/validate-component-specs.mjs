@@ -5,7 +5,6 @@ import path from 'node:path'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const PRESET_FILES = [
-  'src/public/generic_presets.json',
   'core/presets/generic_presets.json',
 ]
 

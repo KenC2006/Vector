@@ -4,7 +4,7 @@
 // for the mateCorpus fixture harness (mirrors the urdfGraphEquivalence /
 // reconcileAlignment split the rest of the codebase uses).
 //
-// Architecture: Phase 1 of docs/MATE_CONNECTOR_MIGRATION.md — WS5's render-time
+// Architecture: Phase 1 — WS5's render-time
 // reconciliation pass (reconcileAlignment.ts) closes mesh-vs-bbox depth gaps
 // at the scene level but can't disambiguate face-identity or concentric shafts.
 // Connectors move that ambiguity into preset data (named frames) and resolve
@@ -23,27 +23,27 @@ export type ConnectorType = 'planar' | 'cylindrical' | 'point'
 export type MateType = 'fastened' | 'planar' | 'concentric'
 
 /** A named local frame on a preset. origin/axis are in the preset link's
- *  local coordinate frame, units mm (matches preset JSON throughout). */
+ * local coordinate frame, units mm (matches preset JSON throughout). */
 export interface MateConnector {
   id: string
   origin_xyz_mm: [number, number, number]
   /** Primary axis direction (unit-length by convention; not re-normalised on
-   *  read so authored values stay stable round-trip). */
+   * read so authored values stay stable round-trip). */
   axis_xyz: [number, number, number]
   type: ConnectorType
   /** Only meaningful for cylindrical; used for port-compat diagnostics. */
   diameter_mm?: number
   /** Signed depth (mm) the mating child should sink INTO the parent along
-   *  this connector's axis. Positive = child translates by -engagement_depth_mm
-   *  along axis_xyz at mate time, hiding chamfer-vs-flat gaps without per-GLB
-   *  edits. Default 0 (legacy behavior). Authoring-time analogue of Onshape's
-   *  baked connector-frame offsets / Unreal SkeletalMeshSocket RelativeLocation
-   *  — see docs/ENGINE_NEXT_STEPS.md Step 1. */
+   * this connector's axis. Positive = child translates by -engagement_depth_mm
+   * along axis_xyz at mate time, hiding chamfer-vs-flat gaps without per-GLB
+   * edits. Default 0 (legacy behavior). Authoring-time analogue of Onshape's
+   * baked connector-frame offsets / Unreal SkeletalMeshSocket RelativeLocation
+   * — see docs/ENGINE_NEXT_STEPS.md Step 1. */
   engagement_depth_mm?: number
 }
 
 /** Preset-local bbox half-extents, in mm. Matches the `bounding_box_mm` field
- *  on presets divided by 2. */
+ * on presets divided by 2. */
 export interface ConnectorBoundingBoxMm {
   hxMm: number
   hyMm: number
@@ -51,21 +51,21 @@ export interface ConnectorBoundingBoxMm {
 }
 
 /** Runtime params for a mate. All fields optional — their defaults produce the
- *  "flush, no slide, no spin" result, which equals fastened. */
+ * "flush, no slide, no spin" result, which equals fastened. */
 export interface MateParams {
   /** Axial slide along the mate axis (concentric). +mm moves the child
-   *  connector along the parent connector's +axis direction. */
+   * connector along the parent connector's +axis direction. */
   offset_mm?: number
   /** Axial spin about the mate axis (planar, concentric), radians. */
   rotation_rad?: number
   /** In-plane translation for a planar mate. Basis vectors are picked
-   *  canonically from the face normal so the same (u,v) yields the same
-   *  displacement across runs (see `buildInPlaneBasis`). */
+   * canonically from the face normal so the same (u,v) yields the same
+   * displacement across runs (see `buildInPlaneBasis`). */
   offset_uv_mm?: [number, number]
 }
 
 /** A single authored mate — references two connectors by their globally
- *  qualified id (link_name.connector_id) and a type. */
+ * qualified id (link_name.connector_id) and a type. */
 export interface MateConstraint {
   parent_connector: string
   child_connector: string
@@ -78,14 +78,14 @@ export interface MateConstraint {
 // ── Default connectors ─────────────────────────────────────────────────────
 
 /** 6 face-center connectors derived from bbox half-extents. Ids match the
- *  legacy `attach_face` names in urdfAssembly.ts exactly, so on the backward-
- *  compat path `attach_face: "top"` is equivalent to
- *  `attach_connector: "top"` + `mate_connector: "bottom"` + `mate_type: "fastened"`.
- *  Axes point OUTWARD from the face (away from the link body).
+ * legacy `attach_face` names in urdfAssembly.ts exactly, so on the backward-
+ * compat path `attach_face: "top"` is equivalent to
+ * `attach_connector: "top"` + `mate_connector: "bottom"` + `mate_type: "fastened"`.
+ * Axes point OUTWARD from the face (away from the link body).
  *
- *  @internal — only `componentResolver.resolveComponent` should call this.
- *  External code must read merged connectors from
- *  `ResolvedComponentRecord.connectors` so authored overlays are merged in. */
+ * @internal — only `componentResolver.resolveComponent` should call this.
+ * External code must read merged connectors from
+ * `ResolvedComponentRecord.connectors` so authored overlays are merged in. */
 export function _resolverInternal_generateDefaultConnectors(bbox: ConnectorBoundingBoxMm): MateConnector[] {
   const { hxMm: hx, hyMm: hy, hzMm: hz } = bbox
   return [
@@ -99,8 +99,8 @@ export function _resolverInternal_generateDefaultConnectors(bbox: ConnectorBound
 }
 
 /** Opposite-face convention. Used to infer the child connector id when the
- *  legacy `attach_face` field is the only thing authored — parent face "top"
- *  pairs with child face "bottom", etc. */
+ * legacy `attach_face` field is the only thing authored — parent face "top"
+ * pairs with child face "bottom", etc. */
 export const DEFAULT_OPPOSITE_FACE: Record<string, string> = {
   top: 'bottom', bottom: 'top',
   front: 'back', back: 'front',
@@ -132,8 +132,8 @@ function vec3(v: readonly [number, number, number]): THREE.Vector3 {
 }
 
 /** Rotation that takes unit vector `a` onto unit vector `b`. Uses three.js's
- *  setFromUnitVectors, which already handles the antiparallel degenerate
- *  case (picks an arbitrary perpendicular axis for the 180° swing). */
+ * setFromUnitVectors, which already handles the antiparallel degenerate
+ * case (picks an arbitrary perpendicular axis for the 180° swing). */
 function quatFromTo(a: THREE.Vector3, b: THREE.Vector3): THREE.Quaternion {
   const q = new THREE.Quaternion()
   q.setFromUnitVectors(_tmpVec.copy(a).normalize(), new THREE.Vector3().copy(b).normalize())
@@ -145,9 +145,9 @@ function quatFromTo(a: THREE.Vector3, b: THREE.Vector3): THREE.Quaternion {
  * match the legacy face-name → world-axis convention used in
  * `faceUVToWorldOffset` whenever `axis` lines up with one of the canonical
  * world axes:
- *   - axis ≈ ±Z (top/bottom)  → u = X, v = Y
- *   - axis ≈ ±X (front/back)  → u = Y, v = Z
- *   - axis ≈ ±Y (left/right)  → u = X, v = Z
+ * - axis ≈ ±Z (top/bottom) → u = X, v = Y
+ * - axis ≈ ±X (front/back) → u = Y, v = Z
+ * - axis ≈ ±Y (left/right) → u = X, v = Z
  *
  * For non-canonical (tilted) axes, falls through to `buildInPlaneBasis` so the
  * caller still gets a deterministic perpendicular basis. The canonical-axis
@@ -167,9 +167,9 @@ export function tangentBasisFromAxis(axis: THREE.Vector3): { u: THREE.Vector3; v
 /**
  * Canonical orthonormal basis (u, v) spanning the plane perpendicular to
  * `normal`. Deterministic choice — important for fixtures and cache keys:
- *   - picks the world axis LEAST parallel to `normal` as the helper;
- *   - u = normalize(normal × helper);
- *   - v = normalize(normal × u).
+ * - picks the world axis LEAST parallel to `normal` as the helper;
+ * - u = normalize(normal × helper);
+ * - v = normalize(normal × u).
  *
  * For axis-aligned normals this produces a stable {u,v} per axis.
  */
@@ -191,21 +191,21 @@ export function buildInPlaneBasis(normal: THREE.Vector3): { u: THREE.Vector3; v:
  * link's world transform as a Matrix4.
  *
  * Convention (URDF-native, matches legacy bbox path):
- *   - axis_xyz is the OUTWARD direction. Two connectors mated with `fastened`
- *     have antiparallel axes in world space: parent's axis points +Z out of
- *     the parent face, child's axis points -Z out of the child face. Placing
- *     the child with identity rotation atop the parent makes those two axes
- *     antiparallel in world (parent +Z vs child -Z == world +Z vs -Z). ✓
- *   - For default face connectors, `resolveMate(fastened)` reproduces the
- *     current bbox math bit-for-bit. The parity is verified in mateCorpus.ts.
+ * - axis_xyz is the OUTWARD direction. Two connectors mated with `fastened`
+ * have antiparallel axes in world space: parent's axis points +Z out of
+ * the parent face, child's axis points -Z out of the child face. Placing
+ * the child with identity rotation atop the parent makes those two axes
+ * antiparallel in world (parent +Z vs child -Z == world +Z vs -Z). ✓
+ * - For default face connectors, `resolveMate(fastened)` reproduces the
+ * current bbox math bit-for-bit. The parity is verified in mateCorpus.ts.
  *
  * Math:
- *   R_align  = quatFromTo(child.axis, -parent.axis)   // so child.axis ends up antiparallel to parent.axis in parent-local
- *   R_spin   = rotate(parent.axis, params.rotation_rad)
- *   R_local  = R_spin · R_align                        // child link orientation in parent-local
- *   t_local  = parent.origin + disp(mate, params) - R_local · child.origin
- *   childLocal = compose(t_local, R_local)
- *   childWorld = parentWorld · childLocal
+ * R_align = quatFromTo(child.axis, -parent.axis) // so child.axis ends up antiparallel to parent.axis in parent-local
+ * R_spin = rotate(parent.axis, params.rotation_rad)
+ * R_local = R_spin · R_align // child link orientation in parent-local
+ * t_local = parent.origin + disp(mate, params) - R_local · child.origin
+ * childLocal = compose(t_local, R_local)
+ * childWorld = parentWorld · childLocal
  */
 export function resolveMate(
   parentWorld: THREE.Matrix4,
@@ -233,9 +233,9 @@ export function resolveMate(
   const qChildLocal = qSpin.multiply(qAlign)
 
   // Mate-type-specific displacement, in parent-local frame.
-  // fastened  → 0 DOF, no displacement
+  // fastened → 0 DOF, no displacement
   // concentric → axial slide along parent's axis (+mm = deeper along +axis)
-  // planar     → in-plane (u,v) translation spanning parent face
+  // planar → in-plane (u,v) translation spanning parent face
   const displacement = new THREE.Vector3(0, 0, 0)
   if (mateType === 'concentric') {
     const offsetM = (params.offset_mm ?? 0) / 1000
@@ -270,9 +270,9 @@ export function resolveMate(
 }
 
 /** Convenience: default-connector opposite-face pair. Callers that only know
- *  `attach_face` can compute the child's connector id without synthesising
- *  the full connector table. Returns null for non-default face names
- *  (e.g. "plate_top") so the caller can fail loudly rather than guess. */
+ * `attach_face` can compute the child's connector id without synthesising
+ * the full connector table. Returns null for non-default face names
+ * (e.g. "plate_top") so the caller can fail loudly rather than guess. */
 export function childConnectorIdForAttachFace(attachFace: string): string | null {
   return DEFAULT_OPPOSITE_FACE[attachFace] ?? null
 }
@@ -282,9 +282,9 @@ export function childConnectorIdForAttachFace(attachFace: string): string | null
  * a world-frame (dx, dy, dz) offset, using the same face→UV mapping that
  * `computeFacePlacement`/`faceUVHalfExtents` in urdfAssembly.ts uses:
  *
- *   top/bottom:  u → X, v → Y   (face normal ±Z)
- *   front/back:  u → Y, v → Z   (face normal ±X)
- *   left/right:  u → X, v → Z   (face normal ±Y)
+ * top/bottom: u → X, v → Y (face normal ±Z)
+ * front/back: u → Y, v → Z (face normal ±X)
+ * left/right: u → X, v → Z (face normal ±Y)
  *
  * Used by the connector-path multi-child distribution branch in
  * `computeMatePlacement`, which composes _computeMultiChildOffsets's tu/tv
@@ -318,7 +318,7 @@ export function faceUVToWorldOffset(
 }
 
 /** Find a connector by id in a flat list. Returns null if missing — callers
- *  MUST fail loudly (the migration doc explicitly rejects silent fallbacks). */
+ * MUST fail loudly (the migration doc explicitly rejects silent fallbacks). */
 export function findConnector(
   connectors: MateConnector[],
   id: string,

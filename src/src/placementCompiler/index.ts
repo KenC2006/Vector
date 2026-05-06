@@ -12,9 +12,6 @@
 // siblings, then implement compileAssembly on top of them. Sub-phase 3b.5
 // adds a Node-subprocess CLI (cli.ts) so the Python AI loop can call this
 // compiler over JSON-lines without re-implementing the geometry rules.
-//
-// See docs/COMPONENT_UNIFICATION_PLAN.md §3.8 (AI assembly compiler) and the
-// Phase 3b plan in this branch's session notes.
 
 import * as THREE from 'three'
 import type { AssemblyGraph, AssemblyComponent } from '../urdfGraphEquivalence.ts'
@@ -60,39 +57,39 @@ import {
 } from './servoSplit.ts'
 
 /** Minimal data the compiler needs back from a per-component lookup. The
- *  browser path wraps `findPreset` + `resolveComponentVisual`; the Node path
- *  (Phase 3b.5) reads from a JSON catalog. Bounds are in meters (post-rpy,
- *  parametric-spliced) — same convention as `ResolvedComponentRecord.bounds`. */
+ * browser path wraps `findPreset` + `resolveComponentVisual`; the Node path
+ * (Phase 3b.5) reads from a JSON catalog. Bounds are in meters (post-rpy,
+ * parametric-spliced) — same convention as `ResolvedComponentRecord.bounds`. */
 export interface ComponentResolution {
   componentId: string
   bounds: ComponentBoundsMm
   /** Connectors used by the **mate** placement path — typically the preset's
-   *  authored connectors merged with auto-generated face-default connectors
-   *  (top/bottom/front/back/left/right). Mate uses these to resolve
-   *  inferred-from-attach-face lookups. */
+   * authored connectors merged with auto-generated face-default connectors
+   * (top/bottom/front/back/left/right). Mate uses these to resolve
+   * inferred-from-attach-face lookups. */
   connectors?: MateConnector[]
   /** Connectors used by the **face** placement path's connector-snap fallback.
-   *  Should be the RAW authored preset.connectors (no auto-defaults), so face
-   *  doesn't snap to a generated connector that the legacy assembler ignored.
-   *  When omitted, defaults to `connectors`. */
+   * Should be the RAW authored preset.connectors (no auto-defaults), so face
+   * doesn't snap to a generated connector that the legacy assembler ignored.
+   * When omitted, defaults to `connectors`. */
   presetConnectors?: MateConnector[]
   /** Drivetrain hub motors carry an assembled tire — the swap radius (meters)
-   *  used for `effectiveCym` when bottom-mounting. From
-   *  `preset.mounting_logic.assembled_outer_radius_mm / 1000`. Slice 4.I
-   *  (drivetrain_remap). */
+   * used for `effectiveCym` when bottom-mounting. From
+   * `preset.mounting_logic.assembled_outer_radius_mm / 1000`. Slice 4.I
+   * (drivetrain_remap). */
   assembledOuterRadiusM?: number
   /** Per-instance length override for parametric extrusions (raw mm, NOT
-   *  divided). Set when the preset is `isParametricSpec` AND the
-   *  AssemblyComponent provided `length_mm`. Face placement uses this to
-   *  compute parentBodyHZ from the body length rather than the AABB which
-   *  includes pivot-boss / axle-cap protrusions. Slice 4.J (parametric_splice). */
+   * divided). Set when the preset is `isParametricSpec` AND the
+   * AssemblyComponent provided `length_mm`. Face placement uses this to
+   * compute parentBodyHZ from the body length rather than the AABB which
+   * includes pivot-boss / axle-cap protrusions. Slice 4.J (parametric_splice). */
   parametricLengthMm?: number
   /** Joint angle limits in radians (lo, hi). From `resolveJointLimitsRad`.
-   *  Slice 4.J (port_resolution). Used for revolute/prismatic joints; ignored
-   *  for fixed/continuous. */
+   * Slice 4.J (port_resolution). Used for revolute/prismatic joints; ignored
+   * for fixed/continuous. */
   jointLimitsRad?: [number, number]
   /** Joint effort in N·m (URDF `<limit effort="…"/>`). From
-   *  `preset.mechanical_electrical.max_torque_nm` ?? `holding_torque_nm` ?? 10. */
+   * `preset.mechanical_electrical.max_torque_nm` ?? `holding_torque_nm` ?? 10. */
   maxTorqueNm?: number
 }
 
@@ -113,27 +110,27 @@ export type AssemblyJointType = 'fixed' | 'revolute' | 'continuous' | 'prismatic
  * with string suffixes — read `physicalLinks` and `childAttachTarget`. */
 export interface CompiledLink {
   /** The logical link name from the semantic AssemblyGraph. Children targeting
-   *  this link reference `logicalName` even when the compiler split it. */
+   * this link reference `logicalName` even when the compiler split it. */
   logicalName: string
   componentId: string
   /** Physical link names emitted to URDF. Single-link components: just
-   *  `[logicalName]`. Servos: `[<name>_body, <name>_horn]` (+ optional
-   *  `<name>_compound_carrier`). Order is parent-frame-first. */
+   * `[logicalName]`. Servos: `[<name>_body, <name>_horn]` (+ optional
+   * `<name>_compound_carrier`). Order is parent-frame-first. */
   physicalLinks: string[]
   /** The physical link a child component should attach to when its
-   *  AssemblyComponent.attach_to equals `logicalName`. For servos this is the
-   *  horn so children rotate with the actuator output. */
+   * AssemblyComponent.attach_to equals `logicalName`. For servos this is the
+   * horn so children rotate with the actuator output. */
   childAttachTarget: string
   /** Resolved bounds (post-rpy, parametric-spliced). Copied from the
-   *  ResolvedComponentRecord — consumers must not re-derive geometry. */
+   * ResolvedComponentRecord — consumers must not re-derive geometry. */
   bounds: ComponentBoundsMm
   /** Local pose under the parent's `childAttachTarget` frame, URDF coords
-   *  (meters / radians). Root link: zero. */
+   * (meters / radians). Root link: zero. */
   localXyz: [number, number, number]
   localRpy: [number, number, number]
   /** World pose under the compiler's deterministic root frame (root identity).
-   *  Used for invariant checks (foot leveling, mirror symmetry, parity tests).
-   *  Exporters should prefer local pose + parent traversal. */
+   * Used for invariant checks (foot leveling, mirror symmetry, parity tests).
+   * Exporters should prefer local pose + parent traversal. */
   worldXyz: [number, number, number]
   worldRpy: [number, number, number]
   /** Connector chosen on each side, if any. Null for face-only placements. */
@@ -141,11 +138,11 @@ export interface CompiledLink {
   childConnector: string | null
   /** Joints synthesized for this link's physical links. Empty for root.
    *
-   *  Single-link components: one joint (parent.childAttachTarget → physicalName).
-   *  Servos: 2 joints — `_mount` (fixed, parent → body) + actuated revolute
-   *  (body → horn). Compound servos add a 3rd `_compound_carrier` (fixed,
-   *  parent → carrier, mount routes off carrier). Order is parent-frame-first
-   *  so consumers can append to URDF in iteration order. */
+   * Single-link components: one joint (parent.childAttachTarget → physicalName).
+   * Servos: 2 joints — `_mount` (fixed, parent → body) + actuated revolute
+   * (body → horn). Compound servos add a 3rd `_compound_carrier` (fixed,
+   * parent → carrier, mount routes off carrier). Order is parent-frame-first
+   * so consumers can append to URDF in iteration order. */
   joints: Array<{
     name: string
     type: AssemblyJointType
@@ -162,27 +159,27 @@ export interface CompiledLink {
     originRpy: [number, number, number]
   }>
   /** Marker for compiler-generated links that don't correspond to a logical
-   *  component on their own — body/horn halves of a split servo, the optional
-   *  compound carrier visual. Null when this is the user-named link. */
+   * component on their own — body/horn halves of a split servo, the optional
+   * compound carrier visual. Null when this is the user-named link. */
   syntheticRole: 'body' | 'horn' | 'carrier' | null
   /** Per-physical-link world poses (URDF coords). Same length as
-   *  `physicalLinks`, in the same order. For non-servos: length-1 = childWorld.
-   *  For servos: carrier+body share bodyWorld, horn gets hornWorld. The 4.K
-   *  cutover seeds `linkWorldTransforms` from this so reconcile + ICP find
-   *  every emitted link. */
+   * `physicalLinks`, in the same order. For non-servos: length-1 = childWorld.
+   * For servos: carrier+body share bodyWorld, horn gets hornWorld. The 4.K
+   * cutover seeds `linkWorldTransforms` from this so reconcile + ICP find
+   * every emitted link. */
   physicalWorldXyz: Array<[number, number, number]>
   physicalWorldRpy: Array<[number, number, number]>
   /** True when placement came from a connector mate (mate path matched, or
-   *  face's connector-snap fallback engaged). Drives `viaConnectorMap` in
-   *  reconcileNodePlacement so it skips re-flushing connector-aligned pairs. */
+   * face's connector-snap fallback engaged). Drives `viaConnectorMap` in
+   * reconcileNodePlacement so it skips re-flushing connector-aligned pairs. */
   placedViaConnector: boolean
 }
 
 /** Placement-class taxonomy used by the Phase 3b.4 incremental rollout. Each
- *  slice (4.B–4.J) implements one class and removes it from
- *  CompiledGraph.skippedClasses. The shadow-compile parity harness only
- *  compares links whose class has been implemented — anything else is silently
- *  passed through. After 4.K cutover, `skippedClasses` is always []. */
+ * slice (4.B–4.J) implements one class and removes it from
+ * CompiledGraph.skippedClasses. The shadow-compile parity harness only
+ * compares links whose class has been implemented — anything else is silently
+ * passed through. After 4.K cutover, `skippedClasses` is always []. */
 export type PlacementClass =
   | 'root'
   | 'face_simple'
@@ -215,60 +212,60 @@ export const ALL_PLACEMENT_CLASSES: readonly PlacementClass[] = [
 export interface CompiledGraph {
   baseLink: string
   /** Topological order — parents before children. Single canonical traversal
-   *  for exporters and invariant checks. */
+   * for exporters and invariant checks. */
   links: CompiledLink[]
   /** Logical-name → physical-link routing table. Exporters look here when
-   *  resolving an `attach_to` from the semantic graph instead of synthesizing
-   *  string suffixes. */
+   * resolving an `attach_to` from the semantic graph instead of synthesizing
+   * string suffixes. */
   attachIndex: Record<string, string>
   /** Diagnostics emitted by the compiler. Owner-tagged via
-   *  compilerDiagnostics — semantic-graph violations that survived
-   *  normalize_and_validate are AI_TOPOLOGY; everything else is
-   *  PLACEMENT_COMPILER. */
+   * compilerDiagnostics — semantic-graph violations that survived
+   * normalize_and_validate are AI_TOPOLOGY; everything else is
+   * PLACEMENT_COMPILER. */
   diagnostics: Diagnostic[]
   /** Hash of (semantic graph + resolver fingerprint + compiler version). Equal
-   *  fingerprints must produce equal graphs — used by the cross-runtime parity
-   *  tests and the AI-determinism corpus. */
+   * fingerprints must produce equal graphs — used by the cross-runtime parity
+   * tests and the AI-determinism corpus. */
   fingerprint: string
   /** Placement classes the compiler has not yet implemented in this build.
-   *  Always [] after Phase 3b.4.K cutover; the parity harness uses it to
-   *  decide which links to skip during incremental rollout. */
+   * Always [] after Phase 3b.4.K cutover; the parity harness uses it to
+   * decide which links to skip during incremental rollout. */
   skippedClasses: PlacementClass[]
 }
 
 export interface CompileOptions {
   /** Per-instance overrides keyed by logical link name. Currently only
-   *  `length_mm` for parametric extrusions; matches ComponentInstanceSpec. */
+   * `length_mm` for parametric extrusions; matches ComponentInstanceSpec. */
   instanceOverrides?: Record<string, ComponentInstanceSpec>
   /** When true (Python AI subprocess path), skip any work that would need a
-   *  THREE.Object3D scene graph; emit transforms + descriptors only. */
+   * THREE.Object3D scene graph; emit transforms + descriptors only. */
   headless?: boolean
   /** Looks up bounds + componentId for an AssemblyComponent. Required as soon
-   *  as `compileAssembly` emits any links; absent during the 4.A skeleton.
-   *  Browser callers wrap their preset catalog + resolveComponentVisual; the
-   *  Node CLI (3b.5) wraps the JSON catalog directly. */
+   * as `compileAssembly` emits any links; absent during the 4.A skeleton.
+   * Browser callers wrap their preset catalog + resolveComponentVisual; the
+   * Node CLI (3b.5) wraps the JSON catalog directly. */
   resolveComponent?: ComponentResolver
   /** Mirrors the assembler's `useMateConnectors()` flag — set false to bypass
-   *  connector-aware placement entirely (debug / regression bisect). Default
-   *  true matches the assembler's `VECTOR_USE_MATE_CONNECTORS !== false`. */
+   * connector-aware placement entirely (debug / regression bisect). Default
+   * true matches the assembler's `VECTOR_USE_MATE_CONNECTORS !== false`. */
   useMateConnectors?: boolean
 }
 
 /** Compiler version string baked into the fingerprint. Bump when output for a
- *  fixed input legitimately changes; the cross-runtime parity test will then
- *  re-pin its golden fixtures. */
+ * fixed input legitimately changes; the cross-runtime parity test will then
+ * re-pin its golden fixtures. */
 export const COMPILER_VERSION = '0.0.13-physical-world'
 
 /** Z position of the servo horn rotation origin, as a fraction of the servo's
- *  total height. Mirror of `SERVO_HORN_ORIGIN_Z_RATIO` in componentMeshes.ts.
- *  Inlined here because the compiler module must stay free of three.js scene-
- *  graph deps so it can run under `--experimental-strip-types` in the Node
- *  corpus and the Python AI subprocess (slice 3b.5). */
+ * total height. Mirror of `SERVO_HORN_ORIGIN_Z_RATIO` in componentMeshes.ts.
+ * Inlined here because the compiler module must stay free of three.js scene-
+ * graph deps so it can run under `--experimental-strip-types` in the Node
+ * corpus and the Python AI subprocess (slice 3b.5). */
 const SERVO_HORN_ORIGIN_Z_RATIO = 0.44
 
 /** Component-id prefixes that mark a component as "passive hardware" — no
- *  splay applied during multi-child distribution. Mirrors urdfAssembly.ts
- *  line ~4024 verbatim so noSplay computes bit-identically. */
+ * splay applied during multi-child distribution. Mirrors urdfAssembly.ts
+ * line ~4024 verbatim so noSplay computes bit-identically. */
 function isPassiveHardware(componentId: string): boolean {
   return componentId.startsWith('structural_bracket')
     || componentId.startsWith('structural_joint_plate')
@@ -280,11 +277,11 @@ function isPassiveHardware(componentId: string): boolean {
 }
 
 /** Cross-cutting deferred-class bypasses — apply to ALL placement paths
- *  (face/mate AND servo_split). Slices 4.G–4.J each peel one of these off as
- *  they implement the corresponding class. */
+ * (face/mate AND servo_split). Slices 4.G–4.J each peel one of these off as
+ * they implement the corresponding class. */
 function deferredByGlobalBypass(
   c: AssemblyComponent,
-  parent: AssemblyComponent | undefined,
+  _parent: AssemblyComponent | undefined,
 ): boolean {
   if (!c.attach_to) return true
   // All previously deferred classes (parametric_splice / attach_rpy override /
@@ -302,7 +299,7 @@ function isServoSplitCase(
 }
 
 /** Eligibility for face/mate placement (slices 4.C/4.D/4.E). Servos and
- *  servo-children go through `eligibleForServoSplit` instead. */
+ * servo-children go through `eligibleForServoSplit` instead. */
 function eligibleForFaceOrMatePlacement(
   c: AssemblyComponent,
   parent: AssemblyComponent | undefined,
@@ -320,8 +317,8 @@ function eligibleForFaceOrMatePlacement(
 }
 
 /** Eligibility for the servo split path (slice 4.F). Covers both `cIsActuated`
- *  (current child IS a servo) and `parentIsServo` (current child mounts on a
- *  servo horn). */
+ * (current child IS a servo) and `parentIsServo` (current child mounts on a
+ * servo horn). */
 function eligibleForServoSplit(
   c: AssemblyComponent,
   parent: AssemblyComponent | undefined,
@@ -549,10 +546,10 @@ export function compileAssembly(
 
     // ── Placement (xyz, rpy) ──────────────────────────────────────────────
     // Three sources, in priority order:
-    //   1. Servo-driven: when parent is a split servo, use the closed-form
-    //      limb / child placement helpers (replaces face/mate entirely).
-    //   2. Mate connector: closed-form connector mate.
-    //   3. Bbox face placement: fallback / standard path.
+    // 1. Servo-driven: when parent is a split servo, use the closed-form
+    // limb / child placement helpers (replaces face/mate entirely).
+    // 2. Mate connector: closed-form connector mate.
+    // 3. Bbox face placement: fallback / standard path.
     let placement: { xyz: string; rpy: string } | null = null
     let placedViaConnectorFlag = false
 
@@ -637,11 +634,11 @@ export function compileAssembly(
 
     // ── Post-placement adjustments (slices 4.J.2 / 4.J.3 / 4.J.4) ─────────
     // Order mirrors assembler ~4197-4270:
-    //   1. Distal-beam-bottom flip — child mounts under a distal limb tip
-    //      whose local-Z points the wrong way in world space; flip xyz[2].
-    //   2. Arm rest pose — Y-axis revolute "arm" chain auto-bends:
-    //      shoulder (depth 1) +π/4, elbow (depth 2) -π/2.
-    //   3. Explicit attach_rpy override — replaces auto rest pose.
+    // 1. Distal-beam-bottom flip — child mounts under a distal limb tip
+    // whose local-Z points the wrong way in world space; flip xyz[2].
+    // 2. Arm rest pose — Y-axis revolute "arm" chain auto-bends:
+    // shoulder (depth 1) +π/4, elbow (depth 2) -π/2.
+    // 3. Explicit attach_rpy override — replaces auto rest pose.
     // Side-axis servo dz nudge (cIsActuated only) runs INSIDE the servo
     // emit branch, after these — same order as assembler line ~4277.
     const servoAxisName = axisNameFromComponentAxis(c.joint_axis)
@@ -740,8 +737,8 @@ export function compileAssembly(
       // childBody[face-axis]; after the shaft-align rotation, a different body
       // axis now lies along that world axis. Nudge xyz[face-axis] so the body
       // still seats flush.
-      //   axis-x shaft-align Ry(π/2): world(X,Y,Z) extents from body(Z,Y,X)
-      //   axis-y shaft-align Rx(-π/2): world(X,Y,Z) extents from body(X,Z,Y)
+      // axis-x shaft-align Ry(π/2): world(X,Y,Z) extents from body(Z,Y,X)
+      // axis-y shaft-align Rx(-π/2): world(X,Y,Z) extents from body(X,Z,Y)
       if (servoAxisName !== 'z') {
         const face = c.attach_face || 'top'
         const faceNormalAxis: 0 | 1 | 2 | null =
@@ -800,12 +797,12 @@ export function compileAssembly(
 
       // ── Slice 4.J — servo joint synthesis ──────────────────────────────
       // Mirror of assembler ~4301-4390: 2-3 joints per servo.
-      //   1. (compound only) `${jointName}_compound_carrier` fixed,
-      //      parent → carrier @ (placement.xyz, servoBodyMountRpy)
-      //   2. `${jointName}_mount` fixed, parent-or-carrier → body
-      //      @ ('0 0 0' if compound else placement.xyz / servoBodyMountRpy)
-      //   3. `${jointName}` revolute, body → horn
-      //      @ ('0 0 hornOriginZ', identity rpy), axis (0 0 1), limits
+      // 1. (compound only) `${jointName}_compound_carrier` fixed,
+      // parent → carrier @ (placement.xyz, servoBodyMountRpy)
+      // 2. `${jointName}_mount` fixed, parent-or-carrier → body
+      // @ ('0 0 0' if compound else placement.xyz / servoBodyMountRpy)
+      // 3. `${jointName}` revolute, body → horn
+      // @ ('0 0 hornOriginZ', identity rpy), axis (0 0 1), limits
       const jointBaseName = `joint_${c.component_id}_${placedCount}`
       const carrierJointName = `${jointBaseName}_compound_carrier`
       const mountJointName = `${jointBaseName}_mount`

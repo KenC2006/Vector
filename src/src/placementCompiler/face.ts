@@ -82,7 +82,6 @@ export function computeFacePlacement(
   const childBodyHX = childX / 2 - Math.abs(childCenterOffset.cx)
   const childBodyHY = childY / 2 - Math.abs(childCenterOffset.cy)
   const childBodyHZ = childZ / 2 - Math.abs(childCenterOffset.cz)
-  console.log(`[placement] ${childComponentId || '?'} on ${parentLinkName} face=${attachFace || 'top'} | parent hx=${parent.hx.toFixed(4)} hy=${parent.hy.toFixed(4)} hz=${parent.hz.toFixed(4)} | child ${childX.toFixed(4)}×${childY.toFixed(4)}×${childZ.toFixed(4)}`)
 
   const face = attachFace || 'top'
 

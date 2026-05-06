@@ -32,7 +32,7 @@ import { normalizeAssembly, formatDiagnosticForPrompt } from './archetypeNormali
 import type { RequestedFeatures } from './archetypeNormalizer.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
-// Mate-connector resolver (Phase 1/2, docs/MATE_CONNECTOR_MIGRATION.md). Pure
+// Mate-connector resolver (Phase 1/2,). Pure
 // module, bit-identical to the bbox math when mating default face connectors
 // with `fastened` — see mateCorpus.ts for the parity proof. Feature-flagged
 // so the legacy path can still be exercised for A/B comparison.
@@ -43,7 +43,7 @@ import {
 } from './mateConnectors.ts'
 import { applyMutation as runApplyMutation } from './graphMutations.ts'
 import type { GraphMutation, MutationResult } from './graphMutations.ts'
-// Render-time alignment pass (Option C — see docs/ENGINE_ARCHITECTURE.md).
+// Render-time alignment pass (Option C — ).
 // Kept in its own module so the test harness can import it without pulling in
 // this file's DOM/tauri dependencies. Re-exported below for external callers.
 import { reconcileNodePlacement } from './reconcileAlignment.ts'
@@ -153,7 +153,7 @@ export interface TopologyOp {
   orientation?: string
   elevation_angle?: number
   attach_rpy?: number[]
-  // Phase 4 of docs/MATE_CONNECTOR_MIGRATION.md — optional named-connector
+  // Phase 4 — optional named-connector
   // overrides that mirror the AssemblyComponent fields. Forwarded verbatim
   // so Claude's modify_topology add/modify ops can target shaft_out /
   // shaft_hole / plate_top etc. instead of falling back to attach_face.
@@ -163,9 +163,9 @@ export interface TopologyOp {
 }
 
 /** One row of engine-computed placement ground-truth (what the placement loop
- *  actually emitted per child). `linkName` / `parentLinkName` are final URDF
- *  names after nameMap remap. Threaded to the validator so Gemini can compare
- *  screenshot inspection against the engine's authoritative xyz/rpy. */
+ * actually emitted per child). `linkName` / `parentLinkName` are final URDF
+ * names after nameMap remap. Threaded to the validator so Gemini can compare
+ * screenshot inspection against the engine's authoritative xyz/rpy. */
 export interface EnginePlacementEntry {
   linkName: string
   parentLinkName: string
@@ -174,11 +174,11 @@ export interface EnginePlacementEntry {
 }
 
 /** One row of ICP contact-cleanup diagnostics per mated pair. Mirrors the
- *  `[icp][trace]` console line. `confidence` is derived from paired-ratio +
- *  reason: "high" when paired ≥ 75% OR reason mentions "confident-cap",
- *  "low" otherwise. gap values are in mm; negative = child slightly overlaps
- *  parent (flush). Validator uses gap_p50_mm / confidence to refute screenshot
- *  claims of "floating N mm". */
+ * `[icp][trace]` console line. `confidence` is derived from paired-ratio +
+ * reason: "high" when paired ≥ 75% OR reason mentions "confident-cap",
+ * "low" otherwise. gap values are in mm; negative = child slightly overlaps
+ * parent (flush). Validator uses gap_p50_mm / confidence to refute screenshot
+ * claims of "floating N mm". */
 export interface EngineIcpEntry {
   linkName: string
   parentConnector: string   // `${parentPresetId}.${parentConnectorId}`
@@ -195,7 +195,7 @@ export interface EngineIcpEntry {
 }
 
 /** Ground-truth payload returned from resolveAssemblyGraph and forwarded to
- *  the Gemini validator (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). */
+ * the Gemini validator. */
 export interface EngineSummary {
   placements: EnginePlacementEntry[]
   icpGaps: EngineIcpEntry[]
@@ -211,24 +211,24 @@ export interface UrdfAssemblyApi {
   /** Resolve an AI assembly graph using the frontend snap/placement system. Returns final URDF and any topology errors. */
   resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary }
   /** Render-time alignment: measure real AABBs of rendered meshes and shift pivots
-   *  so child contact surfaces meet their parent's attach face. No-op if no graph
-   *  has been resolved yet. Safe to call multiple times (EPS-guarded, idempotent). */
+   * so child contact surfaces meet their parent's attach face. No-op if no graph
+   * has been resolved yet. Safe to call multiple times (EPS-guarded, idempotent). */
   reconcileNodePlacement(): ReconcileResult
   /** Get a deep-cloned snapshot of the last successfully resolved AssemblyGraph. Cloned so
-   *  callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
+   * callers (chat context, IPC marshaling) can't mutate the canonical in-memory copy. */
   getLastAssemblyGraph(): AssemblyGraph | null
   /** Reverse-parse current URDF into an AssemblyGraph for iterative editing (lossy fallback — prefer getLastAssemblyGraph). */
   urdfToAssemblyGraph(urdfXml: string): AssemblyGraph | null
   /** Structural + parametric equality for two AssemblyGraphs. Use to detect drift when a
-   *  reverse-parse is unavoidable (import-URDF path). */
+   * reverse-parse is unavoidable (import-URDF path). */
   graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult
   /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
   applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
   /** WS2 tool-call edit surface: apply a single typed mutation with per-call
-   *  validation. Runs against a deep clone of `graph`; on success the new graph
-   *  is returned and the caller commits via resolveAssemblyGraph. On failure,
-   *  a structured error returns to the Claude tool loop for same-turn self-
-   *  correction — no full-graph redesign fired. */
+   * validation. Runs against a deep clone of `graph`; on success the new graph
+   * is returned and the caller commits via resolveAssemblyGraph. On failure,
+   * a structured error returns to the Claude tool loop for same-turn self-
+   * correction — no full-graph redesign fired. */
   applyGraphMutation(graph: AssemblyGraph, mutation: GraphMutation): MutationResult
   /** Re-run attachment node placement based on current scene geometry. Call after async GLB meshes settle. */
   rebuildMountNodes(): void
@@ -240,8 +240,8 @@ export interface UrdfAssemblyApi {
   /** True while resolveAssemblyGraph is batching edits. Callers (e.g. reparseURDF) skip heavy per-mesh rebuilds when active. */
   isBulkAssemblyMode(): boolean
   /** Look up a component's authoritative bounding box from the preset catalog (in mm).
-   *  Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
-   *  where per-instance length_mm makes the link's URDF box the authoritative source. */
+   * Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
+   * where per-instance length_mm makes the link's URDF box the authoritative source. */
   getPresetBoundingBoxMm(compId: string): [number, number, number] | null
 }
 
@@ -276,13 +276,13 @@ function ensureOrigin(el: Element, doc: Document): Element {
  * Only applies to revolute / prismatic / continuous joints (fixed joints have no axis).
  *
  * TODO: when ball/floating joints are added, a single axis vector is insufficient;
- *       that will require a per-DOF quaternion stack at the joint level.
+ * that will require a per-DOF quaternion stack at the joint level.
  *
- * @param jointEl         The `<joint>` XML element to update.
- * @param doc             The owning Document (used to create the `<axis>` element if missing).
- * @param oldJointWorldQ  Quaternion of the joint frame BEFORE the move (drag-start snapshot).
- * @param parentWorldQ    World quaternion of the joint's NEW parent link.
- * @param newLocalQuat    New local quaternion of the joint in the parent frame.
+ * @param jointEl The `<joint>` XML element to update.
+ * @param doc The owning Document (used to create the `<axis>` element if missing).
+ * @param oldJointWorldQ Quaternion of the joint frame BEFORE the move (drag-start snapshot).
+ * @param parentWorldQ World quaternion of the joint's NEW parent link.
+ * @param newLocalQuat New local quaternion of the joint in the parent frame.
  */
 function reconcileJointAxis(
   jointEl: Element,
@@ -330,7 +330,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 /** Kinematic roots (no parent). Prefer base_link when world is the only virtual root — matches ROS fixed-base URDFs. */
 /** Lift a box-shaped carry ghost in world space so its AABB clears y ≈ 0 (floor).
- *  cx/cy/cz are the visual center offset within the carry group's local frame. */
+ * cx/cy/cz are the visual center offset within the carry group's local frame. */
 function clampCarryMatrixAboveFloor(worldMat: THREE.Matrix4, hx: number, hy: number, hz: number, cx = 0, cy = 0, cz = 0): THREE.Matrix4 {
   const m = worldMat.clone()
   let minY = Infinity
@@ -776,7 +776,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         const componentId = componentIdFromLinkName(linkName)
         const preset = findPresetById(componentId)
         if (preset) {
-          // PLACEMENT_REWRITE_PLAN.md Phase 4c — resolver-driven bbox is the
+          // Phase 4c — resolver-driven bbox is the
           // source of truth for every preset-backed link. The resolver's AABB
           // is zero-centered around the link origin (post-parametric, pre-
           // rotation), which matches what the placement compiler reads. Using
@@ -818,7 +818,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const componentId = componentIdFromLinkName(linkName)
       const preset = findPresetById(componentId)
       const connectors = preset ? resolveComponentConnectors(preset) : []
-      // PLACEMENT_REWRITE_PLAN.md Phase 4c — with the resolver-driven
+      // Phase 4c — with the resolver-driven
       // (zero-centered) bbox above, the previous hub_bore center-compensation
       // for tires (`origin_xyz: [-center, -center, -center]`) collapses to
       // `[0, 0, 0]`, which is already what `resolveComponentPortsForBounds`
@@ -882,9 +882,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   /** Refresh world transforms for mount nodes.
-   *  Pass `onlyLink` to limit refresh to nodes owned by that link — use this
-   *  during drag where only the selected component is moving and all static
-   *  target nodes already have valid world positions from rebuildMountNodes(). */
+   * Pass `onlyLink` to limit refresh to nodes owned by that link — use this
+   * during drag where only the selected component is moving and all static
+   * target nodes already have valid world positions from rebuildMountNodes(). */
   function refreshNodeWorldTransforms(onlyLink?: string) {
     const parsed = ctx.getParsedRobot()
     const worldQuatTmp = new THREE.Quaternion()
@@ -1657,21 +1657,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return { ixx: i, iyy: i, izz: i }
   }
 
-  // Phase 2 of COMPONENT_UNIFICATION_PLAN.md: placement reads parent bounds
+  // Phase 2: placement reads parent bounds
   // from the resolver, not from a re-parsed URDF visual AABB. Returns bounds
   // in METERS — matching the contract callers expect from the retired
   // (Phase 2) getParentBounds DOM-read path.
   //
   // Lookup strategy:
-  //   1. If the caller already has the parent preset (the AI assembly path
-  //      always does), they pass it in. Otherwise we strip the trailing
-  //      _N suffix from the link name and look it up in the catalog.
-  //   2. Split-servo `_body`/`_horn` link suffixes route to
-  //      resolveSplitServoVisual so a child mounted on the body sees body
-  //      bounds, not the whole-servo envelope.
-  //   3. Unknown link names (base_link, synthetic carriers, presets that
-  //      haven't loaded yet) get the same 50 mm cube fallback the old URDF
-  //      path returned.
+  // 1. If the caller already has the parent preset (the AI assembly path
+  // always does), they pass it in. Otherwise we strip the trailing
+  // _N suffix from the link name and look it up in the catalog.
+  // 2. Split-servo `_body`/`_horn` link suffixes route to
+  // resolveSplitServoVisual so a child mounted on the body sees body
+  // bounds, not the whole-servo envelope.
+  // 3. Unknown link names (base_link, synthetic carriers, presets that
+  // haven't loaded yet) get the same 50 mm cube fallback the old URDF
+  // path returned.
   function parentBoundsFromLink(
     parentLinkName: string,
     options?: { preset?: PresetComponent | null; instanceLengthMm?: number },
@@ -1784,7 +1784,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   // splayAngleForLegCount + verticalExtentForRotation moved to
   // placementCompiler/multiChild.ts (Phase 3b.2). Imported below.
 
-  // ── Phase 2 connector branch (docs/MATE_CONNECTOR_MIGRATION.md) ───────────
+  // ── Phase 2 connector branch ───────────
   // Feature flag. Defaults on: when no preset has authored connectors, the new
   // path only fires for components that explicitly opt in via
   // attach_connector/mate_connector/mate_type. For every other component,
@@ -1806,7 +1806,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   // scripts/contact-analysis-output.txt for the Phase 1 diagnosis.
 
   /** Standalone preset lookup that doesn't depend on the `findPreset`
-   *  closure inside `resolveAssemblyGraph`. Reads the outer `presetData`. */
+   * closure inside `resolveAssemblyGraph`. Reads the outer `presetData`. */
   function _findPresetForCleanup(componentId: string): PresetComponent | null {
     if (!presetData) return null
     for (const cat of Object.values(presetData.categories)) {
@@ -1817,7 +1817,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     return null
   }
 
-  // Phase 2c of COMPONENT_UNIFICATION_PLAN.md: contact cleanup is now an
+  // Phase 2c: contact cleanup is now an
   // analytic check against resolved.collision, not a scene raycast. With
   // resolver-driven placement (Phase 2a) and resolver-driven collision
   // bounds (Phase 1), the gap between mating faces is determined by the
@@ -1861,7 +1861,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       // Analytic gap along the parent connector axis. With resolver-driven
       // placement, parent connector world origin equals child connector world
       // origin, and the parent collision face along +axis is at:
-      //   parentColl.center · axis + parentColl.half · |axis| − parentConn.origin · axis
+      // parentColl.center · axis + parentColl.half · |axis| − parentConn.origin · axis
       // Same expression on the child side (with axis negated for antiparallel
       // mate). Sum them and the result is the residual gap; under correct
       // authoring it is 0.
@@ -2035,9 +2035,9 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   /** Compute the AABB of a component in URDF coordinates.
-   *  Placement math still prefers rendered mesh dims when available, but carry
-   *  visualization uses computeCarryGhostPreview() so it preserves per-visual
-   *  rotations and multi-primitive outlines instead of drawing a generic box. */
+   * Placement math still prefers rendered mesh dims when available, but carry
+   * visualization uses computeCarryGhostPreview() so it preserves per-visual
+   * rotations and multi-primitive outlines instead of drawing a generic box. */
   function computeCarryGhostBounds(comp: PresetComponent): CarryGhostBounds {
     const catName = findCategory(comp)
     return resolveComponentVisual({ preset: comp, category: catName }).bounds
@@ -2203,7 +2203,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     addBoundsCollisionElement(doc, link, collision.bounds)
   }
 
-  // PLACEMENT_REWRITE_PLAN.md Phase 3 — carry-ghost ↔ commit invariant.
+  // Phase 3 — carry-ghost ↔ commit invariant.
   // The user-visible carry ghost is rendered at `carryGroup.matrixWorld`; the
   // commit path decomposes that matrix in the parent's local frame, formats
   // the result as URDF xyz/rpy strings, and feeds them to addComponentCore.
@@ -2250,7 +2250,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
   }
 
-  // PLACEMENT_REWRITE_PLAN.md Phase 3 — post-reparse drift check.
+  // Phase 3 — post-reparse drift check.
   // After `commitUrdf` rewrites the document and `reparseUrdf` rebuilds the
   // scene graph, downstream passes (reconcileAlignment, contactCleanup,
   // resolveAssemblyGraph) can shift the persisted link. If that shift is
@@ -2307,10 +2307,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     xyzStr: string,
     rpyStr: string,
     /** Optional debug hook — receives the base child link name BEFORE
-     *  commitUrdf triggers reparse. Used by the carry-commit drift check
-     *  to schedule a post-reparse pose comparison. Split servos still get
-     *  the un-suffixed `${comp.id}_${idx}` here; the hook can append
-     *  `_body` if it wants to look up the physical link. */
+     * commitUrdf triggers reparse. Used by the carry-commit drift check
+     * to schedule a post-reparse pose comparison. Split servos still get
+     * the un-suffixed `${comp.id}_${idx}` here; the hook can append
+     * `_body` if it wants to look up the physical link. */
     onLinkCommitted?: (baseLinkName: string, isSplitServo: boolean) => void,
   ): boolean {
     const graph = ctx.getKinematicGraph()
@@ -2590,10 +2590,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   }
 
   /** Swap the carry ghost's visual contents with the freshly-resolved preview
-   *  (mesh path now that the GLB is cached) while preserving the carryGroup's
-   *  current world transform — so the in-flight carry pose isn't lost when the
-   *  GLB load completes mid-carry. Bounds may also change between rich and mesh
-   *  paths; refreshed too. */
+   * (mesh path now that the GLB is cached) while preserving the carryGroup's
+   * current world transform — so the in-flight carry pose isn't lost when the
+   * GLB load completes mid-carry. Bounds may also change between rich and mesh
+   * paths; refreshed too. */
   function rebuildCarryGhostVisual(comp: PresetComponent) {
     if (!carryGroup) return
     const preview = computeCarryGhostPreview(comp)
@@ -2810,7 +2810,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       }
       parentLinkGroup.updateMatrixWorld(true)
       const parentWorldInv = parentLinkGroup.matrixWorld.clone().invert()
-      // PLACEMENT_REWRITE_PLAN.md Phase 3 / carry-frame fix.
+      // Phase 3 / carry-frame fix.
       // The ghost child carries a `componentVisualWorldQuat(z_up, scene_y_up)`
       // (-90°X) so its Z-up authored content displays correctly in scene Y-up.
       // The render path applies that swap one level higher, on `worldGroup`,
@@ -3045,24 +3045,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       presetData = data
       reportComponentSpecDeprecations(data as unknown as Parameters<typeof reportComponentSpecDeprecations>[0])
       void ensureMeshExtentsLoaded()
-      // Log the connector setup per preset — 6 default face connectors plus
-      // any Phase 3 authored connectors (shaft_out, plate_top, wall_inner,
-      // mount_back, etc.). This is the load-time signal that JSON authoring
-      // took effect; presets with authored connectors stand out in the log
-      // so "did my preset edit reach the runtime?" is obvious at startup.
-      if (useMateConnectors()) {
-        for (const cat of Object.values(data.categories)) {
-          for (const comp of cat.components) {
-            const authored = comp.connectors?.length ?? 0
-            if (authored > 0) {
-              const ids = comp.connectors!.map(c => c.id).join(', ')
-              console.log(`[mate] connectors: 6 defaults + ${authored} authored = ${6 + authored} (${comp.id}) — authored: [${ids}]`)
-            } else {
-              console.log(`[mate] connectors: 6 defaults (${comp.id})`)
-            }
-          }
-        }
-      }
       renderComponents('')
     })
     .catch(() => {
@@ -3662,8 +3644,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary } {
     _resetMultiChildPositionsCache()
-    console.log('[assembly] Resolving assembly graph:', JSON.stringify(graph, null, 2))
-    console.log(`[assembly] ${graph.components.length} components, base_link: ${graph.base_link}`)
     if (!presetData) {
       console.error('[assembly] Presets not loaded')
       ctx.showToast('Component presets not loaded yet', 'error')
@@ -3685,7 +3665,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       findPreset: (id: string): ValidationPreset | null => findPreset(id) as ValidationPreset | null,
     }
 
-    // Phase 3 (COMPONENT_UNIFICATION_PLAN.md §3.8): archetype normalizer runs
+    // Phase 3: archetype normalizer runs
     // before topology auto-repair so cosmetic-tail removal happens at the
     // semantic-graph layer, and the AI sees structured `[ai_topology/...]`
     // diagnostics in the redesign prompt instead of free-text post-hoc errors.
@@ -3693,19 +3673,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       .requested_features ?? {}
     const archResult = normalizeAssembly(graph.components, requestedFeatures)
     if (archResult.diagnostics.length > 0) {
-      for (const d of archResult.diagnostics) console.log(`[assembly][archetype] ${formatDiagnosticForPrompt(d)}`)
       graph.components = archResult.components
     }
 
-    console.log(`[assembly][autorepair] Scanning ${graph.components.length} components for auto-repairable issues...`)
-    console.log(`[assembly][autorepair] Input link_names: [${graph.components.map(c => c.link_name).join(', ')}]`)
     const { repairs } = runAutoRepair(graph, validationCtx)
-    if (repairs.length > 0) {
-      for (const r of repairs) console.log(`[assembly][autorepair] ${r.kind}: ${r.message}`)
-      console.log(`[assembly][autorepair] Post-repair topology: ${graph.components.map(c => `${c.link_name}→${c.attach_to || 'ROOT'}`).join(', ')}`)
-    } else {
-      console.log(`[assembly][autorepair] No repairs needed — topology clean`)
-    }
+    void repairs
 
     const { errors: topologyErrors, warnings: topologyWarnings } = runValidateTopology(graph.components, validationCtx)
     // Surface archetype diagnostics on the same channel the retry/redesign
@@ -3833,7 +3805,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // Ground-truth placement rows (xyz/rpy actually written to URDF, per child)
     // captured inline during the placement loop. Threaded to the Gemini validator
     // so screenshot misreads can be refuted against authoritative engine output
-    // (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1). Hoisted above the try so
+    //. Hoisted above the try so
     // the final return (which runs outside the try) can read it.
     const placementEntries: EnginePlacementEntry[] = []
 
@@ -3865,7 +3837,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         && parent.component_id.startsWith('structural_baseplate')
         && hasServoChild
       if (isCompoundHipBaseServo) {
-        console.log(`[assembly] planar hip servo axis normalized: ${comp.link_name} ${comp.joint_axis || 'z'} -> z so horn faces down/up normal to the baseplate`)
         comp.joint_axis = 'z'
       }
     }
@@ -3897,7 +3868,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         faceChildSizes.get(key)!.push({ hu: 0.02, hv: 0.02 })
       }
     }
-    console.log('[assembly] Face child distribution:', Object.fromEntries(faceChildCounts))
 
     // Track port occupancy: how many children are connected to each parent port
     // Key format: "parent_link_name::face_name"
@@ -3983,7 +3953,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       const cxm = childBounds.hx * 2
       const cym = childBounds.hy * 2
       // For extrusions with per-instance length, the mesh cache may hold dims from a
-      // different-length instance (cache is keyed by component ID).  Always use the
+      // different-length instance (cache is keyed by component ID). Always use the
       // explicit length when specified.
       let czm = childBounds.hz * 2
       if (comp.length_mm && isParametricSpec(preset)) {
@@ -4004,47 +3974,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       if (parentPreset) {
         const parentPorts = resolveComponentPorts(parentPreset, parentCompDef ?? undefined)
         parentPort = resolveFaceToPort(attachFace, parentPorts)
-        console.log(`[assembly][ports] Parent port resolved: ${parentPreset.id}.${attachFace} → ${parentPort ? `${parentPort.nodeId}(${parentPort.cls}:${parentPort.label})` : 'NOT FOUND'}`)
 
         if (childPreset) {
           const childPorts = resolveComponentPorts(childPreset, comp)
           childPort = resolveFaceToPort(childFace, childPorts)
-          console.log(`[assembly][ports] Child port resolved: ${childPreset.id}.${childFace} → ${childPort ? `${childPort.nodeId}(${childPort.cls}:${childPort.label})` : 'NOT FOUND'}`)
-        } else {
-          console.warn(`[assembly][ports] Child preset not found for component_id="${comp.component_id}" — cannot resolve child port`)
         }
-      } else {
-        console.warn(`[assembly][ports] Parent preset not found for component_id="${parentCompDef?.component_id}" (parent of ${comp.component_id}) — cannot resolve ports`)
-      }
-
-      // Log compatibility result
-      if (parentPort && childPort) {
-        const compat = nodesCompatible(childPort.cls, parentPort.cls)
-        // Expected-mismatch suppression: brackets and coupler discs exist precisely
-        // to mate a shaft against a mount_face (shaft drives the disc via friction
-        // /screws — the real mechanical interface). Auto-repair inserts these
-        // intentionally, so the resulting shaft↔mount_face pair is the design
-        // intent, not an error. Quiet the log line (12× spam per quadruped)
-        // while still leaving compat=false for any downstream code that cares.
-        const isCouplingPair = !compat
-          && childPort.cls === 'shaft'
-          && parentPort.cls === 'mount_face'
-          && (parentPreset!.id.startsWith('structural_bracket')
-              || parentPreset!.id.startsWith('structural_servo_coupler'))
-        if (!isCouplingPair) {
-          const reason = compat ? '' : ` — ${incompatibleReason(childPort.cls, parentPort.cls)}`
-          console.log(`[assembly][ports] Connection: ${comp.component_id}(${childPort.cls}:${childPort.label}) → ${parentPreset!.id}.${parentPort.nodeId}(${parentPort.cls}:${parentPort.label}) — compatible=${compat}${reason}`)
-        }
-      } else {
-        console.log(`[assembly][ports] Connection: ${comp.component_id} → ${comp.attach_to}.${attachFace} — port resolution incomplete (parent=${!!parentPort}, child=${!!childPort})`)
       }
 
       // Track per-port occupancy: enforce single-use ports
       const portOccupancyKey = `${comp.attach_to}::${parentPort?.nodeId ?? attachFace}`
       const currentOccupancy = portOccupancy.get(portOccupancyKey) || 0
-      console.log(`[assembly][ports] Occupancy: ${portOccupancyKey} = ${currentOccupancy} → ${currentOccupancy + 1}${parentPort?.single ? ' (single-use)' : ''}`)
       if (parentPort?.single && currentOccupancy > 0 && parentPort.cls === 'shaft') {
-        console.warn(`[assembly][ports] WARNING: ${parentPreset!.id}.${parentPort.nodeId} (shaft) already has ${currentOccupancy} child(ren) — multiple children on a shaft output is unusual`)
+        console.warn(`[assembly][ports] ${parentPreset!.id}.${parentPort.nodeId} (shaft) already has ${currentOccupancy} child(ren) — multiple children on a shaft output is unusual`)
       }
       portOccupancy.set(portOccupancyKey, currentOccupancy + 1)
 
@@ -4314,7 +4255,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           xyz: placement.xyz,
           rpy: cIsActuated ? servoBodyMountRpy : finalRpy,
         })
-        console.log(`[assembly] ✓ Placed ${childName} at xyz=${placement.xyz} rpy=${cIsActuated ? servoBodyMountRpy : finalRpy}`)
         // Reparse so next component sees updated geometry. Skipped in bulk mode
         // — parentBoundsFromLink reads the resolver, not the rendered-mesh cache,
         // so the in-progress URDF buffer is sufficient.
@@ -4331,7 +4271,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     // Port occupancy summary
-    console.log(`[assembly][ports] Final occupancy:`, Object.fromEntries(portOccupancy))
     const shaftOverloads = [...portOccupancy.entries()].filter(([_key, count]) => count > 1)
     if (shaftOverloads.length > 0) {
       console.warn(`[assembly][ports] Ports with multiple children:`, shaftOverloads.map(([k, c]) => `${k}=${c}`).join(', '))

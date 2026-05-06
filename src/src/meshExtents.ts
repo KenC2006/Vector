@@ -1,5 +1,5 @@
 // Runtime accessor for build-time measured mesh extents (Phase 1 of
-// COMPONENT_UNIFICATION_PLAN.md).
+//).
 //
 // scripts/measure-mesh-extents.mjs writes meshExtents.generated.json under
 // src/public/. This module loads it on demand and exposes synchronous lookups
@@ -73,8 +73,8 @@ export function getMeasuredVisualExtentMm(componentId: string): [number, number,
 }
 
 /** Fire-and-forget loader for the browser path. The first caller triggers the
- *  fetch; subsequent calls reuse the in-flight promise or the cached catalog.
- *  Resolves to null when running in non-browser environments. */
+ * fetch; subsequent calls reuse the in-flight promise or the cached catalog.
+ * Resolves to null when running in non-browser environments. */
 export function ensureMeshExtentsLoaded(url = '/meshExtents.generated.json'): Promise<MeasuredMeshCatalog | null> {
   if (catalog) return Promise.resolve(catalog)
   if (fetchPromise) return fetchPromise

@@ -117,7 +117,7 @@ function generateParallelGripper(id: string, dims: ComponentVisualDims): THREE.G
 
 // ── 3-Finger Adaptive ───────────────────────────────────────────────────────
 
-function generate3FingerAdaptive(id: string, dims: ComponentVisualDims): THREE.Group {
+function generate3FingerAdaptive(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -175,7 +175,7 @@ function generate3FingerAdaptive(id: string, dims: ComponentVisualDims): THREE.G
 
 // ── Suction Cup ─────────────────────────────────────────────────────────────
 
-function generateSuctionCup(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateSuctionCup(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   // Revolved bell shape via LatheGeometry (narrow tube -> wide bell -> thin lip)
@@ -239,7 +239,7 @@ function generateSuctionCup(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Vacuum Pad Array ────────────────────────────────────────────────────────
 
-function generateVacuumPadArray(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateVacuumPadArray(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -288,7 +288,7 @@ function generateVacuumPadArray(id: string, dims: ComponentVisualDims): THREE.Gr
 
 // ── Magnetic Tool ───────────────────────────────────────────────────────────
 
-function generateMagneticTool(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateMagneticTool(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -343,7 +343,7 @@ function generateMagneticTool(id: string, dims: ComponentVisualDims): THREE.Grou
 
 // ── Tool Changer ────────────────────────────────────────────────────────────
 
-function generateToolChanger(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateToolChanger(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -401,7 +401,7 @@ function generateToolChanger(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Soft Gripper ────────────────────────────────────────────────────────────
 
-function generateSoftGripper(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateSoftGripper(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05

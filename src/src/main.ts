@@ -156,7 +156,6 @@ function groundRobot(robotGroup: THREE.Group) {
   // because the lowest mesh was buried in servo→servo→extrusion chains.
   let minY = Infinity
   let meshCount = 0
-  let lowestLink: string | null = null
   const tmpBox = new THREE.Box3()
   target.traverse((obj: THREE.Object3D) => {
     const mesh = obj as THREE.Mesh
@@ -173,23 +172,10 @@ function groundRobot(robotGroup: THREE.Group) {
     tmpBox.copy(bb).applyMatrix4(mesh.matrixWorld)
     if (tmpBox.min.y < minY) {
       minY = tmpBox.min.y
-      // Walk up if the mesh itself isn't tagged — applyRichVisuals replacements
-      // sometimes leave nested groups whose direct mesh children lost the tag.
-      let cur: THREE.Object3D | null = mesh
-      let foundLink: string | null = null
-      while (cur && !foundLink) {
-        const cud = cur.userData as Record<string, unknown> | undefined
-        const tag = cud?.urdfLinkName
-        if (typeof tag === 'string') foundLink = tag
-        cur = cur.parent
-      }
-      lowestLink = foundLink
     }
     meshCount++
   })
   if (!isFinite(minY) || meshCount === 0) return
-  // Diagnostic: visible into floating-robot debugging without re-instrumenting.
-  console.log(`[groundRobot] meshes=${meshCount} minY=${minY.toFixed(4)} lowestLink=${lowestLink || '?'} → shifting by ${(-minY).toFixed(4)}`)
   // In Three.js Y is up; shift so lowest mesh touches Y=0
   robotGroup.position.y = -minY
   // Mount-node meshes live in a separate scene group (not under robotGroup), so
@@ -397,7 +383,6 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
     try {
       completionInFlight = true
       lastCompletionVersion = modelVersion
-      console.log(`[Completions] Requesting at L${cursorLine}:${cursorColumn} "${trimmedBefore.slice(-40)}"`)
 
       const completion = await invokeWithTimeout<string>('ai_complete', {
         urdfContent,
@@ -412,12 +397,10 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
       // Reject stale results — if the editor changed while we were waiting,
       // this completion is for an old state and will likely be wrong
       if (model.getVersionId() !== lastCompletionVersion) {
-        console.log('[Completions] Stale result (editor changed), discarding')
         return { items: [] }
       }
 
       if (!completion || !completion.trim()) {
-        console.log('[Completions] Empty response')
         return { items: [] }
       }
 
@@ -441,7 +424,6 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
         }
         if (overlapLines > 0) {
           result = compLines.slice(0, -overlapLines).join('\n')
-          console.log(`[Completions] Stripped ${overlapLines} overlapping lines`)
         }
       }
 
@@ -449,15 +431,11 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
       const resultLines = result.split('\n')
       if (resultLines.length > 20) {
         result = resultLines.slice(0, 20).join('\n')
-        console.log(`[Completions] Capped ${resultLines.length} → 20 lines`)
       }
 
       if (!result.trim()) {
-        console.log('[Completions] Empty after overlap trimming')
         return { items: [] }
       }
-
-      console.log('[Completions] ✓ Got:', JSON.stringify(result.slice(0, 120)))
 
       return {
         items: [{
@@ -467,9 +445,7 @@ monaco.languages.registerInlineCompletionsProvider('xml', {
       }
     } catch (error) {
       completionInFlight = false
-      if (String(error).includes('timed out')) {
-        console.log('[Completions] Timed out')
-      } else {
+      if (!String(error).includes('timed out')) {
         console.warn('[Completions] Error:', error)
       }
       return { items: [] }
@@ -2008,8 +1984,6 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
     // reflects the final robot position. Skipped during bulk assembly —
     // the final reparse after the loop runs it once.
     if (!skipHeavy) rebuildWireframes()
-
-    console.log(`[URDF] Reparsed: ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`)
   } catch (e) {
     console.error('[URDF] Parse error:', e)
     showToast(`URDF parse failed — 3D not updated: ${e instanceof Error ? e.message : String(e)}`, 'error')

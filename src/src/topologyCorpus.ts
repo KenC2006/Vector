@@ -28,7 +28,7 @@ interface PresetFile {
 
 function loadPresets(): ValidationContext {
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const presetPath = path.resolve(here, '..', 'public', 'generic_presets.json')
+  const presetPath = path.resolve(here, '..', '..', 'core', 'presets', 'generic_presets.json')
   const raw = fs.readFileSync(presetPath, 'utf-8')
   const data = JSON.parse(raw) as PresetFile
   const byId = new Map<string, ValidationPreset>()
@@ -347,8 +347,8 @@ const fixtures: Fixture[] = [
     },
   },
   {
-    // C4 (docs/ENGINE_EXECUTION_PLAN.md): Case 2 (mount_face parent, shaft
-    // child) now also routes the bracket through the connector resolver,
+    // Case 2 (mount_face parent, shaft child) routes the bracket through
+    // the connector resolver,
     // using default face connectors with a fastened mate. Bit-identical to
     // the legacy bbox path on presets that still rely on default face
     // connectors, but flips the repair onto the connector engine so it

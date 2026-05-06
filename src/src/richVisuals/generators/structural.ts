@@ -127,7 +127,7 @@ function generateAngle(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── L-Bracket ───────────────────────────────────────────────────────────────
 
-function generateLBracket(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateLBracket(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const mat = catMetal()
@@ -161,7 +161,7 @@ function generateLBracket(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── U-Bracket ───────────────────────────────────────────────────────────────
 
-function generateUBracket(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateUBracket(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
@@ -199,7 +199,7 @@ function generateUBracket(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── T-Bracket ───────────────────────────────────────────────────────────────
 
-function generateTBracket(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateTBracket(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
@@ -233,7 +233,7 @@ function generateTBracket(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Joint Plate ─────────────────────────────────────────────────────────────
 
-function generateJointPlate(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateJointPlate(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const thick = h
@@ -262,7 +262,7 @@ function generateJointPlate(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Baseplate ───────────────────────────────────────────────────────────────
 
-function generateBaseplate(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateBaseplate(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const thick = h
@@ -294,7 +294,7 @@ function generateBaseplate(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Carbon Fiber Round Tube ─────────────────────────────────────────────────
 
-function generateCFTubeRound(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCFTubeRound(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: length } = dims
   const r = w / 2
@@ -322,7 +322,7 @@ function generateCFTubeRound(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Carbon Fiber Square Tube ────────────────────────────────────────────────
 
-function generateCFTubeSquare(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCFTubeSquare(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.06
@@ -398,7 +398,7 @@ function generateSheetMetal(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Hex Standoff ────────────────────────────────────────────────────────────
 
-function generateHexStandoff(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateHexStandoff(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: length } = dims
   const r = w / 2
@@ -429,7 +429,7 @@ function generateHexStandoff(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Gusset (Triangular Plate) ───────────────────────────────────────────────
 
-function generateGusset(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateGusset(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const thick = h
@@ -475,7 +475,7 @@ function generateGusset(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Corner Cube ─────────────────────────────────────────────────────────────
 
-function generateCornerCube(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCornerCube(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const s = Math.min(w, h, d)
@@ -505,7 +505,7 @@ function generateCornerCube(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Cross Plate ─────────────────────────────────────────────────────────────
 
-function generateCrossPlate(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCrossPlate(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const thick = h
@@ -531,7 +531,7 @@ function generateCrossPlate(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Pillow Block ────────────────────────────────────────────────────────────
 
-function generatePillowBlock(id: string, dims: ComponentVisualDims): THREE.Group {
+function generatePillowBlock(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -573,7 +573,7 @@ function generatePillowBlock(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Shaft Collar ────────────────────────────────────────────────────────────
 
-function generateShaftCollar(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateShaftCollar(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -608,7 +608,7 @@ function generateShaftCollar(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Linear Rail ─────────────────────────────────────────────────────────────
 
-function generateLinearRail(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateLinearRail(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.03
@@ -670,7 +670,7 @@ function generateLinearRail(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Linear Rail Carriage (standalone) ───────────────────────────────────────
 
-function generateLinearRailCarriage(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateLinearRailCarriage(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, h, d) * 0.04
@@ -700,7 +700,7 @@ function generateLinearRailCarriage(id: string, dims: ComponentVisualDims): THRE
 
 // ── DIN Rail ────────────────────────────────────────────────────────────────
 
-function generateDINRail(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateDINRail(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
   const chamfer = Math.min(w, h) * 0.02

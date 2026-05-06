@@ -1,5 +1,5 @@
 """
-Archetype normalizer (Phase 3 of docs/COMPONENT_UNIFICATION_PLAN.md §3.8).
+Archetype normalizer (Phase 3.
 
 Deterministic post-processing for AI-emitted assembly graphs. Runs *after* the
 LLM produces a semantic graph (link names, component_ids, parents, faces) and

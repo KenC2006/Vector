@@ -5,8 +5,8 @@
 // the result, and returns a structured pass/fail response. The response shape
 // is the same one the backend marshals back to Claude as a `tool_result`:
 //
-//   { ok: true,  graph: <mutated>, warnings: string[] }
-//   { ok: false, code: <rule>,     message: string, suggested_repair?: string }
+// { ok: true, graph: <mutated>, warnings: string[] }
+// { ok: false, code: <rule>, message: string, suggested_repair?: string }
 //
 // Staying pure (no THREE / DOM / presets.json I/O) is load-bearing: the
 // fixture runner drives this from Node, and the Python edit-turn loop calls
@@ -46,7 +46,7 @@ export interface AddLinkArgs {
   orientation?: string
   elevation_angle?: number
   attach_rpy?: number[]
-  // Phase 4 of docs/MATE_CONNECTOR_MIGRATION.md — optional named-connector
+  // Phase 4 — optional named-connector
   // overrides (see AssemblyComponent for semantics). Forwarded verbatim to
   // the new child component.
   attach_connector?: string
@@ -135,14 +135,14 @@ function _portClassAtFace(
 }
 
 /** Reject mutations whose parent-face class can't mechanically host the child's
- *  contact-face class. Scoped to actuator/motor children because those are the
- *  cases the bracket-insertion auto-repair (Repair 5) covers in resolveAssembly-
- *  Graph. Structural→structural chains skip this check by design:
- *    - mount_face↔mount_face is mechanically valid (brackets bolt on extrusions).
- *    - validateTopology doesn't look at port classes, so a genuinely broken
- *      structural port pairing is still caught only at placement-time via
- *      `nodesCompatible` warnings. Widening this enforcement to structurals
- *      would require naming an auto-repair that covers the widened cases. */
+ * contact-face class. Scoped to actuator/motor children because those are the
+ * cases the bracket-insertion auto-repair (Repair 5) covers in resolveAssembly-
+ * Graph. Structural→structural chains skip this check by design:
+ * - mount_face↔mount_face is mechanically valid (brackets bolt on extrusions).
+ * - validateTopology doesn't look at port classes, so a genuinely broken
+ * structural port pairing is still caught only at placement-time via
+ * `nodesCompatible` warnings. Widening this enforcement to structurals
+ * would require naming an auto-repair that covers the widened cases. */
 function _checkPortCompatibility(
   ctx: ValidationContext,
   parent: AssemblyComponent | undefined,
@@ -417,8 +417,8 @@ export function removeLink(
 }
 
 /** Thin dispatcher — routes a discriminated `GraphMutation` to the right mutator.
- *  Python-side tool dispatch goes through here so there's a single table for
- *  (tool_name ↔ mutator) instead of per-call if/else chains. */
+ * Python-side tool dispatch goes through here so there's a single table for
+ * (tool_name ↔ mutator) instead of per-call if/else chains. */
 export function applyMutation(
   graph: AssemblyGraph,
   mutation: GraphMutation,

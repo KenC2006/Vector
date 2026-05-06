@@ -2,13 +2,13 @@
 // X-Y-Z fixed-axis RPY) and the Three.js scene (m, Y-up, quaternion).
 //
 // Every Z-up ↔ Y-up basis swap in this codebase must go through one of the
-// two functions below. PLACEMENT_REWRITE_PLAN.md Phase 5 adds a CI grep gate
+// two functions below. Phase 5 adds a CI grep gate
 // that fails the build if any other file performs the swap inline.
 //
 // Convention chosen for this project:
-//   urdf.x → scene.x
-//   urdf.y → scene.-z      (URDF +Y points "left", scene +Z points "out of screen")
-//   urdf.z → scene.+y
+// urdf.x → scene.x
+// urdf.y → scene.-z (URDF +Y points "left", scene +Z points "out of screen")
+// urdf.z → scene.+y
 // Equivalently: rotate the URDF frame by -90° about world X to enter scene
 // space. The inverse (+90° about X) takes scene back to URDF.
 //
@@ -57,7 +57,7 @@ export function urdfFrameToScene(
  * (meters) — useful for carry-ghost local-frame math where bounds and port
  * origins are already in m. No mm scaling, no rotation conjugation. The
  * canonical convention from `urdfFrameToScene` is preserved:
- *   urdf.x → scene.x ;  urdf.y → scene.-z ;  urdf.z → scene.+y
+ * urdf.x → scene.x ; urdf.y → scene.-z ; urdf.z → scene.+y
  *
  * Accepts either a tuple or a Vector3 to match the legacy
  * `carrySnapMath.urdfVectorToSceneLocal` shape (which now re-exports this).

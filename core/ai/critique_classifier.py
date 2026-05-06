@@ -124,7 +124,7 @@ def _normalize(text: str) -> str:
 
 
 # Magnitude parsing — used by the Layer-2 measurement-feedback logic
-# (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). Validator details frequently include
+#. Validator details frequently include
 # numeric distance claims like "floating ~45mm", "shin shifted 38mm", "camera
 # detached by 1.5cm". We pull the LARGEST such magnitude in the text (in mm)
 # so we can compare against the engine's ICP gap for the same joint.
@@ -186,11 +186,11 @@ def _find_icp_entry_for_critique(detail: str, icp_gaps: List[Dict]) -> Optional[
 # constants so they're easy to tune and reference in fixtures / docs.
 #
 # - CRITIQUE_MAGNITUDE_MIN_MM: critiques below this magnitude don't trigger
-#   reclassification. 10mm is the cap docs/ICP_RESIDUALS.md calls out as the
-#   typical adaptive-confident-cap bound — real placement residuals should be
-#   below 10mm, so a >10mm complaint is suspicious.
+# reclassification. 10mm is the cap calls out as the
+# typical adaptive-confident-cap bound — real placement residuals should be
+# below 10mm, so a >10mm complaint is suspicious.
 # - ICP_FLUSH_MAX_MM: below this gap, an ICP entry is "flush" and a large
-#   magnitude complaint on the same joint is almost certainly a visual misread.
+# magnitude complaint on the same joint is almost certainly a visual misread.
 CRITIQUE_MAGNITUDE_MIN_MM = 10.0
 ICP_FLUSH_MAX_MM = 2.0
 
@@ -205,9 +205,9 @@ def _deterministic_verdict(detail: str) -> Tuple[str, str]:
         return ("ambig", "empty detail")
 
     # 1. Hard drops — known-infeasible phrases and dimension-specific regex
-    #    win over everything else. Even if the critique name-drops a real
-    #    component alongside the bad phrase ("rocker-bogie wheels") the
-    #    load-bearing ask is infeasible.
+    # win over everything else. Even if the critique name-drops a real
+    # component alongside the bad phrase ("rocker-bogie wheels") the
+    # load-bearing ask is infeasible.
     for phrase in INFEASIBLE_PHRASES:
         if re.search(rf"\b{re.escape(phrase)}\b", t):
             return ("drop", f"infeasible phrase: {phrase!r}")
@@ -216,9 +216,9 @@ def _deterministic_verdict(detail: str) -> Tuple[str, str]:
             return ("drop", label)
 
     # 2. Aesthetic/anatomical drops — gated by GATE_KEEP_PATTERNS. If the
-    #    critique also names a concrete missing/wrong component or connection
-    #    change, prefer KEEP (it's actionable even if wrapped in anatomical
-    #    language). Mirrors the old TS regex's `actionableHints` guard.
+    # critique also names a concrete missing/wrong component or connection
+    # change, prefer KEEP (it's actionable even if wrapped in anatomical
+    # language). Mirrors the old TS regex's `actionableHints` guard.
     has_actionable_hint = any(re.search(p, t) for p in GATE_KEEP_PATTERNS)
     if not has_actionable_hint:
         for pattern, label in INFEASIBLE_AESTHETIC_PATTERNS:
@@ -226,14 +226,14 @@ def _deterministic_verdict(detail: str) -> Tuple[str, str]:
                 return ("drop", label)
 
     # 3. Catalog matches — if the critique names a catalog concept directly
-    #    it's actionable. Use word-boundary regex so "motor" doesn't fire on
-    #    "motorway" etc.
+    # it's actionable. Use word-boundary regex so "motor" doesn't fire on
+    # "motorway" etc.
     for kw in CATALOG_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", t):
             return ("keep", f"catalog match: {kw!r}")
 
     # 4. Everything else — ambiguous proportions/shape language ("legs too
-    #    thin", "torso is wrong proportion"). Hand off to LLM.
+    # thin", "torso is wrong proportion"). Hand off to LLM.
     return ("ambig", "no direct catalog match")
 
 
@@ -323,7 +323,7 @@ def _llm_classify(items: List[Dict]) -> Dict[int, Tuple[bool, str]]:
 
 def _apply_measurement_feedback(item: Dict, icp_gaps: List[Dict]) -> None:
     """
-    In-place Layer-2 reclassification (docs/VALIDATOR_MEASUREMENT_FEEDBACK.md).
+    In-place Layer-2 reclassification.
 
     Two transformations on placement-fixable critiques whose detail contains
     a dimensional claim > CRITIQUE_MAGNITUDE_MIN_MM:

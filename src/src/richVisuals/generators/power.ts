@@ -29,7 +29,7 @@ function catPcb(strength = 0.4) {
 
 // ── LiPo Battery ────────────────────────────────────────────────────────────
 
-function generateLipo(id: string, dims: GeneratorDims): THREE.Group {
+function generateLipo(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -178,7 +178,7 @@ function generateCellHolder(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Buck Converter ──────────────────────────────────────────────────────────
 
-function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
+function generateBuckConverter(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.03
@@ -262,7 +262,7 @@ function generateBuckConverter(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Solar Panel ─────────────────────────────────────────────────────────────
 
-function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
+function generateSolarPanel(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.03
@@ -338,7 +338,7 @@ function generateSolarPanel(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── E-Stop Switch ───────────────────────────────────────────────────────────
 
-function generateEStop(id: string, dims: GeneratorDims): THREE.Group {
+function generateEStop(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -420,7 +420,7 @@ function generateEStop(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Power Distribution Unit ─────────────────────────────────────────────────
 
-function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
+function generatePDU(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -483,7 +483,7 @@ function generatePDU(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── Supercapacitor ──────────────────────────────────────────────────────────
 
-function generateSupercapacitor(id: string, dims: GeneratorDims): THREE.Group {
+function generateSupercapacitor(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -541,7 +541,7 @@ function generateSupercapacitor(id: string, dims: GeneratorDims): THREE.Group {
 
 // ── USB-C PD Trigger ────────────────────────────────────────────────────────
 
-function generateUSBCPD(id: string, dims: GeneratorDims): THREE.Group {
+function generateUSBCPD(_id: string, dims: GeneratorDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const chamfer = Math.min(w, d) * 0.03

@@ -1,6 +1,6 @@
 // Measure post-rotation AABB for every authored visual GLB and collision OBJ.
 //
-// Phase 1 of docs/COMPONENT_UNIFICATION_PLAN.md: every consumer that asks
+// Phase 1: every consumer that asks
 // "how big is this collision shape, really?" must read a number computed
 // once at build time, not infer it from the preset bbox or from the live
 // rendered scene. This script writes that number into
@@ -8,7 +8,7 @@
 // for collision.bounds and bbox-vs-mesh divergence warnings.
 //
 // Usage:
-//   cd src && node ../scripts/measure-mesh-extents.mjs
+// cd src && node ../scripts/measure-mesh-extents.mjs
 //
 // Reuses the GLB loader / rotation parsing from generate-collision-meshes.mjs.
 
@@ -21,7 +21,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..')
 const GLB_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'glb')
 const COLLISION_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'collision')
-const PUBLIC_PRESETS = path.join(repoRoot, 'src', 'public', 'generic_presets.json')
+const PUBLIC_PRESETS = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
 const MESH_OVERRIDES_TS = path.join(repoRoot, 'src', 'src', 'richVisuals', 'meshOverrides.ts')
 const OUT_FILE = path.join(repoRoot, 'src', 'public', 'meshExtents.generated.json')
 
@@ -254,12 +254,12 @@ async function safeAccess(p) {
 // it *fails* on divergence is controlled by flags so the gate can be wired
 // into CI now without bricking the build on the 61 pre-existing drifts.
 //
-//   --strict                fail on any new divergence > 5% not in baseline,
-//                           or any baselined divergence that grew by >tolerance
-//   --update-baseline       overwrite scripts/mesh-extent-baseline.json with
-//                           current divergences (use after deliberately fixing
-//                           or accepting a spec change)
-//   --threshold=0.05        divergence ratio that counts as "drift" (default 5%)
+// --strict fail on any new divergence > 5% not in baseline,
+// or any baselined divergence that grew by >tolerance
+// --update-baseline overwrite scripts/mesh-extent-baseline.json with
+// current divergences (use after deliberately fixing
+// or accepting a spec change)
+// --threshold=0.05 divergence ratio that counts as "drift" (default 5%)
 
 const BASELINE_FILE = path.join(repoRoot, 'scripts', 'mesh-extent-baseline.json')
 
@@ -467,7 +467,7 @@ async function main() {
     for (const { id, div } of collisionFails) {
       console.error(`  COLLISION: ${id}  divergence ${(div * 100).toFixed(1)}% > limit ${(COLLISION_LIMIT * 100).toFixed(0)}%`)
     }
-    console.error(`\nFix by editing physical.bbox_mm / parametric in src/public/generic_presets.json,`)
+    console.error(`\nFix by editing physical.bbox_mm / parametric in core/presets/generic_presets.json,`)
     console.error(`or — if the new visual divergence is intentional — re-run with --update-baseline.`)
     console.error(`(Collision divergence has no baseline — it must be fixed in the preset.)`)
     process.exit(1)

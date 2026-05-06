@@ -24,28 +24,28 @@ export interface AssemblyComponent {
   /** Degrees of upward/downward tilt for side-face (front/back/left/right) attachments. Positive = upward. */
   elevation_angle?: number
   /** Explicit rest-pose [roll, pitch, yaw] in radians. When any component is non-zero, overrides
-   *  the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
+   * the auto-computed joint rpy (placement + arm rest-pose). Used for Z-crouch quadruped poses etc. */
   attach_rpy?: number[]
-  // ── Phase 1/2 mate-connector fields (docs/MATE_CONNECTOR_MIGRATION.md) ──
+  // ── Phase 1/2 mate-connector fields ──
   // Optional; when any are set, the engine routes through the connector
   // resolver (mateConnectors.ts) instead of the bbox half-extent path.
   // Omitted fields fall back to the legacy attach_face path — bit-identical
   // to the WS5 output so USE_MATE_CONNECTORS=on is safe to ship by default.
   /** Parent-side connector id. Defaults to the same face name as `attach_face`
-   *  when omitted (parent "top" face == parent "top" default connector). */
+   * when omitted (parent "top" face == parent "top" default connector). */
   attach_connector?: string
   /** Child-side connector id. When omitted but `attach_face` is set, the
-   *  opposite-face default is inferred (top ↔ bottom, etc.). */
+   * opposite-face default is inferred (top ↔ bottom, etc.). */
   mate_connector?: string
   /** Mate type: 'fastened' / 'planar' / 'concentric'. Defaults to 'fastened'
-   *  when a connector is named but the type is omitted (matches attach_face
-   *  semantics — treat as a weld unless told otherwise). */
+   * when a connector is named but the type is omitted (matches attach_face
+   * semantics — treat as a weld unless told otherwise). */
   mate_type?: string
   /** Set by the assembly engine when this child's placement was resolved via
-   *  the authored mate-connector path (computeMatePlacement OR the Layer-2
-   *  parentConnectors override in computeFacePlacement). reconcile uses this
-   *  to skip bbox-based correction — connector positions are authoritative,
-   *  bbox-derived deltas would stomp them. Runtime state, not authored. */
+   * the authored mate-connector path (computeMatePlacement OR the Layer-2
+   * parentConnectors override in computeFacePlacement). reconcile uses this
+   * to skip bbox-based correction — connector positions are authoritative,
+   * bbox-derived deltas would stomp them. Runtime state, not authored. */
   placed_via_connector?: boolean
 }
 
@@ -68,7 +68,7 @@ export function cloneAssemblyGraph(graph: AssemblyGraph): AssemblyGraph {
 }
 
 /** Result of a structural graph comparison. When `equal` is false, `differences` is
- *  a human-readable list of fields/components that disagreed — not a machine-diff. */
+ * a human-readable list of fields/components that disagreed — not a machine-diff. */
 export interface GraphEquivalenceResult {
   equal: boolean
   differences: string[]
@@ -100,14 +100,14 @@ function _rpyEqual(a: number[] | undefined, b: number[] | undefined): boolean {
 
 /** Structural + parametric equality for two AssemblyGraphs.
  *
- *  Components are matched by `link_name` (order-independent). A mismatch on
- *  base_link, ground_offset, component set, or any per-component field
- *  (component_id, attach_to, attach_face, joint_*, length_mm, orientation,
- *  elevation_angle, attach_rpy) is reported as a difference.
+ * Components are matched by `link_name` (order-independent). A mismatch on
+ * base_link, ground_offset, component set, or any per-component field
+ * (component_id, attach_to, attach_face, joint_*, length_mm, orientation,
+ * elevation_angle, attach_rpy) is reported as a difference.
  *
- *  Numeric fields use small tolerances; `attach_rpy` uses the same EPS the
- *  runtime uses to decide whether to apply the override (so "absent" and
- *  "all-zero" are considered equal — they produce identical placement). */
+ * Numeric fields use small tolerances; `attach_rpy` uses the same EPS the
+ * runtime uses to decide whether to apply the override (so "absent" and
+ * "all-zero" are considered equal — they produce identical placement). */
 export function graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult {
   const diffs: string[] = []
   if (a.base_link !== b.base_link) {

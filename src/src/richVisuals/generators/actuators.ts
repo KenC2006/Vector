@@ -46,7 +46,7 @@ export function combineSplitVisual(s: SplitVisual): THREE.Group {
   return g
 }
 
-function generateServoBody(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateServoBody(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h, y: d } = dims
 
@@ -185,7 +185,7 @@ function generateServo(id: string, dims: ComponentVisualDims): SplitVisual {
 
 // ── BLDC Outrunner ───────────────────────────────────────────────────────────
 
-function generateBLDC(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateBLDC(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -274,7 +274,7 @@ function generateBLDC(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── NEMA Stepper ─────────────────────────────────────────────────────────────
 
-function generateStepper(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateStepper(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: faceW, z: h } = dims
 
@@ -379,7 +379,7 @@ function generateStepper(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Linear Actuator ──────────────────────────────────────────────────────────
 
-function generateLinearActuator(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateLinearActuator(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: length } = dims
 

@@ -236,7 +236,7 @@ const fixtures: Fixture[] = [
 // If delta > ~0.5 mm, Bug 1 is real (connector placement + reconcile disagree)
 // and the `placed_via_connector` skip flag has to land. Delta ≈ 0 means the
 // authored connector origins happen to sit on the bbox faces that reconcile
-// measures, so the flag is dead code — ENGINE_EXECUTION_PLAN Bug 1 outcome.
+// measures, so the flag is dead code.
 
 function deriveConcentricPivotMeters(
   parentConn: MateConnector,

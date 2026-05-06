@@ -738,11 +738,11 @@ ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
 # Coarse link-level granularity is deliberate: field-level tools inflate token
 # count and turn the model into a key-value setter. Five tools cover ~90% of
 # edit intents:
-#   add_link          — new component at (parent, face)
-#   attach_sensor     — sensor preset on a structural/actuator parent
-#   replace_component — swap preset_id, preserve topology
-#   set_joint         — change joint type/axis/rest-pose rpy in place
-#   remove_link       — delete subtree or graft children up
+# add_link — new component at (parent, face)
+# attach_sensor — sensor preset on a structural/actuator parent
+# replace_component — swap preset_id, preserve topology
+# set_joint — change joint type/axis/rest-pose rpy in place
+# remove_link — delete subtree or graft children up
 
 ADD_LINK_TOOL = {
     "name": "add_link",
@@ -2167,7 +2167,7 @@ def _is_low_quality_completion(completion: str, cursor_prefix: str, context_afte
         return True
 
     # Completion is just a closing tag for something the user already has
-    # e.g., prefix has `</collision>` and completion is `\n  </link>` -- that's just boilerplate closing
+    # e.g., prefix has `</collision>` and completion is `\n </link>` -- that's just boilerplate closing
     if re.match(r'^\s*</\w+>\s*$', stripped):
         # Check if this closing tag already exists right after cursor
         close_tag = stripped.strip()
@@ -2411,7 +2411,7 @@ def validate_assembly(urdf_content: str, original_prompt: str,
                   sampleCount, gapP50Mm, gapP90Mm, gapMinMm, gapMaxMm,
                   nudgeMm, reason, confidence}, ...]}. When present, rendered
     into tables the validator is told not to contradict (Layer 1 of
-    docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). The same structure is passed to
+). The same structure is passed to
     the critique classifier so it can drop validator-misreads that contradict
     a high-confidence ICP gap (Layer 2).
     """

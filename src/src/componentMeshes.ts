@@ -155,7 +155,7 @@ export function servoSideYokeShape(
 }
 
 export function servoHornBeamAdapterShape(
-  w: number, h: number, d: number,
+  w: number, _h: number, d: number,
   cat: string,
 ): UrdfVisualDesc[] {
   const c = catColor(cat, 1)

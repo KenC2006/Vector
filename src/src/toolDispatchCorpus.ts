@@ -27,7 +27,7 @@ interface PresetFile {
 
 function loadPresets(): ValidationContext {
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const presetPath = path.resolve(here, '..', 'public', 'generic_presets.json')
+  const presetPath = path.resolve(here, '..', '..', 'core', 'presets', 'generic_presets.json')
   const raw = fs.readFileSync(presetPath, 'utf-8')
   const data = JSON.parse(raw) as PresetFile
   const byId = new Map<string, ValidationPreset>()

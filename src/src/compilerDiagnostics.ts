@@ -1,7 +1,7 @@
 // Structured diagnostic taxonomy — TypeScript twin of
 // core/ai/compiler_diagnostics.py.
 //
-// Phase 3 (docs/COMPONENT_UNIFICATION_PLAN.md §3.8): every layer that emits
+// Phase 3: every layer that emits
 // validation feedback should classify it by the layer that owns the fix, so
 // the AI redesign loop never sees compiler/exporter bugs and the developer
 // console never has to guess which subsystem is upset.

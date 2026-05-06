@@ -36,7 +36,7 @@ console.debug = console.log
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projRoot = resolvePath(__dirname, '..', '..')
 
-const presetCatalogPath = resolvePath(projRoot, 'src', 'public', 'generic_presets.json')
+const presetCatalogPath = resolvePath(projRoot, 'core', 'presets', 'generic_presets.json')
 const presetCatalog = JSON.parse(readFileSync(presetCatalogPath, 'utf8'))
 
 try {

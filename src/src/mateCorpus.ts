@@ -6,7 +6,7 @@
 // Run: cd src && npm run test:mate-corpus
 // Direct: node --experimental-strip-types src/src/mateCorpus.ts
 //
-// Why this file exists: Phase 1 of docs/MATE_CONNECTOR_MIGRATION.md swaps
+// Why this file exists: Phase 1 swaps
 // in a closed-form matrix composition for assembly placement. The whole
 // migration is load-bearing on `resolveMate(default top, default bottom, fastened)`
 // producing bit-identical output to computeFacePlacement(face='top'). If
@@ -69,7 +69,7 @@ interface CorpusPresetFile {
 
 function loadPresets(): Map<string, CorpusPreset> {
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const presetPath = path.resolve(here, '..', 'public', 'generic_presets.json')
+  const presetPath = path.resolve(here, '..', '..', 'core', 'presets', 'generic_presets.json')
   const raw = fs.readFileSync(presetPath, 'utf-8')
   const data = JSON.parse(raw) as CorpusPresetFile
   const byId = new Map<string, CorpusPreset>()
@@ -84,9 +84,9 @@ function resolvedConnectors(p: CorpusPreset): MateConnector[] {
 }
 
 /** Mimic the urdfAssembly.computeMatePlacement merge-then-find path:
- *  resolveComponent(preset).connectors + findConnector(merged, id).
- *  Any drift between this path and the runtime
- *  path = drift between corpus and production; keep them in sync. */
+ * resolveComponent(preset).connectors + findConnector(merged, id).
+ * Any drift between this path and the runtime
+ * path = drift between corpus and production; keep them in sync. */
 function resolveFromPresets(
   parentPreset: CorpusPreset,
   childPreset: CorpusPreset,
@@ -281,7 +281,7 @@ const fixtures: Fixture[] = [
   },
 
   // ── 10: servo shaft_out → coupler shaft_hole, concentric ──
-  // Authored connectors from the worked example in docs/MATE_CONNECTOR_MIGRATION.md.
+  // Authored connectors from the worked example in.
   {
     name: 'concentric: servo shaft_out → coupler shaft_hole (authored connectors)',
     setup: () => {

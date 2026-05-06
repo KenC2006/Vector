@@ -23,10 +23,10 @@ export type ComponentVisualStatus = 'ready' | 'loading' | 'fallback' | 'missing'
 export type ComponentVisualScalePolicy = 'none' | 'uniform' | 'per-axis'
 export type ComponentCollisionSource = 'authored_mesh' | 'urdf_primitives' | 'preset_bbox'
 /** Coordinate convention the resolver's `previewGroup` is authored in.
- *  Carry and render paths use this to compute the per-target world rotation
- *  through `componentVisualWorldQuat` — making both paths identical by
- *  construction. Rich generators emit Y-up; meshes (after rotation overrides)
- *  and URDF primitives are already URDF Z-up. */
+ * Carry and render paths use this to compute the per-target world rotation
+ * through `componentVisualWorldQuat` — making both paths identical by
+ * construction. Rich generators emit Y-up; meshes (after rotation overrides)
+ * and URDF primitives are already URDF Z-up. */
 export type ComponentVisualAuthoredFrame = 'y_up' | 'z_up'
 
 export interface ComponentVisualPresetLike {
@@ -444,7 +444,7 @@ function buildRichPreviewGroup(
     // GLBs are authored Z-up. Wrap the rich output in +90° X here so the
     // returned previewGroup is Z-up authored regardless of source. Single
     // outer group lets the carry/render adapter set its quaternion without
-    // disturbing the wrap. See PLACEMENT_REWRITE_PLAN.md authored-frame
+    // disturbing the wrap. See authored-frame
     // section.
     const wrapper = new THREE.Group()
     group.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ'))

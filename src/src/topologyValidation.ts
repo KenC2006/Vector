@@ -44,7 +44,7 @@ export interface ValidationResult {
 }
 
 /**
- * Phase 3 (COMPONENT_UNIFICATION_PLAN.md §3.8): owner-tagged view of the same
+ * Phase 3: owner-tagged view of the same
  * validation result. Built from the legacy string lists via `liftStrings` —
  * topology rule failures are AI-fixable (they describe wrong parents/children/
  * placements that the next AI redesign should address), so default the bucket
@@ -663,8 +663,7 @@ export function autoRepairTopology(
       // instead of landing in the fallback branch via an unrecognized literal.
       joint_axis: 'z',
     }
-    // Phase 3 task #7 / C4 (docs/ENGINE_EXECUTION_PLAN.md): route both
-    // mismatch cases through the mate-connector resolver.
+    // Route both mismatch cases through the mate-connector resolver.
     //
     // Case 1 (shaft parent, mount_face child): coupler's shaft_hole
     // mates concentrically onto the parent's shaft_out. Without this,

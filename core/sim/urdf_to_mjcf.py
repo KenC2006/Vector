@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - depends on import entrypoint
 
 # Resolve package:// URIs emitted by the frontend URDF builder.
 # This file lives at <repo_root>/core/sim/urdf_to_mjcf.py, so the repo root
-# is two directories up.  The frontend maps package:// to src/public/.
+# is two directories up. The frontend maps package:// to src/public/.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _PACKAGE_URL_PREFIX = "package://"
 _PACKAGE_MESH_ROOTS = [
@@ -123,10 +123,10 @@ def _extract_link_data(link_elem: etree._Element, urdf_dir: str) -> Dict[str, An
                 pass
         collision_list.append({"geometry": geom, "origin_xyz": xyz, "origin_rpy": rpy_vals})
 
-    # Collect visual meshes for trimesh inertia estimation.  Only meshes with a
+    # Collect visual meshes for trimesh inertia estimation. Only meshes with a
     # zero <origin> are eligible — otherwise inertia about the mesh COM cannot be
     # written at the link origin without a parallel-axis shift, which would
-    # silently produce a wrong tensor.  We also capture the scale so volume-based
+    # silently produce a wrong tensor. We also capture the scale so volume-based
     # inertia is computed against the rendered geometry, not the unit-scale file.
     visual_mesh_files: List[Dict[str, Any]] = []
     for vis_elem in link_elem.findall(".//visual"):
@@ -355,7 +355,7 @@ def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
     sim_metadata = preset.get("sim_metadata", {})
     if sim_metadata.get("mjcf_geom_type") != "cylinder":
         return None
-    # Phase 3 (COMPONENT_UNIFICATION_PLAN.md): route through resolver instead
+    # Phase 3: route through resolver instead
     # of reading raw preset bbox — keeps wheel cylinder dims consistent with
     # the same envelope the placement compiler sees.
     from core.presets import resolve_component_bounds_m
@@ -640,8 +640,8 @@ def _create_body_element(
                          f"{ixx:.6g} {iyy:.6g} {izz:.6g} {ixy:.6g} {ixz:.6g} {iyz:.6g}")
         else:
             # Try trimesh inertia from visual mesh when:
-            #   (a) no explicit inertia from URDF, AND
-            #   (b) visual geometry is a richer mesh (common for CAD robots).
+            # (a) no explicit inertia from URDF, AND
+            # (b) visual geometry is a richer mesh (common for CAD robots).
             # This is the biggest single accuracy win for mesh robots.
             trimesh_result: Optional[Tuple[np.ndarray, np.ndarray]] = None
             for vm in visual_mesh_files:
@@ -1109,7 +1109,7 @@ def urdf_to_mjcf(
     worldbody = etree.SubElement(mjcf_root, "worldbody")
 
     # Terrain lives in the world body so physics and contact reporting see the
-    # same landscape the UI asks for.  The default is the old flat floor.
+    # same landscape the UI asks for. The default is the old flat floor.
     _add_terrain(asset, worldbody, terrain_config)
 
     # Track mesh assets that need declarations in <asset>: name → (file, [sx, sy, sz])
@@ -1185,9 +1185,9 @@ def urdf_to_mjcf(
             is_prismatic = urdf_joint_type == "prismatic"
             effort = incoming_joint["limits"]["effort"] if incoming_joint["limits"] else 10.0
 
-            # Damping (viscous friction).  Use URDF value when provided; otherwise
+            # Damping (viscous friction). Use URDF value when provided; otherwise
             # scale with sqrt(effort) so heavier joints settle at a similar rate
-            # regardless of stiffness.  Prismatic joints are 10× stiffer by default
+            # regardless of stiffness. Prismatic joints are 10× stiffer by default
             # because linear slides have higher viscous losses.
             urdf_damping = dyn.get("damping")
             if urdf_damping is not None:
@@ -1198,8 +1198,8 @@ def urdf_to_mjcf(
                 damping = max(0.05, 0.1 * (effort / 10.0) ** 0.5)
             joint_elem.set("damping", f"{damping:.6g}")
 
-            # Frictionloss (Coulomb / dry friction).  URDF default is 0, which lets
-            # joints drift indefinitely when control is released.  A small non-zero
+            # Frictionloss (Coulomb / dry friction). URDF default is 0, which lets
+            # joints drift indefinitely when control is released. A small non-zero
             # value prevents this without fighting the actuator.
             urdf_friction = dyn.get("friction")
             if urdf_friction is not None and urdf_friction > 1e-9:
@@ -1210,9 +1210,9 @@ def urdf_to_mjcf(
                 frictionloss = 0.02  # Nm — typical revolute dry friction
             joint_elem.set("frictionloss", f"{frictionloss:.6g}")
 
-            # Armature (reflected rotor inertia).  Even a tiny value dramatically
+            # Armature (reflected rotor inertia). Even a tiny value dramatically
             # stabilises PD control and prevents high-frequency jitter, at negligible
-            # computational cost.  Scale conservatively with effort so that a 1 Nm
+            # computational cost. Scale conservatively with effort so that a 1 Nm
             # servo and a 100 Nm drive don't share the same value.
             armature = (5e-4 if not is_prismatic else 1e-3) * max(1.0, (effort / 10.0) ** 0.5)
             joint_elem.set("armature", f"{armature:.6g}")
@@ -1244,7 +1244,7 @@ def urdf_to_mjcf(
 
     # Self-collision excludes: suppress contacts between every adjacent body pair.
     # Touching neighbors (parent/child across a joint) almost always cause spurious
-    # contact forces that destabilize the sim.  Non-adjacent self-collision among
+    # contact forces that destabilize the sim. Non-adjacent self-collision among
     # role-tagged geoms (foot/wheel/gripper) is still on so legs/feet can't tunnel
     # through each other; structural geoms use CT_STRUCTURAL contype so they collide with terrain only.
     if joints:

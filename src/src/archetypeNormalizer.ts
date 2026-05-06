@@ -1,4 +1,4 @@
-// Archetype normalizer (Phase 3 of docs/COMPONENT_UNIFICATION_PLAN.md §3.8).
+// Archetype normalizer (Phase 3.
 //
 // Deterministic post-processing for assembly graphs. Runs after the AI emits
 // a graph and before topology auto-repair / placement, enforcing invariants
@@ -197,8 +197,8 @@ export function normalizeAssembly(
 }
 
 /** Render a diagnostic as a human-readable line for the redesign-retry prompt.
- *  Owner tag lets the AI distinguish "you (the LLM) did this" from "the spec
- *  is wrong" or "the placement compiler is wrong" — per plan §3.8 routing. */
+ * Owner tag lets the AI distinguish "you (the LLM) did this" from "the spec
+ * is wrong" or "the placement compiler is wrong" — per plan §3.8 routing. */
 export function formatDiagnosticForPrompt(d: ArchetypeDiagnostic): string {
   return `[${d.owner}/${d.severity}] ${d.code}: ${d.message}`
 }

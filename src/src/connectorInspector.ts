@@ -1,10 +1,9 @@
 // Viewport debug overlay — renders every authored mate connector from
 // generic_presets.json on every spawned link. Toggle via Shift+C.
 //
-// See docs/ENGINE_EXECUTION_PLAN.md §C3. Exists to accelerate Phase 2
-// preset authoring: load a robot, press Shift+C, see whether the sphere
-// lands on the real mesh surface. Mismatches are Bug 2a/2b evidence
-// (missing or wrong connector coords).
+// Exists to accelerate preset authoring: load a robot, press Shift+C, see
+// whether the sphere lands on the real mesh surface. Mismatches are evidence
+// of missing or wrong connector coords.
 //
 // Coordinate convention: authored connector `origin_xyz_mm` is in the
 // URDF link frame — the same frame `resolveMate` in mateConnectors.ts

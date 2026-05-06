@@ -695,8 +695,8 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   // ── AI send ───────────────────────────────────────────────────────────────
 
   /** Run the Workstream #2 tool-call edit loop. Returns true if the loop
-   *  handled the turn (UI update owned by the loop); false if it stopped
-   *  with no mutations so the caller should fall through to `ai_edit`. */
+   * handled the turn (UI update owned by the loop); false if it stopped
+   * with no mutations so the caller should fall through to `ai_edit`. */
   async function runToolCallEditLoop(args: {
     prompt: string
     initialGraph: AssemblyGraph
@@ -876,12 +876,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     retryCount = 0,
     imagesOverride?: ImageAttachment[],
     /** Pre-prompt URDF captured on the outermost call. Forwarded through
-     *  validator-driven redesign retries so the diff baseline stays anchored
-     *  to what the user actually saw before sending the prompt — not to the
-     *  failed first attempt that resolveAssemblyGraph already wrote into the
-     *  editor. Without this, the inline-diff line count for a redesign turn
-     *  reports only the deltas vs. the discarded attempt, masking the bulk of
-     *  what changed since the user's original state. */
+     * validator-driven redesign retries so the diff baseline stays anchored
+     * to what the user actually saw before sending the prompt — not to the
+     * failed first attempt that resolveAssemblyGraph already wrote into the
+     * editor. Without this, the inline-diff line count for a redesign turn
+     * reports only the deltas vs. the discarded attempt, masking the bulk of
+     * what changed since the user's original state. */
     originalUrdfOverride?: string,
   ) {
     if (!prompt.trim()) return
@@ -1249,7 +1249,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               screenshots,
               referenceImages: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
               // Engine-computed placement + ICP ground truth (Layer 1 of
-              // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md). Lets Gemini refute
+              //). Lets Gemini refute
               // "camera floating 45mm" / "shin detached" misreads using the
               // actual xyz/rpy written to URDF plus per-joint ICP gaps.
               engineSummary,

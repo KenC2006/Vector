@@ -1,7 +1,7 @@
 """
 Structured diagnostic taxonomy for the AI assembly pipeline.
 
-Phase 3 of docs/COMPONENT_UNIFICATION_PLAN.md §3.8 (Structured repair loop):
+Phase 3 (Structured repair loop):
 
     > Validation feedback is routed to the owning layer:
     >   - topology/archetype errors -> AI semantic graph

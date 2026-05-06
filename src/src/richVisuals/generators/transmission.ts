@@ -55,7 +55,7 @@ function generateBearing(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Flanged Bushing ─────────────────────────────────────────────────────────
 
-function generateBushing(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateBushing(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -139,7 +139,7 @@ function generateGearPair(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Planetary Gearbox ───────────────────────────────────────────────────────
 
-function generatePlanetaryGearbox(id: string, dims: ComponentVisualDims): THREE.Group {
+function generatePlanetaryGearbox(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const r = w / 2
@@ -200,7 +200,7 @@ function generatePlanetaryGearbox(id: string, dims: ComponentVisualDims): THREE.
 
 // ── Timing Belt GT2 ─────────────────────────────────────────────────────────
 
-function generateTimingBelt(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateTimingBelt(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: beltWidth, y: length, z: height } = dims
 
@@ -332,7 +332,7 @@ function generateLeadscrew(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Worm Gear Set ───────────────────────────────────────────────────────────
 
-function generateWormGearSet(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateWormGearSet(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
 
@@ -387,7 +387,7 @@ function generateWormGearSet(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Chain & Sprocket Set ────────────────────────────────────────────────────
 
-function generateChainSprocket(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateChainSprocket(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: length, z: h } = dims
 
@@ -430,7 +430,7 @@ function generateChainSprocket(id: string, dims: ComponentVisualDims): THREE.Gro
 
 // ── Universal Joint ─────────────────────────────────────────────────────────
 
-function generateUniversalJoint(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateUniversalJoint(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: length } = dims
 
@@ -571,7 +571,7 @@ function generateCoupling(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Rack & Pinion ───────────────────────────────────────────────────────────
 
-function generateRackPinion(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateRackPinion(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: width, y: length, z: height } = dims
 
@@ -630,7 +630,7 @@ function generateRackPinion(id: string, dims: ComponentVisualDims): THREE.Group 
 
 // ── Crossed Roller Bearing / Slewing Ring ───────────────────────────────────
 
-function generateSlewingRing(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateSlewingRing(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: h } = dims
   const outerR = w / 2

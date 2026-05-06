@@ -1,5 +1,5 @@
 """
-Semantic-graph contract validator (Phase 3 of COMPONENT_UNIFICATION_PLAN.md §3.8).
+Semantic-graph contract validator (Phase 3.
 
 The plan splits AI output cleanly:
 
@@ -51,7 +51,7 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
         cid = str(comp.get("component_id", ""))
 
         # 1. Backend link names. The compiler emits `_body`/`_horn`; the AI
-        #    must reference the bare logical servo only.
+        # must reference the bare logical servo only.
         for infix in _FORBIDDEN_LINK_INFIXES:
             if infix in link_name:
                 diagnostics.append({
@@ -67,7 +67,7 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
                 break
 
         # 2. Foot pads must not carry attach_rpy — the assembler auto-levels
-        #    them flat to the world floor.
+        # them flat to the world floor.
         if cid == "mobility_rubber_foot_pad":
             rpy = comp.get("attach_rpy")
             if isinstance(rpy, list) and any(abs(float(v)) > 1e-9 for v in rpy if isinstance(v, (int, float))):
@@ -83,9 +83,9 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
                 })
 
         # 3. Passive limb links (extrusions / limb beams) must not carry
-        #    attach_rpy either; they inherit orientation from their actuator
-        #    parent's joint frame, and any nonzero rpy is a placement compiler
-        #    concern (rest pose), not an AI authoring concern.
+        # attach_rpy either; they inherit orientation from their actuator
+        # parent's joint frame, and any nonzero rpy is a placement compiler
+        # concern (rest pose), not an AI authoring concern.
         if _is_passive_limb(cid):
             rpy = comp.get("attach_rpy")
             if isinstance(rpy, list) and any(abs(float(v)) > 1e-9 for v in rpy if isinstance(v, (int, float))):

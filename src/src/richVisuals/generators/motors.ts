@@ -223,7 +223,7 @@ function generateGearMotor(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Coreless Motor ──────────────────────────────────────────────────────────
 
-function generateCoreless(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCoreless(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -265,7 +265,7 @@ function generateCoreless(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Worm Gear Motor ─────────────────────────────────────────────────────────
 
-function generateWormGear(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateWormGear(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: h, z: d } = dims
   const motorR = w * 0.35
@@ -526,7 +526,7 @@ function generateHarmonicDrive(id: string, dims: ComponentVisualDims): THREE.Gro
 
 // ── Pancake Motor ───────────────────────────────────────────────────────────
 
-function generatePancake(id: string, dims: ComponentVisualDims): THREE.Group {
+function generatePancake(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2
@@ -578,7 +578,7 @@ function generatePancake(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Brushless Inrunner ──────────────────────────────────────────────────────
 
-function generateBrushlessInrunner(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateBrushlessInrunner(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, z: d } = dims
   const r = w / 2

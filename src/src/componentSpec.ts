@@ -35,8 +35,6 @@ export interface ComponentPhysicalSpec {
   mesh?: ComponentMeshSpec
   collision_mesh?: string
 
-  /** Mesh audit marker for presets whose bbox intentionally differs from raw mesh extents. */
-  legacy_override?: boolean
   /** Per-100mm mass for parametric extrusions; resolveComponentMassKg multiplies by length_mm/100. */
   mass_kg_per_100mm?: number
   mass_kg_per_100x100mm?: number
@@ -143,13 +141,6 @@ export function auditComponentSpecDeprecations(spec: {
         message: `physical.${field} is deprecated; replace with bbox_mm/parametric/mesh metadata`,
       })
     }
-  }
-  if (Object.prototype.hasOwnProperty.call(phys, 'legacy_override') && phys.legacy_override !== undefined) {
-    findings.push({
-      componentId: id,
-      field: 'legacy_override',
-      message: 'physical.legacy_override is a temporary mesh-audit marker; will be retired with Phase 5 mesh extents',
-    })
   }
   return findings
 }

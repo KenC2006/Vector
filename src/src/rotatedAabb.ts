@@ -5,7 +5,7 @@
 // to be correct because the half-extent triple is just permuted; for any
 // other rotation it is silently wrong (the bounding box grows).
 //
-// PLACEMENT_REWRITE_PLAN.md Phase 2 routes every face/connector calculation
+// Phase 2 routes every face/connector calculation
 // in placementCompiler/{face,mate}.ts through this helper before reading
 // `child.bounds.half`. RPY interpretation matches `rotationIO.rpyToQuat`
 // (URDF X-Y-Z fixed axes).

@@ -20,7 +20,7 @@ function catMetal(strength = 0.3) {
 
 // ── Driven Wheel ────────────────────────────────────────────────────────────
 
-function generateDrivenWheel(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateDrivenWheel(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: axleWidth } = dims
 
@@ -108,7 +108,7 @@ function generateDrivenWheel(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Mecanum Wheel ───────────────────────────────────────────────────────────
 
-function generateMecanumWheel(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateMecanumWheel(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: axleWidth } = dims
   const chamfer = Math.min(w, d) * 0.03
@@ -170,7 +170,7 @@ function generateMecanumWheel(id: string, dims: ComponentVisualDims): THREE.Grou
 
 // ── Caster Wheel ────────────────────────────────────────────────────────────
 
-function generateCasterWheel(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateCasterWheel(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -260,7 +260,7 @@ function generateCasterWheel(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Track/Tread System ──────────────────────────────────────────────────────
 
-function generateTrackSystem(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateTrackSystem(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: length, y: depth, z: height } = dims
   const chamfer = Math.min(length, depth, height) * 0.04
@@ -329,7 +329,7 @@ function generateTrackSystem(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Swerve Drive Module ─────────────────────────────────────────────────────
 
-function generateSwerveDrive(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateSwerveDrive(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.05
@@ -395,7 +395,7 @@ function generateSwerveDrive(id: string, dims: ComponentVisualDims): THREE.Group
 
 // ── Omni Wheel ──────────────────────────────────────────────────────────────
 
-function generateOmniWheel(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateOmniWheel(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: axleWidth } = dims
   const chamfer = Math.min(w, d) * 0.03
@@ -453,7 +453,7 @@ function generateOmniWheel(id: string, dims: ComponentVisualDims): THREE.Group {
 
 // ── Ball Transfer Unit ──────────────────────────────────────────────────────
 
-function generateBallTransfer(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateBallTransfer(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   const chamfer = Math.min(w, d) * 0.04
@@ -506,7 +506,7 @@ function generateBallTransfer(id: string, dims: ComponentVisualDims): THREE.Grou
 
 // ── Rubber Foot Pad ─────────────────────────────────────────────────────────
 
-function generateRubberFoot(id: string, dims: ComponentVisualDims): THREE.Group {
+function generateRubberFoot(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
   // Authored URDF-Z-up: cylinder axes along world Z so the puck stands

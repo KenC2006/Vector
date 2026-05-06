@@ -1,4 +1,4 @@
-// Phase 1 grep gate (PLACEMENT_REWRITE_PLAN.md §3.5):
+// Phase 1 grep gate:
 // every URDF/MuJoCo Z-up ↔ Three.js Y-up basis swap must go through
 // `src/src/coordinates.ts`. This script fails CI when an inline swap shows
 // up anywhere else in src/src.

@@ -1,22 +1,22 @@
 /**
  * Component visual diagnostics.
  *
- * Phase 1 of docs/COMPONENT_VISUAL_SOURCE_OF_TRUTH_PLAN.md: inspect the
+ * Phase 1: inspect the
  * current visual stack without changing runtime behavior.
  *
  * Usage:
- *   node scripts/component-visual-diagnostics.js
- *   node scripts/component-visual-diagnostics.js --all
- *   node scripts/component-visual-diagnostics.js --json
- *   node scripts/component-visual-diagnostics.js --strict
+ * node scripts/component-visual-diagnostics.js
+ * node scripts/component-visual-diagnostics.js --all
+ * node scripts/component-visual-diagnostics.js --json
+ * node scripts/component-visual-diagnostics.js --strict
  *
  * The report compares:
- *   - preset bounding_box_mm / cross_section_mm
- *   - generated URDF primitive bounds from componentMeshes.generateVisuals()
- *   - rich visual generator bounds
- *   - mesh override asset presence
- *   - raw GLB bounds and post-rotation bounds
- *   - current per-axis scaling factors
+ * - preset bounding_box_mm / cross_section_mm
+ * - generated URDF primitive bounds from componentMeshes.generateVisuals()
+ * - rich visual generator bounds
+ * - mesh override asset presence
+ * - raw GLB bounds and post-rotation bounds
+ * - current per-axis scaling factors
  */
 
 'use strict'

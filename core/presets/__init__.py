@@ -144,7 +144,7 @@ def _resolved_bbox_mm(phys: Dict, instance: Optional[Dict] = None) -> List[float
 
 def resolve_component_bounds_mm(preset: Dict, instance: Optional[Dict] = None) -> List[float]:
     """Single source of truth for component outer-envelope dimensions on the
-    Python side (Phase 3 of COMPONENT_UNIFICATION_PLAN.md). Mirrors the TS
+    Python side (Phase 3. Mirrors the TS
     `resolveComponentHalfBoundsMm` contract: bbox_mm wins, parametric splice
     consumes instance.length_mm, legacy cross_section_mm falls through.
 
@@ -162,7 +162,7 @@ def resolve_component_bounds_m(preset: Dict, instance: Optional[Dict] = None) ->
 
 def is_parametric_spec(preset: Dict) -> bool:
     """True when the preset defines a per-instance length axis. Mirrors the TS
-    `isParametricSpec` predicate (Phase 3 of COMPONENT_UNIFICATION_PLAN.md)."""
+    `isParametricSpec` predicate (Phase 3."""
     if not isinstance(preset, dict):
         return False
     phys = preset.get("physical", {}) or {}

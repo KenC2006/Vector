@@ -778,7 +778,7 @@ async fn ai_validate_assembly(
             "screenshots": screenshots,
             "reference_images": reference_images.unwrap_or_default(),
             // Engine-computed ground truth (placement + ICP tables) —
-            // docs/VALIDATOR_MEASUREMENT_FEEDBACK.md Layer 1. Pass-through to the
+            // Layer 1. Pass-through to the
             // Python core which formats it into the Gemini validator prompt.
             "engine_summary": engine_summary,
         }),
