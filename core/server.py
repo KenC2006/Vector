@@ -6,6 +6,7 @@ Reads line-delimited JSON from stdin, writes responses to stdout.
 Minimal implementation without external JSON-RPC libraries.
 """
 import json
+import math
 import sys
 from typing import Any, Dict, Optional
 import traceback
@@ -476,7 +477,52 @@ def _extract_sim_joint_context(urdf_content: str) -> tuple:
                     "swing_bend" if bend_idx == swing_idx else "bend"
                 )
 
-    return joint_names, joint_limits, joint_metadata
+    # ── Leg geometry summary ────────────────────────────────────────────────
+    # Aggregates per-leg hip-to-foot length and standing height from the URDF
+    # neutral pose. Used downstream to derive physics-grounded gait constants
+    # (FREQ_HZ from sqrt(g/L), settle time from sqrt(L), etc.) instead of
+    # hardcoded literature values that only suit one robot size.
+    leg_geometry: Optional[Dict[str, Any]] = None
+    if len(valid_leg_groups) >= 2:
+        leg_lengths: list = []
+        body_heights: list = []
+        per_leg: list = []
+        joint_info_by_name = {j["name"]: j for j in joints}
+        for leg_id, members in valid_leg_groups.items():
+            if not members:
+                continue
+            members_sorted = sorted(members, key=lambda m: rev_depth_map.get(m["name"], 0))
+            hip = members_sorted[0]
+            ji = joint_info_by_name.get(hip["name"])
+            if ji is None:
+                continue
+            hip_pos = hip.get("center", [0.0, 0.0, 0.0])
+            tip_pos = _tip_pos(ji["child"])
+            L = math.sqrt(sum((tip_pos[i] - hip_pos[i]) ** 2 for i in range(3)))
+            if L < 0.02:
+                continue
+            leg_lengths.append(L)
+            body_heights.append(max(0.0, hip_pos[2] - tip_pos[2]))
+            per_leg.append({
+                "leg_id": leg_id,
+                "hip_pos": [round(v, 4) for v in hip_pos],
+                "foot_pos": [round(v, 4) for v in tip_pos],
+                "length_m": round(L, 4),
+                "joint_count": len(members_sorted),
+            })
+        if leg_lengths:
+            leg_geometry = {
+                "mean_leg_length_m": round(sum(leg_lengths) / len(leg_lengths), 4),
+                "mean_body_height_m": (
+                    round(sum(body_heights) / len(body_heights), 4) if body_heights else 0.0
+                ),
+                "min_leg_length_m": round(min(leg_lengths), 4),
+                "max_leg_length_m": round(max(leg_lengths), 4),
+                "leg_count": len(leg_lengths),
+                "per_leg": per_leg,
+            }
+
+    return joint_names, joint_limits, joint_metadata, leg_geometry
 
 
 class JSONRPCServer:
@@ -1250,7 +1296,7 @@ class JSONRPCServer:
 
         # Extract joint names, limits, and wheel direction metadata from the URDF.
         try:
-            joint_names, joint_limits, joint_metadata = _extract_sim_joint_context(urdf_content)
+            joint_names, joint_limits, joint_metadata, leg_geometry = _extract_sim_joint_context(urdf_content)
         except Exception as e:
             return {"status": "error",
                     "message": f"Could not parse URDF joints: {e}"}
@@ -1261,7 +1307,8 @@ class JSONRPCServer:
 
         try:
             code = _generate_sim_script(
-                prompt, joint_names, current_script, joint_limits, joint_metadata, terrain_config
+                prompt, joint_names, current_script, joint_limits, joint_metadata, terrain_config,
+                leg_geometry,
             )
         except Exception as e:
             return {"status": "error", "message": f"AI call failed: {e}"}

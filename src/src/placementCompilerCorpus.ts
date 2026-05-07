@@ -400,6 +400,69 @@ test('compileAssembly emits drivetrain hub motor with continuous joint type', ()
     `expected rolling-pose roll ≈ -π/2, got ${wheel!.localRpy[0]}`)
 })
 
+test('compileAssembly: tire-on-drivetrain ignores AI mate fields (always outboard)', () => {
+  // Regression for "wheels on the inside" bug. The AI repeatedly emitted
+  // attach_connector="bottom" on the tire because it (mis)reasoned the motor's
+  // "top" connector was consumed by the baseplate bolt-down. Honoring that
+  // mate field puts the wheel at motor-local -Z, which after the rolling-pose
+  // ±π/2 roll lands inboard of the chassis edge instead of outboard. The
+  // compiler must skip the mate path for tire-on-drivetrain so the
+  // face short-circuit (face.ts:92, +dz axial offset) always wins.
+  const conn = (id: string, z: number, axisSign: 1 | -1): MateConnector => ({
+    id, type: 'planar',
+    origin_xyz_mm: [0, 0, z],
+    axis_xyz: [0, 0, axisSign],
+  })
+  const motorConn: MateConnector[] = [
+    conn('top', 22.5, 1), conn('shaft_out', 22.5, 1), conn('bottom', -22.5, -1),
+  ]
+  const wheelConn: MateConnector[] = [
+    conn('hub_bore', 15, 1), conn('top', 15, 1), conn('bottom', -15, -1),
+  ]
+  const resolver: ComponentResolver = (componentId, _instance) => {
+    if (componentId === 'drivetrain_hub_motor_80') return {
+      componentId, bounds: { half: [0.04, 0.04, 0.0225], center: [0, 0, 0], shape: 'cylinder' },
+      connectors: motorConn, presetConnectors: motorConn,
+      assembledOuterRadiusM: 0.05,
+    }
+    if (componentId === 'mobility_wheel_driven') return {
+      componentId, bounds: { half: [0.05, 0.05, 0.015], center: [0, 0, 0], shape: 'cylinder' },
+      connectors: wheelConn, presetConnectors: wheelConn,
+    }
+    return {
+      componentId, bounds: { half: [0.175, 0.125, 0.004], center: [0, 0, 0], shape: 'box' },
+    }
+  }
+  // The "evil" input: the AI emits a wrong attach_connector. The engine must
+  // still produce an outboard placement.
+  const graph: AssemblyGraph = {
+    base_link: 'plate',
+    components: [
+      { link_name: 'plate', component_id: 'structural_baseplate_large',
+        attach_to: null, attach_face: 'top', joint_type: 'fixed', joint_axis: 'z' },
+      { link_name: 'motor', component_id: 'drivetrain_hub_motor_80',
+        attach_to: 'plate', attach_face: 'bottom',
+        joint_type: 'continuous', joint_axis: 'y' },
+      { link_name: 'tire', component_id: 'mobility_wheel_driven',
+        attach_to: 'motor', attach_face: 'coaxial',
+        attach_connector: 'bottom', mate_connector: 'hub_bore', mate_type: 'concentric',
+        joint_type: 'fixed', joint_axis: 'z' },
+    ],
+  }
+  const result = compileAssembly(graph, { resolveComponent: resolver, useMateConnectors: true })
+  const tire = result.links.find(l => l.logicalName === 'tire')
+  assert(tire, 'tire CompiledLink emitted')
+  // Outboard means motor-local +Z, which with motorHalfZ=0.0225 + tireHalfAxle=0.015
+  // = +0.0375. Negative would mean the bug is back.
+  assert(tire!.localXyz[2] > 0.03,
+    `tire-on-drivetrain must end outboard (z > 0.03 in motor frame); got z=${tire!.localXyz[2]} — `
+    + 'mate-connector path leaked through the guard at index.ts:583.')
+  // RPY must stay zero (no axis flip from concentric mate). A non-zero rpy
+  // here would indicate the mate path ran and rotated the wheel.
+  assert(Math.abs(tire!.localRpy[0]) + Math.abs(tire!.localRpy[1]) + Math.abs(tire!.localRpy[2]) < 1e-3,
+    `tire-on-drivetrain rpy must stay zero, got [${tire!.localRpy.join(',')}]`)
+})
+
 // ── Slice 4.J½ — parametric_splice ──────────────────────────────────────────
 
 test('compileAssembly uses parent parametricLengthMm for parentBodyHZ', () => {

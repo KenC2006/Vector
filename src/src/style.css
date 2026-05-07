@@ -2757,13 +2757,16 @@ body.ai-busy #sidebar,
 body.ai-busy #editor-panel,
 body.ai-busy #tab-bar,
 body.ai-busy #statusbar,
-body.ai-busy #sim-toggle {
+body.ai-busy #sim-toggle,
+body.ai-busy #toggle-vp-mode {
   pointer-events: none;
   opacity: 0.55;
   filter: saturate(0.7);
 }
 body.ai-busy #viewport-chat #vc-input,
-body.ai-busy #viewport-chat #vc-attach-btn { pointer-events: none; opacity: 0.5; }
+body.ai-busy #viewport-chat #vc-attach-btn,
+body.ai-busy #viewport-chat #vc-new-chat,
+body.ai-busy #viewport-chat #vc-chat-dropdown-btn { pointer-events: none; opacity: 0.5; }
 body.ai-busy::after {
   content: 'AI generating — click ✕ in chat to cancel';
   position: fixed;

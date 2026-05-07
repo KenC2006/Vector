@@ -1,9 +1,9 @@
 {
   "$schema": "vector_preset_v1",
   "version": "1.0.0",
-  "description": "Vector Component Preset Library — Generic robotic building blocks with realistic physical constants for sim-ready model generation.",
+  "description": "Vector Component Preset Library \u2014 Generic robotic building blocks with realistic physical constants for sim-ready model generation.",
   "system_instruction": {
-    "role": "You are Vector's AI design engine. When constructing or editing a robot model, you MUST compose it exclusively from these generic component primitives. Never hallucinate arbitrary masses, dimensions, or inertia values. Instead, select the closest matching preset, use its physical constants, and calculate derived properties (total mass, CoM, inertia tensors) from the assembled set. Use mounting_logic fields to validate that parts interface correctly — e.g., an axial_shaft actuator connects to a hub_bore transmission element, not directly to a face_mount sensor. When the user's request is ambiguous, prefer the smallest component that meets the torque/payload/sensing requirement.",
+    "role": "You are Vector's AI design engine. When constructing or editing a robot model, you MUST compose it exclusively from these generic component primitives. Never hallucinate arbitrary masses, dimensions, or inertia values. Instead, select the closest matching preset, use its physical constants, and calculate derived properties (total mass, CoM, inertia tensors) from the assembled set. Use mounting_logic fields to validate that parts interface correctly \u2014 e.g., an axial_shaft actuator connects to a hub_bore transmission element, not directly to a face_mount sensor. When the user's request is ambiguous, prefer the smallest component that meets the torque/payload/sensing requirement.",
     "mass_stability_logic": {
       "description": "How the AI should calculate total mass and assess static stability from selected primitives.",
       "steps": [
@@ -19,12 +19,12 @@
       ]
     },
     "mounting_validation": [
-      "axial_shaft ↔ hub_bore: actuator output shaft inserts into transmission bore (coaxial alignment required).",
-      "face_mount ↔ face_mount: bolt-circle pattern, flanged connection (planar alignment, concentric bolt holes).",
-      "side_rail_mount ↔ rail_slot: component slides onto extrusion rail T-slot and clamps.",
-      "bracket_mount ↔ bracket_mount: L-bracket or U-bracket with through-holes.",
-      "tool_changer_master ↔ tool_changer_slave: standardized quick-change plate interface.",
-      "press_fit ↔ bore: bearing/bushing pressed into housing bore."
+      "axial_shaft \u2194 hub_bore: actuator output shaft inserts into transmission bore (coaxial alignment required).",
+      "face_mount \u2194 face_mount: bolt-circle pattern, flanged connection (planar alignment, concentric bolt holes).",
+      "side_rail_mount \u2194 rail_slot: component slides onto extrusion rail T-slot and clamps.",
+      "bracket_mount \u2194 bracket_mount: L-bracket or U-bracket with through-holes.",
+      "tool_changer_master \u2194 tool_changer_slave: standardized quick-change plate interface.",
+      "press_fit \u2194 bore: bearing/bushing pressed into housing bore."
     ]
   },
   "categories": {
@@ -204,7 +204,7 @@
         {
           "id": "actuator_servo_high_torque",
           "name": "High-Torque Smart Servo",
-          "description": "Bus-protocol smart servo with magnetic encoder feedback, metal gears, and daisy-chain comms. Comparable to Dynamixel XM-class. ~165g. Authors shaft_out (cylindrical, +Z, 8mm bore) for concentric coupler mates — the most-used servo in quadruped leg chains, so this connector sees the heaviest traffic.",
+          "description": "Bus-protocol smart servo with magnetic encoder feedback, metal gears, and daisy-chain comms. Comparable to Dynamixel XM-class. ~165g. Authors shaft_out (cylindrical, +Z, 8mm bore) for concentric coupler mates \u2014 the most-used servo in quadruped leg chains, so this connector sees the heaviest traffic.",
           "physical": {
             "mass_kg": 0.165,
             "bounding_box_mm": [
@@ -1141,7 +1141,7 @@
       ]
     },
     "motors": {
-      "description": "Raw electric motors (DC brushed, gear motors, coreless, hub, harmonic drive, brushless inrunners). These are bare motors without integrated controllers — pair with driver boards from the compute category.",
+      "description": "Raw electric motors (DC brushed, gear motors, coreless, hub, harmonic drive, brushless inrunners). These are bare motors without integrated controllers \u2014 pair with driver boards from the compute category.",
       "components": [
         {
           "id": "motor_dc_small_130",
@@ -2452,7 +2452,7 @@
         {
           "id": "sensor_depth_camera_small",
           "name": "Compact Depth Camera",
-          "description": "Small structured-light or active-stereo depth camera. Comparable to RealSense D435 class. ~72g. Authors mount_back (planar, -X) as the bolt-ring side and optical_front (point, +X) as the lens aim direction. Resolves the M2 lens-orientation ambiguity — a fastened mate from a bracket face to camera.mount_back puts the +X lens axis pointing out from the bracket, so the camera faces its mount direction instead of sideways.",
+          "description": "Small structured-light or active-stereo depth camera. Comparable to RealSense D435 class. ~72g. Authors mount_back (planar, -X) as the bolt-ring side and optical_front (point, +X) as the lens aim direction. Resolves the M2 lens-orientation ambiguity \u2014 a fastened mate from a bracket face to camera.mount_back puts the +X lens axis pointing out from the bracket, so the camera faces its mount direction instead of sideways.",
           "physical": {
             "mass_kg": 0.072,
             "bounding_box_mm": [
@@ -5454,7 +5454,7 @@
         {
           "id": "structural_bracket_l",
           "name": "L-Bracket (90-degree)",
-          "description": "Generic aluminum L-bracket for right-angle structural joints. 3.2mm thick plate (8% of bracket size). Geometry: plate in XY plane with top face at Z=+1.6mm, wall on the -X side rising to Z=+38.4mm. Authors three planar connectors that disambiguate the two distinct mounting surfaces — the legacy default top at +Z/Z=+20 is geometrically invalid (no plate face lives there; bbox corner is empty air), so attach_face:\"top\" routed via the bbox path historically caused P1 rotation errors (camera / component mounted via 'top' landed with its normal along wrong axis). The authored plate_top / wall_inner / wall_outer give exact pose targets: plate_top for components sitting on the horizontal plate, wall_inner for components facing into the L concave side, wall_outer for components facing out from the back of the wall.",
+          "description": "Generic aluminum L-bracket for right-angle structural joints. 3.2mm thick plate (8% of bracket size). Geometry: plate in XY plane with top face at Z=+1.6mm, wall on the -X side rising to Z=+38.4mm. Authors three planar connectors that disambiguate the two distinct mounting surfaces \u2014 the legacy default top at +Z/Z=+20 is geometrically invalid (no plate face lives there; bbox corner is empty air), so attach_face:\"top\" routed via the bbox path historically caused P1 rotation errors (camera / component mounted via 'top' landed with its normal along wrong axis). The authored plate_top / wall_inner / wall_outer give exact pose targets: plate_top for components sitting on the horizontal plate, wall_inner for components facing into the L concave side, wall_outer for components facing out from the back of the wall.",
           "physical": {
             "mass_kg": 0.035,
             "bounding_box_mm": [
@@ -5647,7 +5647,7 @@
         {
           "id": "structural_servo_coupler_disc",
           "name": "Servo Coupler Disc (25T)",
-          "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub. Authors shaft_hole (cylindrical, on -Z face with axis -Z, 8mm nominal bore) so a concentric mate against a servo's +Z shaft_out is already-antiparallel — coupler stays upright, bolt-ring side (+Z) faces upward so a child bracket mounts correctly. Also authors top_face (planar, +Z) as a named handle for that bolt-ring side.",
+          "description": "Thin aluminum hub with 25-tooth splined bore on one side and a bolt ring on the other. Couples a servo's rotating shaft to a rigid child bracket/link. Used by the auto-repair pass to resolve shaft-to-mount-face port mismatches. Modeled on goBILDA 1908 series servo hub. Authors shaft_hole (cylindrical, on -Z face with axis -Z, 8mm nominal bore) so a concentric mate against a servo's +Z shaft_out is already-antiparallel \u2014 coupler stays upright, bolt-ring side (+Z) faces upward so a child bracket mounts correctly. Also authors top_face (planar, +Z) as a named handle for that bolt-ring side.",
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [
@@ -6665,7 +6665,7 @@
         {
           "id": "structural_gusset_plate",
           "name": "Gusset Plate (Triangular Reinforcement)",
-          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs. Triangle front/back/left/right defaults are skipped intentionally — those bbox-face centers don't land on real mesh surfaces (the plate is a triangle, not a rectangle), so callers should target top/bottom only.",
+          "description": "Triangular aluminum gusset plate for bracing 90-degree joints. 3mm thick, ~50mm legs. Triangle front/back/left/right defaults are skipped intentionally \u2014 those bbox-face centers don't land on real mesh surfaces (the plate is a triangle, not a rectangle), so callers should target top/bottom only.",
           "physical": {
             "mass_kg": 0.02,
             "bounding_box_mm": [
@@ -6903,7 +6903,7 @@
         {
           "id": "structural_cross_plate",
           "name": "Cross Plate Connector",
-          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum. Front/back/left/right defaults are left intact: the cross is built from two overlapping rectangular arms so the ±X and ±Y face centers DO land on real arm end faces, and callers mating extrusions to the arm ends will still get the legacy defaults.",
+          "description": "Flat cross-shaped connector plate for joining 4 extrusions in a plane. 3mm aluminum. Front/back/left/right defaults are left intact: the cross is built from two overlapping rectangular arms so the \u00b1X and \u00b1Y face centers DO land on real arm end faces, and callers mating extrusions to the arm ends will still get the legacy defaults.",
           "physical": {
             "mass_kg": 0.04,
             "bounding_box_mm": [
@@ -9661,7 +9661,7 @@
       ]
     },
     "drivetrain": {
-      "description": "Drivetrain assemblies — motor, axle, hub, and mounting hardware that sit between the chassis and a tire. Tires (mobility_wheel_*) attach as children of these.",
+      "description": "Drivetrain assemblies \u2014 motor, axle, hub, and mounting hardware that sit between the chassis and a tire. Tires (mobility_wheel_*) attach as children of these.",
       "components": [
         {
           "id": "drivetrain_hub_motor_80",
@@ -9708,6 +9708,20 @@
                 1
               ],
               "type": "planar"
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
             },
             {
               "id": "bottom",
@@ -9771,6 +9785,20 @@
               "type": "planar"
             },
             {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                45
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
               "id": "bottom",
               "origin_xyz_mm": [
                 0,
@@ -9828,6 +9856,20 @@
                 1
               ],
               "type": "planar"
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                15
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
             },
             {
               "id": "bottom",
@@ -9889,6 +9931,20 @@
               "type": "planar"
             },
             {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                35
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
+            },
+            {
               "id": "bottom",
               "origin_xyz_mm": [
                 0,
@@ -9907,7 +9963,7 @@
         {
           "id": "drivetrain_steering_knuckle",
           "name": "Steering Knuckle (Ackermann)",
-          "description": "King-pin for Ackermann front-wheel steering. ±30° revolute z joint. Pairs with a drivetrain_hub_motor_80 child (driven) or drivetrain_stub_axle_passive (undriven). ~150g.",
+          "description": "King-pin for Ackermann front-wheel steering. \u00b130\u00b0 revolute z joint. Pairs with a drivetrain_hub_motor_80 child (driven) or drivetrain_stub_axle_passive (undriven). ~150g.",
           "physical": {
             "mass_kg": 0.15,
             "bounding_box_mm": [
@@ -9950,6 +10006,20 @@
                 1
               ],
               "type": "planar"
+            },
+            {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                40
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical"
             },
             {
               "id": "bottom",

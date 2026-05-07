@@ -4,6 +4,7 @@ Communicates with Claude API to generate robot model edits based on natural lang
 """
 import base64
 import json
+import math
 import os
 import re
 import sys
@@ -462,7 +463,7 @@ Examples (note which side each named connector belongs to):
 5. Include ALL components the user mentions. Do not skip or simplify.
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
-8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
+8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". DO NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire — emit only `attach_face="coaxial"` and let the engine handle the rest. (Setting `attach_connector="bottom"` in particular drops the wheel inboard, under the chassis, on every corner.) The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
 9. length_mm overrides parametric structural links (default 100mm). For sleek robot limbs, prefer `structural_limb_link_slim` over T-slot extrusion: use 80–120mm for leg segments, 150–300mm for arm links, and 50–80mm for short connectors. Use `structural_extrusion_2020/4040` for frames and chassis rails, not dog thighs/shins unless the user asks for bulky extrusion. For robot dogs/quadrupeds specifically, `structural_extrusion_2020` and `structural_extrusion_4040` are FORBIDDEN as thigh/shin/leg bones; use `structural_limb_link_slim`.
 10. **Rotary servos drive exactly ONE child.** The backend splits each rotary servo into a fixed body (bolted to its parent) and a rotating horn (the output). For `joint_axis="x"` or `"y"`, it also inserts effective side-yoke plus slim horn-link adapter hardware so the physical horn shaft is on the red/blue hinge axis. Children you attach to a servo link are automatically routed to the horn/adapter — you do not need to name `_body` or `_horn` links yourself; just use the servo's `link_name` as `attach_to`. Attach exactly ONE child per servo; never fan out multiple children from the same servo.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
@@ -991,7 +992,7 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 - For slim limb links: do not set attach_rpy/orientation to make the link look flush. The engine mounts `structural_limb_link_slim` on its broad flat face; rest/crouch angles belong on the servo that drives the link.
 - For wheels: NEVER attach a tire directly to the baseplate. Use a drivetrain assembly:
   baseplate -> drivetrain_hub_motor_80 (attach_face="bottom", continuous y) -> mobility_wheel_driven (attach_face="coaxial", fixed).
-  The drivetrain IS the motor; the tire mounts coaxially on the hub (attach_face="coaxial"). The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner.
+  The drivetrain IS the motor; the tire mounts coaxially on the hub (attach_face="coaxial"). The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner. Do NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire; those fields make the engine try to honor your connector choice and the wrong choice puts the wheel inboard.
   Casters: baseplate -> drivetrain_caster_swivel (bottom, fixed) -> mobility_wheel_driven (coaxial, fixed).
   Mecanum: baseplate -> drivetrain_hub_motor_80 (bottom, continuous y) -> mobility_mecanum_wheel (coaxial, fixed).
   Default 4 wheels for any "car/truck/vehicle/rover/buggy/cart" request.
@@ -2980,10 +2981,79 @@ def _default_terrain_profile(terrain_config: dict | None) -> dict:
     }
 
 
-def _generate_default_sim_script(joint_names: list, joint_metadata: list | None, terrain_config: dict | None = None) -> str:
+def _physics_gait_profile(leg_geometry: dict | None, terrain_config: dict | None) -> dict | None:
+    """
+    Derive gait constants from URDF leg geometry instead of literature defaults.
+
+    The pendulum-frequency formula sqrt(g/L) sets the natural locomotion rate;
+    halving it gives a conservative trot. SETTLE_TIME scales with sqrt(L) so
+    larger, heavier robots ease in more slowly. Hip and knee amplitudes stay
+    in physically reasonable bands regardless of robot size: stride is set as
+    a fraction of leg length, and knee retraction in radians is roughly the
+    desired foot lift divided by shin length.
+
+    Returns None when leg geometry is unavailable, so the caller falls back
+    to the legacy terrain-only profile.
+    """
+    if not leg_geometry:
+        return None
+    L = float(leg_geometry.get("mean_leg_length_m", 0.0))
+    if L < 0.03:
+        return None
+
+    g = 9.81
+    w_pend = math.sqrt(g / max(0.05, L))
+    # Trot frequency at the pendulum's nat freq (rad/s) over 2π. Matches the
+    # legacy 1.2 Hz default at L≈0.18m; smaller legs run faster, larger slower.
+    freq_hz = max(0.5, min(2.5, w_pend / (2 * math.pi)))
+
+    # Stride = 55% of leg length → forward foot travel ≈ 0.55 L per cycle.
+    hip_amp = math.atan2(0.275 * L, L)
+
+    # KNEE_BIAS is a small offset from URDF-neutral that biases the knee
+    # toward stance. Scales mildly with leg length: longer legs sag more.
+    knee_bias = max(0.30, min(0.60, 0.40 + 0.5 * max(0.0, L - 0.20)))
+
+    # KNEE_CLEARANCE is the swing-time retraction in radians. Foot lift ≈
+    # clearance * shin_length. Targeting ~15% L of clearance gives ~0.30 rad
+    # for a typical 2-link leg regardless of size.
+    knee_clearance = 0.30
+
+    # Inertia heuristic: settle time scales with sqrt(L) anchored at L=0.18m.
+    settle_leg = max(0.5, min(1.6, 0.8 * math.sqrt(max(0.05, L) / 0.18)))
+
+    terrain_type = str((terrain_config or {}).get("type", "flat")).lower()
+    if terrain_type == "stairs":
+        freq_hz *= 0.7
+        knee_clearance += 0.10
+        settle_leg += 0.4
+    elif terrain_type == "rough":
+        freq_hz *= 0.85
+        knee_clearance += 0.05
+        settle_leg += 0.3
+
+    return {
+        "freq_hz": round(freq_hz, 3),
+        "hip_amp": round(hip_amp, 3),
+        "knee_bias": round(knee_bias, 3),
+        "knee_clearance": round(knee_clearance, 3),
+        "settle_time_leg": round(settle_leg, 2),
+        "wheel_throttle_frac": 0.15,
+        "settle_time_wheel": 0.5,
+        "_leg_length_m": round(L, 4),
+        "_source": "physics",
+    }
+
+
+def _generate_default_sim_script(
+    joint_names: list,
+    joint_metadata: list | None,
+    terrain_config: dict | None = None,
+    leg_geometry: dict | None = None,
+) -> str:
     if not joint_metadata:
         return ""
-    profile = _default_terrain_profile(terrain_config)
+    profile = _physics_gait_profile(leg_geometry, terrain_config) or _default_terrain_profile(terrain_config)
 
     by_name = {
         item.get("name"): item
@@ -3092,6 +3162,7 @@ def generate_sim_script(
     joint_limits: dict = None,
     joint_metadata: list = None,
     terrain_config: dict = None,
+    leg_geometry: dict = None,
 ) -> str:
     """
     Generate a sim-sandbox Python script from a natural-language prompt.
@@ -3138,9 +3209,40 @@ def generate_sim_script(
         except Exception:
             terrain_block = f"\n\nTERRAIN:\n  - type: {terrain_type}"
 
+    geometry_block = ""
+    physics_profile = _physics_gait_profile(leg_geometry, terrain_config)
+    if leg_geometry:
+        L = float(leg_geometry.get("mean_leg_length_m", 0.0))
+        body_h = float(leg_geometry.get("mean_body_height_m", 0.0))
+        n_legs = int(leg_geometry.get("leg_count", 0))
+        L_min = float(leg_geometry.get("min_leg_length_m", L))
+        L_max = float(leg_geometry.get("max_leg_length_m", L))
+        geometry_block = (
+            "\n\nGAIT GEOMETRY (measured from URDF neutral pose):\n"
+            f"  - leg_count: {n_legs}\n"
+            f"  - mean_leg_length_m: {L:.3f}\n"
+            f"  - leg_length_range_m: [{L_min:.3f}, {L_max:.3f}]\n"
+            f"  - mean_standing_height_m: {body_h:.3f}\n"
+        )
+        if physics_profile:
+            geometry_block += (
+                "\nRECOMMENDED CONSTANTS (physics-derived, prefer these over the\n"
+                "system-prompt defaults — they are tuned to this robot's actual size):\n"
+                f"  - FREQ_HZ: {physics_profile['freq_hz']:.2f}     "
+                f"# 0.5 * sqrt(g/L) / (2pi); pendulum natural rate at 50% margin\n"
+                f"  - HIP_AMP: {physics_profile['hip_amp']:.2f}     "
+                f"# atan(stride/2 / L) for stride = 0.55 * L\n"
+                f"  - KNEE_BIAS: {physics_profile['knee_bias']:.2f}    "
+                f"# stance offset, bend_sign-relative\n"
+                f"  - KNEE_CLEARANCE: {physics_profile['knee_clearance']:.2f}  "
+                f"# swing-time retraction, ~15% L foot lift\n"
+                f"  - SETTLE_TIME: {physics_profile['settle_time_leg']:.2f}    "
+                f"# scales with sqrt(L) to ease in proportionally\n"
+            )
+
     p = prompt.strip()
     if not p and not current_script.strip():
-        default_script = _generate_default_sim_script(joint_names, joint_metadata, terrain_config)
+        default_script = _generate_default_sim_script(joint_names, joint_metadata, terrain_config, leg_geometry)
         if default_script:
             return default_script
 
@@ -3153,7 +3255,7 @@ def generate_sim_script(
             "more natural, and better matched to the robot's morphology."
         )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}{geometry_block}\n\n"
             f"CURRENT SCRIPT:\n{current_script}\n\n"
             f"{request_line}\n\n"
             f"Return the full modified script. Keep the same joint names, wheel signs, leg signs, and leg roles."
@@ -3178,7 +3280,7 @@ def generate_sim_script(
                 "Include a SETTLE_TIME ramp so motion eases in from zero."
             )
         user_msg = (
-            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}\n\n"
+            f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}{geometry_block}\n\n"
             f"{request_line}\n\n"
             f"Write a sandbox-compliant script."
         )

@@ -60,8 +60,12 @@ export function initInlineDiff(deps: InlineDiffDeps): InlineDiffApi {
     // chat doesn't stay frozen after an editor-bar accept.
     const vcSend = document.getElementById('vc-send') as HTMLButtonElement | null
     const vcInput = document.getElementById('vc-input') as HTMLTextAreaElement | null
+    const vcNewChat = document.getElementById('vc-new-chat') as HTMLButtonElement | null
+    const vcDropBtn = document.getElementById('vc-chat-dropdown-btn') as HTMLButtonElement | null
     if (vcSend) vcSend.disabled = false
     if (vcInput) vcInput.disabled = false
+    if (vcNewChat) vcNewChat.disabled = false
+    if (vcDropBtn) vcDropBtn.disabled = false
   }
 
   function showInlineDiff(oldText: string, newText: string, newUrdf?: string) {

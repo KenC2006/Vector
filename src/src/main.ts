@@ -2822,6 +2822,7 @@ function refreshInspectAfterModelUpdate() {
 
 document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
   if (simApi.isSimActive()) return  // locked to inspect while simulation is running
+  if (document.body.classList.contains('ai-busy')) return  // locked to inspect during AI generation
   viewportInteractionMode = viewportInteractionMode === 'build' ? 'inspect' : 'build'
   syncViewportModeButton()
   urdfAssemblyApi?.onInteractionModeChanged(viewportInteractionMode)
@@ -2830,6 +2831,34 @@ document.getElementById('toggle-vp-mode')?.addEventListener('click', () => {
   }
 })
 syncViewportModeButton()
+
+// While the AI is mid-generation, force build → inspect (build mode lets the
+// user drag-place components, which would race with the model's tool calls
+// rewriting the URDF). The pre-generation mode is captured on the busy → idle
+// edge so the user lands back where they were when the apply/dismiss prompt
+// resolves. Mirrors the sim-mode lockout but driven by body.ai-busy so the
+// editor inline-diff Accept path (which doesn't go through viewportChat's
+// setAiBusy) still triggers restoration.
+let _modeBeforeAiBusy: 'build' | 'inspect' | null = null
+new MutationObserver(() => {
+  const busy = document.body.classList.contains('ai-busy')
+  if (busy && _modeBeforeAiBusy === null) {
+    _modeBeforeAiBusy = viewportInteractionMode
+    if (viewportInteractionMode === 'build') {
+      viewportInteractionMode = 'inspect'
+      syncViewportModeButton()
+      urdfAssemblyApi?.onInteractionModeChanged('inspect')
+    }
+  } else if (!busy && _modeBeforeAiBusy !== null) {
+    if (viewportInteractionMode !== _modeBeforeAiBusy) {
+      viewportInteractionMode = _modeBeforeAiBusy
+      syncViewportModeButton()
+      urdfAssemblyApi?.onInteractionModeChanged(viewportInteractionMode)
+      if (viewportInteractionMode === 'build') clearInspectFocus()
+    }
+    _modeBeforeAiBusy = null
+  }
+}).observe(document.body, { attributes: true, attributeFilter: ['class'] })
 
 // Ensure Monaco always has at least the default robot.urdf open so placement
 // and AI edits always have a valid URDF to read/write (prevents "Cannot edit
@@ -3010,13 +3039,25 @@ void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndSh
         }
         lastBakeResult = res
         const ok = res.clusters.filter(c => c.outcome.ok).length
-        const fail = res.clusters.length - ok
-        const summary = `Bake: ${ok} ok, ${fail} failed, ${res.hiddenLinks.size} links swapped (${(performance.now()-t0).toFixed(0)}ms)`
+        // `skip-*` phases are deliberate "nothing to do here" outcomes (e.g.
+        // baseplate-rooted clusters where electronics don't physically fuse).
+        // They are not failures — counting them as such was the source of the
+        // misleading "0 ok, N failed" toast on every AI generation.
+        const skipped = res.clusters.filter(c => !c.outcome.ok && c.outcome.phase?.startsWith('skip-')).length
+        const fail = res.clusters.length - ok - skipped
+        const skipPart = skipped > 0 ? `, ${skipped} skipped` : ''
+        const summary = `Bake: ${ok} ok, ${fail} failed${skipPart}, ${res.hiddenLinks.size} links swapped (${(performance.now()-t0).toFixed(0)}ms)`
         console.log(`[bake/scene] ${summary}`)
         // Toast only when the user asked (manual mode) or when something
-        // actually failed (worth surfacing in auto mode).
-        if (!quiet) showToast(summary, fail === 0 ? 'success' : 'warning')
-        else if (fail > 0) showToast(summary, 'warning')
+        // actually failed (worth surfacing in auto mode). All-skipped runs in
+        // auto mode are silent — they happen on every reparse for any robot
+        // whose only bakeable cluster is the baseplate one, which is the norm.
+        if (!quiet) {
+          const tone = fail > 0 ? 'warning' : (ok > 0 ? 'success' : 'info')
+          showToast(summary, tone)
+        } else if (fail > 0) {
+          showToast(summary, 'warning')
+        }
         return res
       } catch (e) {
         console.warn('[bake/scene] bake threw:', e)

@@ -830,6 +830,13 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
   function setAiBusy(busy: boolean) {
     vcSend.disabled = busy
     vcInput.disabled = busy
+    if (vcNewChatBtn) vcNewChatBtn.disabled = busy
+    const dropBtn = document.getElementById('vc-chat-dropdown-btn') as HTMLButtonElement | null
+    if (dropBtn) dropBtn.disabled = busy
+    if (busy) {
+      // Close the chat-switcher dropdown if it was open when generation started.
+      document.getElementById('vc-chat-dropdown-list')?.classList.add('hidden')
+    }
     document.body.classList.toggle('ai-busy', busy)
     const editor = (window as any).__vectorEditor as
       | { updateOptions(opts: { readOnly: boolean }): void } | undefined

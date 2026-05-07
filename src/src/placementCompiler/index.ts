@@ -580,7 +580,17 @@ export function compileAssembly(
       // (the servo horn IS the connector). Reconcile must not re-flush them.
       placedViaConnectorFlag = true
     } else {
-      if (hasMateConnectorFields(c)) {
+      // Tire-on-drivetrain has exactly one correct placement (motor body's
+      // outboard end), and the face short-circuit at face.ts:92 produces it.
+      // The mate-connector path here would honor whatever attach_connector the
+      // AI emits — and the AI consistently picks the motor's "bottom" because
+      // it thinks "top" was consumed by the baseplate bolt-down, dropping the
+      // wheel inboard. Skip the mate path entirely for this case so the face
+      // short-circuit always wins regardless of which mate fields the AI sets.
+      const tireOnDrivetrain =
+        isTireComponentId(c.component_id)
+        && !!parentComp && isDrivetrainComponentId(parentComp.component_id)
+      if (!tireOnDrivetrain && hasMateConnectorFields(c)) {
         const mateMulti = totalOnFace > 1
           ? { total: totalOnFace, index: childIdx, face: c.attach_face || 'top', childSizes: faceChildSizes.get(faceKey) }
           : undefined
