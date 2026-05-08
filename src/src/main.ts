@@ -101,10 +101,13 @@ function computeLowestRenderedMeshY(robotGroup: THREE.Group): number | null {
 let _liftAppliedSinceLastReground = false
 
 function liftAboveFloor(robotGroup: THREE.Group) {
-  const minY = computeLowestRenderedMeshY(robotGroup)
-  if (minY === null) return
-  const worldFloorY = robotGroup.position.y + minY
-  if (worldFloorY >= 0) return
+  // computeLowestRenderedMeshY returns world-space minY (mesh.matrixWorld already
+  // includes robotGroup.position.y), so it IS the world floor — don't add the
+  // group's Y again. Snap to floor in either direction; without the lower path,
+  // a wholesale content swap inherits the previous URDF's lift and floats.
+  const worldFloorY = computeLowestRenderedMeshY(robotGroup)
+  if (worldFloorY === null) return
+  if (Math.abs(worldFloorY) < 0.001) return
   robotGroup.position.y -= worldFloorY
   robotGroup.updateMatrixWorld(true)
   urdfAssemblyApi?.refreshMountNodeTransforms()
@@ -119,10 +122,9 @@ function liftAboveFloor(robotGroup: THREE.Group) {
  *  so user-positioned floating designs aren't disturbed. */
 function reconcilePostMeshLoadFloor(robotGroup: THREE.Group) {
   if (!_liftAppliedSinceLastReground) return
-  const minY = computeLowestRenderedMeshY(robotGroup)
-  if (minY === null) return
-  const worldFloorY = robotGroup.position.y + minY
-  // Only correct meaningful drift (> 1mm). Floor lift only — never raises here
+  const worldFloorY = computeLowestRenderedMeshY(robotGroup)
+  if (worldFloorY === null) return
+  // Only correct meaningful drift (> 1mm). Floor lower only — never raises here
   // (liftAboveFloor handles raising on its own).
   if (worldFloorY > 0.001) {
     robotGroup.position.y -= worldFloorY
