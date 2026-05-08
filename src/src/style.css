@@ -1124,6 +1124,35 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
   letter-spacing: 0.08em;
 }
 
+#panel-sim .sim-preview-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#panel-sim .sim-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 0;
+  transition: color 0.12s, background 0.12s;
+}
+
+#panel-sim .sim-icon-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#panel-sim .sim-icon-btn.copied {
+  color: #6ec76e;
+}
+
 #panel-sim .sim-ai-preview {
   max-height: 180px;
   margin: 0;

@@ -536,6 +536,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   const aiApplyRow = document.getElementById('sim-ai-apply-row')
   const aiApplyBtn = document.getElementById('sim-ai-apply') as HTMLButtonElement | null
   const aiDiscardBtn = document.getElementById('sim-ai-discard') as HTMLButtonElement | null
+  const aiCopyBtn = document.getElementById('sim-ai-copy') as HTMLButtonElement | null
 
   let pendingAiCode = ''
   let activeScriptCode = ''
@@ -554,6 +555,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
       aiPreviewEl.hidden = false
     }
     if (aiApplyRow) aiApplyRow.hidden = false
+    if (aiCopyBtn) aiCopyBtn.hidden = !code
     updateSimConfigLock()
   }
 
@@ -561,7 +563,25 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     pendingAiCode = ''
     if (aiPreviewEl) aiPreviewEl.hidden = true
     if (aiApplyRow) aiApplyRow.hidden = true
+    if (aiCopyBtn) aiCopyBtn.hidden = true
     updateSimConfigLock()
+  }
+
+  if (aiCopyBtn) {
+    aiCopyBtn.addEventListener('click', async () => {
+      if (!pendingAiCode) return
+      try {
+        await navigator.clipboard.writeText(pendingAiCode)
+        aiCopyBtn.classList.add('copied')
+        aiCopyBtn.title = 'Copied!'
+        setTimeout(() => {
+          aiCopyBtn.classList.remove('copied')
+          aiCopyBtn.title = 'Copy script to clipboard'
+        }, 1200)
+      } catch (err) {
+        console.warn('[sim-ai] clipboard write failed:', err)
+      }
+    })
   }
 
   function resetSimStatusDisplay() {
