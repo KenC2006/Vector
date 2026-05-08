@@ -685,22 +685,15 @@ export function compileAssembly(
       && c.joint_axis?.toLowerCase() === 'y'
       && c.attach_face === 'top'
     const parentDepth = armDepth.get(c.attach_to!) ?? 0
-    const applyRestPitch = (pitch: number) => {
-      if (cIsActuated) {
-        const rpyParts = parseRpyString(servoHornZeroRpy)
-        rpyParts[2] += pitch
-        servoHornZeroRpy = formatRpyTuple(rpyParts)
-      } else {
-        const rpyParts = parseRpyString(placementRpyAtRest)
-        rpyParts[1] += pitch
-        finalRpy = formatRpyTuple(rpyParts)
-      }
-    }
     if (isArmJoint) {
       const depth = parentDepth + 1
       armDepth.set(c.link_name, depth)
-      const defaultPitch = depth === 1 ? 0.7854 : depth === 2 ? -1.5708 : 0
-      if (defaultPitch !== 0) applyRestPitch(defaultPitch)
+      // Auto rest-pose disabled. Previously shoulder (depth 1) was pre-rotated
+      // +π/4 and elbow (depth 2) -π/2, which left arms locked in an L-pose at
+      // zero servo input rather than vertical. The prompt now instructs arms
+      // to stand vertical at rest; dog/humanoid still get their crouch via
+      // explicit `attach_rpy` from the AI (handled in the explicitRpyApplied
+      // branch below).
     } else {
       armDepth.set(c.link_name, c.attach_face === 'top' ? parentDepth : 0)
     }

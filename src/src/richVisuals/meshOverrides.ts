@@ -120,6 +120,33 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'mobility_rubber_foot_pad': 'mobility_rubber_foot.step',
 }
 
+/**
+ * Components whose entry in MESH_OVERRIDES exists only to keep them visible in
+ * the component picker (which gates on hasMeshOverride). The actual visual is
+ * rendered procedurally via the rich-visual generator. Use when the authored
+ * STEP/GLB has a fundamentally wrong aspect for the preset bbox.
+ */
+export const PROCEDURAL_VISUAL_ONLY: Set<string> = new Set([
+  'mobility_rubber_foot_pad',
+  // The following meshes diverge from their preset bbox by >3x even after best-
+  // case axis permutation — the GLB models a different part or scale than the
+  // preset spec, and per-axis stretching produces a grossly wrong shape with
+  // connector positions that don't land on real mesh features. Routing to the
+  // procedural fallback gives a clean primitive box matching the bbox, which
+  // is strictly better than a wildly distorted mesh.
+  // structural_shaft_collar: bbox 18×18×9 vs mesh 60×60×25 (3.37x off).
+  'structural_shaft_collar',
+  // structural_bracket_l: bbox 40mm cube vs mesh 146×72×90 L-bracket (3.65x).
+  'structural_bracket_l',
+  // sensor_joint_encoder_absolute: bbox 22×22×10 vs mesh 56×38×53 (3.80x).
+  'sensor_joint_encoder_absolute',
+  // power_distribution_unit: bbox 65×45×15 vs mesh 36×36×4 round PCB (3.66x).
+  'power_distribution_unit',
+  // compute_fpga_dev_board: spec is "small" 50×35×10 dev board, mesh is a
+  // 112×87×20 Xilinx-class board (2.47x). Spec wins here — use primitive box.
+  'compute_fpga_dev_board',
+])
+
 export type MeshVisualScalePolicy = 'none' | 'uniform' | 'per-axis'
 export type MeshVisualUnits = 'm' | 'mm' | 'auto'
 
@@ -258,6 +285,62 @@ export const ROTATION_OVERRIDES: Record<string, [number, number, number]> = {
   // preset [23,12.2,29] vs GLB [29,46.5,38.3] — cycle XYZ→ZXY so shaft lands
   // along +Z and body length on X.
   'actuator_servo_micro': [0, Math.PI / 2, Math.PI / 2],
+
+  // Rubber foot GLB raw [33, 50, 33] is Y-up (stud along +Y), preset frame is
+  // Z-up. Rx(π/2) maps GLB Y→Z so the stud points up instead of sideways.
+  'mobility_rubber_foot_pad': [Math.PI / 2, 0, 0],
+
+  // Parallel gripper GLB raw [74.6, 117.9, 11] is Y-up (jaw protrusion along
+  // +Y, plates flat in XZ). Preset bbox 65×65×40 puts protrusion on Z.
+  // Rx(π/2) maps GLB Y→Z so the gripper sticks out along the link's mounting
+  // axis (+Z) — without this it pointed sideways/down instead of forward.
+  'effector_parallel_gripper_small': [Math.PI / 2, 0, 0],
+  'effector_parallel_gripper_large': [Math.PI / 2, 0, 0],
+
+  // ── Phase 2 Tier 1: orientation fixes (no bbox change, only mesh axis swap) ──
+  // Without these, per-axis scaling stretches the mesh's wrong axis violently to
+  // fill the bbox dimension that should hold the shaft / length. With them, the
+  // mesh lands axis-aligned with the bbox even when bbox magnitudes differ from
+  // the mesh (for shared GLBs like linear_actuator and motor_dc).
+
+  // motor_dc_medium_540: GLB [37, 75, 37] long on Y, preset [36, 36, 54] long on Z.
+  // Rx(π/2) maps Y→Z so mesh length aligns with bbox length axis.
+  'motor_dc_medium_540': [Math.PI / 2, 0, 0],
+
+  // motor_dc_small_130: GLB [20, 38, 17] long on Y, preset [27.5, 20, 25] long on X.
+  // Rz(π/2) maps Y→X.
+  'motor_dc_small_130': [0, 0, Math.PI / 2],
+
+  // motor_gear_heavy_50mm: GLB [157, 45, 44] long on X, preset [50, 50, 95] long on Z.
+  // Ry(π/2) maps X→Z.
+  'motor_gear_heavy_50mm': [0, Math.PI / 2, 0],
+
+  // motor_gear_small_n20: GLB [48, 15, 19] long on X, preset [12, 10, 25] long on Z.
+  // Ry(π/2) maps X→Z.
+  'motor_gear_small_n20': [0, Math.PI / 2, 0],
+
+  // power_buck_converter_5v / _12v: GLB [43, 14, 21], thinnest axis is Y in mesh,
+  // but presets put thinnest on Z. Rx(π/2) swaps Y and Z so 14mm thinness lands
+  // on bbox Z (8mm / 12mm).
+  'power_buck_converter_5v': [Math.PI / 2, 0, 0],
+  'power_buck_converter_12v': [Math.PI / 2, 0, 0],
+
+  // sensor_tof: GLB [25, 3.5, 11] thin on Y, preset [13, 18, 2] thin on Z.
+  // Rx(π/2)+Rz(π/2) cycles XYZ→YZX so mesh Y(3.5mm thin)→preset Z(2mm thin)
+  // and mesh X(25mm long)→preset Y(18mm long).
+  'sensor_tof': [Math.PI / 2, 0, Math.PI / 2],
+
+  // Linear actuator family shares one GLB [27, 80, 15] (long on Y) across three
+  // presets all of which put length on Z. Rx(π/2) maps Y→Z. Magnitude mismatch
+  // remains because one mesh feeds three sizes — fixing that needs separate GLBs
+  // or a procedural family generator.
+  'actuator_linear_small': [Math.PI / 2, 0, 0],
+  'actuator_linear_heavy': [Math.PI / 2, 0, 0],
+  'actuator_micro_linear_servo': [Math.PI / 2, 0, 0],
+
+  // actuator_stepper_nema17: GLB [47, 72, 42] long on Y, preset [42, 42, 48].
+  // Rx(π/2) maps Y→Z so length lands on the preset's longest axis.
+  'actuator_stepper_nema17': [Math.PI / 2, 0, 0],
 }
 
 /**
@@ -306,6 +389,17 @@ export const EXPLICIT_SCALE_POLICY: Record<string, MeshVisualScalePolicy> = {
   // GLB raw [75.64, 41.3, 75.7] → rotX 90° → [75.64, 75.7, 41.3]
   // bbox [70, 70, 41]. Uniform scale 0.957 → divergence 3.5%.
   'sensor_lidar_2d': 'uniform',
+  // Rubber foot GLB models the full foot+M6 stud (~33×33×50 after rotation),
+  // preset bbox is pad-only (25×25×15). Per-axis would crush the stud into a
+  // disc. Uniform preserves proportions; the foot ends up smaller than the
+  // bbox on X/Y but reads as a real anti-vibration foot instead of a puck.
+  'mobility_rubber_foot_pad': 'uniform',
+  // Parallel gripper GLB raw [74.6, 117.9, 11] → after Rx(π/2) → [74.6, 11, 117.9].
+  // Preset bbox 65×65×40. Per-axis would stretch the 11mm jaw thickness 5.9× into
+  // 65mm Y. Uniform preserves the slim jaw silhouette (gripper ends up smaller than
+  // bbox on width/thickness but reads as a real two-finger gripper).
+  'effector_parallel_gripper_small': 'uniform',
+  'effector_parallel_gripper_large': 'uniform',
 }
 
 function scalePolicyForComponent(componentId: string): MeshVisualScalePolicy {

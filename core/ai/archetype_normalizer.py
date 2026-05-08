@@ -50,12 +50,22 @@ def _subtree_component_ids(components: List[Dict], root_link: str) -> Set[str]:
 def detect_archetype(components: List[Dict]) -> Optional[str]:
     """Return the archetype label, or None if unrecognized.
 
-    Mirrors the heuristic that previously lived inline in claude_client.py.
-    Quadruped = >=4 rubber foot pads. Future archetypes (arm, rover, humanoid)
-    plug in here."""
+    Quadruped = >=4 rubber foot pads.
+    Arm       = has an effector at the chain tip + chain of revolute servos
+                + no rubber feet (otherwise quadruped wins first).
+    """
     foot_count = sum(1 for c in components if c.get("component_id") == "mobility_rubber_foot_pad")
     if foot_count >= 4:
         return "quadruped"
+
+    has_effector = any(c.get("component_id", "").startswith("effector_") for c in components)
+    revolute_count = sum(
+        1 for c in components
+        if c.get("joint_type") == "revolute"
+        and c.get("component_id", "").startswith("actuator_")
+    )
+    if has_effector and revolute_count >= 3 and foot_count == 0:
+        return "arm"
     return None
 
 
@@ -163,8 +173,113 @@ def _normalize_quadruped(
     return new_components, diagnostics
 
 
+def _normalize_arm(
+    components: List[Dict],
+    requested_features: Dict[str, bool],
+) -> Tuple[List[Dict], List[Dict]]:
+    """Enforce arm-archetype invariants. Returns (new_components, diagnostics).
+
+    Doesn't auto-mutate the topology — it surfaces structured diagnostics so
+    the caller (AI redesign loop) can flag-and-retry. Auto-repair would risk
+    cascading placement breakage; topology critiques drive redesign instead.
+    """
+    diagnostics: List[Dict] = []
+    by_link = {c.get("link_name", ""): c for c in components}
+    base_names = _baseplate_link_names(components)
+
+    user_wants_camera = bool(requested_features.get("camera"))
+    user_wants_lidar = bool(requested_features.get("lidar"))
+
+    # Find the base servo (parented to baseplate, axis z) and the next-stage
+    # shoulder servo (parented to base servo's horn or compound parent, axis y).
+    base_servo: Optional[Dict] = None
+    shoulder_servo: Optional[Dict] = None
+    for c in components:
+        if (c.get("attach_to") in base_names
+            and c.get("component_id", "").startswith("actuator_servo")
+            and c.get("joint_axis", "").lower() == "z"):
+            base_servo = c
+            break
+    if base_servo is not None:
+        base_link = base_servo.get("link_name", "")
+        for c in components:
+            if (c.get("attach_to") == base_link
+                and c.get("component_id", "").startswith("actuator_servo")
+                and c.get("joint_axis", "").lower() == "y"):
+                shoulder_servo = c
+                break
+
+    # Invariant 1: a structural extrusion stem must sit between base_servo
+    # and shoulder_servo. Without it the shoulder hangs off the base via
+    # a tiny compound bracket and the arm reads as stubby.
+    if base_servo is not None and shoulder_servo is not None:
+        diagnostics.append({
+            "code": "arm_missing_torso_stem",
+            "severity": "error",
+            "component": shoulder_servo.get("link_name"),
+            "message": (
+                f"shoulder servo '{shoulder_servo.get('link_name')}' attaches directly "
+                f"to base servo '{base_servo.get('link_name')}' — insert a "
+                "`structural_extrusion_2020` (length_mm=60–100) torso stem between them."
+            ),
+            "fixable_by": "topology",
+        })
+
+    # Invariant 2: arm bones (between Y-axis revolute joints) must use
+    # structural_extrusion_2020, not structural_limb_link_slim. Slim links
+    # are 6×6mm and look like twigs under chunky shoulder/elbow servos.
+    y_servo_links = {
+        c.get("link_name") for c in components
+        if c.get("joint_type") == "revolute"
+        and c.get("joint_axis", "").lower() == "y"
+        and c.get("component_id", "").startswith("actuator_servo")
+    }
+    for c in components:
+        if c.get("component_id") != "structural_limb_link_slim":
+            continue
+        parent = c.get("attach_to")
+        if parent not in y_servo_links:
+            continue
+        # Slim link is parented to a Y-revolute servo => it's an arm bone.
+        diagnostics.append({
+            "code": "arm_slim_limb_used_as_bone",
+            "severity": "error",
+            "component": c.get("link_name"),
+            "message": (
+                f"arm bone '{c.get('link_name')}' uses structural_limb_link_slim — "
+                "swap to `structural_extrusion_2020` (180–220mm upper arm, "
+                "130–170mm forearm). Slim is for legs, not arms."
+            ),
+            "fixable_by": "topology",
+        })
+
+    # Invariant 3: no default sensors on a bare arm. Only flag if requested
+    # features explicitly disclaim them.
+    for c in components:
+        cid = c.get("component_id", "")
+        if not (cid.startswith("sensor_depth_camera") or cid.startswith("sensor_lidar")):
+            continue
+        is_camera = cid.startswith("sensor_depth_camera")
+        if is_camera and user_wants_camera: continue
+        if (not is_camera) and user_wants_lidar: continue
+        diagnostics.append({
+            "code": "arm_unrequested_sensor",
+            "severity": "warning",
+            "component": c.get("link_name"),
+            "message": (
+                f"sensor '{c.get('link_name')}' ({cid}) added to a bare arm — "
+                "remove it unless the user explicitly asked for "
+                f"{'a camera' if is_camera else 'a lidar'}."
+            ),
+            "fixable_by": "topology",
+        })
+
+    return components, diagnostics
+
+
 _NORMALIZERS = {
     "quadruped": _normalize_quadruped,
+    "arm": _normalize_arm,
 }
 
 

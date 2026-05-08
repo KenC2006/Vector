@@ -6,7 +6,6 @@ import type {
 } from './componentSpec.ts'
 import { _resolverInternal_generateDefaultConnectors, mergeConnectors } from './mateConnectors.ts'
 import type { MateConnector } from './mateConnectors.ts'
-import { getMeasuredCollisionExtentMm, getMeasuredCollisionCenterMm } from './meshExtents.ts'
 
 /**
  * Loose preset shape accepted by the resolver. Wider than `ComponentSpec` to
@@ -83,26 +82,16 @@ function resolveCollisionRecord(
   spec: ComponentResolverSpec,
   envelopeBounds: ResolvedComponentRecord['bounds'],
 ): ResolvedComponentRecord['collision'] {
+  // Bbox-as-source-of-truth: collision bounds always derive from the spec
+  // bbox (envelopeBounds), never from the measured OBJ. See
+  // componentVisualResolver.resolveCollisionEnvelope for the rationale.
   if (!spec.physical.collision_mesh) {
     return { source: 'preset_bbox', bounds: envelopeBounds }
-  }
-  const measured = getMeasuredCollisionExtentMm(spec.id)
-  const center = getMeasuredCollisionCenterMm(spec.id)
-  if (!measured) {
-    return {
-      source: 'authored_mesh',
-      file: spec.physical.collision_mesh,
-      bounds: envelopeBounds,
-    }
   }
   return {
     source: 'authored_mesh',
     file: spec.physical.collision_mesh,
-    bounds: {
-      half: [measured[0] / 2, measured[1] / 2, measured[2] / 2],
-      center: center ? [center[0], center[1], center[2]] : [0, 0, 0],
-      shape: envelopeBounds.shape,
-    },
+    bounds: envelopeBounds,
   }
 }
 

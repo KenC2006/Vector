@@ -837,6 +837,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       // Close the chat-switcher dropdown if it was open when generation started.
       document.getElementById('vc-chat-dropdown-list')?.classList.add('hidden')
     }
+    // Flip viewport mode synchronously BEFORE toggling the class, so the
+    // gizmo/mount-nodes are torn down before any AI tool call can write a new
+    // URDF. The class toggle still fires the MutationObserver as a backstop
+    // for the inlineDiff path that bypasses setAiBusy.
+    const setAiBusyMode = (window as unknown as { __setAiBusyMode?: (busy: boolean) => void }).__setAiBusyMode
+    setAiBusyMode?.(busy)
     document.body.classList.toggle('ai-busy', busy)
     const editor = (window as any).__vectorEditor as
       | { updateOptions(opts: { readOnly: boolean }): void } | undefined

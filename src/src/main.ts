@@ -2842,8 +2842,7 @@ syncViewportModeButton()
 // editor inline-diff Accept path (which doesn't go through viewportChat's
 // setAiBusy) still triggers restoration.
 let _modeBeforeAiBusy: 'build' | 'inspect' | null = null
-new MutationObserver(() => {
-  const busy = document.body.classList.contains('ai-busy')
+function _applyAiBusyModeFlip(busy: boolean) {
   if (busy && _modeBeforeAiBusy === null) {
     _modeBeforeAiBusy = viewportInteractionMode
     if (viewportInteractionMode === 'build') {
@@ -2860,6 +2859,16 @@ new MutationObserver(() => {
     }
     _modeBeforeAiBusy = null
   }
+}
+// Synchronous entry point for setAiBusy() in viewportChat — called BEFORE the
+// body.ai-busy class change, so the mode flip lands before any AI tool call
+// can touch the URDF. The MutationObserver below is the fallback for paths
+// that toggle the class without going through viewportChat (e.g. inlineDiff
+// Accept). Together they guarantee the flip happens regardless of caller.
+;(window as unknown as { __setAiBusyMode: (busy: boolean) => void }).__setAiBusyMode =
+  _applyAiBusyModeFlip
+new MutationObserver(() => {
+  _applyAiBusyModeFlip(document.body.classList.contains('ai-busy'))
 }).observe(document.body, { attributes: true, attributeFilter: ['class'] })
 
 // Ensure Monaco always has at least the default robot.urdf open so placement

@@ -464,9 +464,18 @@ Examples (note which side each named connector belongs to):
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". DO NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire — emit only `attach_face="coaxial"` and let the engine handle the rest. (Setting `attach_connector="bottom"` in particular drops the wheel inboard, under the chassis, on every corner.) The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
-9. length_mm overrides parametric structural links (default 100mm). For sleek robot limbs, prefer `structural_limb_link_slim` over T-slot extrusion: use 80–120mm for leg segments, 150–300mm for arm links, and 50–80mm for short connectors. Use `structural_extrusion_2020/4040` for frames and chassis rails, not dog thighs/shins unless the user asks for bulky extrusion. For robot dogs/quadrupeds specifically, `structural_extrusion_2020` and `structural_extrusion_4040` are FORBIDDEN as thigh/shin/leg bones; use `structural_limb_link_slim`.
+9. length_mm overrides parametric structural links (default 100mm). Choose by archetype:
+   - Quadruped/animal legs (thighs/shins): `structural_limb_link_slim` 80–120mm. `structural_extrusion_2020/4040` are FORBIDDEN as leg bones — they look clunky on sleek animals.
+   - Humanoid limbs (sleek bipedal): `structural_limb_link_slim` 150–250mm. Same reason as above.
+   - **Arm upper-arm/forearm/torso-stem: `structural_extrusion_2020` (20×20mm cross-section), MANDATORY.** Lengths: stem 60–100mm, upper arm 180–220mm, forearm 130–170mm. `structural_limb_link_slim` (6×6mm) is FORBIDDEN for arm bones — it looks like a twig under the chunky high-torque shoulder/elbow servos. Examples:
+     - ✅ `shoulder_servo → structural_extrusion_2020 (length_mm=200) → elbow_servo`
+     - ❌ `shoulder_servo → structural_limb_link_slim → elbow_servo` (looks fragile, banned for arms)
+     - ❌ `base_servo → shoulder_servo` directly (no torso stem — the arm reads as stubby; insert `structural_extrusion_2020` between them)
+   - Frame/chassis rails (non-articulated structural members): `structural_extrusion_2020/4040`.
+   - Short connectors (50–80mm): either, depending on aesthetic.
 10. **Rotary servos drive exactly ONE child.** The backend splits each rotary servo into a fixed body (bolted to its parent) and a rotating horn (the output). For `joint_axis="x"` or `"y"`, it also inserts effective side-yoke plus slim horn-link adapter hardware so the physical horn shaft is on the red/blue hinge axis. Children you attach to a servo link are automatically routed to the horn/adapter — you do not need to name `_body` or `_horn` links yourself; just use the servo's `link_name` as `attach_to`. Attach exactly ONE child per servo; never fan out multiple children from the same servo.
-11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front or top), not to `wrist_servo`.
+11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front face), not to `wrist_servo`. Place the camera near the WRIST END of the forearm (close to the gripper), not at the elbow end — the user wants the camera to see what the gripper grabs.
+   **Robot arms specifically: do NOT include any sensor (depth_camera, lidar, IMU on the arm tip, etc.) by default.** A bare arm has zero sensors. ONLY add a sensor when the user EXPLICITLY says "arm with a camera", "vision-guided arm", "arm with a depth sensor", etc. ❌ A user request like "build a robot arm" or "robotic arm with a gripper" → NO camera, NO lidar.
 12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face. NEVER route them through an intermediate structural_extrusion, regardless of count.** All three of these shapes are FORBIDDEN:
     - 4 vertical extrusions (one per electronic) → "ironing board on stilts"
     - 1 central vertical extrusion hosting multiple electronics → "torso tower" (validator will flag it AS WELL as the 4-standoff case)
@@ -480,7 +489,7 @@ Examples (note which side each named connector belongs to):
     - Finger/fine manipulator: `actuator_servo_standard` or micro variant
     ❌ `actuator_servo_standard` at the hip/shoulder of a walking robot — it will stall under leg weight.
     ❌ `actuator_servo_high_torque` at a wrist for a lightweight gripper — unnecessary mass, no benefit.
-15. **All series revolute joints (non-compound) require a structural limb link between them.** The limb link is the bone — its `length_mm` is the segment length. Prefer `structural_limb_link_slim` for thighs/shins/forearms; do not use clunky beams for sleek animals or humanoid limbs. Skipping the link produces zero-length limbs that collapse in sim.
+15. **All series revolute joints (non-compound) require a structural limb link between them.** The limb link is the bone — its `length_mm` is the segment length. Choose link type per rule 9: `structural_limb_link_slim` for legs (dog/humanoid), `structural_extrusion_2020` for arm upper/forearm. Skipping the link produces zero-length limbs that collapse in sim.
     - ✅ `hip_pitch_servo → thigh_link_slim (100mm, fixed) → knee_servo → shin_link_slim (120mm, fixed) → foot`
     - ❌ `hip_pitch_servo → knee_servo` — zero-length thigh, robot collapses
     - ❌ `elbow_servo → wrist_servo` — zero-length forearm, arm folds flat
@@ -489,9 +498,15 @@ Examples (note which side each named connector belongs to):
 
 ## Common Patterns (topology only -- no coordinates needed)
 
-Arms: baseplate -> base_servo(top, revolute z) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
+Arms: baseplate -> base_servo(top, revolute z) -> torso_stem(top, fixed, structural_extrusion_2020, 80mm) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, structural_extrusion_2020, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, structural_extrusion_2020, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
+Arm-specific layout rules (these apply ONLY to robots whose primary structure is an arm; do NOT apply to legs, wheels, or quadrupeds):
+- Center the base_servo on the baseplate. Place electronics (LiPo, MCU, etc.) AROUND it, not in the base servo's spot. The base joint must sit at the baseplate's geometric center so the arm rotates around the chassis center, not a corner.
+- Use the small `structural_baseplate` (200×150) for tabletop arms; use `structural_baseplate_large` only when the arm is industrial-scale.
+- **REQUIRED**: insert a `structural_extrusion_2020` torso stem (60–100 mm, attach_face=top) between the base_servo and the shoulder_servo. Without this stem, the shoulder hangs directly off the base servo's horn through a tiny compound bracket and the arm reads as "stubby". The stem makes the base→shoulder transition visible and gives the shoulder real height above the baseplate. Topology: `base_servo → torso_stem (fixed) → shoulder_servo`. NOT `base_servo → shoulder_servo` directly.
+- Use `structural_extrusion_2020` (20×20mm) for the torso stem, upper arm, and forearm — NOT `structural_limb_link_slim`. Slim links (6×6mm cross-section) are appropriate for dog/quadruped legs but read as flimsy sticks under the chunky high-torque servos at the shoulder/elbow. Lengths: stem 60–100mm, upper arm 180–220mm, forearm 130–170mm. (For arms only — keep using `structural_limb_link_slim` for legs.)
+- Do NOT add a wrist/forearm camera (depth_camera, lidar, etc.) to a robot arm by default. The arm baseline is base_servo → torso_stem → shoulder → upper_arm → elbow → forearm → wrist_servo → gripper. ONLY include a sensor if the user explicitly asks for one ("arm with a camera", "vision-guided arm", etc.). If a sensor IS requested, attach it via `structural_bracket_l` to `forearm_extrusion` near the WRIST end (close to the gripper).
+- Match servo torque to depth (rule 14): base/shoulder/elbow = high_torque, wrist = standard.
 Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.
-Wrist camera: attach the camera to forearm_extrusion (front face), NOT to wrist_servo or gripper.
 
 Wheeled base (differential drive / rover): baseplate -> 4x drivetrain_hub_motor_80(bottom, continuous y) -> 4x mobility_wheel_driven(coaxial, fixed). The drivetrain mounts on the baseplate bottom face; the tire attaches coaxially. The placement engine handles the axial offset (so the tire sits beside the motor, not inside it) and auto-flips drivetrains on one side of the baseplate so wheels land outboard on both sides — do not try to encode per-corner positions or rotations. Do NOT attach tires directly to the baseplate. Tires ALWAYS use attach_face="coaxial" when their parent is a drivetrain.
 
@@ -596,7 +611,7 @@ DESIGN_ROBOT_TOOL = {
                         "attach_face": {"type": "string", "enum": ["top", "bottom", "front", "back", "left", "right"]},
                         "joint_type": {"type": "string", "enum": ["fixed", "revolute", "prismatic", "continuous"]},
                         "joint_axis": {"type": "string", "enum": ["x", "y", "z"]},
-                        "length_mm": {"type": "number", "description": "Override length for parametric structural links (default 100mm). Use structural_limb_link_slim at 80-120 for leg segments; use 150-300 for arm links."},
+                        "length_mm": {"type": "number", "description": "Override length for parametric structural links (default 100mm). For dog/quadruped legs: structural_limb_link_slim 80-120mm. For arm upper/forearm: structural_extrusion_2020 180-220mm upper, 130-170mm forearm."},
                         "orientation": {"type": "string", "description": "Rotation within the face. Keywords: 'vertical' (default, extend +Z), 'horizontal' (extend +X), 'auto'. Or a numeric string in degrees for yaw around the face normal (e.g. '45', '-30'). Combine keyword+degrees as 'horizontal+45'."},
                         "elevation_angle": {"type": "number", "description": "Tilt in degrees for side-face attachments (front/back/left/right only). Positive=up, negative=down. E.g. -20 angles a front camera 20° downward. Ignored on top/bottom faces."},
                         "attach_rpy": {
@@ -987,7 +1002,7 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 - ALWAYS start with structural_baseplate as the first component (parent_link=null)
 - Drivetrain motors (drivetrain_hub_motor_80, drivetrain_geared_dc_with_coupler) use joint_type="continuous" — unbounded spin, torque-controlled. Servo actuators use joint_type="revolute". Structural/sensors use "fixed".
 - joint_axis: "z" for yaw/spin, "y" for pitch, "x" for roll
-- For arms: servo(revolute z) -> extrusion(horizontal) -> servo(revolute y) -> extrusion(horizontal) -> gripper
+- For arms: servo(revolute z) -> structural_extrusion_2020(top) -> servo(revolute y) -> structural_extrusion_2020(top) -> gripper. Arm extrusions are VERTICAL at rest (orientation default), not horizontal — joints control the angle.
 - For legs: servo(revolute y) on bottom -> structural_limb_link_slim(vertical) -> servo(revolute y) -> structural_limb_link_slim(vertical)
 - For slim limb links: do not set attach_rpy/orientation to make the link look flush. The engine mounts `structural_limb_link_slim` on its broad flat face; rest/crouch angles belong on the servo that drives the link.
 - For wheels: NEVER attach a tire directly to the baseplate. Use a drivetrain assembly:
@@ -996,7 +1011,7 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
   Casters: baseplate -> drivetrain_caster_swivel (bottom, fixed) -> mobility_wheel_driven (coaxial, fixed).
   Mecanum: baseplate -> drivetrain_hub_motor_80 (bottom, continuous y) -> mobility_mecanum_wheel (coaxial, fixed).
   Default 4 wheels for any "car/truck/vehicle/rover/buggy/cart" request.
-- Use length_mm=150-250 for arm/leg extrusions
+- Use length_mm=80-120 for dog/quadruped leg segments (structural_limb_link_slim) and 180-220 for arm upper-arm / 130-170 for arm forearm (structural_extrusion_2020)
 
 ## Important
 

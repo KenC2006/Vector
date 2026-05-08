@@ -10,7 +10,7 @@
  */
 import * as THREE from 'three'
 import type { GeneratorDims } from './generators'
-import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES, SLOW_MESH_BLACKLIST } from './meshOverrides'
+import { getMeshOverrideUrl, getStepFallbackUrl, MESH_OVERRIDES, SLOW_MESH_BLACKLIST, PROCEDURAL_VISUAL_ONLY } from './meshOverrides'
 import { setRenderedMeshDims } from '../meshDimsCache'
 import { resolveComponentVisual } from '../componentVisualResolver'
 import type {
@@ -202,7 +202,7 @@ export function applyRichVisuals(
     // Check for a real mesh override. Cached meshes are applied through the
     // resolver; uncached meshes keep the resolver fallback while loading.
     const meshUrl = getMeshOverrideUrl(compId)
-    if (meshUrl && !SLOW_MESH_BLACKLIST.has(compId)) {
+    if (meshUrl && !SLOW_MESH_BLACKLIST.has(compId) && !PROCEDURAL_VISUAL_ONLY.has(compId)) {
       // Check cache first — reuse previously loaded STEP mesh
       if (resolved.source === 'mesh' && resolved.previewGroup) {
         applyResolvedRenderVisual(resolved, linkGroup)

@@ -509,70 +509,16 @@ function generateBallTransfer(_id: string, dims: ComponentVisualDims): THREE.Gro
 function generateRubberFoot(_id: string, dims: ComponentVisualDims): THREE.Group {
   const g = new THREE.Group()
   const { x: w, y: d, z: h } = dims
-  // Authored URDF-Z-up: cylinder axes along world Z so the puck stands
-  // upright in both the carry-ghost path (which keeps the group's local
-  // rotation) and the assembled path (where applyRichVisuals overwrites
-  // the group rotation with the URDF primitive's origin_rpy = identity).
-  // nurbsCylinder revolves around local Y; Rx(π/2) per-mesh swings Y→Z.
-  const discR = Math.min(w, d) * 0.5
-  const discH = h
-  const chamfer = discH * 0.08
-
-  // Rubber body — chamferedCylinder (rubber_black)
-  const bodyR = discR * 0.7
-  const bodyH = discH * 0.45
-  const body = new THREE.Mesh(
-    nurbsCylinder(bodyR, bodyH, chamfer, 28),
+  // Plain black cylinder filling the bbox — axis along URDF +Z (up).
+  // nurbsCylinder revolves around local Y; Rx(π/2) swings Y→Z so the
+  // cylinder stands upright with its flat faces top/bottom.
+  const radius = Math.min(w, d) * 0.5
+  const cyl = new THREE.Mesh(
+    nurbsCylinder(radius, h, h * 0.05, 32),
     getMaterial('rubber_black'),
   )
-  body.rotation.x = Math.PI / 2
-  g.add(body)
-
-  // Wider base flange — nurbsCylinder (rubber_black)
-  const baseR = discR * 0.95
-  const baseH = discH * 0.15
-  const base = new THREE.Mesh(
-    nurbsCylinder(baseR, baseH, chamfer * 0.5, 28),
-    getMaterial('rubber_black'),
-  )
-  base.rotation.x = Math.PI / 2
-  base.position.z = -bodyH * 0.5 - baseH * 0.3
-  g.add(base)
-
-  // Center mounting bolt — pierces the body along Z
-  const boltR = bodyR * 0.15
-  const bolt = new THREE.Mesh(
-    nurbsCylinder(boltR, bodyH * 1.2, boltR * 0.1, 12),
-    getMaterial('brushed_steel'),
-  )
-  bolt.rotation.x = Math.PI / 2
-  g.add(bolt)
-
-  // Tread pattern on bottom (concentric rings) — torus rings live in XY plane
-  // by virtue of nurbsTorus revolving around Y; Rx(π/2) lays them flat in XY.
-  const treadMat = getMaterial('matte_plastic', 0x0a0a0a)
-  for (let i = 1; i <= 3; i++) {
-    const ringR = baseR * (i / 4)
-    const tread = new THREE.Mesh(
-      nurbsTorus(ringR, baseR * 0.02, 24, 4),
-      treadMat,
-    )
-    tread.rotation.x = Math.PI / 2
-    tread.position.z = -bodyH * 0.5 - baseH * 0.5
-    g.add(tread)
-  }
-
-  // Washer on top of the body
-  const washerR = bodyR * 0.5
-  const washerH = discH * 0.06
-  const washer = new THREE.Mesh(
-    nurbsCylinder(washerR, washerH, washerH * 0.2, 16),
-    getMaterial('brushed_steel'),
-  )
-  washer.rotation.x = Math.PI / 2
-  washer.position.z = bodyH * 0.5 + washerH * 0.5
-  g.add(washer)
-
+  cyl.rotation.x = Math.PI / 2
+  g.add(cyl)
   return g
 }
 

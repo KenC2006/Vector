@@ -1207,6 +1207,11 @@ function assertLogicalAndVisualBoundsAgree(): Case {
 }
 
 function assertCollisionUsesMeasuredMeshExtent(): Case {
+  // Bbox-as-source-of-truth: collision.bounds derives from the spec bbox, not
+  // from the measured OBJ extent. The OBJ stays as a build-time measurement
+  // (and could legitimately differ from the spec) but no longer feeds runtime
+  // collision geometry. This test confirms the new contract — the measured
+  // mesh entry is intentionally provided here AND ignored.
   setMeshExtentsCatalog({
     components: {
       compute_mcu_small: {
@@ -1227,28 +1232,30 @@ function assertCollisionUsesMeasuredMeshExtent(): Case {
 
     if (visual.collision.source !== 'authored_mesh' || logical.collision.source !== 'authored_mesh') {
       return {
-        name: 'collision parity: measured mesh extent populates collision.bounds',
+        name: 'collision parity: bbox populates collision.bounds (not measured OBJ)',
         passed: false,
         reason: `expected authored_mesh on both, got visual=${visual.collision.source} logical=${logical.collision.source}`,
       }
     }
-    if (!approx(visual.collision.bounds.hx, 0.0249, 1e-4) || !approx(visual.collision.bounds.hy, 0.0102, 1e-4)) {
+    // Visual side is in meters: bbox [51,21,5] mm → halves [0.0255, 0.0105, 0.0025] m
+    if (!approx(visual.collision.bounds.hx, 0.0255, 1e-4) || !approx(visual.collision.bounds.hy, 0.0105, 1e-4)) {
       return {
-        name: 'collision parity: measured mesh extent populates collision.bounds',
+        name: 'collision parity: bbox populates collision.bounds (not measured OBJ)',
         passed: false,
-        reason: `visual collision half from measured extent expected [0.0249,0.0102,0.0023], got [${visual.collision.bounds.hx},${visual.collision.bounds.hy},${visual.collision.bounds.hz}]`,
+        reason: `visual collision half from bbox expected [0.0255,0.0105,0.0025], got [${visual.collision.bounds.hx},${visual.collision.bounds.hy},${visual.collision.bounds.hz}]`,
       }
     }
+    // Logical side is in mm.
     const lhx = logical.collision.bounds.half[0]
     const lhy = logical.collision.bounds.half[1]
-    if (!approx(lhx, 24.9, 1e-2) || !approx(lhy, 10.2, 1e-2)) {
+    if (!approx(lhx, 25.5, 1e-2) || !approx(lhy, 10.5, 1e-2)) {
       return {
-        name: 'collision parity: measured mesh extent populates collision.bounds',
+        name: 'collision parity: bbox populates collision.bounds (not measured OBJ)',
         passed: false,
-        reason: `logical collision half (mm) expected [24.9,10.2,2.3], got [${lhx},${lhy},${logical.collision.bounds.half[2]}]`,
+        reason: `logical collision half (mm) expected [25.5,10.5,2.5], got [${lhx},${lhy},${logical.collision.bounds.half[2]}]`,
       }
     }
-    return { name: 'collision parity: measured mesh extent populates collision.bounds', passed: true }
+    return { name: 'collision parity: bbox populates collision.bounds (not measured OBJ)', passed: true }
   } finally {
     setMeshExtentsCatalog(null)
   }

@@ -372,12 +372,21 @@ async function main() {
           const collisionHash = shortContentHash(collisionBytes)
           const verts = await loadObjVertices(objPath)
           if (verts.length > 0) {
+            // Apply the same runtime rotation override as the visual side, so
+            // the collision AABB lives in the same frame as declared_bbox_mm
+            // (which is authored in the post-rotation, runtime-presented
+            // frame). Without this, components with a rotation override show
+            // bbox-vs-collision divergence == bbox-vs-mesh axis swap, which
+            // forces the strict gate to reject any aligned-with-GLB bbox.
+            const rot = rotationOverrides.get(id) || [0, 0, 0]
+            const rotMat = rotationMatrixXyz(rot)
             const b = emptyBounds()
-            for (const v of verts) expandBounds(b, v)
+            for (const v of verts) expandBounds(b, transformPoint(rotMat, v))
             const extentMm = sizeOf(b).map(v => v * 1000)
             entry.collision = {
               file: collisionMesh,
               content_hash: collisionHash,
+              rotation_rpy: rot,
               extent_mm: extentMm,
               center_mm: [
                 (b.max[0] + b.min[0]) / 2 * 1000,
@@ -439,22 +448,28 @@ async function main() {
     const baseline = await loadBaseline()
     const { newDrifts, grewDrifts } = compareAgainstBaseline(sortedResult, baseline, flags.threshold)
 
-    // Phase 5 step 4: collision divergence is a hard gate — no baseline. The
-    // collision mesh is the canonical envelope the placement compiler reads
-    // (via resolved.collision.bounds), so a bbox that diverges from it
-    // misplaces every downstream child. 15% accommodates the shaft-overhang
-    // case (high_torque ~14.7%); anything beyond is a preset data bug.
-    const COLLISION_LIMIT = 0.15
-    const collisionFails = []
+    // Collision divergence is now informational, not a hard gate. The
+    // resolver was changed to use the spec bbox (not the OBJ extent) as the
+    // collision envelope (componentVisualResolver.resolveCollisionEnvelope),
+    // so the OBJ being a different size from the bbox no longer misplaces
+    // children — placement reads the bbox directly. Large divergences still
+    // get printed as a heads-up (likely an asset that doesn't match its
+    // spec), but they don't block commits.
+    const COLLISION_NOTICE = 0.30
+    const collisionNotices = []
     for (const [id, entry] of Object.entries(sortedResult)) {
       const div = entry.collision?.divergence_vs_bbox
-      if (typeof div === 'number' && div > COLLISION_LIMIT) {
-        collisionFails.push({ id, div })
+      if (typeof div === 'number' && div > COLLISION_NOTICE) {
+        collisionNotices.push({ id, div })
       }
     }
 
-    if (newDrifts.length === 0 && grewDrifts.length === 0 && collisionFails.length === 0) {
-      console.log(`Strict check passed (baseline: ${Object.keys(baseline.components || {}).length} known visual drifts, tolerance ${baseline.tolerance ?? 0.005}; collision limit ${COLLISION_LIMIT * 100}%).`)
+    if (newDrifts.length === 0 && grewDrifts.length === 0) {
+      if (collisionNotices.length > 0) {
+        console.log(`Strict check passed; ${collisionNotices.length} component(s) have collision-vs-bbox divergence > ${(COLLISION_NOTICE * 100).toFixed(0)}% (informational, see meshExtents.generated.json).`)
+      } else {
+        console.log(`Strict check passed (baseline: ${Object.keys(baseline.components || {}).length} known visual drifts, tolerance ${baseline.tolerance ?? 0.005}).`)
+      }
       return
     }
     console.error(`\nStrict mesh-extent check FAILED:`)
@@ -463,9 +478,6 @@ async function main() {
     }
     for (const { id, div, baseline: b } of grewDrifts) {
       console.error(`  GREW visual: ${id}  ${(b * 100).toFixed(1)}% → ${(div * 100).toFixed(1)}%`)
-    }
-    for (const { id, div } of collisionFails) {
-      console.error(`  COLLISION: ${id}  divergence ${(div * 100).toFixed(1)}% > limit ${(COLLISION_LIMIT * 100).toFixed(0)}%`)
     }
     console.error(`\nFix by editing physical.bbox_mm / parametric in core/presets/generic_presets.json,`)
     console.error(`or — if the new visual divergence is intentional — re-run with --update-baseline.`)

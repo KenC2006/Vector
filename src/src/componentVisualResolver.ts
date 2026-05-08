@@ -12,7 +12,7 @@ import type { UrdfVisualDesc } from './componentMeshes'
 import { resolveComponent, resolveComponentBboxMm } from './componentResolver.ts'
 import { getMeasuredCollisionExtentMm, getMeasuredCollisionCenterMm, getMeasuredVisualExtentMm, getMeasuredMeshEntry } from './meshExtents.ts'
 import type { MateConnector } from './mateConnectors'
-import { getMeshVisualMetadata } from './richVisuals/meshOverrides'
+import { getMeshVisualMetadata, PROCEDURAL_VISUAL_ONLY } from './richVisuals/meshOverrides'
 import { findRichGenerator } from './richVisuals/generators'
 import { getComponentColor } from './richVisuals/materials'
 import { getCachedMeshGroup, isMeshLoadInProgress } from './richVisuals/meshCache'
@@ -115,8 +115,9 @@ export function resolveComponentVisual(args: ResolveComponentVisualArgs): Resolv
   const meshMetadata = getMeshVisualMetadata(preset.id)
   const collision = resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
   const resolvedLogical = resolveComponent({ spec: preset, instance: args.instance, category: args.category })
-  const meshOverride = !!meshMetadata
-  const meshUsable = !!meshMetadata && !meshMetadata.blacklisted
+  const proceduralOnly = PROCEDURAL_VISUAL_ONLY.has(preset.id)
+  const meshOverride = !!meshMetadata && !proceduralOnly
+  const meshUsable = !!meshMetadata && !meshMetadata.blacklisted && !proceduralOnly
   const meshPreview = meshUsable ? buildCachedMeshPreviewGroup(preset, {
     linkName: args.linkName,
     materialCache: args.materialCache,
@@ -240,26 +241,21 @@ function resolveCollisionEnvelope(
   visualBounds: ComponentVisualBounds | null,
 ): ResolvedComponentVisual['collision'] {
   if (preset.physical.collision_mesh) {
-    // Phase 1 contract: when an authored collision mesh exists, collision.bounds
-    // is the AABB of that mesh (measured at build time), not the preset bbox.
-    const measuredExtent = getMeasuredCollisionExtentMm(preset.id)
-    const measuredCenter = getMeasuredCollisionCenterMm(preset.id)
+    // Bbox-as-source-of-truth: collision bounds use the spec bbox (centered at
+    // origin), not the OBJ-measured AABB. The previous behavior trusted the
+    // OBJ extent + center — but collision OBJs ship at fixed sizes (ignoring
+    // per-instance length_mm), and several authors placed the OBJ origin at
+    // a corner/face rather than the centroid (e.g. extrusion_2020.obj has
+    // center_mm=[0,0,250] because the part runs z=0..500). Both errors caused
+    // children to attach at the wrong distance and the collision shape to
+    // float relative to the visual. Anchoring collision to the bbox keeps
+    // placement, visual, and connector positions consistent by construction.
+    // The OBJ stays as a build-time measurement for divergence reporting.
     const collisionShape: 'box' | 'cylinder' =
       preset.physical.inertia_primitive === 'cylinder' ? 'cylinder' : 'box'
-    const meshBounds = measuredExtent
-      ? {
-        hx: measuredExtent[0] / 2000,
-        hy: measuredExtent[1] / 2000,
-        hz: measuredExtent[2] / 2000,
-        cx: measuredCenter ? measuredCenter[0] / 1000 : 0,
-        cy: measuredCenter ? measuredCenter[1] / 1000 : 0,
-        cz: measuredCenter ? measuredCenter[2] / 1000 : 0,
-        shape: collisionShape,
-      }
-      : bounds
     return {
       source: 'authored_mesh',
-      bounds: meshBounds,
+      bounds: { ...bounds, shape: collisionShape },
       meshFile: preset.physical.collision_mesh,
     }
   }

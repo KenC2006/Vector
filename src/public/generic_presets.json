@@ -1150,11 +1150,11 @@
           "physical": {
             "mass_kg": 0.03,
             "bounding_box_mm": [
-              27.5,
-              20,
-              25
+              39.0,
+              21.0,
+              18.0
             ],
-            "inertia_primitive": "cylinder",
+            "inertia_primitive": "box",
             "legacy_override": true,
             "collision_mesh": "motor_dc_small_130_collision.obj"
           },
@@ -1191,7 +1191,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                9.0
               ],
               "axis_xyz": [
                 0,
@@ -1206,7 +1206,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                9.0
               ],
               "axis_xyz": [
                 0,
@@ -1220,7 +1220,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -9.0
               ],
               "axis_xyz": [
                 0,
@@ -1238,9 +1238,9 @@
           "physical": {
             "mass_kg": 0.2,
             "bounding_box_mm": [
-              36,
-              36,
-              54
+              38.0,
+              38.0,
+              76.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -1279,7 +1279,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                27
+                38.0
               ],
               "axis_xyz": [
                 0,
@@ -1294,7 +1294,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                27
+                38.0
               ],
               "axis_xyz": [
                 0,
@@ -1308,7 +1308,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -27
+                -38.0
               ],
               "axis_xyz": [
                 0,
@@ -1326,9 +1326,9 @@
           "physical": {
             "mass_kg": 0.35,
             "bounding_box_mm": [
-              42,
-              42,
-              66
+              53.0,
+              53.0,
+              109.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -1368,7 +1368,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                33
+                54.5
               ],
               "axis_xyz": [
                 0,
@@ -1383,7 +1383,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                33
+                54.5
               ],
               "axis_xyz": [
                 0,
@@ -1397,7 +1397,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -33
+                -54.5
               ],
               "axis_xyz": [
                 0,
@@ -1415,9 +1415,9 @@
           "physical": {
             "mass_kg": 0.01,
             "bounding_box_mm": [
-              12,
-              10,
-              25
+              20.0,
+              16.0,
+              49.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -1456,7 +1456,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                24.5
               ],
               "axis_xyz": [
                 0,
@@ -1471,7 +1471,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                24.5
               ],
               "axis_xyz": [
                 0,
@@ -1485,7 +1485,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -24.5
               ],
               "axis_xyz": [
                 0,
@@ -1591,9 +1591,9 @@
           "physical": {
             "mass_kg": 0.4,
             "bounding_box_mm": [
-              50,
-              50,
-              95
+              45.0,
+              46.0,
+              158.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -1632,7 +1632,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                47.5
+                79.0
               ],
               "axis_xyz": [
                 0,
@@ -1647,7 +1647,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                47.5
+                79.0
               ],
               "axis_xyz": [
                 0,
@@ -1661,7 +1661,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -47.5
+                -79.0
               ],
               "axis_xyz": [
                 0,
@@ -1679,9 +1679,9 @@
           "physical": {
             "mass_kg": 0.005,
             "bounding_box_mm": [
-              8,
-              8,
-              16
+              11.0,
+              11.0,
+              27.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -1720,7 +1720,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                8
+                13.5
               ],
               "axis_xyz": [
                 0,
@@ -1735,7 +1735,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                8
+                13.5
               ],
               "axis_xyz": [
                 0,
@@ -1749,7 +1749,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -8
+                -13.5
               ],
               "axis_xyz": [
                 0,
@@ -2676,11 +2676,11 @@
           "physical": {
             "mass_kg": 0.83,
             "bounding_box_mm": [
-              103.3,
-              103.3,
-              71.7
+              149.0,
+              73.0,
+              104.0
             ],
-            "inertia_primitive": "cylinder",
+            "inertia_primitive": "box",
             "legacy_override": true,
             "collision_mesh": "sensor_lidar_3d_collision.obj"
           },
@@ -2717,7 +2717,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -35.85
+                -52.0
               ],
               "axis_xyz": [
                 0,
@@ -2731,7 +2731,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                35.85
+                52.0
               ],
               "axis_xyz": [
                 0,
@@ -2882,9 +2882,9 @@
           "physical": {
             "mass_kg": 0.008,
             "bounding_box_mm": [
-              45,
-              20,
-              15
+              46.0,
+              27.0,
+              19.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -2916,7 +2916,7 @@
             {
               "id": "mount_back",
               "origin_xyz_mm": [
-                -22.5,
+                -23.0,
                 0,
                 0
               ],
@@ -2930,7 +2930,7 @@
             {
               "id": "sensing_face",
               "origin_xyz_mm": [
-                22.5,
+                23.0,
                 0,
                 0
               ],
@@ -2950,9 +2950,9 @@
           "physical": {
             "mass_kg": 0.002,
             "bounding_box_mm": [
-              13,
-              18,
-              2
+              12.0,
+              26.0,
+              5.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -2986,7 +2986,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -1
+                -2.5
               ],
               "axis_xyz": [
                 0,
@@ -3000,7 +3000,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                1
+                2.5
               ],
               "axis_xyz": [
                 0,
@@ -3018,11 +3018,11 @@
           "physical": {
             "mass_kg": 0.12,
             "bounding_box_mm": [
-              50,
-              50,
-              20
+              44.0,
+              75.0,
+              15.0
             ],
-            "inertia_primitive": "cylinder",
+            "inertia_primitive": "box",
             "legacy_override": true,
             "collision_mesh": "sensor_force_torque_6axis_collision.obj"
           },
@@ -3055,7 +3055,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -10
+                -7.5
               ],
               "axis_xyz": [
                 0,
@@ -3069,7 +3069,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                10
+                7.5
               ],
               "axis_xyz": [
                 0,
@@ -3441,9 +3441,9 @@
           "physical": {
             "mass_kg": 0.03,
             "bounding_box_mm": [
-              55,
-              12,
-              12
+              81.0,
+              23.0,
+              16.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -3475,7 +3475,7 @@
             {
               "id": "mount_back",
               "origin_xyz_mm": [
-                -27.5,
+                -40.5,
                 0,
                 0
               ],
@@ -3489,7 +3489,7 @@
             {
               "id": "payload_face",
               "origin_xyz_mm": [
-                27.5,
+                40.5,
                 0,
                 0
               ],
@@ -3779,9 +3779,9 @@
           "physical": {
             "mass_kg": 0.01,
             "bounding_box_mm": [
-              51,
-              21,
-              5
+              45.0,
+              19.0,
+              15.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -3820,7 +3820,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                2.5
+                7.5
               ],
               "axis_xyz": [
                 0,
@@ -3834,7 +3834,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -2.5
+                -7.5
               ],
               "axis_xyz": [
                 0,
@@ -4000,9 +4000,9 @@
           "physical": {
             "mass_kg": 0.028,
             "bounding_box_mm": [
-              43,
-              43,
-              15
+              44.0,
+              44.0,
+              29.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -4034,7 +4034,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                7.5
+                14.5
               ],
               "axis_xyz": [
                 0,
@@ -4048,7 +4048,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -7.5
+                -14.5
               ],
               "axis_xyz": [
                 0,
@@ -4205,9 +4205,9 @@
           "physical": {
             "mass_kg": 0.008,
             "bounding_box_mm": [
-              25,
-              18,
-              8
+              41.0,
+              29.0,
+              15.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -4234,7 +4234,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                4
+                7.5
               ],
               "axis_xyz": [
                 0,
@@ -4248,7 +4248,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -4
+                -7.5
               ],
               "axis_xyz": [
                 0,
@@ -4456,9 +4456,9 @@
           "physical": {
             "mass_kg": 0.012,
             "bounding_box_mm": [
-              25,
-              25,
-              8
+              27.0,
+              37.0,
+              13.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -4494,7 +4494,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                4
+                6.5
               ],
               "axis_xyz": [
                 0,
@@ -4508,7 +4508,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -4
+                -6.5
               ],
               "axis_xyz": [
                 0,
@@ -5159,9 +5159,9 @@
           "physical": {
             "mass_kg": 0.045,
             "bounding_box_mm": [
-              40,
-              40,
-              55
+              69.0,
+              69.0,
+              73.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -5188,7 +5188,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                27.5
+                36.5
               ],
               "axis_xyz": [
                 0,
@@ -5202,7 +5202,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -27.5
+                -36.5
               ],
               "axis_xyz": [
                 0,
@@ -5535,9 +5535,9 @@
           "physical": {
             "mass_kg": 0.025,
             "bounding_box_mm": [
-              50,
-              30,
-              40
+              74.0,
+              47.0,
+              31.0
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6",
@@ -5563,7 +5563,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                20
+                15.5
               ],
               "axis_xyz": [
                 0,
@@ -5577,7 +5577,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -20
+                -15.5
               ],
               "axis_xyz": [
                 0,
@@ -5589,7 +5589,7 @@
             {
               "id": "left",
               "origin_xyz_mm": [
-                -25,
+                -37.0,
                 0,
                 0
               ],
@@ -5603,7 +5603,7 @@
             {
               "id": "right",
               "origin_xyz_mm": [
-                25,
+                37.0,
                 0,
                 0
               ],
@@ -5618,7 +5618,7 @@
               "id": "front",
               "origin_xyz_mm": [
                 0,
-                15,
+                23.5,
                 0
               ],
               "axis_xyz": [
@@ -5632,7 +5632,7 @@
               "id": "back",
               "origin_xyz_mm": [
                 0,
-                -15,
+                -23.5,
                 0
               ],
               "axis_xyz": [
@@ -7557,11 +7557,11 @@
           "physical": {
             "mass_kg": 0.2,
             "bounding_box_mm": [
-              42.3,
-              42.3,
-              38
+              53.0,
+              53.0,
+              76.0
             ],
-            "inertia_primitive": "box",
+            "inertia_primitive": "cylinder",
             "legacy_override": true,
             "collision_mesh": "transmission_planetary_gearbox_collision.obj"
           },
@@ -7595,7 +7595,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                19
+                38.0
               ],
               "axis_xyz": [
                 0,
@@ -7610,7 +7610,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                19
+                38.0
               ],
               "axis_xyz": [
                 0,
@@ -7624,7 +7624,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -19
+                -38.0
               ],
               "axis_xyz": [
                 0,
@@ -8063,11 +8063,11 @@
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [
-              18,
-              18,
-              25
+              25.0,
+              21.0,
+              21.0
             ],
-            "inertia_primitive": "cylinder",
+            "inertia_primitive": "box",
             "legacy_override": true,
             "collision_mesh": "transmission_rigid_shaft_coupling_collision.obj"
           },
@@ -8095,7 +8095,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -10.5
               ],
               "axis_xyz": [
                 0,
@@ -8110,7 +8110,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                10.5
               ],
               "axis_xyz": [
                 0,
@@ -8125,7 +8125,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                10.5
               ],
               "axis_xyz": [
                 0,
@@ -8139,7 +8139,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -10.5
               ],
               "axis_xyz": [
                 0,
@@ -8501,11 +8501,11 @@
           "physical": {
             "mass_kg": 0.8,
             "bounding_box_mm": [
-              120,
-              120,
-              90
+              234.0,
+              212.0,
+              131.0
             ],
-            "inertia_primitive": "cylinder",
+            "inertia_primitive": "box",
             "legacy_override": true,
             "collision_mesh": "effector_3finger_adaptive_collision.obj"
           },
@@ -8545,7 +8545,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -45
+                -65.5
               ],
               "axis_xyz": [
                 0,
@@ -8559,7 +8559,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                45
+                65.5
               ],
               "axis_xyz": [
                 0,
@@ -8577,9 +8577,9 @@
           "physical": {
             "mass_kg": 0.06,
             "bounding_box_mm": [
-              40,
-              40,
-              50
+              23.0,
+              16.0,
+              23.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -8609,7 +8609,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -25
+                -11.5
               ],
               "axis_xyz": [
                 0,
@@ -8623,7 +8623,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                25
+                11.5
               ],
               "axis_xyz": [
                 0,
@@ -9123,9 +9123,9 @@
           "physical": {
             "mass_kg": 0.08,
             "bounding_box_mm": [
-              50,
-              50,
-              65
+              68.0,
+              102.0,
+              78.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -9156,7 +9156,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                32.5
+                39.0
               ],
               "axis_xyz": [
                 0,
@@ -9170,7 +9170,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -32.5
+                -39.0
               ],
               "axis_xyz": [
                 0,
@@ -9285,9 +9285,9 @@
           "physical": {
             "mass_kg": 0.09,
             "bounding_box_mm": [
-              60,
-              60,
-              25
+              61.0,
+              61.0,
+              16.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -9324,7 +9324,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                8.0
               ],
               "axis_xyz": [
                 0,
@@ -9337,7 +9337,7 @@
               "id": "tread_outer",
               "origin_xyz_mm": [
                 0,
-                -30,
+                -30.5,
                 0
               ],
               "axis_xyz": [
@@ -9352,7 +9352,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                8.0
               ],
               "axis_xyz": [
                 0,
@@ -9366,7 +9366,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -8.0
               ],
               "axis_xyz": [
                 0,

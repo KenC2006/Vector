@@ -768,6 +768,15 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     linkBBoxCache.clear()
     _pickTargetCache = null
 
+    // Inspect mode (incl. forced-inspect during AI / sim) must never leave
+    // mount nodes visible after a rebuild — the prior carry/drag session may
+    // have left nodesGroup.visible=true, and rebuildMountNodes is the only
+    // funnel after URDF reparses.
+    if (interactionMode !== 'build') {
+      nodesGroup.visible = false
+      applyNodeRingVisibility()
+    }
+
     const graph = ctx.getKinematicGraph()
     const kinJoints = ctx.getKinematicJoints()
     const parsed = ctx.getParsedRobot()
@@ -3589,6 +3598,24 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   })
 
   function onModelUpdated() {
+    // Inspect mode (incl. forced-inspect during AI generation and sim) must not
+    // re-attach the move gizmo or expose mount nodes when the URDF reparses,
+    // otherwise a fresh AI-spawned robot lands with the previous selection's
+    // gizmo live and placement nodes visible — letting the user drag parts
+    // while the chat is supposedly the only writer.
+    if (interactionMode === 'inspect') {
+      selectedLink = null
+      gizmo.detach()
+      nodesGroup.visible = false
+      ghostGroup.visible = false
+      bestMountCandidate = null
+      applyNodeRingVisibility()
+      rebuildMountNodes()
+      refreshBuildPanel()
+      renderInspector()
+      ctx.onAfterModelUpdated?.()
+      return
+    }
     if (selectedLink) {
       if (!resolveInteractionFrameLinkName(selectedLink)) {
         selectedLink = null

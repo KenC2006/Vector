@@ -106,18 +106,36 @@ export function servoCompoundCarrierVisuals(xm: number, ym: number, zm: number, 
     { origin_xyz: [0, -sideY, 0], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: sideSize }, color_rgba: color },
     { origin_xyz: [-xm * 0.42, 0, -zm * 0.42], origin_rpy: [0, 0, 0], geometry: { type: 'box', size: tieSize }, color_rgba: dark },
   ]
-  const bridgeLen = Math.max(reach - ym * 0.25, 0)
-  if (bridgeLen > plateT * 2) {
+  // When the carrier reaches across a non-trivial gap (parent servo's horn to
+  // this servo's body), span it with a single central standoff column instead
+  // of the previous pair of skinny offset rods. Topped with a horn-side anchor
+  // disc so the bracket has a clear foot on the parent's output rather than
+  // ending in mid-air.
+  // The yoke's lower side plate already sits at carrier-Y = -sideY, so the
+  // visible gap between the yoke and the parent horn is only (reach - sideY),
+  // not the full reach. Filling the full reach made the bridge look twice as
+  // long as needed (it ran straight through the yoke region).
+  const yokeBottomY = -sideY
+  const hornSurfaceY = -reach
+  const visibleGap = Math.max((-hornSurfaceY) - (-yokeBottomY) - plateT, 0)
+  if (visibleGap > plateT * 2) {
+    const anchorR = Math.max(xm * 0.42, 0.013)
+    const anchorH = visibleGap * 0.6
+    const standoffLen = visibleGap - anchorH
+    const standoffSide = Math.min(xm * 0.55, ym * 0.55)
+    const standoffStartY = yokeBottomY  // top of standoff sits at the yoke's lower face
+    if (standoffLen > plateT) {
+      visuals.push({
+        origin_xyz: [0, standoffStartY - standoffLen / 2, 0],
+        origin_rpy: [0, 0, 0],
+        geometry: { type: 'box', size: [standoffSide, standoffLen, standoffSide] },
+        color_rgba: dark,
+      })
+    }
     visuals.push({
-      origin_xyz: [xm * 0.38, -bridgeLen / 2, 0],
-      origin_rpy: [0, 0, 0],
-      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
-      color_rgba: dark,
-    })
-    visuals.push({
-      origin_xyz: [-xm * 0.38, -bridgeLen / 2, 0],
-      origin_rpy: [0, 0, 0],
-      geometry: { type: 'box', size: [plateT * 1.8, bridgeLen, plateT * 1.8] },
+      origin_xyz: [0, standoffStartY - standoffLen - anchorH * 0.5, 0],
+      origin_rpy: [Math.PI / 2, 0, 0],
+      geometry: { type: 'cylinder', radius: anchorR, length: anchorH },
       color_rgba: dark,
     })
   }
