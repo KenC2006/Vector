@@ -2698,7 +2698,9 @@ Your output MUST be a single Python module defining exactly this function:
         return {...}
 
 - `t` is simulation time in seconds (float, starts at 0).
-- `state` is a dict; you may ignore it. It is a read-only snapshot.
+- `state` is reserved for future use — its contents are currently undocumented
+  and unstable. Write open-loop controllers parameterized only by `t`. Do not
+  read from `state`.
 - Return a dict mapping joint names (strings, exactly as listed under JOINTS) to
   actuator commands. Revolute joints are target angles in radians. Prismatic
   joints are target positions in meters. Continuous joints are raw torque
@@ -2713,6 +2715,11 @@ Your output MUST be a single Python module defining exactly this function:
   → the robot bounces and jumps. Start low; ramp up slowly if needed.
 
 ## Locomotion reference
+
+If the user message contains "RECOMMENDED CONSTANTS", treat those values as
+authoritative — they are tuned to this specific robot's geometry. The numeric
+defaults later in this prompt are fallbacks for when no recommendations are
+provided.
 
 Use LEG DRIVE INFO when it is present. swing_sign and bend_sign are computed
 from the URDF geometry — they tell you which direction is physically correct.
@@ -2734,13 +2741,21 @@ Classify the robot from the joint list before writing code:
 - joints contain shoulder/elbow/wrist with no leg groups → ARM
 - joints contain finger/palm/thumb only → GRIPPER
 
+### Settle ramp (used by every archetype)
+
+Every archetype eases motion in from zero with a ramp:
+
+  ramp = min(1.0, t / SETTLE_TIME)
+
+Multiply every commanded amplitude by `ramp` so the robot doesn't snap to its
+target at t=0. The per-archetype SETTLE_TIME values below are the defaults.
+
 ### QUADRUPED — diagonal trot
 
 Diagonal pairs: Group A = FR + RL, Group B = FL + RR.
 Phase A = 0, Phase B = π. FREQ_HZ = 1.5, SETTLE_TIME = 0.8 s.
 
   w = 2 * math.pi * FREQ_HZ
-  ramp = min(1.0, t / SETTLE_TIME)
   sin_a = math.sin(w * t)
   sin_b = math.sin(w * t + math.pi)
 
@@ -2759,8 +2774,11 @@ For each role=leg_aux joint:
 The rectified knee is critical. Using raw sin for the knee produces a piston
 motion that fights the ground. Always use max(0, sin_X) for the tuck component.
 
-Hold all non-leg joints (neck, tail, spine) at 0.0. The default gait should
-move straight forward: do not intentionally turn, yaw, sidestep, or crab-walk.
+Set all non-leg joints (neck, tail, spine) to 0.0 explicitly in the returned
+dict — don't rely on omission. "Omitted joints hold their last command" applies
+to the previous tick's command, which may be non-zero if the script was
+hot-swapped mid-run. The default gait should move straight forward: do not
+intentionally turn, yaw, sidestep, or crab-walk.
 
 ### BIPED — alternating step
 
@@ -2778,19 +2796,40 @@ same rectified-knee pattern.
 
 ### WHEELED — differential drive
 
-Use WHEEL DRIVE INFO. forward = throttle * forward_sign per wheel.
+Use WHEEL DRIVE INFO. For straight forward motion:
+  command = throttle * forward_sign     # per wheel
 THROTTLE = 10–20 % of max_torque_Nm. Ramp throttle over SETTLE_TIME = 0.5 s.
 Never oscillate individual wheel commands for straight motion.
+
+For turning, scale opposite-side throttles using the per-wheel `side`:
+  left_command  = throttle * forward_sign * (1 - turn_factor)
+  right_command = throttle * forward_sign * (1 + turn_factor)
+where turn_factor ∈ [-0.5, 0.5]; positive = turn right, negative = turn left.
+Only command turning when the user explicitly asks; default is straight.
 
 ### ARM — reach and return
 
 Drive joints with slow sinusoids staggered by π/N phases so they move in
-sequence. FREQ_HZ = 0.3, amplitude = 35 % of joint range. SETTLE_TIME = 1.0 s.
+sequence. FREQ_HZ = 0.3, SETTLE_TIME = 1.0 s. Read each joint's `(lower, upper)`
+from the LIMITS block and command:
+
+  center = 0.5 * (lower + upper)
+  amplitude = 0.35 * (upper - lower)
+  angle = center + ramp * amplitude * math.sin(w * t + phase_i)
+
+Skip any joint missing from LIMITS (no safe range to clamp against).
 
 ### GRIPPER — open/close cycle
 
-angle = limit_max * 0.8 * 0.5 * (1 - math.cos(2 * math.pi * FREQ_HZ * t))
-FREQ_HZ = 0.25. Ramp over 0.5 s.
+For each gripper joint (single-axis or per-finger), drive in unison so all
+fingers open and close together:
+
+  angle = upper * 0.8 * 0.5 * (1 - math.cos(2 * math.pi * FREQ_HZ * t))
+
+FREQ_HZ = 0.25. SETTLE_TIME = 0.5 s. Use each joint's `upper` from LIMITS;
+fall back to upper = 0.8 rad if LIMITS is missing. Multi-finger grippers with
+independent joints should still receive the same command — independent
+finger control requires explicit user instruction.
 
 ## Sandbox — HARD RULES
 
@@ -2806,6 +2845,9 @@ The script runs in a restricted sandbox. Violations will be rejected.
   str, list, tuple, dict, set, print, isinstance.
 - Module-level code (constants, helper functions) is allowed and runs once.
 - `step` is called every sim tick; keep it cheap. No unbounded loops.
+- The script must be deterministic. Same `(t, state)` input must produce the
+  same output. No randomness, no time-of-day dependencies, no global mutable
+  state outside module-level constants.
 
 ## Output format
 
@@ -3265,19 +3307,11 @@ def generate_sim_script(
             request_line = f"REQUEST: {p}"
         else:
             request_line = (
-                "REQUEST: Classify the robot using the Archetype detection rules in your "
-                "instructions, then generate the matching default controller:\n"
-                "  - QUADRUPED -> diagonal trot using LEG DRIVE INFO roles and signs\n"
-                "  - BIPED     -> alternating step using LEG DRIVE INFO roles and signs\n"
-                "  - HEXAPOD   -> alternating tripod using LEG DRIVE INFO roles and signs\n"
-                "  - WHEELED   -> smooth forward drive using WHEEL DRIVE INFO forward_sign\n"
-                "  - ARM       -> slow staggered reach-and-return sinusoids\n"
-                "  - GRIPPER   -> slow open/close cycle\n"
-                "  - other     -> gentle sinusoidal idle across all joints\n"
-                "Always use the precomputed signs from LEG/WHEEL DRIVE INFO - never guess polarity.\n"
-                "For legged robots with no user prompt, make straight forward locomotion: no turn, yaw, sidestep, or crab-walk.\n"
-                "Hold role=leg_aux joints at 0.0 unless the user explicitly asks for lateral motion or balancing.\n"
-                "Include a SETTLE_TIME ramp so motion eases in from zero."
+                "REQUEST: Classify the robot using the Archetype detection rules in "
+                "your system instructions and generate the matching default "
+                "controller. For unmatched archetypes, emit a gentle sinusoidal "
+                "idle across all joints. Straight forward locomotion only — no "
+                "turn, yaw, sidestep, or crab-walk."
             )
         user_msg = (
             f"JOINTS:\n{joints_block}{limits_block}{wheel_block}{terrain_block}{geometry_block}\n\n"
