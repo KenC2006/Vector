@@ -53,8 +53,8 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'sensor_tof': 'sensor_tof.stp',
   'sensor_force_torque_6axis': 'sensor_force_torque.step',
   'sensor_joint_encoder_absolute': 'sensor_encoder.step',
-  'sensor_thermal_camera': 'sensor_thermal_camera.step',
-  'sensor_contact_switch': 'sensor_limit_switch.step',
+  'sensor_thermal_ir_camera': 'sensor_thermal_camera.step',
+  'sensor_contact_bumper': 'sensor_limit_switch.step',
   'sensor_limit_switch': 'sensor_limit_switch.step',
   'sensor_load_cell': 'sensor_load_cell.step',
 
@@ -75,10 +75,10 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'power_buck_converter_5v': 'power_buck_converter.step',
   'power_buck_converter_12v': 'power_buck_converter.step',
   'power_distribution_unit': 'power_pdu.step',
-  'power_18650_cell_holder': 'power_cell_holder.step',
-  'power_18650_4s2p_battery': 'power_cell_holder.step',
-  'power_supercapacitor': 'power_supercapacitor.stp',
-  'power_usb_c_pd_trigger': 'power_usb_c_pd.step',
+  'power_18650_cell_holder_1s': 'power_cell_holder.step',
+  'power_18650_4s2p_pack': 'power_cell_holder.step',
+  'power_supercapacitor_module': 'power_supercapacitor.stp',
+  'power_usbc_pd_trigger': 'power_usb_c_pd.step',
   'power_estop_switch': 'power_estop.stp',
 
   // ── Structural ──
@@ -88,11 +88,11 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'structural_bracket_u': 'structural_bracket_u.step',
   'structural_servo_coupler_disc': 'servo_coupler_disc.step',
   'structural_hip_housing_2dof': 'hip_housing_2dof.stp',
-  'structural_hex_standoff_m3': 'structural_standoff.step',
-  'structural_hex_standoff_m4': 'structural_standoff.step',
+  'structural_standoff_m3': 'structural_standoff.step',
+  'structural_standoff_m4': 'structural_standoff.step',
   'structural_shaft_collar': 'structural_shaft_collar.step',
   'structural_linear_rail_mgn12': 'structural_linear_rail.step',
-  'structural_pillow_block': 'structural_pillow_block.step',
+  'structural_pillow_block_mount': 'structural_pillow_block.step',
   'structural_din_rail_35mm': 'structural_din_rail.step',
 
   // ── Transmission ──
@@ -100,7 +100,6 @@ export const MESH_OVERRIDES: Record<string, string> = {
   'transmission_bearing_large': 'bearing_large.step',
   'transmission_planetary_gearbox': 'transmission_planetary_gearbox.step',
   'transmission_leadscrew_8mm': 'transmission_leadscrew.step',
-  'transmission_flexible_coupling': 'transmission_coupling.step',
   'transmission_flexible_coupling_jaw': 'transmission_coupling.step',
   'transmission_rigid_shaft_coupling': 'transmission_rigid_coupling.step',
   'transmission_rack_pinion_set': 'transmission_rack_pinion.step',

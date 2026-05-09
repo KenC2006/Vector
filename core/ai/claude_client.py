@@ -2753,8 +2753,10 @@ Classify the robot from the joint list before writing code:
 - LEG DRIVE INFO present, 2 leg groups → BIPED
 - LEG DRIVE INFO present, 6 leg groups → HEXAPOD
 - WHEEL DRIVE INFO present → WHEELED
-- joints contain shoulder/elbow/wrist with no leg groups → ARM
-- joints contain finger/palm/thumb only → GRIPPER
+- ARM CHAIN INFO present → ARM (use chain_id, depth, role to drive in sequence)
+- GRIPPER INFO present → GRIPPER (drive fingers in unison via gripper_root group)
+- Multiple categories may be present at once (e.g. WHEELED + ARM); compose
+  the per-archetype sections in one returned dict.
 
 ### Settle ramp (used by every archetype)
 
@@ -2890,6 +2892,8 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
     joint_rows = []
     wheel_rows = []
     leg_rows = []
+    arm_rows = []
+    gripper_rows = []
 
     for name in joint_names:
         meta = by_name.get(name, {})
@@ -2922,6 +2926,16 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
                 row += f", swing_sign={int(meta['swing_sign']):+d}"
             if "bend_sign" in meta:
                 row += f", bend_sign={int(meta['bend_sign']):+d}"
+        if meta.get("is_arm_chain"):
+            row += (
+                f", arm_chain={meta.get('arm_chain_id', '?')}, arm_depth={meta.get('arm_depth', 0)}"
+                f", role=arm_{meta.get('arm_role', 'distal')}"
+            )
+        if meta.get("is_gripper"):
+            row += (
+                f", gripper={meta.get('gripper_root', '?')}, finger={meta.get('finger_id', 0)}"
+                f"/{meta.get('finger_count', 1)}"
+            )
         joint_rows.append(row)
 
         if meta.get("is_wheel_drive"):
@@ -2955,6 +2969,19 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
                 leg_entry += f"; bend_sign={int(meta['bend_sign']):+d}"
             leg_rows.append(leg_entry)
 
+        if meta.get("is_arm_chain"):
+            arm_rows.append(
+                f"  - joint={name}; chain={meta.get('arm_chain_id', '?')}; "
+                f"depth={meta.get('arm_depth', 0)}; role=arm_{meta.get('arm_role', 'distal')}; "
+                f"chain_size={meta.get('arm_chain_size', 1)}; type={jtype}"
+            )
+
+        if meta.get("is_gripper"):
+            gripper_rows.append(
+                f"  - joint={name}; gripper_root={meta.get('gripper_root', '?')}; "
+                f"finger={meta.get('finger_id', 0)}/{meta.get('finger_count', 1)}; type={jtype}"
+            )
+
     wheel_block = ""
     if wheel_rows:
         wheel_block = (
@@ -2977,7 +3004,27 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
             + "\n".join(leg_rows)
         )
 
-    return "\n".join(joint_rows) or "  (none)", wheel_block + leg_block
+    arm_block = ""
+    if arm_rows:
+        arm_block = (
+            "\n\nARM CHAIN INFO:\n"
+            "Each chain is a serial sequence of revolute/prismatic joints from a base outward.\n"
+            "Roles by depth: arm_base (0), arm_shoulder (1), arm_elbow (2), arm_wrist (3), arm_distal (>=4).\n"
+            "Drive each chain with sinusoids staggered by phase = pi * depth / chain_size for sequenced motion.\n"
+            "Always center on (lower+upper)/2 from LIMITS and use amplitude = 0.35 * (upper - lower).\n"
+            + "\n".join(arm_rows)
+        )
+
+    gripper_block = ""
+    if gripper_rows:
+        gripper_block = (
+            "\n\nGRIPPER INFO:\n"
+            "Fingers in the same gripper_root group should open/close in unison unless the user asks otherwise.\n"
+            "Use a half-cosine open/close cycle scaled to each joint's LIMITS upper bound.\n"
+            + "\n".join(gripper_rows)
+        )
+
+    return "\n".join(joint_rows) or "  (none)", wheel_block + leg_block + arm_block + gripper_block
 
 
 def _leg_role(meta: dict) -> str:
@@ -3102,114 +3149,247 @@ def _physics_gait_profile(leg_geometry: dict | None, terrain_config: dict | None
     }
 
 
-def _generate_default_sim_script(
+def _classify_joints_for_default(
     joint_names: list,
-    joint_metadata: list | None,
-    terrain_config: dict | None = None,
-    leg_geometry: dict | None = None,
-) -> str:
-    if not joint_metadata:
-        return ""
-    profile = _physics_gait_profile(leg_geometry, terrain_config) or _default_terrain_profile(terrain_config)
-
-    by_name = {
-        item.get("name"): item
-        for item in joint_metadata
-        if isinstance(item, dict) and item.get("name")
+    by_name: dict,
+    joint_limits: dict | None,
+) -> dict:
+    """Single pass that buckets joints by category for the default-script handlers."""
+    out = {
+        "wheel": [], "leg_swing": [], "leg_bend": [], "leg_aux": [], "leg_ids": [],
+        "arm": [], "gripper": [], "hold": [],
     }
-
-    wheel_joints = []
-    leg_swing = []
-    leg_bend = []
-    leg_aux = []
-    leg_ids = []
-    hold_joints = []
-
     for name in joint_names:
         meta = by_name.get(name, {})
         if meta.get("is_wheel_drive"):
             effort = float(meta.get("effort", 10.0) or 10.0)
-            wheel_joints.append({
+            out["wheel"].append({
                 "joint": name,
                 "sign": int(meta.get("forward_sign", 1) or 1),
                 "effort": round(effort, 6),
             })
             continue
-
         if meta.get("is_leg"):
             leg_id = str(meta.get("leg_id", ""))
             if leg_id:
-                leg_ids.append(leg_id)
+                out["leg_ids"].append(leg_id)
             role = _leg_role(meta)
             if role in ("swing", "swing_bend") and "swing_sign" in meta:
-                leg_swing.append({
-                    "joint": name,
-                    "leg": leg_id,
+                out["leg_swing"].append({
+                    "joint": name, "leg": leg_id,
                     "sign": int(meta.get("swing_sign", 1) or 1),
                 })
             if role in ("bend", "swing_bend") and "bend_sign" in meta:
-                leg_bend.append({
-                    "joint": name,
-                    "leg": leg_id,
+                out["leg_bend"].append({
+                    "joint": name, "leg": leg_id,
                     "sign": int(meta.get("bend_sign", 1) or 1),
                 })
             if role == "aux":
-                leg_aux.append(name)
+                out["leg_aux"].append(name)
             continue
+        if meta.get("is_gripper"):
+            lim = (joint_limits or {}).get(name)
+            upper = float(lim[1]) if lim and lim[1] is not None else 0.8
+            out["gripper"].append({"joint": name, "upper": round(upper, 4)})
+            continue
+        if meta.get("is_arm_chain"):
+            lim = (joint_limits or {}).get(name)
+            if lim and all(x is not None for x in lim):
+                lower = float(lim[0]); upper = float(lim[1])
+            else:
+                lower, upper = -0.8, 0.8
+            out["arm"].append({
+                "joint": name,
+                "chain": str(meta.get("arm_chain_id", "A0")),
+                "depth": int(meta.get("arm_depth", 0)),
+                "size": int(meta.get("arm_chain_size", 1)),
+                "lower": round(lower, 4),
+                "upper": round(upper, 4),
+            })
+            continue
+        out["hold"].append(name)
+    return out
 
-        hold_joints.append(name)
 
-    if leg_swing and leg_bend and len(set(leg_ids)) >= 2:
-        phases = _phase_map_for_legs(leg_ids)
-        return (
-            "# Auto-generated default legged locomotion controller.\n"
-            "# Positive X/orange axis is treated as forward. Auxiliary lateral joints stay neutral.\n"
-            f"FREQ_HZ = {profile['freq_hz']:.2f}\n"
-            f"HIP_AMP = {profile['hip_amp']:.2f}\n"
-            f"KNEE_BIAS = {profile['knee_bias']:.2f}\n"
-            f"KNEE_CLEARANCE = {profile['knee_clearance']:.2f}\n"
-            f"SETTLE_TIME = {profile['settle_time_leg']:.1f}\n\n"
-            f"LEG_PHASE = {phases!r}\n"
-            f"SWING_JOINTS = {leg_swing!r}\n"
-            f"BEND_JOINTS = {leg_bend!r}\n"
-            f"AUX_JOINTS = {leg_aux!r}\n"
-            f"HOLD_JOINTS = {hold_joints!r}\n\n"
-            "def step(t, state):\n"
-            "    ramp = min(1.0, t / SETTLE_TIME) if SETTLE_TIME > 0 else 1.0\n"
-            "    w = 2.0 * math.pi * FREQ_HZ\n"
-            "    cmds = {}\n"
-            "    for name in HOLD_JOINTS:\n"
-            "        cmds[name] = 0.0\n"
-            "    for name in AUX_JOINTS:\n"
-            "        cmds[name] = 0.0\n"
-            "    for row in SWING_JOINTS:\n"
-            "        phase = LEG_PHASE.get(row['leg'], 0.0)\n"
-            "        s = math.sin(w * t + phase)\n"
-            "        # Negate so hips push backward during stance → body travels forward.\n"
-            "        cmds[row['joint']] = -row['sign'] * ramp * HIP_AMP * s\n"
-            "    for row in BEND_JOINTS:\n"
-            "        phase = LEG_PHASE.get(row['leg'], 0.0)\n"
-            "        s = math.sin(w * t + phase)\n"
-            "        # bend_sign points the foot downward; subtract the swing term for foot clearance.\n"
-            "        cmds[row['joint']] = row['sign'] * ramp * (KNEE_BIAS - KNEE_CLEARANCE * max(0.0, s))\n"
-            "    return cmds"
-        )
+# Each handler returns either None (no joints in its category) or a dict:
+#   {"name": str, "consts": [(NAME, repr-string), ...], "body": [str, ...]}
+# where `body` lines are inserted into the shared step() body and may reference
+# the constants by name. Handlers must NOT touch each other's joints.
 
-    if wheel_joints:
-        return (
-            "# Auto-generated default wheeled locomotion controller.\n"
-            f"SETTLE_TIME = {profile['settle_time_wheel']:.1f}\n"
-            f"DRIVE_JOINTS = {wheel_joints!r}\n\n"
-            "def step(t, state):\n"
-            "    ramp = min(1.0, t / SETTLE_TIME) if SETTLE_TIME > 0 else 1.0\n"
-            "    cmds = {}\n"
-            "    for row in DRIVE_JOINTS:\n"
-            f"        throttle = {profile['wheel_throttle_frac']:.2f} * row['effort']\n"
-            "        cmds[row['joint']] = ramp * throttle * row['sign']\n"
-            "    return cmds"
-        )
+def _legged_section(classified: dict, profile: dict) -> dict | None:
+    if not (classified["leg_swing"] and classified["leg_bend"] and len(set(classified["leg_ids"])) >= 2):
+        return None
+    phases = _phase_map_for_legs(classified["leg_ids"])
+    consts = [
+        ("LEG_FREQ_HZ", f"{profile['freq_hz']:.2f}"),
+        ("LEG_HIP_AMP", f"{profile['hip_amp']:.2f}"),
+        ("LEG_KNEE_BIAS", f"{profile['knee_bias']:.2f}"),
+        ("LEG_KNEE_CLEARANCE", f"{profile['knee_clearance']:.2f}"),
+        ("LEG_SETTLE", f"{profile['settle_time_leg']:.1f}"),
+        ("LEG_PHASE", repr(phases)),
+        ("LEG_SWING_JOINTS", repr(classified["leg_swing"])),
+        ("LEG_BEND_JOINTS", repr(classified["leg_bend"])),
+        ("LEG_AUX_JOINTS", repr(classified["leg_aux"])),
+    ]
+    body = [
+        "# --- legged locomotion ---",
+        "leg_ramp = min(1.0, t / LEG_SETTLE) if LEG_SETTLE > 0 else 1.0",
+        "leg_w = 2.0 * math.pi * LEG_FREQ_HZ",
+        "for name in LEG_AUX_JOINTS:",
+        "    cmds[name] = 0.0",
+        "for row in LEG_SWING_JOINTS:",
+        "    phase = LEG_PHASE.get(row['leg'], 0.0)",
+        "    s = math.sin(leg_w * t + phase)",
+        "    # Negate: hips push backward during stance -> body travels forward.",
+        "    cmds[row['joint']] = -row['sign'] * leg_ramp * LEG_HIP_AMP * s",
+        "for row in LEG_BEND_JOINTS:",
+        "    phase = LEG_PHASE.get(row['leg'], 0.0)",
+        "    s = math.sin(leg_w * t + phase)",
+        "    cmds[row['joint']] = row['sign'] * leg_ramp * (LEG_KNEE_BIAS - LEG_KNEE_CLEARANCE * max(0.0, s))",
+    ]
+    return {"name": "legged", "consts": consts, "body": body}
 
-    return ""
+
+def _wheeled_section(classified: dict, profile: dict) -> dict | None:
+    if not classified["wheel"]:
+        return None
+    consts = [
+        ("WHEEL_SETTLE", f"{profile['settle_time_wheel']:.1f}"),
+        ("WHEEL_THROTTLE_FRAC", f"{profile['wheel_throttle_frac']:.2f}"),
+        ("WHEEL_DRIVE_JOINTS", repr(classified["wheel"])),
+    ]
+    body = [
+        "# --- wheeled drive ---",
+        "wheel_ramp = min(1.0, t / WHEEL_SETTLE) if WHEEL_SETTLE > 0 else 1.0",
+        "for row in WHEEL_DRIVE_JOINTS:",
+        "    throttle = WHEEL_THROTTLE_FRAC * row['effort']",
+        "    cmds[row['joint']] = wheel_ramp * throttle * row['sign']",
+    ]
+    return {"name": "wheeled", "consts": consts, "body": body}
+
+
+def _arm_section(classified: dict, profile: dict) -> dict | None:
+    if not classified["arm"]:
+        return None
+    arm_profile = profile.get("arm") or {}
+    freq_hz = arm_profile.get("freq_hz", 0.30)
+    amp_frac = arm_profile.get("amp_frac", 0.35)
+    settle = arm_profile.get("settle_time", 1.0)
+    consts = [
+        ("ARM_FREQ_HZ", f"{freq_hz:.2f}"),
+        ("ARM_AMP_FRAC", f"{amp_frac:.2f}"),
+        ("ARM_SETTLE", f"{settle:.2f}"),
+        ("ARM_JOINTS", repr(classified["arm"])),
+    ]
+    body = [
+        "# --- arm reach ---",
+        "arm_ramp = min(1.0, t / ARM_SETTLE) if ARM_SETTLE > 0 else 1.0",
+        "arm_w = 2.0 * math.pi * ARM_FREQ_HZ",
+        "for row in ARM_JOINTS:",
+        "    center = 0.5 * (row['lower'] + row['upper'])",
+        "    amp = ARM_AMP_FRAC * (row['upper'] - row['lower'])",
+        "    phase = math.pi * row['depth'] / max(1, row['size'])",
+        "    cmds[row['joint']] = center + arm_ramp * amp * math.sin(arm_w * t + phase)",
+    ]
+    return {"name": "arm", "consts": consts, "body": body}
+
+
+def _gripper_section(classified: dict, profile: dict) -> dict | None:
+    if not classified["gripper"]:
+        return None
+    consts = [
+        ("GRIP_FREQ_HZ", "0.25"),
+        ("GRIP_OPEN_FRAC", "0.80"),
+        ("GRIP_SETTLE", "0.5"),
+        ("GRIP_JOINTS", repr(classified["gripper"])),
+    ]
+    body = [
+        "# --- gripper open/close ---",
+        "grip_ramp = min(1.0, t / GRIP_SETTLE) if GRIP_SETTLE > 0 else 1.0",
+        "grip_cycle = 0.5 * (1.0 - math.cos(2.0 * math.pi * GRIP_FREQ_HZ * t))",
+        "for row in GRIP_JOINTS:",
+        "    cmds[row['joint']] = grip_ramp * GRIP_OPEN_FRAC * row['upper'] * grip_cycle",
+    ]
+    return {"name": "gripper", "consts": consts, "body": body}
+
+
+_DEFAULT_SECTION_HANDLERS = (_legged_section, _wheeled_section, _arm_section, _gripper_section)
+
+
+def _assemble_default_script(sections: list, hold_joints: list) -> str:
+    section_names = ", ".join(s["name"] for s in sections)
+    lines = [
+        f"# Auto-generated default controller — sections: {section_names}",
+        "# Composed from per-archetype handlers; multiple sections coexist if the",
+        "# robot mixes archetypes (e.g. wheeled rover with arm).",
+    ]
+    for sec in sections:
+        for n, v in sec["consts"]:
+            lines.append(f"{n} = {v}")
+    lines.append(f"HOLD_JOINTS = {hold_joints!r}")
+    lines.append("")
+    lines.append("def step(t, state):")
+    lines.append("    cmds = {}")
+    lines.append("    for name in HOLD_JOINTS:")
+    lines.append("        cmds[name] = 0.0")
+    for sec in sections:
+        for bl in sec["body"]:
+            lines.append("    " + bl)
+    lines.append("    return cmds")
+    return "\n".join(lines)
+
+
+def _generate_default_sim_script(
+    joint_names: list,
+    joint_metadata: list | None,
+    terrain_config: dict | None = None,
+    leg_geometry: dict | None = None,
+    joint_limits: dict | None = None,
+    arm_geometry: dict | None = None,
+) -> str:
+    if not joint_metadata:
+        return ""
+    profile = _physics_gait_profile(leg_geometry, terrain_config) or _default_terrain_profile(terrain_config)
+    profile["arm"] = _arm_physics_profile(arm_geometry)
+    by_name = {
+        item.get("name"): item
+        for item in joint_metadata
+        if isinstance(item, dict) and item.get("name")
+    }
+    classified = _classify_joints_for_default(joint_names, by_name, joint_limits)
+    sections = [s for s in (h(classified, profile) for h in _DEFAULT_SECTION_HANDLERS) if s is not None]
+    if not sections:
+        return ""
+    return _assemble_default_script(sections, classified["hold"])
+
+
+def _arm_physics_profile(arm_geometry: dict | None) -> dict | None:
+    """
+    Derive arm-controller constants from URDF chain geometry.
+
+    Frequency drops with reach because longer arms have more rotational inertia
+    at the shoulder; we approximate that with the inverted-pendulum frequency
+    sqrt(g/R) at 25% safety margin (slower than legs because arms aren't
+    self-stabilizing). Settle time scales with sqrt(R) so larger arms ease in
+    proportionally. Amplitude fraction stays at 35% of joint range — physics
+    here is mostly about timing, not range.
+    """
+    if not arm_geometry:
+        return None
+    R = float(arm_geometry.get("mean_reach_m", 0.0))
+    if R < 0.05:
+        return None
+    g = 9.81
+    w_pend = math.sqrt(g / max(0.05, R))
+    freq_hz = max(0.10, min(0.80, 0.25 * w_pend / (2 * math.pi)))
+    settle = max(0.6, min(2.5, 1.0 * math.sqrt(max(0.05, R) / 0.30)))
+    return {
+        "freq_hz": round(freq_hz, 3),
+        "amp_frac": 0.35,
+        "settle_time": round(settle, 2),
+        "_reach_m": round(R, 4),
+        "_source": "physics",
+    }
 
 
 def generate_sim_script(
@@ -3220,6 +3400,7 @@ def generate_sim_script(
     joint_metadata: list = None,
     terrain_config: dict = None,
     leg_geometry: dict = None,
+    arm_geometry: dict = None,
 ) -> str:
     """
     Generate a sim-sandbox Python script from a natural-language prompt.
@@ -3297,9 +3478,32 @@ def generate_sim_script(
                 f"# scales with sqrt(L) to ease in proportionally\n"
             )
 
+    arm_profile = _arm_physics_profile(arm_geometry)
+    if arm_geometry:
+        n_chains = int(arm_geometry.get("chain_count", 0))
+        R = float(arm_geometry.get("mean_reach_m", 0.0))
+        R_min = float(arm_geometry.get("min_reach_m", R))
+        R_max = float(arm_geometry.get("max_reach_m", R))
+        geometry_block += (
+            "\n\nARM GEOMETRY (measured from URDF neutral pose):\n"
+            f"  - chain_count: {n_chains}\n"
+            f"  - mean_reach_m: {R:.3f}\n"
+            f"  - reach_range_m: [{R_min:.3f}, {R_max:.3f}]\n"
+        )
+        if arm_profile:
+            geometry_block += (
+                "\nRECOMMENDED ARM CONSTANTS (physics-derived from chain reach):\n"
+                f"  - ARM_FREQ_HZ: {arm_profile['freq_hz']:.2f}      "
+                f"# 0.25 * sqrt(g/R) / (2pi); slower than free pendulum for stability\n"
+                f"  - ARM_AMP_FRAC: {arm_profile['amp_frac']:.2f}     "
+                f"# fraction of (upper-lower) joint range to sweep\n"
+                f"  - ARM_SETTLE: {arm_profile['settle_time']:.2f}      "
+                f"# sqrt(R) scaled ease-in\n"
+            )
+
     p = prompt.strip()
     if not p and not current_script.strip():
-        default_script = _generate_default_sim_script(joint_names, joint_metadata, terrain_config, leg_geometry)
+        default_script = _generate_default_sim_script(joint_names, joint_metadata, terrain_config, leg_geometry, joint_limits, arm_geometry)
         if default_script:
             return default_script
 

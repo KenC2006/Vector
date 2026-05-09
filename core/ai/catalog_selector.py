@@ -433,11 +433,38 @@ def build_scoped_catalog(
     selected: set[str] = set(CORE_FLOOR_IDS) & {e["id"] for e in index}
     selected.update(tried_ids & {e["id"] for e in index})
 
+    # Optional RAG augmentation: when VECTOR_RAG_ENABLED, run a cosine-
+    # similarity retrieval over preset descriptions and merge the top-K hits
+    # into the keyword score. The boost is additive — keyword matches still
+    # win when both fire — but RAG fills in paraphrastic queries that the
+    # keyword index misses ("see in low light" → IR camera; "absorb shock" →
+    # rubber foot pad). Off by default so the existing path stays the A/B
+    # baseline; flip on with VECTOR_RAG_ENABLED=1.
+    rag_boost: dict[str, int] = {}
+    try:
+        from core.ai import component_rag
+        if component_rag.is_enabled():
+            allowed_set = {e["id"] for e in index}
+            hits = component_rag.get_rag().retrieve(user_prompt, k=24)
+            # Normalize ranks to a small bonus that competes with — but doesn't
+            # eclipse — explicit-id mention (100). Top hit gets 50, fading to
+            # 1 by rank 24. Anything below that's outside the keyword path is
+            # noise.
+            for rank, (pid, _score) in enumerate(hits):
+                if pid in allowed_set:
+                    rag_boost[pid] = max(1, 50 - 2 * rank)
+    except Exception:
+        # RAG is best-effort; if the index fails to load (no presets file in a
+        # test fixture, missing numpy in some unusual env, etc.) fall through
+        # to keyword-only scoring rather than crashing the whole prompt build.
+        rag_boost = {}
+
     scored: list[tuple[int, str]] = []
     for entry in index:
         if entry["id"] in selected:
             continue
         s = _score_preset(entry, prompt_tokens, graph_cats, prompt_cats, tried_ids)
+        s += rag_boost.get(entry["id"], 0)
         if s > 0:
             scored.append((s, entry["id"]))
     # Sort by score desc, then id asc for stable output (Claude sees the

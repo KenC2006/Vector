@@ -10,7 +10,7 @@ import {
 } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import { resolveComponent, resolveComponentBboxMm } from './componentResolver.ts'
-import { getMeasuredCollisionExtentMm, getMeasuredCollisionCenterMm, getMeasuredVisualExtentMm, getMeasuredMeshEntry } from './meshExtents.ts'
+import { getMeasuredCollisionExtentMm, getMeasuredVisualExtentMm, getMeasuredMeshEntry } from './meshExtents.ts'
 import type { MateConnector } from './mateConnectors'
 import { getMeshVisualMetadata, PROCEDURAL_VISUAL_ONLY } from './richVisuals/meshOverrides'
 import { findRichGenerator } from './richVisuals/generators'
@@ -178,27 +178,15 @@ export function resolveSplitServoVisual(args: {
   const d = bb[1] / 1000
   const h = bb[2] / 1000
   const bodyBase = servoBodyShape(w, h, d, args.category)
-  // Phase 5 step 2: when an authored collision mesh has been measured, replace
-  // the body box (servoBodyShape's first descriptor — the h*0.76 primitive)
-  // with one matching the canonical collision envelope. The placement compiler
-  // reads collision.bounds, so URDF-loader-only viewers (no rich GLB) would
-  // otherwise see a body box offset from where the joint origin sits.
-  const collisionExtentMm = preset.physical.collision_mesh
-    ? getMeasuredCollisionExtentMm(preset.id) : undefined
-  const collisionCenterMm = preset.physical.collision_mesh
-    ? getMeasuredCollisionCenterMm(preset.id) : undefined
-  if (collisionExtentMm && bodyBase.length > 0 && bodyBase[0].geometry.type === 'box') {
-    const bodyBox = bodyBase[0]
-    const cz = collisionCenterMm ? collisionCenterMm[2] / 1000 : 0
-    const cx = collisionCenterMm ? collisionCenterMm[0] / 1000 : 0
-    const cy = collisionCenterMm ? collisionCenterMm[1] / 1000 : 0
-    bodyBase[0] = {
-      origin_xyz: [cx, cy, cz],
-      origin_rpy: bodyBox.origin_rpy,
-      geometry: { type: 'box', size: [collisionExtentMm[0] / 1000, collisionExtentMm[1] / 1000, collisionExtentMm[2] / 1000] },
-      color_rgba: bodyBox.color_rgba,
-    }
-  }
+  // Body box uses the canonical servoBodyShape dimensions (h*0.76 along Z),
+  // which sits under the horn at h*SERVO_HORN_ORIGIN_Z_RATIO. Earlier we
+  // replaced this with the measured collision OBJ extent, but that coupled
+  // the visual to the OBJ's authored axes — and after measure-mesh-extents
+  // started applying the rotation override, the collision OBJ's longest axis
+  // (e.g. 46.5mm for high_torque) flipped into the URDF Z slot, producing a
+  // body box taller than the horn origin and swallowing the horn. The
+  // collision envelope is now the spec bbox (componentResolver bbox-as-truth),
+  // so the canonical servoBodyShape already matches collision by construction.
   const hornBase = servoHornShape(w, h, d, args.category)
   const bodyVisuals = args.includeSideYoke
     ? [...bodyBase, ...servoSideYokeShape(w, h, d, args.category)]

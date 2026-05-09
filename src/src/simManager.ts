@@ -642,6 +642,11 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     }
     try { await invoke('stop_core') } catch { /* ignore cleanup failure */ }
     simCoreRunning = false
+    // Sim shutdown stops the core to release MuJoCo state. The chat / parse
+    // panels share the same core and would otherwise hit "Core process not
+    // running" on the next AI call. Restart it eagerly so leaving sim is
+    // transparent to the rest of the app.
+    try { await invoke('start_core') } catch { /* ignore — chat will retry */ }
     const massInfoEl = document.getElementById('sim-mass-info') as HTMLElement | null
     if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
   }

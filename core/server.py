@@ -418,27 +418,29 @@ def _extract_sim_joint_context(urdf_content: str) -> tuple:
         leg_key = f"{m['end'][0].upper()}{m['side'][0].upper()}"  # FR, FL, RR, RL, CR, CL …
         leg_groups.setdefault(leg_key, []).append(m)
 
+    # Walk a kinematic subtree to its leaf and return that leaf's world pose.
+    # Used by both leg-Jacobian and arm-reach computation; defined at outer
+    # scope so it's available even when no legs are present.
+    def _tip_pos(child_link: str) -> list:
+        lnk = child_link
+        _seen_t: set = set()
+        while True:
+            if lnk in _seen_t:
+                break
+            _seen_t.add(lnk)
+            cjs = children_by_link.get(lnk, [])
+            if not cjs:
+                break
+            lnk = cjs[0]["child"]
+        pos, _ = link_pose.get(lnk, ([0.0, 0.0, 0.0], ident))
+        return list(pos)
+
     # Only treat groups as legs if ≥2 joints/group and ≥2 distinct groups.
     valid_leg_groups = {k: v for k, v in leg_groups.items() if len(v) >= 2}
     if len(valid_leg_groups) >= 2:
         joint_info_by_name = {j["name"]: j for j in joints}
         # Robots are always assembled facing +X (orange axis).
         fwd_axis = 0
-
-        def _tip_pos(child_link: str) -> list:
-            """Walk to the leaf of a leg subtree, return its world position."""
-            lnk = child_link
-            _seen_t: set = set()
-            while True:
-                if lnk in _seen_t:
-                    break
-                _seen_t.add(lnk)
-                cjs = children_by_link.get(lnk, [])
-                if not cjs:
-                    break
-                lnk = cjs[0]["child"]
-            pos, _ = link_pose.get(lnk, ([0.0, 0.0, 0.0], ident))
-            return list(pos)
 
         for leg_id, members in valid_leg_groups.items():
             members.sort(key=lambda m: rev_depth_map.get(m["name"], 99))
@@ -522,7 +524,157 @@ def _extract_sim_joint_context(urdf_content: str) -> tuple:
                 "per_leg": per_leg,
             }
 
-    return joint_names, joint_limits, joint_metadata, leg_geometry
+    # ── Gripper detection ──────────────────────────────────────────────────
+    # A joint is a gripper finger if its parent or child link, or its own name,
+    # contains a finger/jaw/claw token. We require the immediate name to match
+    # so that arm joints leading down to a gripper are not all tagged.
+    gripper_tokens = ("gripper", "finger", "claw", "jaw", "thumb")
+    gripper_groups: Dict[str, list] = {}
+    for m in joint_metadata:
+        if m.get("is_wheel_drive") or m.get("is_leg"):
+            continue
+        if not (
+            _sim_name_has_any(m["name"], gripper_tokens)
+            or _sim_name_has_any(m["parent"], gripper_tokens)
+            or _sim_name_has_any(m["child"], gripper_tokens)
+        ):
+            continue
+        m["is_gripper"] = True
+        gripper_groups.setdefault(m["parent"], []).append(m)
+
+    for root_link, fingers in gripper_groups.items():
+        # Order fingers left→right by Y, then front→back by X for stable IDs.
+        fingers_sorted = sorted(fingers, key=lambda f: (f["center"][1], f["center"][0]))
+        for idx, f in enumerate(fingers_sorted):
+            f["gripper_root"] = root_link
+            f["finger_id"] = idx
+            f["finger_count"] = len(fingers_sorted)
+
+    # ── Arm-chain detection ────────────────────────────────────────────────
+    # Walk the kinematic tree from the root. Any movable joint that is not a
+    # leg, wheel, or gripper joins or starts an "arm chain". A chain extends
+    # down a serial path of single-child links; branches start new chains.
+    # Tag with arm_chain_id (A0, A1, ...), arm_depth (0 at the chain base),
+    # and a role string by depth.
+    joint_meta_by_name: Dict[str, dict] = {m["name"]: m for m in joint_metadata}
+
+    def _is_arm_eligible(m: Optional[dict]) -> bool:
+        if m is None:
+            return False
+        if m.get("is_wheel_drive") or m.get("is_leg") or m.get("is_gripper"):
+            return False
+        return m.get("type") in ("revolute", "prismatic", "continuous")
+
+    arm_chains: Dict[str, list] = {}
+    _arm_seen: set = set()
+    _chain_counter = [0]
+
+    def _walk_arm(link: str, current_chain: Optional[str], depth_in_chain: int) -> None:
+        if link in _arm_seen:
+            return
+        _arm_seen.add(link)
+        children = children_by_link.get(link, [])
+        eligible_count = sum(
+            1 for cj in children
+            if cj["type"] not in ("fixed", None)
+            and _is_arm_eligible(joint_meta_by_name.get(cj["name"]))
+        )
+        branch = eligible_count > 1
+
+        for cj in children:
+            cj_meta = joint_meta_by_name.get(cj["name"])
+            if cj["type"] in ("fixed", None):
+                # Pass through fixed joints without changing chain or depth.
+                _walk_arm(cj["child"], current_chain, depth_in_chain)
+                continue
+            if not _is_arm_eligible(cj_meta):
+                # Reset chain across leg/wheel/gripper boundaries.
+                _walk_arm(cj["child"], None, 0)
+                continue
+
+            if current_chain is None or branch:
+                chain_id = f"A{_chain_counter[0]}"
+                _chain_counter[0] += 1
+                arm_chains.setdefault(chain_id, [])
+                next_depth = 0
+            else:
+                chain_id = current_chain
+                next_depth = depth_in_chain
+
+            cj_meta["is_arm_chain"] = True
+            cj_meta["arm_chain_id"] = chain_id
+            cj_meta["arm_depth"] = next_depth
+            if next_depth == 0:
+                cj_meta["arm_role"] = "base"
+            elif next_depth == 1:
+                cj_meta["arm_role"] = "shoulder"
+            elif next_depth == 2:
+                cj_meta["arm_role"] = "elbow"
+            elif next_depth == 3:
+                cj_meta["arm_role"] = "wrist"
+            else:
+                cj_meta["arm_role"] = "distal"
+            arm_chains[chain_id].append(cj_meta)
+
+            _walk_arm(cj["child"], chain_id, next_depth + 1)
+
+    if primary_root:
+        _walk_arm(primary_root, None, 0)
+
+    # Singleton chains (one revolute joint with no further movable descendants)
+    # don't qualify as arms — strip the tags.
+    for chain_id in list(arm_chains.keys()):
+        members = arm_chains[chain_id]
+        if len(members) < 2:
+            for m in members:
+                for k in ("is_arm_chain", "arm_chain_id", "arm_depth", "arm_role"):
+                    m.pop(k, None)
+            arm_chains.pop(chain_id)
+
+    # Stamp arm_chain_size onto remaining members so the LLM/default generator
+    # can pick phase offsets without recounting.
+    for chain_id, members in arm_chains.items():
+        members.sort(key=lambda m: m["arm_depth"])
+        for m in members:
+            m["arm_chain_size"] = len(members)
+
+    # ── Arm geometry summary ───────────────────────────────────────────────
+    # Per-chain reach (sum of segment lengths from base to tip in URDF neutral
+    # pose). Used to derive arm-physics-grounded constants (settle time scales
+    # with sqrt(reach), sweep frequency drops as reach grows due to inertia).
+    arm_geometry: Optional[Dict[str, Any]] = None
+    if arm_chains:
+        per_chain: list = []
+        reaches: list = []
+        joint_info_by_name = {j["name"]: j for j in joints}
+        for chain_id, members in arm_chains.items():
+            base_member = members[0]
+            ji_base = joint_info_by_name.get(base_member["name"])
+            if ji_base is None:
+                continue
+            base_pos = base_member.get("center", [0.0, 0.0, 0.0])
+            tip_pos = _tip_pos(ji_base["child"])
+            reach = math.sqrt(sum((tip_pos[i] - base_pos[i]) ** 2 for i in range(3)))
+            if reach < 0.02:
+                continue
+            reaches.append(reach)
+            per_chain.append({
+                "chain_id": chain_id,
+                "joint_count": len(members),
+                "base_pos": [round(v, 4) for v in base_pos],
+                "tip_pos": [round(v, 4) for v in tip_pos],
+                "reach_m": round(reach, 4),
+            })
+        if reaches:
+            arm_geometry = {
+                "chain_count": len(reaches),
+                "mean_reach_m": round(sum(reaches) / len(reaches), 4),
+                "max_reach_m": round(max(reaches), 4),
+                "min_reach_m": round(min(reaches), 4),
+                "per_chain": per_chain,
+            }
+
+    return joint_names, joint_limits, joint_metadata, leg_geometry, arm_geometry
 
 
 class JSONRPCServer:
@@ -1296,7 +1448,7 @@ class JSONRPCServer:
 
         # Extract joint names, limits, and wheel direction metadata from the URDF.
         try:
-            joint_names, joint_limits, joint_metadata, leg_geometry = _extract_sim_joint_context(urdf_content)
+            joint_names, joint_limits, joint_metadata, leg_geometry, arm_geometry = _extract_sim_joint_context(urdf_content)
         except Exception as e:
             return {"status": "error",
                     "message": f"Could not parse URDF joints: {e}"}
@@ -1308,7 +1460,7 @@ class JSONRPCServer:
         try:
             code = _generate_sim_script(
                 prompt, joint_names, current_script, joint_limits, joint_metadata, terrain_config,
-                leg_geometry,
+                leg_geometry, arm_geometry,
             )
         except Exception as e:
             return {"status": "error", "message": f"AI call failed: {e}"}
