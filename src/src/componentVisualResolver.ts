@@ -17,6 +17,7 @@ import { findRichGenerator } from './richVisuals/generators'
 import { getComponentColor } from './richVisuals/materials'
 import { getCachedMeshGroup, isMeshLoadInProgress } from './richVisuals/meshCache'
 import { prepareMeshVisualGroup } from './richVisuals/meshVisual'
+import { buildVisualsFromLinkGeometry, hasLinkGeometry } from './linkGeometry'
 
 export type ComponentVisualSource = 'mesh' | 'rich' | 'urdf_primitives'
 export type ComponentVisualStatus = 'ready' | 'loading' | 'fallback' | 'missing'
@@ -51,6 +52,11 @@ export interface ComponentVisualPresetLike {
 
 export interface ComponentVisualInstanceLike {
   length_mm?: number
+  // Novel-mode primitive composition: when present, replaces the preset's
+  // rendered visuals with a free-form union of authored boxes/cylinders/spheres.
+  // See linkGeometry.ts for the wire format. Bounds / collision / connectors
+  // all derive from the AABB of the primitives.
+  link_geometry?: unknown
 }
 
 export interface ComponentVisualBounds {
@@ -109,13 +115,32 @@ export interface ResolveComponentVisualArgs {
 
 export function resolveComponentVisual(args: ResolveComponentVisualArgs): ResolvedComponentVisual {
   const preset = buildVisualPreset(args.preset, args.instance)
-  const visuals = generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
+
+  // Novel-mode primitive composition: when an AssemblyComponent declares a
+  // `link_geometry` array, bypass the preset's GLB/rich/primitive pipeline and
+  // render the authored primitives directly. All downstream resolution
+  // (bounds, collision, connectors) derives from the AABB of those primitives,
+  // so the rest of the assembly pipeline treats the resulting link
+  // identically to any catalog component — placement, mate connectors,
+  // inertia, all work without further specialization.
+  const customGeometry = args.instance && hasLinkGeometry(args.instance as { link_geometry?: unknown })
+    ? buildVisualsFromLinkGeometry(((args.instance as { link_geometry?: unknown }).link_geometry as Parameters<typeof buildVisualsFromLinkGeometry>[0]) || [])
+    : null
+
+  const visuals = customGeometry && customGeometry.length > 0
+    ? customGeometry
+    : generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
   const visualBounds = visualBoundsFromDescriptors(visuals)
-  const boundsResult = resolveCurrentBounds(preset, visuals)
+  const boundsResult = customGeometry && customGeometry.length > 0 && visualBounds
+    ? { bounds: visualBounds, boundsSource: 'urdf_primitives' as const, scalePolicy: 'none' as const }
+    : resolveCurrentBounds(preset, visuals)
   const meshMetadata = getMeshVisualMetadata(preset.id)
   const collision = resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
   const resolvedLogical = resolveComponent({ spec: preset, instance: args.instance, category: args.category })
-  const proceduralOnly = PROCEDURAL_VISUAL_ONLY.has(preset.id)
+  // When custom link_geometry is in play, suppress GLB/rich-visual paths so
+  // the authored primitives are what gets rendered (otherwise the preset's
+  // mesh override would re-take the slot we just filled).
+  const proceduralOnly = PROCEDURAL_VISUAL_ONLY.has(preset.id) || (!!customGeometry && customGeometry.length > 0)
   const meshOverride = !!meshMetadata && !proceduralOnly
   const meshUsable = !!meshMetadata && !meshMetadata.blacklisted && !proceduralOnly
   const meshPreview = meshUsable ? buildCachedMeshPreviewGroup(preset, {

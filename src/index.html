@@ -60,13 +60,25 @@
               <button id="btn-open-folder" title="Open Folder" class="explorer-btn">Open Folder</button>
             </div>
             <div class="sb-section">
-              <div class="sb-header" data-target="files-list">
-                <span class="arrow">&#9662;</span> Open Files
+              <div class="sb-header" data-target="files-list" id="explorer-tree-header">
+                <span class="arrow">&#9662;</span> <span id="explorer-tree-label">Open Files</span>
+                <span class="sb-header-actions">
+                  <button id="btn-tree-new-file" class="sb-header-btn" title="New File">+</button>
+                  <button id="btn-tree-new-folder" class="sb-header-btn" title="New Folder">&#128193;</button>
+                  <button id="btn-tree-refresh" class="sb-header-btn" title="Refresh">&#x21bb;</button>
+                </span>
               </div>
               <div class="sb-list" id="files-list">
                 <!-- Populated dynamically by main.ts -->
               </div>
             </div>
+          </div>
+          <!-- Tree context menu -->
+          <div id="tree-context-menu" class="tree-ctx-menu hidden">
+            <button data-action="new-file">New File</button>
+            <button data-action="new-folder">New Folder</button>
+            <button data-action="rename">Rename</button>
+            <button data-action="delete">Delete</button>
           </div>
 
           <!-- URDF Build panel -->

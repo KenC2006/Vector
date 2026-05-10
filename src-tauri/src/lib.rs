@@ -889,6 +889,64 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     fs::read(&path).map_err(|e| format!("Failed to read binary file: {}", e))
 }
 
+/// Create a new file at `path` with optional initial content. Errors if the
+/// file already exists unless `overwrite` is true. Parent directory must exist.
+#[tauri::command]
+async fn create_file(path: String, content: Option<String>, overwrite: Option<bool>) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() && !overwrite.unwrap_or(false) {
+        return Err(format!("File already exists: {}", path));
+    }
+    fs::write(&path, content.unwrap_or_default().as_bytes())
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    Ok(path)
+}
+
+/// Create a directory (and parents). No-op if it already exists.
+#[tauri::command]
+async fn create_directory(path: String) -> Result<String, String> {
+    fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
+    Ok(path)
+}
+
+/// Delete a file or directory. Directories require `recursive=true`.
+#[tauri::command]
+async fn delete_path(path: String, recursive: Option<bool>) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(());
+    }
+    if p.is_dir() {
+        if recursive.unwrap_or(false) {
+            fs::remove_dir_all(&path).map_err(|e| format!("Failed to delete directory: {}", e))
+        } else {
+            fs::remove_dir(&path).map_err(|e| format!("Failed to delete directory (not empty?): {}", e))
+        }
+    } else {
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete file: {}", e))
+    }
+}
+
+/// Rename / move a path. Errors if `new_path` already exists.
+#[tauri::command]
+async fn rename_path(old_path: String, new_path: String) -> Result<String, String> {
+    let np = std::path::Path::new(&new_path);
+    if np.exists() {
+        return Err(format!("Destination already exists: {}", new_path));
+    }
+    fs::rename(&old_path, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
+    Ok(new_path)
+}
+
+/// Check whether a path exists, and whether it's a directory.
+#[tauri::command]
+async fn path_exists(path: String) -> Result<serde_json::Value, String> {
+    let p = std::path::Path::new(&path);
+    let exists = p.exists();
+    let is_dir = exists && p.is_dir();
+    Ok(json!({ "exists": exists, "isDir": is_dir }))
+}
+
 /// Open folder dialog and return the selected directory path
 #[tauri::command]
 async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -897,11 +955,13 @@ async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, Str
     Ok(path.map(|p| p.to_string()))
 }
 
-/// List files in a directory (recursive, max 2 levels deep)
+/// List files in a directory. `max_depth` defaults to 0 (single level —
+/// children are loaded lazily when folders are expanded).
 #[tauri::command]
-async fn list_directory(path: String) -> Result<Vec<serde_json::Value>, String> {
+async fn list_directory(path: String, max_depth: Option<u32>) -> Result<Vec<serde_json::Value>, String> {
     let mut entries = Vec::new();
-    list_dir_recursive(&std::path::Path::new(&path), &path, 0, 2, &mut entries)
+    let depth = max_depth.unwrap_or(0);
+    list_dir_recursive(&std::path::Path::new(&path), &path, 0, depth, &mut entries)
         .map_err(|e| format!("Failed to list directory: {}", e))?;
     Ok(entries)
 }
@@ -1311,6 +1371,11 @@ pub fn run() {
             open_folder_dialog,
             list_directory,
             save_file_dialog,
+            create_file,
+            create_directory,
+            delete_path,
+            rename_path,
+            path_exists,
             get_recent_files,
             git_branch,
             git_status,

@@ -110,6 +110,61 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 .tab.modified .tab-modified { display: block; }
 .tab.modified .tab-close { display: none; }
 
+/* Dirty buffer indicator on tabs — replaces the close X when unsaved.
+ * Hover reveals the X so the user can still close (Monaco prompts internally
+ * via the close handler if confirmation is needed; we don't add a confirm
+ * dialog here — the user can always Ctrl+Z if a close was accidental). */
+.tab-dirty {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #d4d4d4;
+  flex-shrink: 0;
+  display: none;
+  margin-right: 2px;
+}
+.tab.dirty .tab-dirty { display: block; }
+.tab.dirty:not(:hover) .tab-close { display: none; }
+
+/* Dirty dot in tree rows */
+.fi-dirty {
+  margin-left: auto;
+  margin-right: 6px;
+  color: #d4d4d4;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.file-item.dirty { font-style: italic; }
+
+/* Section separator inside the no-workspace explorer list */
+.fi-section-sep {
+  padding: 8px 14px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dimmer);
+}
+
+/* Recently-closed entries in the no-workspace explorer */
+.file-item.recent { color: var(--text-dimmer); }
+.file-item.recent:hover { color: var(--text-dim); }
+.file-item .fi-remove {
+  margin-left: auto;
+  margin-right: 4px;
+  font-size: 14px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--text-dimmer);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+}
+.file-item:hover .fi-remove { opacity: 1; }
+.file-item .fi-remove:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+
 .tab-close {
   font-size: 15px; color: var(--text-dim); opacity: 0;
   transition: opacity 0.1s, color 0.1s;
@@ -269,6 +324,72 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
 .fi-arrow { font-size: 9px; color: var(--text-dimmer); }
 
 .file-item.folder { color: var(--text-dim); font-weight: 500; }
+.file-item.open:not(.active) { color: #d4d4d4; }
+
+/* Header action buttons (New File / New Folder / Refresh) */
+.sb-header-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sb-header:hover .sb-header-actions { opacity: 1; }
+.sb-header-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+.sb-header-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+
+/* Tree context menu */
+.tree-ctx-menu {
+  position: fixed;
+  z-index: 200;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+  padding: 4px 0;
+  min-width: 140px;
+  font-size: 12px;
+}
+.tree-ctx-menu.hidden { display: none; }
+.tree-ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 5px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+.tree-ctx-menu button:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+.tree-ctx-menu button[data-action="delete"] { color: #f48771; }
+
+/* Inline-rename input shown over a tree row */
+.file-item input.fi-rename {
+  flex: 1;
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 1px 4px;
+  outline: none;
+}
 
 
 /* Validation panel */
@@ -1632,12 +1753,21 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
 }
 .crp-option:hover { background: rgba(255,255,255,0.06); color: var(--text); }
 
-#vc-messages .ai-msg.user .ai-msg-content {
+/* Chat bubble width clamp lives on the WRAPPER, not the inner content. The
+ * wrapper has `align-self: flex-end` (user) which makes it shrink-wrap;
+ * percentage max-widths on a child of a shrink-wrapped container resolve
+ * against an indefinite containing block and collapse to intrinsic min-content,
+ * producing the "very vertical, few words per line" failure mode. Putting the
+ * clamp on the wrapper itself sidesteps that. */
+#vc-messages .ai-msg.user {
   max-width: 70%;
   margin-left: auto;
 }
-#vc-messages .ai-msg.assistant .ai-msg-content {
+#vc-messages .ai-msg.assistant {
   max-width: 85%;
+}
+#vc-messages .ai-msg-content {
+  overflow-wrap: anywhere;
 }
 #vc-messages .ai-msg-diff {
   max-height: 300px;

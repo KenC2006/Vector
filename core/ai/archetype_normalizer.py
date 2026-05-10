@@ -50,12 +50,14 @@ def _subtree_component_ids(components: List[Dict], root_link: str) -> Set[str]:
 def detect_archetype(components: List[Dict]) -> Optional[str]:
     """Return the archetype label, or None if unrecognized.
 
-    Quadruped = >=4 rubber foot pads.
+    Quadruped = exactly 4 rubber foot pads. (>=4 used to match here, but it
+                trips on hexapods/crabs/octopods and force-fits them into the
+                quadruped template — a regression for any non-4-leg creature.)
     Arm       = has an effector at the chain tip + chain of revolute servos
                 + no rubber feet (otherwise quadruped wins first).
     """
     foot_count = sum(1 for c in components if c.get("component_id") == "mobility_rubber_foot_pad")
-    if foot_count >= 4:
+    if foot_count == 4:
         return "quadruped"
 
     has_effector = any(c.get("component_id", "").startswith("effector_") for c in components)
@@ -286,15 +288,24 @@ _NORMALIZERS = {
 def normalize_assembly(
     components: List[Dict],
     requested_features: Optional[Dict[str, bool]] = None,
+    declared_archetype: Optional[str] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Run the appropriate archetype normalizer on a semantic assembly graph.
 
     requested_features lets the user opt in to optional parts:
         {"tail": True, "articulated_head": True}
 
+    declared_archetype is the prompt-level classification (see
+    core.ai.prompt_archetype). When set to "novel", normalization is skipped
+    entirely — the user asked for a non-standard creature and the
+    archetype-specific invariants below would force it back toward the
+    nearest known template.
+
     Returns (normalized_components, diagnostics). The diagnostics list contains
     structured records {code, severity, component, message, repair?} suitable
     for routing to the AI redesign prompt or the user-facing chat panel."""
+    if declared_archetype == "novel":
+        return components, []
     feats = requested_features or {}
     archetype = detect_archetype(components)
     if archetype is None:

@@ -534,6 +534,10 @@ interface TabRobotCache {
   parsedContent: string
 }
 const tabRobotCache: Record<string, TabRobotCache> = {}
+// Buffer keys whose Monaco content has changed since last save. Drives the
+// dirty-dot indicator on tabs + tree rows. Untitled buffers are always dirty
+// once they have any content (they have nothing on disk to compare to).
+const dirtyBuffers = new Set<string>()
 // Per-file undo/redo state — saved when leaving a file, restored when returning.
 const fileUndoStates: Record<string, { undo: string[]; redo: string[] }> = {}
 let untitledCounter = 0
@@ -560,23 +564,45 @@ function getMonacoLang(filename: string): string {
   return langs[ext] || 'plaintext'
 }
 
+// Buffer key → display label, with parent-folder disambiguation when two
+// open buffers share the same basename. Untitled buffers display their key.
+function bufferLabel(key: string): string {
+  if (key.startsWith('untitled:')) return key.slice('untitled:'.length)
+  const base = key.split(/[\\/]/).pop() || key
+  // Disambiguate against other open buffers with the same basename
+  const collisions = openFiles.filter(k => {
+    if (k === key) return false
+    const b = k.startsWith('untitled:') ? k.slice('untitled:'.length) : (k.split(/[\\/]/).pop() || k)
+    return b === base
+  })
+  if (collisions.length === 0) return base
+  // Append parent folder for disambiguation
+  const parts = key.split(/[\\/]/)
+  const parent = parts.length >= 2 ? parts[parts.length - 2] : ''
+  return parent ? `${base} — ${parent}` : base
+}
+
 function renderTabs() {
   // Remove all existing tab elements (keep the + button)
   tabBar.querySelectorAll('.tab').forEach(t => t.remove())
 
-  for (const filename of openFiles) {
+  for (const key of openFiles) {
     const tab = document.createElement('div')
-    tab.className = 'tab' + (filename === activeFile ? ' active' : '')
-    tab.dataset.file = filename
+    tab.className = 'tab' + (key === activeFile ? ' active' : '')
+    tab.dataset.file = key
+    const label = bufferLabel(key)
+    const isDirty = dirtyBuffers.has(key)
+    tab.classList.toggle('dirty', isDirty)
     tab.innerHTML = `
-      <span class="tab-label">${filename}</span>
+      <span class="tab-label" title="${key.replace(/"/g, '&quot;')}">${label}</span>
+      <span class="tab-dirty" title="Unsaved changes">&#9679;</span>
       <span class="tab-close" title="Close">&times;</span>
     `
     tab.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).classList.contains('tab-close')) {
-        closeFile(filename)
+        closeFile(key)
       } else {
-        switchToFile(filename)
+        switchToFile(key)
       }
     })
     tabBar.insertBefore(tab, tabNewBtn)
@@ -585,22 +611,72 @@ function renderTabs() {
 
 function renderExplorer() {
   if (!filesList) return
-  // If a folder is open, just update active highlights — don't rebuild the tree
+  // If a folder is open, render the workspace tree (always full re-render so
+  // active highlights track open buffers without separate update logic).
   if (openedFolderPath) {
-    filesList.querySelectorAll('.file-item').forEach(item => {
-      const text = item.textContent?.trim() || ''
-      item.classList.toggle('active', text === activeFile)
-    })
+    renderWorkspaceTree()
     return
   }
-  // No folder open — show open files list
+  // No folder open — show open buffers + recently-closed disk files so the
+  // user can re-open a tab they X'd without going back through the file dialog.
   filesList.innerHTML = ''
-  for (const filename of openFiles) {
-    const ext = getFileExt(filename)
+
+  // Section 1: currently-open buffers
+  for (const key of openFiles) {
+    const label = bufferLabel(key)
+    const ext = getFileExt(label)
+    const isDirty = dirtyBuffers.has(key)
     const item = document.createElement('div')
-    item.className = 'file-item' + (filename === activeFile ? ' active' : '')
-    item.innerHTML = `<span class="fi-dot ${ext}"></span>${filename}`
-    item.addEventListener('click', () => switchToFile(filename))
+    item.className = 'file-item open' + (key === activeFile ? ' active' : '') + (isDirty ? ' dirty' : '')
+    item.innerHTML = `<span class="fi-dot ${ext}"></span>${label}${isDirty ? '<span class="fi-dirty" title="Unsaved changes">&#9679;</span>' : ''}`
+    item.title = key
+    item.addEventListener('click', () => switchToFile(key))
+    filesList.appendChild(item)
+  }
+
+  // Section 2: recent disk-backed files not currently open. Click to reload
+  // from disk. Hover-X removes the entry from the recent list (doesn't touch
+  // disk).
+  const openPaths = new Set(openFiles.filter(k => !k.startsWith('untitled:')))
+  const closedRecents = recentFiles.filter(r => !openPaths.has(r.path))
+  if (closedRecents.length > 0 && openFiles.length > 0) {
+    const sep = document.createElement('div')
+    sep.className = 'fi-section-sep'
+    sep.textContent = 'Recent'
+    filesList.appendChild(sep)
+  }
+  for (const rf of closedRecents) {
+    const ext = rf.name.split('.').pop()?.toLowerCase() || ''
+    const item = document.createElement('div')
+    item.className = 'file-item recent'
+    item.innerHTML = `<span class="fi-dot ${ext}"></span>${rf.name}<span class="fi-remove" title="Remove from list">&times;</span>`
+    item.title = rf.path
+    item.addEventListener('click', async (e) => {
+      if ((e.target as HTMLElement).classList.contains('fi-remove')) {
+        e.stopPropagation()
+        recentFiles = recentFiles.filter(r => r.path !== rf.path)
+        localStorage.setItem('vector_recent_files', JSON.stringify(recentFiles))
+        renderRecentFiles()
+        renderExplorer()
+        return
+      }
+      try {
+        const probe = await invoke<{ exists: boolean; isDir: boolean }>('path_exists', { path: rf.path })
+        if (!probe.exists) {
+          showToast(`File no longer exists: ${rf.name}`, 'warning')
+          recentFiles = recentFiles.filter(r => r.path !== rf.path)
+          localStorage.setItem('vector_recent_files', JSON.stringify(recentFiles))
+          renderRecentFiles()
+          renderExplorer()
+          return
+        }
+        const content = await invoke<string>('open_file', { path: rf.path })
+        createNewFile(rf.name, content, rf.path)
+        currentFilePath = rf.path
+      } catch (err) {
+        showToast(`Failed to open ${rf.name}: ${err}`, 'error')
+      }
+    })
     filesList.appendChild(item)
   }
 }
@@ -640,6 +716,7 @@ function switchToFile(filename: string) {
   }
 
   activeFile = filename
+  saveOpenTabsState()
   fileTypeLabel.textContent = getFileType(filename)
 
   // Pending inline diffs are now stashed per-file by setActiveFile() at the
@@ -706,7 +783,13 @@ function switchToFile(filename: string) {
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
     } else {
-      // First visit or content changed — full reparse
+      // First visit or content changed — full reparse. Clear the previous
+      // tab's geometry from the scene up-front so a parse failure on the new
+      // content doesn't leave the old robot stuck on screen (reparseURDF only
+      // removes the old group AFTER a successful parse).
+      worldGroup.remove(parsedRobot.group)
+      wireframeGroup.clear()
+      axisVisuals.length = 0
       robot.position.set(0, 0, 0)
       reparseURDF(undefined, { ground: true })
       urdfAssemblyApi?.onModelUpdated()
@@ -789,34 +872,70 @@ function renderRecentFiles() {
 renderRecentFiles()
 
 function createNewFile(filename?: string, content = '', diskPath: string | null = null) {
-  if (!filename) {
+  // Buffer key: full disk path when available, synthetic "untitled:N" otherwise.
+  // This lets two files with the same basename in different folders coexist as
+  // distinct tabs, and decouples in-memory buffer identity from display label.
+  let key: string
+  let displayName: string
+  if (diskPath) {
+    key = diskPath
+    displayName = diskPath.split(/[\\/]/).pop() || filename || 'file'
+  } else {
     untitledCounter++
-    filename = `untitled_${untitledCounter}.urdf`
+    key = `untitled:${untitledCounter}`
+    displayName = filename || `untitled_${untitledCounter}.urdf`
   }
 
-  // New URDF files should start with minimal valid robot, not empty
-  if (!content && (isUrdfLike(filename))) {
-    content = SAMPLE_URDF
+  // New URDF buffers need *some* parseable URDF so the 3D pipeline doesn't
+  // either error out (leaving stale geometry on screen) or auto-validate
+  // against an empty model. Inject SAMPLE_URDF, but stamp it with a
+  // per-buffer robot name so two open untitled tabs are visually
+  // distinguishable in the viewport (otherwise every fresh "+" tab looks
+  // identical to the previous one and the user thinks the new tab inherited
+  // the old one's state).
+  if (!content && (isUrdfLike(displayName))) {
+    const stamp = key.startsWith('untitled:')
+      ? `untitled_${key.slice('untitled:'.length)}`
+      : (displayName.replace(/\.[^.]+$/, '') || 'robot')
+    content = SAMPLE_URDF.replace(/<robot\s+name="[^"]*"/, `<robot name="${stamp}"`)
   }
 
-  // If file already open, just switch to it
-  if (monacoModels[filename]) {
-    switchToFile(filename)
-    return filename
+  // If buffer already open for this key, just switch to it
+  if (monacoModels[key]) {
+    switchToFile(key)
+    return key
   }
 
-  const lang = getMonacoLang(filename)
-  monacoModels[filename] = monaco.editor.createModel(content, lang)
-  openFiles.push(filename)
-  filePaths[filename] = diskPath
+  const lang = getMonacoLang(displayName)
+  monacoModels[key] = monaco.editor.createModel(content, lang)
+  openFiles.push(key)
+  filePaths[key] = diskPath
 
   // Track in recent files
-  if (diskPath) addRecentFile(filename, diskPath)
+  if (diskPath) addRecentFile(displayName, diskPath)
+
+  // Untitled buffers start dirty (they have content but nothing on disk yet).
+  if (!diskPath) {
+    dirtyBuffers.add(key)
+  }
+
+  // Mark buffer dirty on any content change (applies to all file types).
+  {
+    const fn = key
+    const fnModel = monacoModels[key]
+    fnModel.onDidChangeContent(() => {
+      if (!dirtyBuffers.has(fn)) {
+        dirtyBuffers.add(fn)
+        renderTabs()
+        renderExplorer()
+      }
+    })
+  }
 
   // Listen for changes on URDF/XML files with debounce
-  if (isUrdfLike(filename)) {
-    const fn = filename // capture for closure
-    const fnModel = monacoModels[filename] // capture model reference for closure
+  if (isUrdfLike(displayName)) {
+    const fn = key // capture for closure
+    const fnModel = monacoModels[key] // capture model reference for closure
     fnModel.onDidChangeContent(() => {
       if (activeFile === fn) {
         // Hot-reload guard: block reparse while sim is running — edits would
@@ -840,10 +959,11 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
     })
   }
 
-  switchToFile(filename)
+  switchToFile(key)
   renderTabs()
   renderExplorer()
-  return filename
+  saveOpenTabsState()
+  return key
 }
 
 function showWelcomeState() {
@@ -901,6 +1021,7 @@ function closeFile(filename: string) {
     })
   }
   delete tabRobotCache[filename]
+  dirtyBuffers.delete(filename)
 
   // Switch to adjacent tab or show welcome if no files left
   if (filename === activeFile) {
@@ -915,10 +1036,345 @@ function closeFile(filename: string) {
 
   renderTabs()
   renderExplorer()
+  saveOpenTabsState()
+}
+
+/**
+ * Migrate every per-buffer map entry from `oldKey` to `newKey`. Used when an
+ * untitled buffer is saved to disk for the first time (key changes from
+ * `untitled:N` to the absolute path) so that tabs, tree highlights, undo
+ * stacks, and 3D caches don't get orphaned. Monaco's model identity is
+ * preserved — we move the existing model under the new key rather than
+ * disposing it, so undo history survives.
+ */
+function rekeyBuffer(oldKey: string, newKey: string) {
+  if (oldKey === newKey) return
+  const idx = openFiles.indexOf(oldKey)
+  if (idx >= 0) openFiles[idx] = newKey
+  if (monacoModels[oldKey]) { monacoModels[newKey] = monacoModels[oldKey]; delete monacoModels[oldKey] }
+  if (oldKey in viewStates) { viewStates[newKey] = viewStates[oldKey]; delete viewStates[oldKey] }
+  if (oldKey in cameraStates) { cameraStates[newKey] = cameraStates[oldKey]; delete cameraStates[oldKey] }
+  if (oldKey in tabRobotCache) { tabRobotCache[newKey] = tabRobotCache[oldKey]; delete tabRobotCache[oldKey] }
+  if (oldKey in fileUndoStates) { fileUndoStates[newKey] = fileUndoStates[oldKey]; delete fileUndoStates[oldKey] }
+  if (oldKey in filePaths) { filePaths[newKey] = filePaths[oldKey]; delete filePaths[oldKey] }
+  if (dirtyBuffers.has(oldKey)) { dirtyBuffers.delete(oldKey); dirtyBuffers.add(newKey) }
+  if (activeFile === oldKey) activeFile = newKey
+}
+
+/**
+ * Persist the disk-backed open buffers + active key so the next launch can
+ * restore them. Untitled buffers are intentionally skipped — they have no
+ * disk identity and would either need their content serialized to
+ * localStorage (which can quickly blow the quota for big URDFs) or come back
+ * as empty stubs that confuse the user. Saving an untitled buffer first
+ * promotes it to a path-keyed buffer, after which it WILL be restored.
+ */
+function saveOpenTabsState() {
+  try {
+    const diskBacked = openFiles.filter(k => !k.startsWith('untitled:') && filePaths[k])
+    const state = { paths: diskBacked, active: diskBacked.includes(activeFile) ? activeFile : null }
+    localStorage.setItem('vector_open_tabs', JSON.stringify(state))
+  } catch { /* localStorage quota — best effort */ }
+}
+
+/** Re-fetch the workspace tree from disk and re-render the explorer. */
+async function refreshTree() {
+  if (!openedFolderPath) return
+  try {
+    const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>(
+      'list_directory', { path: openedFolderPath }
+    )
+    workspaceTreeEntries = entries
+    renderWorkspaceTree()
+  } catch (err) {
+    showToast(`Failed to refresh tree: ${err}`, 'error')
+  }
+}
+
+// Tracks the entries returned by the most recent list_directory call so we can
+// re-render the tree on highlight changes without re-fetching.
+let workspaceTreeEntries: Array<{ name: string; path: string; isDir: boolean; depth: number }> = []
+const expandedFolders = new Set<string>()
+// Children loaded on demand for each expanded folder path.
+const folderChildren: Record<string, Array<{ name: string; path: string; isDir: boolean; depth: number }>> = {}
+
+/** Currently focused tree path for context-menu actions. */
+let contextMenuTarget: { path: string; isDir: boolean } | null = null
+
+function renderWorkspaceTree() {
+  if (!filesList || !openedFolderPath) return
+  filesList.innerHTML = ''
+
+  // Recursively render entries with their lazy-loaded children inserted in line.
+  const renderEntry = (entry: { name: string; path: string; isDir: boolean; depth: number }) => {
+    const el = document.createElement('div')
+    const ext = entry.name.split('.').pop()?.toLowerCase() || ''
+    el.style.paddingLeft = `${12 + entry.depth * 14}px`
+    el.dataset.path = entry.path
+    el.dataset.isDir = entry.isDir ? '1' : '0'
+    if (entry.isDir) {
+      const expanded = expandedFolders.has(entry.path)
+      el.className = 'file-item folder' + (expanded ? ' expanded' : '')
+      el.innerHTML = `<span class="fi-arrow">${expanded ? '&#9662;' : '&#9656;'}</span>${entry.name}/`
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        if (expanded) {
+          expandedFolders.delete(entry.path)
+        } else {
+          expandedFolders.add(entry.path)
+          if (!folderChildren[entry.path]) {
+            try {
+              const children = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>(
+                'list_directory', { path: entry.path }
+              )
+              // Stamp depth relative to root
+              folderChildren[entry.path] = children.map(c => ({ ...c, depth: entry.depth + 1 }))
+            } catch (err) {
+              showToast(`Failed to list ${entry.name}: ${err}`, 'error')
+              expandedFolders.delete(entry.path)
+            }
+          }
+        }
+        renderWorkspaceTree()
+      })
+    } else {
+      const isOpen = openFiles.includes(entry.path)
+      const isActive = entry.path === activeFile
+      const isDirty = dirtyBuffers.has(entry.path)
+      el.className = 'file-item' + (isActive ? ' active' : '') + (isOpen ? ' open' : '') + (isDirty ? ' dirty' : '')
+      el.innerHTML = `<span class="fi-dot ${ext}"></span>${entry.name}${isDirty ? '<span class="fi-dirty" title="Unsaved changes">&#9679;</span>' : ''}`
+      el.addEventListener('click', async () => {
+        // If already open, just switch — otherwise read from disk and open.
+        if (openFiles.includes(entry.path)) {
+          switchToFile(entry.path)
+        } else {
+          try {
+            const content = await invoke<string>('open_file', { path: entry.path })
+            createNewFile(entry.name, content, entry.path)
+            currentFilePath = entry.path
+          } catch (err) {
+            showToast(`Failed to open ${entry.name}: ${err}`, 'error')
+          }
+        }
+      })
+    }
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      contextMenuTarget = { path: entry.path, isDir: entry.isDir }
+      showTreeContextMenu(e as MouseEvent)
+    })
+    filesList!.appendChild(el)
+
+    if (entry.isDir && expandedFolders.has(entry.path) && folderChildren[entry.path]) {
+      for (const child of folderChildren[entry.path]) renderEntry(child)
+    }
+  }
+
+  for (const entry of workspaceTreeEntries) renderEntry(entry)
 }
 
 // + button handler
 tabNewBtn.addEventListener('click', () => createNewFile())
+
+// ── Tree actions (header buttons + context menu) ─────────────────────────────
+
+function pickWorkspaceTargetDir(): string | null {
+  // Where to create a new entry: the focused folder if a folder is selected,
+  // the parent of the focused file, or the workspace root.
+  if (contextMenuTarget) {
+    if (contextMenuTarget.isDir) return contextMenuTarget.path
+    return contextMenuTarget.path.replace(/[\\/][^\\/]+$/, '')
+  }
+  return openedFolderPath
+}
+
+async function promptAndCreateFile(parentDir: string | null) {
+  if (!parentDir) {
+    showToast('Open a folder first to create files in it', 'warning')
+    return
+  }
+  const name = window.prompt('New file name:', 'untitled.urdf')
+  if (!name) return
+  const sep = parentDir.includes('\\') && !parentDir.includes('/') ? '\\' : '/'
+  const newPath = `${parentDir}${parentDir.endsWith(sep) ? '' : sep}${name}`
+  try {
+    const content = isUrdfLike(name) ? SAMPLE_URDF : ''
+    await invoke('create_file', { path: newPath, content, overwrite: false })
+    if (parentDir !== openedFolderPath) expandedFolders.add(parentDir)
+    // Invalidate cached children for the parent so refresh picks up the new file.
+    if (parentDir in folderChildren) delete folderChildren[parentDir]
+    if (expandedFolders.has(parentDir)) {
+      const children = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>(
+        'list_directory', { path: parentDir }
+      )
+      const baseDepth = workspaceTreeEntries.find(e => e.path === parentDir)?.depth ?? 0
+      folderChildren[parentDir] = children.map(c => ({ ...c, depth: baseDepth + 1 }))
+    }
+    await refreshTree()
+    // Open the new file in a buffer
+    const fileContent = await invoke<string>('open_file', { path: newPath })
+    createNewFile(name, fileContent, newPath)
+  } catch (err) {
+    showToast(`Failed to create file: ${err}`, 'error')
+  }
+}
+
+async function promptAndCreateFolder(parentDir: string | null) {
+  if (!parentDir) {
+    showToast('Open a folder first to create directories in it', 'warning')
+    return
+  }
+  const name = window.prompt('New folder name:', 'new-folder')
+  if (!name) return
+  const sep = parentDir.includes('\\') && !parentDir.includes('/') ? '\\' : '/'
+  const newPath = `${parentDir}${parentDir.endsWith(sep) ? '' : sep}${name}`
+  try {
+    await invoke('create_directory', { path: newPath })
+    if (parentDir !== openedFolderPath) expandedFolders.add(parentDir)
+    if (parentDir in folderChildren) delete folderChildren[parentDir]
+    if (expandedFolders.has(parentDir)) {
+      const children = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>(
+        'list_directory', { path: parentDir }
+      )
+      const baseDepth = workspaceTreeEntries.find(e => e.path === parentDir)?.depth ?? 0
+      folderChildren[parentDir] = children.map(c => ({ ...c, depth: baseDepth + 1 }))
+    }
+    await refreshTree()
+  } catch (err) {
+    showToast(`Failed to create folder: ${err}`, 'error')
+  }
+}
+
+async function deletePathFromTree(target: { path: string; isDir: boolean }) {
+  const ok = window.confirm(`Delete ${target.isDir ? 'folder' : 'file'} "${target.path.split(/[\\/]/).pop()}"?${target.isDir ? '\n\nAll contents will be removed.' : ''}`)
+  if (!ok) return
+  try {
+    await invoke('delete_path', { path: target.path, recursive: target.isDir })
+    // Close any open buffer pointing at this path (or a descendant if it's a folder)
+    const toClose = openFiles.filter(k =>
+      k === target.path || (target.isDir && k.startsWith(target.path + '/')) || (target.isDir && k.startsWith(target.path + '\\'))
+    )
+    for (const k of toClose) closeFile(k)
+    // Drop cached children for the deleted folder + its parent
+    if (target.isDir) {
+      delete folderChildren[target.path]
+      expandedFolders.delete(target.path)
+    }
+    const parent = target.path.replace(/[\\/][^\\/]+$/, '')
+    if (parent in folderChildren) delete folderChildren[parent]
+    if (expandedFolders.has(parent)) {
+      const children = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>(
+        'list_directory', { path: parent }
+      )
+      const baseDepth = workspaceTreeEntries.find(e => e.path === parent)?.depth ?? 0
+      folderChildren[parent] = children.map(c => ({ ...c, depth: baseDepth + 1 }))
+    }
+    await refreshTree()
+  } catch (err) {
+    showToast(`Failed to delete: ${err}`, 'error')
+  }
+}
+
+async function startInlineRename(target: { path: string; isDir: boolean }) {
+  const row = filesList?.querySelector(`.file-item[data-path="${CSS.escape(target.path)}"]`) as HTMLElement | null
+  if (!row) return
+  const oldName = target.path.split(/[\\/]/).pop() || ''
+  const parentDir = target.path.replace(/[\\/][^\\/]+$/, '')
+  const labelSpan = row.lastChild as Node | null
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'fi-rename'
+  input.value = oldName
+  // Replace the trailing label text with the input
+  if (labelSpan && labelSpan.nodeType === Node.TEXT_NODE) row.removeChild(labelSpan)
+  row.appendChild(input)
+  input.focus()
+  input.setSelectionRange(0, oldName.lastIndexOf('.') === -1 ? oldName.length : oldName.lastIndexOf('.'))
+  let committed = false
+  const commit = async () => {
+    if (committed) return
+    committed = true
+    const newName = input.value.trim()
+    if (!newName || newName === oldName) { await refreshTree(); return }
+    const sep = parentDir.includes('\\') && !parentDir.includes('/') ? '\\' : '/'
+    const newPath = `${parentDir}${sep}${newName}`
+    try {
+      await invoke('rename_path', { oldPath: target.path, newPath })
+      // Re-key any open buffer whose key is the old path or descends from it
+      for (const k of [...openFiles]) {
+        if (k === target.path) {
+          rekeyBuffer(k, newPath)
+        } else if (target.isDir && (k.startsWith(target.path + '/') || k.startsWith(target.path + '\\'))) {
+          rekeyBuffer(k, newPath + k.slice(target.path.length))
+        }
+      }
+      await refreshTree()
+      renderTabs()
+    } catch (err) {
+      showToast(`Rename failed: ${err}`, 'error')
+      await refreshTree()
+    }
+  }
+  input.addEventListener('blur', commit)
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); await commit() }
+    else if (e.key === 'Escape') { committed = true; await refreshTree() }
+  })
+}
+
+const treeContextMenu = document.getElementById('tree-context-menu') as HTMLDivElement | null
+
+function showTreeContextMenu(e: MouseEvent) {
+  if (!treeContextMenu) return
+  treeContextMenu.classList.remove('hidden')
+  const x = Math.min(e.clientX, window.innerWidth - 160)
+  const y = Math.min(e.clientY, window.innerHeight - 140)
+  treeContextMenu.style.left = `${x}px`
+  treeContextMenu.style.top = `${y}px`
+}
+
+function hideTreeContextMenu() {
+  if (!treeContextMenu) return
+  treeContextMenu.classList.add('hidden')
+}
+
+document.addEventListener('click', hideTreeContextMenu)
+document.addEventListener('contextmenu', (e) => {
+  // Only hide if the click wasn't on a tree row (which has its own handler)
+  const t = e.target as HTMLElement
+  if (!t.closest('.file-item') && !t.closest('.tree-ctx-menu')) hideTreeContextMenu()
+})
+
+if (treeContextMenu) {
+  treeContextMenu.addEventListener('click', async (e) => {
+    const btn = (e.target as HTMLElement).closest('button') as HTMLButtonElement | null
+    if (!btn) return
+    const action = btn.dataset.action
+    hideTreeContextMenu()
+    const target = contextMenuTarget
+    if (!target && action !== 'new-file' && action !== 'new-folder') return
+    if (action === 'new-file') await promptAndCreateFile(pickWorkspaceTargetDir())
+    else if (action === 'new-folder') await promptAndCreateFolder(pickWorkspaceTargetDir())
+    else if (action === 'rename' && target) await startInlineRename(target)
+    else if (action === 'delete' && target) await deletePathFromTree(target)
+    contextMenuTarget = null
+  })
+}
+
+document.getElementById('btn-tree-new-file')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  contextMenuTarget = null
+  promptAndCreateFile(openedFolderPath)
+})
+document.getElementById('btn-tree-new-folder')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  contextMenuTarget = null
+  promptAndCreateFolder(openedFolderPath)
+})
+document.getElementById('btn-tree-refresh')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  refreshTree()
+})
 
 // Initial render
 renderTabs()
@@ -2477,55 +2933,72 @@ async function openFolderDialog() {
   try {
     const folderPath = await invoke<string | null>('open_folder_dialog')
     if (!folderPath) return
-
-    openedFolderPath = folderPath
-    // Update breadcrumb project name
-    const bcProject = document.getElementById('bc-project')
-    if (bcProject) bcProject.textContent = folderPath.split(/[\\/]/).pop() || 'Vector'
-
-    const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>('list_directory', { path: folderPath })
-
-    // Update explorer header
-    const sbHeader = document.querySelector('#panel-explorer .sb-header')
-    if (sbHeader) {
-      const folderName = folderPath.split(/[\\/]/).pop() || folderPath
-      sbHeader.innerHTML = `<span class="arrow">&#9662;</span> ${folderName}`
-    }
-
-    // Render folder tree
-    const filesList = document.getElementById('files-list')
-    if (!filesList) return
-    filesList.innerHTML = ''
-
-    for (const entry of entries) {
-      const el = document.createElement('div')
-      const ext = entry.name.split('.').pop()?.toLowerCase() || ''
-      if (entry.isDir) {
-        el.className = 'file-item folder'
-        el.style.paddingLeft = `${12 + entry.depth * 14}px`
-        el.innerHTML = `<span class="fi-arrow">&#9656;</span>${entry.name}/`
-      } else {
-        el.className = 'file-item'
-        el.style.paddingLeft = `${12 + entry.depth * 14}px`
-        el.innerHTML = `<span class="fi-dot ${ext}"></span>${entry.name}`
-        el.addEventListener('click', async () => {
-          try {
-            const content = await invoke<string>('open_file', { path: entry.path })
-            createNewFile(entry.name, content, entry.path)
-            currentFilePath = entry.path
-          } catch (err) {
-            showToast(`Failed to open ${entry.name}: ${err}`, 'error')
-          }
-        })
-      }
-      filesList.appendChild(el)
-    }
-
-    showToast(`Opened folder: ${folderPath.split(/[\\/]/).pop()}`, 'success')
+    await openWorkspaceFolder(folderPath)
   } catch (err) {
     showToast(`Error opening folder: ${err}`, 'error')
   }
 }
+
+async function openWorkspaceFolder(folderPath: string) {
+  openedFolderPath = folderPath
+  expandedFolders.clear()
+  for (const k of Object.keys(folderChildren)) delete folderChildren[k]
+
+  const bcProject = document.getElementById('bc-project')
+  if (bcProject) bcProject.textContent = folderPath.split(/[\\/]/).pop() || 'Vector'
+
+  const treeLabel = document.getElementById('explorer-tree-label')
+  if (treeLabel) treeLabel.textContent = folderPath.split(/[\\/]/).pop() || folderPath
+
+  try { localStorage.setItem('vector_workspace', folderPath) } catch { /* ignore quota errors */ }
+
+  await refreshTree()
+  showToast(`Opened folder: ${folderPath.split(/[\\/]/).pop()}`, 'success')
+}
+
+// Auto-restore last workspace + open tabs on launch (best-effort — silently
+// skip entries whose paths no longer exist).
+;(async () => {
+  try {
+    const last = localStorage.getItem('vector_workspace')
+    if (last) {
+      const probe = await invoke<{ exists: boolean; isDir: boolean }>('path_exists', { path: last })
+      if (probe.exists && probe.isDir) {
+        await openWorkspaceFolder(last)
+      } else {
+        localStorage.removeItem('vector_workspace')
+      }
+    }
+
+    const raw = localStorage.getItem('vector_open_tabs')
+    if (raw) {
+      const state = JSON.parse(raw) as { paths: string[]; active: string | null }
+      const restored: string[] = []
+      for (const p of state.paths || []) {
+        try {
+          const probe = await invoke<{ exists: boolean; isDir: boolean }>('path_exists', { path: p })
+          if (!probe.exists || probe.isDir) continue
+          const content = await invoke<string>('open_file', { path: p })
+          const name = p.split(/[\\/]/).pop() || 'file'
+          createNewFile(name, content, p)
+          restored.push(p)
+        } catch { /* skip unreadable */ }
+      }
+      // Drop the default untitled sample buffer if we restored real tabs.
+      if (restored.length > 0) {
+        for (const k of [...openFiles]) {
+          if (k.startsWith('untitled:') && monacoModels[k]?.getValue() === SAMPLE_URDF) {
+            closeFile(k)
+            break
+          }
+        }
+      }
+      if (state.active && restored.includes(state.active)) {
+        switchToFile(state.active)
+      }
+    }
+  } catch { /* no-op: best effort */ }
+})()
 
 if (btnOpenFolder) {
   btnOpenFolder.addEventListener('click', openFolderDialog)
@@ -2548,45 +3021,14 @@ try {
 
         // Check if it's a directory by trying to list it
         try {
-          const entries = await invoke<Array<{ name: string; path: string; isDir: boolean; depth: number }>>('list_directory', { path })
-          // It's a directory — open as folder
-          openedFolderPath = path
-          const bcProject = document.getElementById('bc-project')
-          if (bcProject) bcProject.textContent = name
-          const sbHeader = document.querySelector('#panel-explorer .sb-header')
-          if (sbHeader) sbHeader.innerHTML = `<span class="arrow">&#9662;</span> ${name}`
-          const filesList = document.getElementById('files-list')
-          if (filesList) {
-            filesList.innerHTML = ''
-            for (const entry of entries) {
-              const el = document.createElement('div')
-              const entryExt = entry.name.split('.').pop()?.toLowerCase() || ''
-              if (entry.isDir) {
-                el.className = 'file-item folder'
-                el.style.paddingLeft = `${12 + entry.depth * 14}px`
-                el.innerHTML = `<span class="fi-arrow">&#9656;</span>${entry.name}/`
-              } else {
-                el.className = 'file-item'
-                el.style.paddingLeft = `${12 + entry.depth * 14}px`
-                el.innerHTML = `<span class="fi-dot ${entryExt}"></span>${entry.name}`
-                el.addEventListener('click', async () => {
-                  try {
-                    const content = await invoke<string>('open_file', { path: entry.path })
-                    createNewFile(entry.name, content, entry.path)
-                    currentFilePath = entry.path
-                  } catch (err) {
-                    showToast(`Failed to open ${entry.name}: ${err}`, 'error')
-                  }
-                })
-              }
-              filesList.appendChild(el)
-            }
+          const probe = await invoke<{ exists: boolean; isDir: boolean }>('path_exists', { path })
+          if (probe.exists && probe.isDir) {
+            await openWorkspaceFolder(path)
+            openSidebarPanel('explorer')
+            continue
           }
-          showToast(`Opened folder: ${name}`, 'success')
-          openSidebarPanel('explorer')
-          continue
         } catch {
-          // Not a directory — try opening as file
+          // path_exists shouldn't fail; fall through to file path branch
         }
 
         if (['urdf', 'xml', 'sdf', 'mjcf', 'json', 'yaml', 'yml', 'txt', 'obj', 'py'].includes(ext)) {
@@ -2622,7 +3064,10 @@ function showToast(message: string, type: 'success' | 'warning' | 'error' | 'inf
 }
 
 // ── Init toast ───────────────────────────────────────────────────────────────
-setTimeout(() => showToast(`Loaded robot.urdf — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success'), 500)
+setTimeout(() => {
+  if (!activeFile) return
+  showToast(`Loaded ${activeFile.split(/[\\/]/).pop() || activeFile} — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success')
+}, 500)
 setTimeout(() => showToast('Validation: 5 passed, 1 warning (CoM near edge)', 'warning'), 1200)
 
 // ── Auto-start Python core ──────────────────────────────────────────────────
@@ -2720,19 +3165,42 @@ async function saveCurrentFile() {
   try {
     if (!monacoEditor.getModel()) return
     const content = monacoEditor.getValue()
-    let path = filePaths[activeFile] || currentFilePath
+    const wasUntitled = activeFile.startsWith('untitled:')
+    // For untitled buffers, NEVER fall back to `currentFilePath` (the legacy
+    // global tracks the most-recently-opened disk path, NOT the active
+    // buffer's path — falling back to it would silently overwrite the
+    // previous file when the user hits Save on a new tab).
+    let path = wasUntitled ? null : (filePaths[activeFile] || currentFilePath)
 
     if (!path) {
-      path = await invoke<string | null>('save_file_dialog', { default_name: activeFile })
+      const defaultName = wasUntitled
+        ? `untitled_${activeFile.slice('untitled:'.length)}.urdf`
+        : activeFile.split(/[\\/]/).pop() || activeFile
+      path = await invoke<string | null>('save_file_dialog', { default_name: defaultName })
       if (!path) return
     }
 
     await invoke('save_file', { path, content })
+
+    // Promote an untitled buffer to a path-keyed buffer on first save: re-key
+    // every per-buffer map from the synthetic untitled key to the new disk path
+    // so tabs, tree highlights, and chat history all migrate together.
+    if (wasUntitled && path !== activeFile) {
+      rekeyBuffer(activeFile, path)
+    }
+
+    // Buffer is now in sync with disk.
+    dirtyBuffers.delete(activeFile)
     filePaths[activeFile] = path
     currentFilePath = path
+    renderTabs()
+    renderExplorer()
+    saveOpenTabsState()
     const filename = path.split(/[\\/]/).pop() || activeFile
     showToast(`Saved ${filename}`, 'success')
     document.title = `Vector — ${filename}`
+    // Refresh tree if the saved path lives in the open workspace
+    if (openedFolderPath && path.startsWith(openedFolderPath)) refreshTree()
   } catch (err) {
     showToast(`Error saving file: ${err}`, 'error')
   }
@@ -2871,11 +3339,12 @@ new MutationObserver(() => {
   _applyAiBusyModeFlip(document.body.classList.contains('ai-busy'))
 }).observe(document.body, { attributes: true, attributeFilter: ['class'] })
 
-// Ensure Monaco always has at least the default robot.urdf open so placement
-// and AI edits always have a valid URDF to read/write (prevents "Cannot edit
-// invalid URDF" on first component drag when no file has been opened yet).
+// No auto-spawn of a default buffer on launch. The welcome state handles the
+// no-tabs case (user clicks "+" or "Open File"/"Open Folder" to start).
+// The async workspace-restore IIFE further down may still re-open previously
+// open tabs from the last session, which is the intended startup flow.
 if (openFiles.length === 0) {
-  createNewFile('robot.urdf', SAMPLE_URDF, null)
+  showWelcomeState()
 }
 
 urdfAssemblyApi = initUrdfAssembly({
@@ -2923,7 +3392,11 @@ urdfAssemblyApi = initUrdfAssembly({
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
-  getActiveFileName: () => activeFile || 'robot.urdf',
+  getActiveFileName: () => {
+    if (!activeFile) return 'robot.urdf'
+    if (activeFile.startsWith('untitled:')) return `untitled_${activeFile.slice('untitled:'.length)}.urdf`
+    return activeFile.split(/[\\/]/).pop() || 'robot.urdf'
+  },
   isViewport3D: () => viewportChatApi?.isViewport3D() ?? true,
   getInteractionMode: () => viewportInteractionMode,
   isSimActive: () => simApi.isSimActive(),

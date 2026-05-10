@@ -74,8 +74,12 @@ function subtreeComponentIds(components: AssemblyComponent[], root: string): Set
 }
 
 export function detectArchetype(components: AssemblyComponent[]): string | null {
+  // Tightened from `>= 4` to `=== 4` — counts above 4 (hexapods, octopods,
+  // crabs, spiders, etc.) used to trip the quadruped template and produce
+  // "robot dog with extra legs" regressions. Mirror of
+  // core/ai/archetype_normalizer.py:detect_archetype.
   const footCount = components.filter(c => c.component_id === 'mobility_rubber_foot_pad').length
-  if (footCount >= 4) return 'quadruped'
+  if (footCount === 4) return 'quadruped'
   return null
 }
 
@@ -177,7 +181,15 @@ const NORMALIZERS: Record<string, (c: AssemblyComponent[], f: RequestedFeatures)
 export function normalizeAssembly(
   components: AssemblyComponent[],
   features: RequestedFeatures = {},
+  declaredArchetype?: 'standard' | 'novel' | null,
 ): NormalizeResult {
+  // Claude self-declared this as a non-standard creature/topology. The
+  // quadruped normalizer (cosmetic-tail removal etc.) would force-fit it
+  // back toward the dog template — exact regression we're trying to undo.
+  // Mirror of core/ai/archetype_normalizer.py:normalize_assembly.
+  if (declaredArchetype === 'novel') {
+    return { components, diagnostics: [], archetype: null }
+  }
   const archetype = detectArchetype(components)
   if (archetype === null) return { components, diagnostics: [], archetype: null }
   const fn = NORMALIZERS[archetype]

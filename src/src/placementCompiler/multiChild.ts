@@ -5,6 +5,7 @@
 
 import * as THREE from 'three'
 import { tangentBasisFromAxis, type MateConnector } from '../mateConnectors.ts'
+import { isNovelMode } from './context.ts'
 
 export interface ParentHalfExtentsM {
   hx: number
@@ -90,7 +91,26 @@ export function _buildMultiChildPositions(
   if (cached) return cached
   let positions: Array<{ u: number; v: number }>
 
-  if (total === 2) {
+  if (isNovelMode() && total >= 3) {
+    // Novel-archetype mode: distribute children evenly around the face center
+    // on an ellipse inscribed in the face's UV extents. Replaces the
+    // 4-corner-plus-edge-cycle pattern that produced "dog with extra legs in
+    // 2-2-2 stance" for hexapods/octopods/spiders/crabs/etc. The ellipse
+    // adapts to non-square faces (a long-thin baseplate yields an elongated
+    // distribution rather than crammed into the square corner pattern).
+    //
+    // Angle 0 starts at +U (face's "right" edge) and increments
+    // counter-clockwise. The first child going to +U rather than +V is
+    // arbitrary but consistent — what matters is the even spacing.
+    positions = []
+    for (let i = 0; i < total; i++) {
+      const theta = (2 * Math.PI * i) / total
+      positions.push({
+        u: inset * extU * Math.cos(theta),
+        v: inset * extV * Math.sin(theta),
+      })
+    }
+  } else if (total === 2) {
     positions = [
       { u: -inset * extU, v: 0 },
       { u: inset * extU, v: 0 },

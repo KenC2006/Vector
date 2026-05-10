@@ -22,7 +22,7 @@ Returns diagnostics in the shape used elsewhere in the assembler:
   {code, severity, component, message, repair?}
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 # Link-name infixes that indicate the LLM tried to author a backend-only link
@@ -38,11 +38,20 @@ def _is_passive_limb(component_id: str) -> bool:
     )
 
 
-def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
+def validate_semantic_graph(
+    components: List[Dict],
+    declared_archetype: Optional[str] = None,
+) -> List[Dict]:
     """Inspect an LLM-emitted assembly graph and return ownership-tagged
     diagnostics for anything that crosses into the placement compiler's lane.
     Read-only — the caller decides whether to strip offending fields or just
-    route the feedback into the next AI turn."""
+    route the feedback into the next AI turn.
+
+    `declared_archetype="novel"` relaxes the raw-xyz/raw-rpy ban — Tier-B
+    "complete control" lets Claude author full geometry for non-standard
+    creatures. Standard mode keeps the strict ban.
+    """
+    is_novel = declared_archetype == "novel"
     diagnostics: List[Dict] = []
     for comp in components or []:
         if not isinstance(comp, dict):
@@ -101,8 +110,12 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
                     ),
                 })
 
-        # 4. Raw xyz is never permitted from the AI.
-        for forbidden in ("xyz", "origin_xyz", "world_xyz"):
+        # 4. Raw xyz is never permitted from the AI in standard mode. Novel
+        # mode relaxes this — Claude can author xyz directly to express
+        # geometries the deterministic placement compiler can't reach.
+        # `origin_xyz`/`world_xyz` aliases stay forbidden in both modes (only
+        # `xyz` is the supported field name; aliases would create writer races).
+        for forbidden in ("origin_xyz", "world_xyz"):
             if forbidden in comp:
                 diagnostics.append({
                     "code": "semantic_graph_forbidden_field",
@@ -110,10 +123,22 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
                     "component": link_name,
                     "repair": f"drop_{forbidden}",
                     "message": (
-                        f"link '{link_name}' set '{forbidden}' — placement "
-                        "coordinates are computed by the compiler, not the AI."
+                        f"link '{link_name}' set '{forbidden}' — use bare 'xyz' "
+                        "(novel mode only) or let the compiler place it."
                     ),
                 })
+        if not is_novel and "xyz" in comp:
+            diagnostics.append({
+                "code": "semantic_graph_forbidden_field",
+                "severity": "error",
+                "component": link_name,
+                "repair": "drop_xyz",
+                "message": (
+                    f"link '{link_name}' set 'xyz' in standard mode. "
+                    "Direct geometry authoring is novel-mode only — set "
+                    "archetype_mode='novel' to use raw xyz/rpy authoring."
+                ),
+            })
 
     return diagnostics
 
@@ -141,9 +166,12 @@ def normalize_and_validate(assembly: Dict) -> Dict:
         "articulated_head": bool(features_in.get("articulated_head")),
     }
 
-    semantic_diags = validate_semantic_graph(components)
-    strip_forbidden_fields(components)
-    components, arch_diags = normalize_assembly(components, requested_features)
+    declared_archetype = assembly.get("_archetype_mode")
+    semantic_diags = validate_semantic_graph(components, declared_archetype=declared_archetype)
+    strip_forbidden_fields(components, declared_archetype=declared_archetype)
+    components, arch_diags = normalize_assembly(
+        components, requested_features, declared_archetype=declared_archetype,
+    )
     assembly["components"] = components
 
     all_diags = list(semantic_diags) + list(arch_diags)
@@ -163,17 +191,49 @@ def normalize_and_validate(assembly: Dict) -> Dict:
     return assembly
 
 
-def strip_forbidden_fields(components: List[Dict]) -> List[Dict]:
+def strip_forbidden_fields(
+    components: List[Dict],
+    declared_archetype: Optional[str] = None,
+) -> List[Dict]:
     """In-place safety net: drop fields the AI is not allowed to author.
 
     Used in shadow mode so that even when validate_semantic_graph emits a
     diagnostic, the offending value can't leak into the placement compiler.
+
+    `declared_archetype`: when not 'novel', strips Tier-A creative-authority
+    fields (placement_offset_mm, splay_angle_deg). Those fields are
+    novel-mode-only — exposing them in standard mode would risk regressing
+    dog/arm/wheeled designs that depend on the deterministic placement
+    pipeline staying byte-identical.
+
     Returns the same list reference for chaining."""
+    is_novel = declared_archetype == "novel"
     for comp in components or []:
         if not isinstance(comp, dict):
             continue
-        for k in ("xyz", "origin_xyz", "world_xyz"):
-            comp.pop(k, None)
+        # Phase-3 contract: raw xyz / world coordinates were forbidden because
+        # earlier-phase Claude produced invalid URDF when given direct geometry
+        # control. In novel mode, Tier-B "complete control" reverses that —
+        # Claude can author full xyz/rpy explicitly to express designs the
+        # deterministic placement compiler can't reach (asymmetric anatomy,
+        # exact creature poses, sculpture-style robots). Standard mode keeps
+        # the strip — dog/arm/wheeled stay bulletproof.
+        if not is_novel:
+            for k in ("xyz", "origin_xyz", "world_xyz", "rpy"):
+                comp.pop(k, None)
+            comp.pop("placement_offset_mm", None)
+            comp.pop("splay_angle_deg", None)
+            # Custom primitive composition is novel-mode only: standard
+            # archetypes have well-tuned templates that custom geometry would
+            # dilute (e.g. a dog with a primitive-composed torso would lose the
+            # baseplate-driven mate-connector math).
+            comp.pop("link_geometry", None)
+        else:
+            # Novel mode: drop the world_xyz / origin_xyz aliases (placement
+            # compiler only consumes `xyz` and `rpy` directly). Keeping all
+            # three would let two writers race.
+            comp.pop("origin_xyz", None)
+            comp.pop("world_xyz", None)
         cid = str(comp.get("component_id", ""))
         if cid == "mobility_rubber_foot_pad":
             comp.pop("attach_rpy", None)

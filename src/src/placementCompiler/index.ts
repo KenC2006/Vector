@@ -44,6 +44,7 @@ import {
   computeFacePlacement as _pureComputeFacePlacement,
   type ParentBoundsM,
 } from './face.ts'
+import { isNovelMode } from './context.ts'
 import {
   faceUVHalfExtents,
 } from './multiChild.ts'
@@ -545,15 +546,46 @@ export function compileAssembly(
     const parentIsServo = !!(parentComp && isSplitServoComponentId(parentComp.component_id))
 
     // ── Placement (xyz, rpy) ──────────────────────────────────────────────
-    // Three sources, in priority order:
+    // Four sources, in priority order:
+    // 0. Tier-B raw authoring (novel mode only): Claude wrote `xyz` / `rpy`
+    //    on the component — bypass everything below and use them verbatim.
     // 1. Servo-driven: when parent is a split servo, use the closed-form
-    // limb / child placement helpers (replaces face/mate entirely).
+    //    limb / child placement helpers (replaces face/mate entirely).
     // 2. Mate connector: closed-form connector mate.
     // 3. Bbox face placement: fallback / standard path.
     let placement: { xyz: string; rpy: string } | null = null
     let placedViaConnectorFlag = false
 
-    if (parentIsServo) {
+    // Tier-B raw authoring — only honored in novel mode. `strip_forbidden_fields`
+    // already removes these in standard mode, but the explicit `isNovelMode()`
+    // guard here is a defense in depth: if any TS-side path constructs a graph
+    // with xyz set (e.g. modify_topology op without re-stripping), standard
+    // mode still ignores the raw fields and uses the deterministic placement.
+    if (isNovelMode()) {
+      const rawXyz = Array.isArray(c.xyz) && c.xyz.length === 3 ? c.xyz : null
+      const rawRpy = Array.isArray(c.rpy) && c.rpy.length === 3 ? c.rpy : null
+      if (rawXyz || rawRpy) {
+        // Compute defaults for the unauthored axis so a partially-authored
+        // component still produces a valid joint origin. If only `xyz` is
+        // provided, keep rpy at zero (face-up); if only `rpy` is provided,
+        // keep xyz at origin. Authoring both is the typical case.
+        const x = rawXyz ? Number(rawXyz[0]) || 0 : 0
+        const y = rawXyz ? Number(rawXyz[1]) || 0 : 0
+        const z = rawXyz ? Number(rawXyz[2]) || 0 : 0
+        const r = rawRpy ? Number(rawRpy[0]) || 0 : 0
+        const p = rawRpy ? Number(rawRpy[1]) || 0 : 0
+        const yw = rawRpy ? Number(rawRpy[2]) || 0 : 0
+        placement = {
+          xyz: `${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}`,
+          rpy: `${r.toFixed(4)} ${p.toFixed(4)} ${yw.toFixed(4)}`,
+        }
+        // Mark as connector-placed so reconcile doesn't snap the child back
+        // to bbox-min — Claude's authored position is authoritative.
+        placedViaConnectorFlag = true
+      }
+    }
+
+    if (parentIsServo && placement === null) {
       const parentServoAxis = axisNameFromComponentAxis(parentComp!.joint_axis)
       const grandParentComp = parentComp!.attach_to
         ? componentByName.get(parentComp!.attach_to)
@@ -579,7 +611,9 @@ export function compileAssembly(
       // Mirror inline-path behavior: servo-driven children are connector-placed
       // (the servo horn IS the connector). Reconcile must not re-flush them.
       placedViaConnectorFlag = true
-    } else {
+    } else if (placement === null) {
+      // Tier-B short-circuited above (raw xyz/rpy authored) — skip the mate
+      // and face paths entirely so they don't overwrite the authored values.
       // Tire-on-drivetrain has exactly one correct placement (motor body's
       // outboard end), and the face short-circuit at face.ts:92 produces it.
       // The mate-connector path here would honor whatever attach_connector the
@@ -622,6 +656,10 @@ export function compileAssembly(
             && typeof childResolved.assembledOuterRadiusM === 'number') {
           effectiveChildY = childResolved.assembledOuterRadiusM * 2
         }
+        // Tier-A novel-mode authoring: `splay_angle_deg` is honored only when
+        // the graph is in novel mode. Standard mode ignores it entirely so the
+        // bulletproof determinism for dog/arm/wheeled stays byte-identical.
+        const splayAngleDegOverride = isNovelMode() ? c.splay_angle_deg : undefined
         placement = _pureComputeFacePlacement(
           parentBoundsM, parentComp!.link_name,
           childX, effectiveChildY, childZ,
@@ -634,9 +672,33 @@ export function compileAssembly(
           parentPresetConnectors.length > 0 ? parentPresetConnectors : undefined,
           undefined,
           childPresetConnectors.length > 0 ? childPresetConnectors : undefined,
-          { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
+          { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose, splayAngleDegOverride },
           parentResolved.parametricLengthMm,
         )
+      }
+    }
+
+    // Tier-A novel-mode authoring: `placement_offset_mm` adds a small bounded
+    // [dx, dy, dz] (millimeters) to the face-derived xyz, after all face/mate
+    // logic has run. Lets Claude break radial symmetry — front pincer arms
+    // longer than back walking legs, off-center electronics, etc. Standard
+    // mode ignores this field; novel mode clamps each axis to ±50mm.
+    if (isNovelMode() && Array.isArray(c.placement_offset_mm) && c.placement_offset_mm.length === 3) {
+      const off = c.placement_offset_mm
+      const clamp = (v: unknown) => {
+        const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
+        return Math.max(-50, Math.min(50, n))
+      }
+      const dx = clamp(off[0]) / 1000
+      const dy = clamp(off[1]) / 1000
+      const dz = clamp(off[2]) / 1000
+      if (dx !== 0 || dy !== 0 || dz !== 0) {
+        const xyz = parseXyzString(placement.xyz)
+        xyz[0] += dx; xyz[1] += dy; xyz[2] += dz
+        placement = {
+          xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' '),
+          rpy: placement.rpy,
+        }
       }
     }
 
@@ -709,13 +771,19 @@ export function compileAssembly(
       ])
       if (cIsActuated) {
         const explicitTuple = parseRpyString(explicitRpyStr)
+        // NOVEL MODE: rest pose applied verbatim per leg (no sign flip across
+        // body Y). The geometric horn-axis mirror (servoMountRpyForParentWorld
+        // call below) still uses the real `servoAxisSign` so symmetric pairs
+        // physically face outward, but Claude's authored `attach_rpy` reaches
+        // each leg unchanged so per-leg pose authority is preserved.
+        const restPoseSign = isNovelMode() ? 1 : servoAxisSign
         if (servoAxisName === 'y' && parentComp
             && isDistalBeamComponentId(parentComp.component_id)
             && c.attach_face === 'bottom') {
           const bend = Math.abs(explicitTuple[1] || 0)
-          servoHornZeroRpy = formatRpyTuple([0, 0, bend * servoAxisSign])
+          servoHornZeroRpy = formatRpyTuple([0, 0, bend * restPoseSign])
         } else {
-          servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, servoAxisSign)
+          servoHornZeroRpy = servoLocalRestRpyFromJointRpy(explicitTuple, servoAxisName, restPoseSign)
         }
       } else {
         finalRpy = explicitRpyStr

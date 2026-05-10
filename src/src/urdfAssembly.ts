@@ -30,6 +30,7 @@ import { validateTopology as runValidateTopology, autoRepairTopology as runAutoR
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { normalizeAssembly, formatDiagnosticForPrompt } from './archetypeNormalizer.ts'
 import type { RequestedFeatures } from './archetypeNormalizer.ts'
+import { setArchetypeMode } from './placementCompiler/context.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
 // Mate-connector resolver (Phase 1/2,). Pure
@@ -160,6 +161,10 @@ export interface TopologyOp {
   attach_connector?: string
   mate_connector?: string
   mate_type?: string
+  // Tier-A novel-mode authoring (mirrors AssemblyComponent fields). Stripped
+  // by `strip_forbidden_fields` in standard mode.
+  placement_offset_mm?: number[]
+  splay_angle_deg?: number
 }
 
 /** One row of engine-computed placement ground-truth (what the placement loop
@@ -233,8 +238,13 @@ export interface UrdfAssemblyApi {
   /** Structural + parametric equality for two AssemblyGraphs. Use to detect drift when a
    * reverse-parse is unavoidable (import-URDF path). */
   graphsEquivalent(a: AssemblyGraph, b: AssemblyGraph): GraphEquivalenceResult
-  /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version. */
-  applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph
+  /** Apply modify_topology operations to an existing AssemblyGraph and return the modified version.
+   * `archetypeOverride` lets the caller force `_archetype_mode` on the returned
+   * graph — used so Claude's per-turn `archetype_mode` declaration on
+   * `modify_topology` carries through. Without this override, the field is
+   * inherited from the input graph (preserving novel-mode designs across
+   * topology edits). */
+  applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[], archetypeOverride?: 'standard' | 'novel'): AssemblyGraph
   /** WS2 tool-call edit surface: apply a single typed mutation with per-call
    * validation. Runs against a deep clone of `graph`; on success the new graph
    * is returned and the caller commits via resolveAssemblyGraph. On failure,
@@ -3689,6 +3699,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   function resolveAssemblyGraph(graph: AssemblyGraph): { urdf: string | null; topologyErrors?: string[]; topologyWarnings?: string[]; engineSummary?: EngineSummary } {
     _resetMultiChildPositionsCache()
+    // Clear any archetype mode from a previous compile (set further down once
+    // we've parsed the graph). Leaving stale state would let a previous run's
+    // novel-mode bleed into a fresh standard-mode compile.
+    setArchetypeMode(null)
     if (!presetData) {
       console.error('[assembly] Presets not loaded')
       ctx.showToast('Component presets not loaded yet', 'error')
@@ -3716,7 +3730,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // diagnostics in the redesign prompt instead of free-text post-hoc errors.
     const requestedFeatures: RequestedFeatures = (graph as { requested_features?: RequestedFeatures })
       .requested_features ?? {}
-    const archResult = normalizeAssembly(graph.components, requestedFeatures)
+    const declaredArchetype = (graph as { _archetype_mode?: 'standard' | 'novel' })._archetype_mode
+    // Stash on the placement-compiler context so deeply-nested helpers
+    // (multiChild distribution, splay) can branch on novel mode without
+    // every signature growing an `archetypeMode` parameter. Reset after
+    // compilation completes, in the finally branch below.
+    setArchetypeMode(declaredArchetype)
+    const archResult = normalizeAssembly(graph.components, requestedFeatures, declaredArchetype)
     if (archResult.diagnostics.length > 0) {
       graph.components = archResult.components
     }
@@ -4372,7 +4392,16 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       placed_via_connector: viaConnectorMap.get(c.link_name) || c.placed_via_connector,
     }))
     const remappedBase = nameMap.get(graph.base_link) || graph.base_link
-    _lastAssemblyGraph = { base_link: remappedBase, ground_offset: graph.ground_offset, components: remappedComponents }
+    _lastAssemblyGraph = {
+      base_link: remappedBase,
+      ground_offset: graph.ground_offset,
+      // Preserve archetype mode across the resolve→persist round-trip so a
+      // novel-mode design survives reload, undo/redo, and subsequent
+      // modify_topology turns. Without this, every successful resolve
+      // silently dropped the mode and the next render used the dog template.
+      _archetype_mode: graph._archetype_mode,
+      components: remappedComponents,
+    }
     _graphSource = 'ai'  // engine owns this URDF — reconcile may write back
     _persistGraph(_lastAssemblyGraph)
     console.log(`[assembly] Stored assembly graph (${remappedComponents.length} components, URDF names) for modify_topology`)
@@ -4574,7 +4603,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   // ── Topology Operations: apply add/remove/modify to AssemblyGraph ──────────
 
-  function applyTopologyOps(graph: AssemblyGraph, operations: TopologyOp[]): AssemblyGraph {
+  function applyTopologyOps(
+    graph: AssemblyGraph,
+    operations: TopologyOp[],
+    archetypeOverride?: 'standard' | 'novel',
+  ): AssemblyGraph {
     const components = [...graph.components.map(c => ({ ...c }))]
 
     for (const op of operations) {
@@ -4619,6 +4652,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           attach_connector: op.attach_connector,
           mate_connector: op.mate_connector,
           mate_type: op.mate_type,
+          placement_offset_mm: op.placement_offset_mm,
+          splay_angle_deg: op.splay_angle_deg,
         })
         console.log(`[topology] Added ${op.link_name} (${op.component_id}) → ${op.attach_to}:${op.attach_face}`)
 
@@ -4641,13 +4676,23 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (op.attach_connector !== undefined) existing.attach_connector = op.attach_connector
         if (op.mate_connector !== undefined) existing.mate_connector = op.mate_connector
         if (op.mate_type !== undefined) existing.mate_type = op.mate_type
+        if (op.placement_offset_mm !== undefined) existing.placement_offset_mm = op.placement_offset_mm
+        if (op.splay_angle_deg !== undefined) existing.splay_angle_deg = op.splay_angle_deg
         console.log(`[topology] Modified ${op.link_name}: ${JSON.stringify(op)}`)
       }
     }
 
+    // Preserve `_archetype_mode` across topology edits — without this, every
+    // modify_topology turn silently reverts a novel design to standard mode
+    // and the placement compiler reapplies the dog/arm/wheeled template.
+    // Caller-provided override (Claude's per-turn declaration) wins; otherwise
+    // inherit the existing graph's declaration.
+    const inheritedMode = graph._archetype_mode
+    const finalMode = archetypeOverride ?? inheritedMode
     return {
       base_link: graph.base_link,
       ground_offset: true,
+      _archetype_mode: finalMode,
       components,
     }
   }

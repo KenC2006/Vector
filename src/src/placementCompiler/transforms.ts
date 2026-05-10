@@ -99,6 +99,22 @@ export function servoAxisSignFromParentWorld(
   // world Y is already negative). When localOffset is supplied, project it
   // into world via parentWorld and use that Y; otherwise fall back to the
   // parent's world Y for compatibility with older callers.
+  //
+  // This sign is consumed by TWO downstream paths via the call sites in
+  // placementCompiler/index.ts:
+  //   1. servoMountRpyForParentWorld → servoDesiredWorldRotation: picks an
+  //      antiparallel rotation matrix that flips horn local +Z to world -Y.
+  //      This is GEOMETRICALLY REQUIRED for symmetric leg/arm pairs — without
+  //      it, both sides' horns face the same world direction.
+  //   2. servoLocalRestRpyFromJointRpy: multiplies authored `attach_rpy` by
+  //      this sign so a single rest pose (e.g. `attach_rpy=[0, 0.5, 0]`) on
+  //      both sides produces world-symmetric bends.
+  //
+  // In novel mode, path #1 is still required (mirror geometry), but #2 is
+  // suppressed at the call site (rest poses applied verbatim per leg, so
+  // Claude has full per-component authority). We return the true geometric
+  // sign here; the call site decides whether to forward it to the rest-pose
+  // path or pin it to +1.
   const probe = new THREE.Vector3(
     localOffset?.[0] ?? 0,
     localOffset?.[1] ?? 0,

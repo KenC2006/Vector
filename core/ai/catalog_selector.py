@@ -399,6 +399,7 @@ def build_scoped_catalog(
     kg_json: Optional[dict] = None,
     tried_preset_ids: Optional[Iterable[str]] = None,
     max_scored: int = DEFAULT_MAX_SCORED,
+    force_full_catalog: bool = False,
 ) -> str:
     """Return a catalog string scoped to presets relevant to this request.
 
@@ -408,10 +409,19 @@ def build_scoped_catalog(
 
     Appends a "more-presets-available" hint so Claude knows the catalog
     is intentionally truncated — mitigates the hidden-preset failure mode.
+
+    `force_full_catalog`: when True, skip scoping and return the full
+    allowed catalog. Used by freedom mode for novel archetypes (crab,
+    snake, etc.) where keyword scoring would starve the design of parts
+    that don't keyword-match the unusual creature name.
     """
     index = _get_index(allowed_ids)
     if not index:
         return "(Component catalog unavailable)"
+
+    if force_full_catalog:
+        all_ids = {e["id"] for e in index}
+        return _render_catalog(all_ids, index)
 
     prompt_tokens = set(_tokenize(user_prompt))
     prompt_lower = (user_prompt or "").lower()
