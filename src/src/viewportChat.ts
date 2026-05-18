@@ -35,6 +35,11 @@ export interface ViewportChatDeps {
   scene: THREE.Scene
   robot: THREE.Group
   camera: THREE.PerspectiveCamera
+  // Main viewport renderer. Screenshot capture renders into a
+  // WebGLRenderTarget on THIS renderer rather than creating a second one —
+  // a 2nd live WebGL context can evict the main one on Tauri/WebView2 (no
+  // webglcontextlost handler exists), which manifests as a full app reload.
+  renderer: THREE.WebGLRenderer
   groundRobot(): void
   autoFrameRobot(): void
   // Chat history
@@ -1224,13 +1229,28 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             captureGround.receiveShadow = true
             deps.scene.add(captureGround)
 
-            const offCanvas = document.createElement('canvas')
-            offCanvas.width = captureSize
-            offCanvas.height = captureSize
-            const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias: true, preserveDrawingBuffer: true })
-            offRenderer.setSize(captureSize, captureSize)
-            offRenderer.shadowMap.enabled = true
-            offRenderer.setClearColor(0xd8dce3, 1)
+            // Render into a WebGLRenderTarget on the EXISTING main renderer
+            // instead of spinning up a second WebGLRenderer. A 2nd live WebGL
+            // context can evict the main one on WebView2 (no
+            // webglcontextlost handler exists in main.ts), which manifests
+            // as the entire app refreshing. Render-target capture stays
+            // inside the single main context.
+            const captureTarget = new THREE.WebGLRenderTarget(captureSize, captureSize, {
+              format: THREE.RGBAFormat,
+              type: THREE.UnsignedByteType,
+            })
+            const pixelBuffer = new Uint8Array(captureSize * captureSize * 4)
+            const flippedBuffer = new Uint8ClampedArray(captureSize * captureSize * 4)
+            const captureCanvas = document.createElement('canvas')
+            captureCanvas.width = captureSize
+            captureCanvas.height = captureSize
+            const captureCtx = captureCanvas.getContext('2d')!
+
+            const prevRenderTarget = deps.renderer.getRenderTarget()
+            const prevClearColor = new THREE.Color()
+            deps.renderer.getClearColor(prevClearColor)
+            const prevClearAlpha = deps.renderer.getClearAlpha()
+            deps.renderer.setClearColor(0xd8dce3, 1)
 
             const offCam = deps.camera.clone()
             offCam.aspect = 1
@@ -1245,11 +1265,26 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
               )
               offCam.lookAt(robotCenter)
               offCam.updateProjectionMatrix()
-              offRenderer.render(deps.scene, offCam)
-              const dataUrl = offCanvas.toDataURL('image/png')
+
+              deps.renderer.setRenderTarget(captureTarget)
+              deps.renderer.clear()
+              deps.renderer.render(deps.scene, offCam)
+              deps.renderer.readRenderTargetPixels(captureTarget, 0, 0, captureSize, captureSize, pixelBuffer)
+
+              // WebGL pixel origin is bottom-left, canvas origin is top-left — flip rows.
+              const stride = captureSize * 4
+              for (let y = 0; y < captureSize; y++) {
+                const srcOffset = (captureSize - 1 - y) * stride
+                flippedBuffer.set(pixelBuffer.subarray(srcOffset, srcOffset + stride), y * stride)
+              }
+              captureCtx.putImageData(new ImageData(flippedBuffer, captureSize, captureSize), 0, 0)
+              const dataUrl = captureCanvas.toDataURL('image/png')
               screenshots.push(dataUrl.replace(/^data:image\/png;base64,/, ''))
             }
-            offRenderer.dispose()
+
+            deps.renderer.setRenderTarget(prevRenderTarget)
+            deps.renderer.setClearColor(prevClearColor, prevClearAlpha)
+            captureTarget.dispose()
 
             // ── Restore scene state ──
             deps.scene.background = origBackground

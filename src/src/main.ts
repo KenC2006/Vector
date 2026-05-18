@@ -558,6 +558,16 @@ function isUrdfLike(filename: string): boolean {
   return ['urdf', 'xacro', 'xml', 'sdf', 'mjcf'].includes(ext)
 }
 
+// Buffer-key-aware variant. Buffer keys are either an absolute path (the
+// extension is part of the key — `isUrdfLike` works directly) or a synthetic
+// `untitled:N` for unsaved buffers (no extension, so the plain check would
+// return false). For untitled keys, default to URDF — we always inject
+// SAMPLE_URDF as content on creation, so the buffer is parseable URDF.
+function isUrdfLikeBuffer(key: string): boolean {
+  if (key.startsWith('untitled:')) return true
+  return isUrdfLike(key)
+}
+
 function getMonacoLang(filename: string): string {
   const ext = getFileExt(filename)
   const langs: Record<string, string> = { urdf: 'xml', xacro: 'xml', xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml', sdf: 'xml', mjcf: 'xml' }
@@ -695,7 +705,7 @@ function switchToFile(filename: string) {
   }
 
   // Save current 3D state so we can restore it when switching back
-  if (activeFile && isUrdfLike(activeFile)) {
+  if (activeFile && isUrdfLikeBuffer(activeFile)) {
     tabRobotCache[activeFile] = {
       parsedRobot,
       kinematicGraph,
@@ -759,8 +769,13 @@ function switchToFile(filename: string) {
 
   monacoEditor.focus()
 
-  // Update 3D viewport if switching to a URDF/XML file
-  if (isUrdfLike(filename)) {
+  // Update 3D viewport if switching to a URDF/XML file. Use the buffer-key-
+  // aware variant — synthetic `untitled:N` keys don't end in .urdf but the
+  // buffer always carries SAMPLE_URDF content, so we still want the parse +
+  // viewport refresh path. Without this, clicking "+" leaves the previous
+  // tab's robot stuck on screen because the entire 3D-update block is
+  // skipped for untitled buffers.
+  if (isUrdfLikeBuffer(filename)) {
     const currentContent = monacoModels[filename].getValue()
     const cached = tabRobotCache[filename]
 
@@ -783,15 +798,26 @@ function switchToFile(filename: string) {
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
     } else {
-      // First visit or content changed — full reparse. Clear the previous
-      // tab's geometry from the scene up-front so a parse failure on the new
-      // content doesn't leave the old robot stuck on screen (reparseURDF only
-      // removes the old group AFTER a successful parse).
-      worldGroup.remove(parsedRobot.group)
+      // First visit or content changed — full reparse. Clear EVERYTHING from
+      // the scene's robot group up-front: not just `parsedRobot.group` (the
+      // pristine parser output) but every child added by applyRichVisuals,
+      // mesh loaders, mate connectors, or carry previews. Otherwise a fresh
+      // tab opened via "+" inherits the previous tab's visible geometry when
+      // the new content's parsedRobot.group is empty or doesn't fully
+      // overlap. Manually clearing the whole worldGroup guarantees a blank
+      // slate before reparseURDF rebuilds.
+      while (worldGroup.children.length > 0) {
+        worldGroup.remove(worldGroup.children[0])
+      }
       wireframeGroup.clear()
       axisVisuals.length = 0
       robot.position.set(0, 0, 0)
-      reparseURDF(undefined, { ground: true })
+      // Pass `currentContent` explicitly instead of letting reparseURDF read
+      // from monacoEditor.getModel(). For a brand-new tab opened via "+", the
+      // model swap is synchronous but the editor's getValue() can still
+      // briefly return stale content if other listeners fire in between —
+      // pulling the string from monacoModels[filename] directly sidesteps it.
+      reparseURDF(currentContent, { ground: true })
       urdfAssemblyApi?.onModelUpdated()
       runLocalValidation()
     }
@@ -3129,6 +3155,7 @@ viewportChatApi = initViewportChat({
   scene,
   robot,
   camera,
+  renderer,
   groundRobot: () => groundRobot(robot),
   autoFrameRobot: () => autoFrameRobot(robot, camera, controls),
   exportForBackend: (chatId) => chatApi.exportForBackend(chatId),
