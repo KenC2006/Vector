@@ -1686,6 +1686,12 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
   color: #e0e0e0;
   border-bottom-color: #007acc;
 }
+.vp-tab.disabled,
+.vp-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 /* ── Viewport Chat ──────────────────────────────────────────────── */
 #viewport-chat {

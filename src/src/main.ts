@@ -541,6 +541,18 @@ const dirtyBuffers = new Set<string>()
 // Per-file undo/redo state — saved when leaving a file, restored when returning.
 const fileUndoStates: Record<string, { undo: string[]; redo: string[] }> = {}
 let untitledCounter = 0
+// Per-launch tag stamped into every untitled buffer key. Untitled buffers are
+// not persisted to disk, but per-file state keyed off them (chat history,
+// inline diff stash) IS persisted to localStorage. Without a per-launch tag,
+// next session reuses `untitled:1`, `untitled:2`, etc. — and inherits the
+// stale chat bucket left behind by a previous run's discarded buffer.
+const UNTITLED_SESSION_TAG = Math.random().toString(36).slice(2, 8)
+// Extract the trailing counter from an untitled buffer key for display.
+// Keys are `untitled:<sessionTag>:<N>`; the user only ever wants to see N.
+function untitledDisplayN(key: string): string {
+  const parts = key.split(':')
+  return parts[parts.length - 1] || key
+}
 
 function getFileExt(filename: string): string {
   const dot = filename.lastIndexOf('.')
@@ -577,12 +589,12 @@ function getMonacoLang(filename: string): string {
 // Buffer key → display label, with parent-folder disambiguation when two
 // open buffers share the same basename. Untitled buffers display their key.
 function bufferLabel(key: string): string {
-  if (key.startsWith('untitled:')) return key.slice('untitled:'.length)
+  if (key.startsWith('untitled:')) return untitledDisplayN(key)
   const base = key.split(/[\\/]/).pop() || key
   // Disambiguate against other open buffers with the same basename
   const collisions = openFiles.filter(k => {
     if (k === key) return false
-    const b = k.startsWith('untitled:') ? k.slice('untitled:'.length) : (k.split(/[\\/]/).pop() || k)
+    const b = k.startsWith('untitled:') ? untitledDisplayN(k) : (k.split(/[\\/]/).pop() || k)
     return b === base
   })
   if (collisions.length === 0) return base
@@ -908,7 +920,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
     displayName = diskPath.split(/[\\/]/).pop() || filename || 'file'
   } else {
     untitledCounter++
-    key = `untitled:${untitledCounter}`
+    key = `untitled:${UNTITLED_SESSION_TAG}:${untitledCounter}`
     displayName = filename || `untitled_${untitledCounter}.urdf`
   }
 
@@ -921,7 +933,7 @@ function createNewFile(filename?: string, content = '', diskPath: string | null 
   // the old one's state).
   if (!content && (isUrdfLike(displayName))) {
     const stamp = key.startsWith('untitled:')
-      ? `untitled_${key.slice('untitled:'.length)}`
+      ? `untitled_${untitledDisplayN(key)}`
       : (displayName.replace(/\.[^.]+$/, '') || 'robot')
     content = SAMPLE_URDF.replace(/<robot\s+name="[^"]*"/, `<robot name="${stamp}"`)
   }
@@ -999,6 +1011,9 @@ function showWelcomeState() {
   handle.classList.add('editor-hidden')
   const bcFilename = document.getElementById('bc-filename')
   if (bcFilename) bcFilename.textContent = ''
+  // No file open → AI chat has no buffer to operate on. Freeze the chat tab
+  // (and bounce off it if it's the active view) until a file is opened.
+  viewportChatApi?.setChatEnabled(false)
   renderTabs()
   renderExplorer()
   // Viewport expands to fill the space — update renderer after layout settles
@@ -1006,6 +1021,7 @@ function showWelcomeState() {
 }
 
 function hideWelcomeState() {
+  viewportChatApi?.setChatEnabled(true)
   editorPanel.classList.remove('editor-hidden')
   handle.classList.remove('editor-hidden')
   if (!editorPanel.style.width) editorPanel.style.width = '50%'
@@ -3201,7 +3217,7 @@ async function saveCurrentFile() {
 
     if (!path) {
       const defaultName = wasUntitled
-        ? `untitled_${activeFile.slice('untitled:'.length)}.urdf`
+        ? `untitled_${untitledDisplayN(activeFile)}.urdf`
         : activeFile.split(/[\\/]/).pop() || activeFile
       path = await invoke<string | null>('save_file_dialog', { default_name: defaultName })
       if (!path) return
@@ -3421,7 +3437,7 @@ urdfAssemblyApi = initUrdfAssembly({
   getKinematicJoints: () => kinematicJoints,
   getActiveFileName: () => {
     if (!activeFile) return 'robot.urdf'
-    if (activeFile.startsWith('untitled:')) return `untitled_${activeFile.slice('untitled:'.length)}.urdf`
+    if (activeFile.startsWith('untitled:')) return `untitled_${untitledDisplayN(activeFile)}.urdf`
     return activeFile.split(/[\\/]/).pop() || 'robot.urdf'
   },
   isViewport3D: () => viewportChatApi?.isViewport3D() ?? true,

@@ -57,6 +57,10 @@ export interface ViewportChatApi {
   switchViewportView(view: '3d' | 'chat'): void
   isViewport3D(): boolean
   getVcInput(): HTMLTextAreaElement
+  /** Enable or disable the AI Chat viewport tab. When disabled, the tab is
+   *  unclickable and the Ctrl+L shortcut is a no-op. If chat is the active
+   *  view at the moment of disabling, the viewport switches to 3D first. */
+  setChatEnabled(enabled: boolean): void
 }
 
 export interface ImageAttachment {
@@ -532,7 +536,25 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
 
   // ── View switching ────────────────────────────────────────────────────────
 
+  let chatEnabled = true
+  const chatVpTab = Array.from(viewportTabs).find(
+    t => (t as HTMLElement).dataset.view === 'chat',
+  ) as HTMLButtonElement | undefined
+
+  function setChatEnabled(enabled: boolean) {
+    chatEnabled = enabled
+    if (chatVpTab) {
+      chatVpTab.disabled = !enabled
+      chatVpTab.classList.toggle('disabled', !enabled)
+      chatVpTab.title = enabled ? '' : 'Open a file to chat with the AI'
+    }
+    if (!enabled && activeViewportView === 'chat') {
+      switchViewportView('3d')
+    }
+  }
+
   function switchViewportView(view: '3d' | 'chat') {
+    if (view === 'chat' && !chatEnabled) return
     activeViewportView = view
     if (view !== '3d') {
       deps.keysViewportPan.w = deps.keysViewportPan.a = deps.keysViewportPan.s = deps.keysViewportPan.d = false
@@ -1532,5 +1554,6 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     switchViewportView,
     isViewport3D: () => activeViewportView === '3d',
     getVcInput: () => vcInput,
+    setChatEnabled,
   }
 }

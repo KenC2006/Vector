@@ -86,6 +86,31 @@ export function initChatHistory(deps: {
     if (raw) currentByFile = JSON.parse(raw)
   } catch { /* ignore */ }
 
+  // Orphan sweep: untitled buffers (key prefix "untitled:") never survive an
+  // app restart — main.ts intentionally skips them in saveOpenTabsState. Any
+  // bucket left under such a key in storage is stale. Without this sweep, a
+  // freshly created "+" tab can collide with a previous-session untitled key
+  // and inherit its chat history. main.ts now also stamps a per-launch tag
+  // into new untitled keys so collisions can't happen even mid-sweep, but the
+  // sweep still reclaims storage from runs prior to that change.
+  {
+    let purged = 0
+    for (const k of Object.keys(chatsByFile)) {
+      if (k.startsWith('untitled:')) {
+        delete chatsByFile[k]
+        delete currentByFile[k]
+        purged++
+      }
+    }
+    if (purged > 0) {
+      console.log(`[chatHistory] Swept ${purged} orphan untitled chat bucket(s) from storage`)
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(chatsByFile))
+        localStorage.setItem(CURRENT_KEY, JSON.stringify(currentByFile))
+      } catch { /* best-effort; persistAll will retry on next write */ }
+    }
+  }
+
   // The active file's chats and current-chat-id are mirrored into these
   // working variables so existing call sites that read getChatHistory() etc.
   // see "the chats relevant right now". On setActiveFile() we flush these
