@@ -1029,15 +1029,26 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
 async fn save_file_dialog(
     app: tauri::AppHandle,
     default_name: Option<String>,
+    filters: Option<Vec<(String, Vec<String>)>>,
 ) -> Result<Option<String>, String> {
-    let mut dialog = app
-        .dialog()
-        .file()
-        .add_filter("URDF Files", &["urdf"])
-        .add_filter("MJCF Files", &["mjcf"])
-        .add_filter("SDF Files", &["sdf"])
-        .add_filter("XML Files", &["xml"])
-        .add_filter("All Files", &["*"]);
+    let mut dialog = app.dialog().file();
+
+    // Callers can pass a custom filter list (e.g. STL export). When omitted,
+    // fall back to the URDF-centric default that pre-existed this parameter.
+    if let Some(custom) = filters {
+        for (label, exts) in &custom {
+            let ext_refs: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+            dialog = dialog.add_filter(label, &ext_refs);
+        }
+        dialog = dialog.add_filter("All Files", &["*"]);
+    } else {
+        dialog = dialog
+            .add_filter("URDF Files", &["urdf"])
+            .add_filter("MJCF Files", &["mjcf"])
+            .add_filter("SDF Files", &["sdf"])
+            .add_filter("XML Files", &["xml"])
+            .add_filter("All Files", &["*"]);
+    }
 
     if let Some(name) = default_name {
         dialog = dialog.set_file_name(&name);

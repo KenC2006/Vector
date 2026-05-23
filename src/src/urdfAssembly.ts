@@ -3103,11 +3103,34 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
 
   async function saveStlToFile(group: THREE.Object3D, defaultName: string) {
     try {
-      const path = await invoke<string | null>('save_file_dialog', { default_name: defaultName })
+      const path = await invoke<string | null>('save_file_dialog', {
+        default_name: defaultName,
+        filters: [['STL Files', ['stl']]],
+      })
       if (!path) return
 
-      // Export as ASCII STL (text-based, works with save_file)
-      const stlString = stlExporter.parse(group, { binary: false }) as string
+      // STLExporter walks every Mesh in the tree — including the torus rings
+      // and connector-overlay spheres that aren't real robot geometry. Detach
+      // them for the duration of the export, then put them back exactly where
+      // they were. No scene rebuild, no transform math.
+      type Detached = { node: THREE.Object3D; parent: THREE.Object3D }
+      const detached: Detached[] = []
+      group.traverse(obj => {
+        if (!(obj instanceof THREE.Mesh)) return
+        const ud = obj.userData as Record<string, unknown> | undefined
+        const isOverlay = ud?.__connectorOverlay === true
+        const isRing = obj.geometry instanceof THREE.TorusGeometry
+        if ((isOverlay || isRing) && obj.parent) {
+          detached.push({ node: obj, parent: obj.parent })
+        }
+      })
+      for (const d of detached) d.parent.remove(d.node)
+      let stlString: string
+      try {
+        stlString = stlExporter.parse(group, { binary: false }) as string
+      } finally {
+        for (const d of detached) d.parent.add(d.node)
+      }
       await invoke('save_file', { path, content: stlString })
 
       const filename = path.split(/[\\/]/).pop() || defaultName
