@@ -1,0 +1,114 @@
+{
+ "base_link": "chassis",
+ "ground_offset": true,
+ "components": [
+  {
+   "link_name": "chassis",
+   "component_id": "structural_baseplate",
+   "attach_to": null,
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "motor_fl",
+   "component_id": "drivetrain_hub_motor_80",
+   "attach_to": "chassis",
+   "attach_face": "bottom",
+   "joint_type": "continuous",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "wheel_fl",
+   "component_id": "mobility_wheel_driven",
+   "attach_to": "motor_fl",
+   "attach_face": "coaxial",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "motor_fr",
+   "component_id": "drivetrain_hub_motor_80",
+   "attach_to": "chassis",
+   "attach_face": "bottom",
+   "joint_type": "continuous",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "wheel_fr",
+   "component_id": "mobility_wheel_driven",
+   "attach_to": "motor_fr",
+   "attach_face": "coaxial",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "motor_rl",
+   "component_id": "drivetrain_hub_motor_80",
+   "attach_to": "chassis",
+   "attach_face": "bottom",
+   "joint_type": "continuous",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "wheel_rl",
+   "component_id": "mobility_wheel_driven",
+   "attach_to": "motor_rl",
+   "attach_face": "coaxial",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "motor_rr",
+   "component_id": "drivetrain_hub_motor_80",
+   "attach_to": "chassis",
+   "attach_face": "bottom",
+   "joint_type": "continuous",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "wheel_rr",
+   "component_id": "mobility_wheel_driven",
+   "attach_to": "motor_rr",
+   "attach_face": "coaxial",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "bracket_cam",
+   "component_id": "structural_bracket_l",
+   "attach_to": "chassis",
+   "attach_face": "front",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "mate_connector": "wall_outer"
+  },
+  {
+   "link_name": "camera_1",
+   "component_id": "sensor_depth_camera_small",
+   "attach_to": "bracket_cam",
+   "attach_face": "front",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "attach_connector": "wall_inner",
+   "mate_connector": "mount_back",
+   "mate_type": "fastened"
+  },
+  {
+   "link_name": "battery_1",
+   "component_id": "power_lipo_4s_5000",
+   "attach_to": "chassis",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "sbc_1",
+   "component_id": "compute_sbc_small",
+   "attach_to": "chassis",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  }
+ ]
+}

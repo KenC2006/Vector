@@ -92,6 +92,10 @@ export interface ComponentResolution {
   /** Joint effort in N·m (URDF `<limit effort="…"/>`). From
    * `preset.mechanical_electrical.max_torque_nm` ?? `holding_torque_nm` ?? 10. */
   maxTorqueNm?: number
+  /** Resolved component mass in kg (`resolveComponentMassKg`: authored mass_kg
+   * → parametric per-100mm × length → fallback). Copied onto CompiledLink so
+   * headless consumers (eval harness, URDF emitters) don't re-derive it. */
+  massKg?: number
 }
 
 export type ComponentResolver = (
@@ -174,6 +178,10 @@ export interface CompiledLink {
    * face's connector-snap fallback engaged). Drives `viaConnectorMap` in
    * reconcileNodePlacement so it skips re-flushing connector-aligned pairs. */
   placedViaConnector: boolean
+  /** Resolved mass in kg for the logical component (0 when the resolver
+   * didn't supply one). Servo splits report the whole component's mass here;
+   * consumers needing the body/horn split apply their own ratio. */
+  massKg: number
 }
 
 /** Placement-class taxonomy used by the Phase 3b.4 incremental rollout. Each
@@ -417,6 +425,7 @@ export function compileAssembly(
     physicalWorldXyz: [[0, 0, 0]],
     physicalWorldRpy: [[0, 0, 0]],
     placedViaConnector: false,
+    massKg: rootResolved.massKg ?? 0,
   }
   links.push(rootLink)
   attachIndex[root.link_name] = root.link_name
@@ -930,6 +939,7 @@ export function compileAssembly(
         physicalWorldXyz,
         physicalWorldRpy,
         placedViaConnector: placedViaConnectorFlag,
+        massKg: childResolved.massKg ?? 0,
       }
       links.push(link)
       compiledByLogical.set(c.link_name, link)
@@ -998,6 +1008,7 @@ export function compileAssembly(
         physicalWorldXyz: [childWorldXyz],
         physicalWorldRpy: [childWorldRpy],
         placedViaConnector: placedViaConnectorFlag,
+        massKg: childResolved.massKg ?? 0,
       }
       links.push(link)
       compiledByLogical.set(c.link_name, link)

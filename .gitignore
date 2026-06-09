@@ -33,7 +33,11 @@ Thumbs.db
 # Markdown
 *.md
 !src/public/COMPONENT_PRESETS.md
+!eval/**/*.md
 *.urdf
 
 # Auto-synced from core/presets/ by vite.config.ts plugin
 src/public/generic_presets.json
+
+# Eval harness run outputs (baselines ARE committed)
+eval/runs/

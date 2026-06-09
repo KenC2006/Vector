@@ -675,6 +675,7 @@ test('parity harness flags localXyz divergence above tolerance', () => {
       physicalWorldXyz: [[0.1, 0, 0] as [number, number, number]],
       physicalWorldRpy: [[0, 0, 0] as [number, number, number]],
       placedViaConnector: false,
+      massKg: 0,
     }],
     attachIndex: { a: 'a' },
     diagnostics: [],

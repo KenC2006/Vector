@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { compileAssembly } from './placementCompiler/index.ts'
 import { resolveJointLimitsRad } from './placementCompiler/joints.ts'
-import { resolveComponent as resolveSpec, isParametricSpec } from './componentResolver.ts'
+import { resolveComponent as resolveSpec, resolveComponentMassKg, isParametricSpec } from './componentResolver.ts'
 import { setMeshExtentsCatalog } from './meshExtents.ts'
 import type { ComponentResolver } from './placementCompiler/index.ts'
 import type { MeasuredMeshCatalog } from './meshExtents.ts'
@@ -87,6 +87,7 @@ const resolver: ComponentResolver = (componentId, instance) => {
       : undefined,
     jointLimitsRad: resolveJointLimitsRad(preset),
     maxTorqueNm: torque,
+    massKg: resolveComponentMassKg(preset as Parameters<typeof resolveSpec>[0]['spec'], instance),
   }
 }
 

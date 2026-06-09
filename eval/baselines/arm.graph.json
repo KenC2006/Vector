@@ -1,0 +1,81 @@
+{
+ "base_link": "base",
+ "ground_offset": true,
+ "components": [
+  {
+   "link_name": "base",
+   "component_id": "structural_baseplate",
+   "attach_to": null,
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "base_servo",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "base",
+   "attach_face": "top",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "stem",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "base_servo",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 80
+  },
+  {
+   "link_name": "shoulder",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "stem",
+   "attach_face": "top",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "upper_arm",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "shoulder",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 200
+  },
+  {
+   "link_name": "elbow",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "upper_arm",
+   "attach_face": "top",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "forearm",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "elbow",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 150
+  },
+  {
+   "link_name": "wrist",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "forearm",
+   "attach_face": "top",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "gripper",
+   "component_id": "effector_parallel_gripper_small",
+   "attach_to": "wrist",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  }
+ ]
+}

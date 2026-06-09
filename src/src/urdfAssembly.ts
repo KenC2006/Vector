@@ -4020,6 +4020,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             ? preset.mechanical_electrical.max_torque_nm
             : (typeof preset.mechanical_electrical?.holding_torque_nm === 'number'
               ? preset.mechanical_electrical.holding_torque_nm : undefined),
+          massKg: resolveComponentMassKg(preset, instance),
         }
       },
     })

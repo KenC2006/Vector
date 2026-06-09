@@ -1,0 +1,390 @@
+{
+ "base_link": "body",
+ "ground_offset": true,
+ "components": [
+  {
+   "link_name": "body",
+   "component_id": "structural_baseplate",
+   "attach_to": null,
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_0",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_0",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_0",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_0",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_0",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 90
+  },
+  {
+   "link_name": "knee_0",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_0",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_0",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_0",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 110
+  },
+  {
+   "link_name": "foot_0",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_0",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_1",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_1",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_1",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_1",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_1",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 100
+  },
+  {
+   "link_name": "knee_1",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_1",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_1",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_1",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 120
+  },
+  {
+   "link_name": "foot_1",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_1",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_2",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_2",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_2",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_2",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_2",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 90
+  },
+  {
+   "link_name": "knee_2",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_2",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_2",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_2",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 110
+  },
+  {
+   "link_name": "foot_2",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_2",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_3",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_3",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_3",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_3",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_3",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 90
+  },
+  {
+   "link_name": "knee_3",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_3",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_3",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_3",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 110
+  },
+  {
+   "link_name": "foot_3",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_3",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_4",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_4",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_4",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_4",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_4",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 100
+  },
+  {
+   "link_name": "knee_4",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_4",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_4",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_4",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 120
+  },
+  {
+   "link_name": "foot_4",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_4",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_5",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "body",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_pitch_5",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "hip_5",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.7,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_5",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "hip_pitch_5",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 90
+  },
+  {
+   "link_name": "knee_5",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "thigh_5",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -1.1,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_5",
+   "component_id": "structural_limb_link_slim",
+   "attach_to": "knee_5",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 110
+  },
+  {
+   "link_name": "foot_5",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "shin_5",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "antenna_l",
+   "component_id": "sensor_ultrasonic",
+   "attach_to": "body",
+   "attach_face": "front",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "battery_1",
+   "component_id": "power_lipo_3s_2200",
+   "attach_to": "body",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  }
+ ]
+}
