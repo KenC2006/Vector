@@ -25,11 +25,8 @@
 // per-call enforcement lets Claude fix it itself within the same turn instead
 // of relying on a downstream repair that may not satisfy the user intent.
 
-import { validateTopology } from './topologyValidation.ts'
+import { validateTopology, checkPortCompatibility, formatStructuredDiagnostic } from './topologyValidation.ts'
 import type { ValidationContext, ValidationPreset } from './topologyValidation.ts'
-import { resolveFaceToPort } from './attachmentNodes.ts'
-import type { AttachmentNodeClass } from './componentSpec.ts'
-import { resolveComponent } from './componentResolver.ts'
 import { cloneAssemblyGraph } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph } from './urdfGraphEquivalence.ts'
 
@@ -115,81 +112,20 @@ export interface MutationError {
 
 export type MutationResult = MutationOk | MutationError
 
-// ── Port-compatibility helper (inline enforcement of the shaft/mount_face gap) ──
+// ── Port-compatibility (delegates to the shared validator helper) ───────────
+// WS2: a port mismatch is a WARNING on both edit surfaces, not a reject — the
+// same `checkPortCompatibility` powers the design_robot batch validator, so
+// the two paths can never disagree about what's allowed. The warning carries
+// the coupler-disc suggested_repair; Claude applies it or argues for the
+// deliberate pairing.
 
-const OPPOSITE_FACE: Record<string, string> = {
-  top: 'bottom', bottom: 'top',
-  front: 'back', back: 'front',
-  left: 'right', right: 'left',
-}
-
-function isSplitServoComponentId(componentId: string): boolean {
-  return (
-    componentId.startsWith('actuator_servo') ||
-    componentId.startsWith('actuator_continuous_rotation_servo') ||
-    componentId.startsWith('actuator_high_speed')
-  )
-}
-
-function _portClassAtFace(
-  ctx: ValidationContext,
-  componentId: string,
-  face: string,
-): AttachmentNodeClass | undefined {
-  const preset = ctx.findPreset(componentId)
-  if (!preset) return undefined
-  const ports = resolveComponent({ spec: preset }).ports
-  return resolveFaceToPort(face, ports)?.cls
-}
-
-/** Reject mutations whose parent-face class can't mechanically host the child's
- * contact-face class. Scoped to actuator/motor children because those are the
- * cases the bracket-insertion auto-repair (Repair 5) covers in resolveAssembly-
- * Graph. Structural→structural chains skip this check by design:
- * - mount_face↔mount_face is mechanically valid (brackets bolt on extrusions).
- * - validateTopology doesn't look at port classes, so a genuinely broken
- * structural port pairing is still caught only at placement-time via
- * `nodesCompatible` warnings. Widening this enforcement to structurals
- * would require naming an auto-repair that covers the widened cases. */
-function _checkPortCompatibility(
+function _portMismatchWarning(
   ctx: ValidationContext,
   parent: AssemblyComponent | undefined,
   child: AssemblyComponent,
-): MutationError | null {
-  if (!parent) return null
-  const isActuator = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
-  if (!isActuator(child.component_id)) return null
-  if (isSplitServoComponentId(child.component_id)) return null
-  // Brackets and coupler discs exist precisely to mate shaft↔mount_face — skip.
-  if (
-    parent.component_id.startsWith('structural_bracket_') ||
-    parent.component_id === 'structural_servo_coupler_disc'
-  ) return null
-
-  const parentFace = child.attach_face || 'top'
-  const childFace = OPPOSITE_FACE[parentFace] || 'bottom'
-  const pClass = _portClassAtFace(ctx, parent.component_id, parentFace)
-  const cClass = _portClassAtFace(ctx, child.component_id, childFace)
-  if (!pClass || !cClass) return null
-
-  const mismatched =
-    (pClass === 'shaft' && cClass === 'mount_face') ||
-    (pClass === 'mount_face' && cClass === 'shaft')
-  if (!mismatched) return null
-
-  return {
-    ok: false,
-    code: 'PORT_MISMATCH',
-    message:
-      `${child.link_name} (${child.component_id}) cannot mount on ` +
-      `${parent.link_name}.${parentFace} (${parent.component_id}): ` +
-      `${pClass} ↔ ${cClass} incompatible. Insert a structural bracket ` +
-      `(structural_bracket_u / structural_servo_coupler_disc) between them, ` +
-      `or attach the child to a structural extrusion near ${parent.link_name}.`,
-    suggested_repair:
-      `add_link(parent_link=${parent.link_name}, preset_id=structural_servo_coupler_disc, ` +
-      `attach_face=${parentFace}) first, then attach ${child.component_id} to the bracket.`,
-  }
+): string | null {
+  const diag = checkPortCompatibility(ctx, parent, child)
+  return diag ? formatStructuredDiagnostic(diag) : null
 }
 
 // ── Connector-reference validation (CONNECTOR_MISS) ───────────────────────
@@ -297,9 +233,11 @@ function _validateAndRespond(
   graph: AssemblyGraph,
   ctx: ValidationContext,
   summary: string,
+  extraWarnings: string[] = [],
 ): MutationResult {
   const { errors, warnings } = validateTopology(graph.components, ctx)
   if (errors.length > 0) {
+    // Hard errors only (UNKNOWN_*, DUPLICATE_LINK_NAME, MULTIPLE_ROOTS, CYCLE).
     // Prefer the bracketed rule code if present; fall back to the first error.
     const first = errors[0]
     const codeMatch = first.match(/^\[([A-Z_]+)\]/)
@@ -307,13 +245,12 @@ function _validateAndRespond(
       ok: false,
       code: codeMatch ? codeMatch[1] : 'VALIDATION_FAILED',
       message: errors.join(' | '),
-      suggested_repair:
-        codeMatch?.[1] === 'SHAFT_FANOUT' ? 'reparent the extra children to a structural extrusion'
-        : codeMatch?.[1] === 'SENSOR_ON_ACTUATOR' ? 'attach the sensor to a structural extrusion near the actuator instead'
-        : undefined,
     }
   }
-  return { ok: true, graph, warnings, summary }
+  // De-dupe: the graph-wide validator may emit the same PORT_MISMATCH the
+  // per-call check already produced.
+  const merged = [...new Set([...extraWarnings, ...warnings])]
+  return { ok: true, graph, warnings: merged, summary }
 }
 
 export function addLink(
@@ -365,9 +302,6 @@ export function addLink(
     mate_type: args.mate_type,
   }
 
-  const portErr = _checkPortCompatibility(ctx, parent, child)
-  if (portErr) return portErr
-
   // Pre-resolve connector check: runs only when the AI opted into named-
   // connector fields. Catches the dev-throw class (urdfAssembly.ts:2048) here
   // so the tool-call edit loop can self-correct in the same turn instead of
@@ -375,10 +309,13 @@ export function addLink(
   const connErr = _checkConnectorReferences(ctx, parent, child)
   if (connErr) return connErr
 
+  const portWarning = _portMismatchWarning(ctx, parent, child)
+
   next.components.push(child)
   return _validateAndRespond(
     next, ctx,
     `added ${child.link_name} (${child.component_id}) on ${args.parent_link}.${child.attach_face}`,
+    portWarning ? [portWarning] : [],
   )
 }
 
@@ -433,17 +370,18 @@ export function replaceComponent(
   target.component_id = args.new_component_id
 
   const parent = next.components.find(c => c.link_name === target.attach_to)
-  const portErr = _checkPortCompatibility(ctx, parent, target)
-  if (portErr) return portErr
 
   // The new preset may not author the connector ids the existing component
   // referenced — re-validate against the swapped preset.
   const connErr = _checkConnectorReferences(ctx, parent, target)
   if (connErr) return connErr
 
+  const portWarning = _portMismatchWarning(ctx, parent, target)
+
   return _validateAndRespond(
     next, ctx,
     `replaced ${args.link_name}: ${prevId} → ${args.new_component_id}`,
+    portWarning ? [portWarning] : [],
   )
 }
 

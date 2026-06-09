@@ -32,6 +32,13 @@ from typing import Any, Dict, List, Optional
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+# Windows consoles default to cp1252 — the report uses arrows/box characters.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # Same .env convention as core/server.py — live mode needs ANTHROPIC_API_KEY.
 try:
     from dotenv import load_dotenv

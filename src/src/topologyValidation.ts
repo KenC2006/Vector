@@ -1,11 +1,25 @@
-// Pure topology validation + auto-repair for AssemblyGraphs.
+// Pure topology validation for AssemblyGraphs — structured diagnostics, no
+// graph mutation.
+//
+// WS2 of the assembler refactor replaced the silent auto-repair pass
+// (autoRepairTopology) with structured warnings: the validator DESCRIBES what
+// looks wrong and suggests the concrete edit, and Claude applies (or argues
+// with) the suggestion on its next turn. Only structural impossibilities are
+// hard errors that block compilation:
+//
+//   UNKNOWN_PARENT / UNKNOWN_COMPONENT / DUPLICATE_LINK_NAME /
+//   MULTIPLE_ROOTS / CYCLE
+//
+// Everything that used to be silently rewritten (effector children, foot-pad
+// children, sensors on actuators, shaft fan-out, bare tires, servo spacers,
+// port mismatches) is now a warning with a `suggested_repair`.
 //
 // No DOM, no THREE runtime deps at this module boundary — so the logic can be
 // driven from a node-based corpus runner as well as from the browser-side
 // urdfAssembly pipeline.
 
 import { resolveFaceToPort } from './attachmentNodes.ts'
-import type { AssemblyComponent, AssemblyGraph } from './urdfAssembly.ts'
+import type { AssemblyComponent } from './urdfAssembly.ts'
 import {
   isDrivetrainComponentId,
   isFootPadComponentId,
@@ -17,7 +31,6 @@ import type { MateConnector } from './mateConnectors.ts'
 import {
   type Diagnostic,
   DiagnosticOwner,
-  liftStrings,
   routeDiagnostics,
 } from './compilerDiagnostics.ts'
 
@@ -32,10 +45,7 @@ export interface ValidationPreset {
   mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
   /** Authored mate connectors. Merged over the 6 default face connectors
-   *  (top/bottom/front/back/left/right) by id. Used by
-   *  graphMutations._checkConnectorReferences to reject attach_connector /
-   *  mate_connector references that don't resolve before resolveAssemblyGraph
-   *  hits the dev-throw at urdfAssembly.ts:2048. */
+   *  (top/bottom/front/back/left/right) by id. */
   connectors?: MateConnector[]
 }
 
@@ -43,50 +53,45 @@ export interface ValidationContext {
   findPreset: (componentId: string) => ValidationPreset | null
 }
 
+/** One validation finding. Same field vocabulary as graphMutations.MutationError
+ * so the tool-call loop and the batch design path speak one language. */
+export interface StructuredDiagnostic {
+  severity: 'error' | 'warning'
+  /** Stable SCREAMING_SNAKE rule code Claude can pattern-match on. */
+  code: string
+  message: string
+  link_name?: string
+  /** Concrete edit that would resolve the finding. */
+  suggested_repair?: string
+}
+
 export interface ValidationResult {
   errors: string[]
   warnings: string[]
 }
 
-/**
- * Phase 3: owner-tagged view of the same
- * validation result. Built from the legacy string lists via `liftStrings` —
- * topology rule failures are AI-fixable (they describe wrong parents/children/
- * placements that the next AI redesign should address), so default the bucket
- * to `AiTopology`. Once individual rules emit structured codes themselves,
- * this can be populated directly instead of through the lifter.
- */
+/** Render a diagnostic in the legacy string format consumed by
+ * resolveAssemblyGraph / viewportChat / the redesign-retry prompt. */
+export function formatStructuredDiagnostic(d: StructuredDiagnostic): string {
+  const fix = d.suggested_repair ? ` Fix: ${d.suggested_repair}` : ''
+  return `[${d.code}] ${d.message}${fix}`
+}
+
+/** Owner-tagged view for the diagnostics router. Topology findings are
+ * AI-fixable by definition (they describe wrong parents/children/placements
+ * that the next AI turn should address). */
 export function validateTopologyRouted(
   components: AssemblyComponent[],
   ctx: ValidationContext,
 ): { diagnostics: Diagnostic[]; routed: Record<DiagnosticOwner, Diagnostic[]> } {
-  const { errors, warnings } = validateTopology(components, ctx)
-  const diagnostics: Diagnostic[] = [
-    ...liftStrings(errors, 'error', DiagnosticOwner.AiTopology),
-    ...liftStrings(warnings, 'warning', DiagnosticOwner.AiTopology),
-  ]
+  const structured = validateTopologyStructured(components, ctx)
+  const diagnostics: Diagnostic[] = structured.map(d => ({
+    code: d.code.toLowerCase(),
+    severity: d.severity,
+    owner: DiagnosticOwner.AiTopology,
+    message: formatStructuredDiagnostic(d),
+  }))
   return { diagnostics, routed: routeDiagnostics(diagnostics) }
-}
-
-export type RepairKind =
-  | 'duplicate_name'
-  | 'effector_children'
-  | 'foot_pad_children'
-  | 'sensor_on_actuator'
-  | 'shaft_fanout'
-  | 'bare_tire_drivetrain'
-  | 'invalid_connector_removed'
-  | 'servo_coupler_removed'
-  | 'port_mismatch_bracket'
-
-export interface RepairLogEntry {
-  kind: RepairKind
-  message: string
-}
-
-export interface RepairResult {
-  graph: AssemblyGraph
-  repairs: RepairLogEntry[]
 }
 
 function isSplitServoComponentId(componentId: string): boolean {
@@ -98,7 +103,7 @@ function isSplitServoComponentId(componentId: string): boolean {
 }
 
 // Walk up from `start` to the nearest component whose id begins with `structural_`.
-// Cycle-guarded because auto-repairs run before cycle validation.
+// Cycle-guarded because callers may run before cycle validation.
 export function findStructuralAncestor(
   components: AssemblyComponent[],
   start: AssemblyComponent | undefined,
@@ -116,13 +121,7 @@ export function findStructuralAncestor(
   return undefined
 }
 
-function directChildren(components: AssemblyComponent[], parentName: string): AssemblyComponent[] {
-  return components.filter(c => c.attach_to === parentName)
-}
-
-function portsForComponent(
-  preset: ValidationPreset,
-) {
+function portsForComponent(preset: ValidationPreset) {
   return resolveComponent({ spec: preset }).ports
 }
 
@@ -133,9 +132,7 @@ function resolvePresetBoundsMm(
   return resolveComponentHalfBoundsMm(preset, instance)
 }
 
-// Mirrors the oppositeFace table in urdfAssembly.ts — the child's contact face
-// is the opposite of the parent's attach_face. Kept in sync manually; tiny
-// enough that a shared constant isn't worth the cross-module coupling.
+// Mirrors the oppositeFace table in urdfAssembly.ts.
 const OPPOSITE_FACE: Record<string, string> = {
   top: 'bottom', bottom: 'top',
   front: 'back', back: 'front',
@@ -143,184 +140,315 @@ const OPPOSITE_FACE: Record<string, string> = {
   coaxial: 'coaxial',
 }
 
-function connectorIdsForPreset(preset: ValidationPreset): Set<string> {
-  const ids = new Set<string>()
-  for (const conn of resolveComponent({ spec: preset }).connectors) {
-    if (typeof conn?.id === 'string' && conn.id.trim()) ids.add(conn.id)
-  }
-  return ids
-}
-
 function portClassAtFace(preset: ValidationPreset, face: string): string | undefined {
   return resolveFaceToPort(face, portsForComponent(preset))?.cls
 }
 
-export function validateTopology(
+// ── Shared port-compatibility check ─────────────────────────────────────────
+// Single source of truth for shaft↔mount_face pairing, used by BOTH edit
+// surfaces: validateTopologyStructured (design_robot batch path) and
+// graphMutations (tool-call loop). A mismatch is a WARNING — sometimes a
+// "wrong" pairing is a deliberate creative choice — but the suggested_repair
+// names the coupler-disc pattern a physical assembly would use.
+
+export function checkPortCompatibility(
+  ctx: ValidationContext,
+  parent: AssemblyComponent | undefined,
+  child: AssemblyComponent,
+): StructuredDiagnostic | null {
+  if (!parent) return null
+  const isActuator = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
+  if (!isActuator(child.component_id)) return null
+  // Split servos carry their own body holder + horn adapter internally.
+  if (isSplitServoComponentId(child.component_id)) return null
+  // Brackets and coupler discs exist precisely to mate shaft↔mount_face — skip.
+  if (
+    parent.component_id.startsWith('structural_bracket_') ||
+    parent.component_id === 'structural_servo_coupler_disc'
+  ) return null
+
+  const parentPreset = ctx.findPreset(parent.component_id)
+  const childPreset = ctx.findPreset(child.component_id)
+  if (!parentPreset || !childPreset) return null
+
+  const parentFace = child.attach_face || 'top'
+  const childFace = OPPOSITE_FACE[parentFace] || 'bottom'
+  const pClass = portClassAtFace(parentPreset, parentFace)
+  const cClass = portClassAtFace(childPreset, childFace)
+  if (!pClass || !cClass) return null
+
+  const mismatched =
+    (pClass === 'shaft' && cClass === 'mount_face') ||
+    (pClass === 'mount_face' && cClass === 'shaft')
+  if (!mismatched) return null
+
+  return {
+    severity: 'warning',
+    code: 'PORT_MISMATCH',
+    link_name: child.link_name,
+    message:
+      `${child.link_name} (${child.component_id}) mounts on ` +
+      `${parent.link_name}.${parentFace} (${parent.component_id}) with ` +
+      `incompatible port classes (${pClass} ↔ ${cClass}).`,
+    suggested_repair:
+      `insert a structural_servo_coupler_disc between ${parent.link_name} and ` +
+      `${child.link_name} (attach the coupler to ${parent.link_name}.${parentFace}, ` +
+      `then attach ${child.link_name} to the coupler), or attach ${child.link_name} ` +
+      `to a structural extrusion near ${parent.link_name}.`,
+  }
+}
+
+// ── Structured validation ────────────────────────────────────────────────────
+
+export function validateTopologyStructured(
   components: AssemblyComponent[],
   ctx: ValidationContext,
-): ValidationResult {
-  const errors: string[] = []
-  const warnings: string[] = []
+): StructuredDiagnostic[] {
+  const out: StructuredDiagnostic[] = []
   const linkNames = new Set(components.map(c => c.link_name))
+  const byName = new Map<string, AssemblyComponent>()
+  for (const c of components) byName.set(c.link_name, c)
 
+  // ── Hard errors ────────────────────────────────────────────────────────────
+
+  const seenNames = new Set<string>()
   for (const comp of components) {
-    // Rule 1: every non-root references a valid parent.
     if (comp.attach_to && !linkNames.has(comp.attach_to)) {
-      errors.push(`${comp.link_name} references unknown parent "${comp.attach_to}"`)
+      out.push({
+        severity: 'error', code: 'UNKNOWN_PARENT', link_name: comp.link_name,
+        message: `${comp.link_name} references unknown parent "${comp.attach_to}".`,
+        suggested_repair: 'set attach_to to an existing link_name',
+      })
     }
-    // Rule 2: component_id must exist in the preset library.
     if (!ctx.findPreset(comp.component_id)) {
-      errors.push(`Unknown component_id "${comp.component_id}" on ${comp.link_name}`)
+      out.push({
+        severity: 'error', code: 'UNKNOWN_COMPONENT', link_name: comp.link_name,
+        message: `Unknown component_id "${comp.component_id}" on ${comp.link_name}.`,
+        suggested_repair: 'pick a component_id from the catalog',
+      })
     }
-    // Rule 3: sensor parented to sensor (nothing to mount it rigidly to).
-    if (comp.attach_to) {
-      const parentComp = components.find(c => c.link_name === comp.attach_to)
-      if (parentComp?.component_id.startsWith('sensor_') && comp.component_id.startsWith('sensor_')) {
-        errors.push(`Sensor ${comp.link_name} attached to sensor ${comp.attach_to} — sensors should attach to structural/actuator links`)
+    if (seenNames.has(comp.link_name)) {
+      out.push({
+        severity: 'error', code: 'DUPLICATE_LINK_NAME', link_name: comp.link_name,
+        message: `Duplicate link_name "${comp.link_name}".`,
+        suggested_repair: `rename one occurrence (convention: <component_id>_<N>)`,
+      })
+    }
+    seenNames.add(comp.link_name)
+  }
+
+  const roots = components.filter(c => !c.attach_to)
+  if (roots.length > 1) {
+    out.push({
+      severity: 'error', code: 'MULTIPLE_ROOTS',
+      message: `Multiple root components: ${roots.map(r => r.link_name).join(', ')}.`,
+      suggested_repair: 'exactly one component may have attach_to: null — attach the others to it',
+    })
+  }
+
+  // Cycles / disconnected components (topological sort must complete).
+  {
+    const visited = new Set<string>()
+    const remaining = components.filter(c => c.attach_to)
+    let maxIter = remaining.length * 2
+    const toProcess = [...remaining]
+    for (const r of roots) visited.add(r.link_name)
+    while (toProcess.length > 0 && maxIter-- > 0) {
+      const idx = toProcess.findIndex(c => visited.has(c.attach_to!))
+      if (idx === -1) break
+      visited.add(toProcess.splice(idx, 1)[0].link_name)
+    }
+    if (toProcess.length > 0) {
+      out.push({
+        severity: 'error', code: 'CYCLE',
+        message: `Cycle or disconnected components: ${toProcess.map(c => c.link_name).join(', ')}.`,
+        suggested_repair: 'break the attach_to cycle so the topology forms a tree rooted at the base link',
+      })
+    }
+  }
+
+  // ── Warnings (the former auto-repairs, as feedback) ───────────────────────
+
+  for (const comp of components) {
+    // Sensor parented to sensor — nothing rigid to mount to.
+    if (comp.attach_to && comp.component_id.startsWith('sensor_')) {
+      const parentComp = byName.get(comp.attach_to)
+      if (parentComp?.component_id.startsWith('sensor_')) {
+        out.push({
+          severity: 'warning', code: 'SENSOR_ON_SENSOR', link_name: comp.link_name,
+          message: `Sensor ${comp.link_name} is attached to sensor ${comp.attach_to}.`,
+          suggested_repair: `attach ${comp.link_name} to a structural or actuator link instead`,
+        })
       }
     }
-    // Rule 4: effectors must be terminal.
+
+    // Effectors are conventionally terminal. Creative reuse (a feeler past a
+    // pincer) is allowed — hence warning, not error, and no rewrite.
     if (comp.component_id.startsWith('effector_')) {
-      const hasChildren = components.some(c => c.attach_to === comp.link_name)
-      if (hasChildren) {
-        errors.push(`End effector ${comp.link_name} has children — effectors should be terminal nodes`)
+      const kids = components.filter(c => c.attach_to === comp.link_name)
+      if (kids.length > 0) {
+        out.push({
+          severity: 'warning', code: 'EFFECTOR_HAS_CHILDREN', link_name: comp.link_name,
+          message:
+            `End effector ${comp.link_name} has children (${kids.map(k => k.link_name).join(', ')}). ` +
+            `Children of an effector move with its jaws/tool.`,
+          suggested_repair:
+            `if unintended, reparent them to ${comp.attach_to ?? 'the effector\'s parent'}; ` +
+            `keep them only for deliberate designs (e.g. a sensor feeler on a pincer)`,
+        })
       }
     }
-    // Rule 4b: rubber foot pads must be terminal leaf nodes.
+
+    // Foot pads are conventionally terminal leaf nodes.
     if (isFootPadComponentId(comp.component_id)) {
-      const hasChildren = components.some(c => c.attach_to === comp.link_name)
-      if (hasChildren) {
-        errors.push(`[FOOT_PAD_CHILDREN] ${comp.link_name} (mobility_rubber_foot_pad) has children — foot pads are terminal leaf nodes with no children. Reparent the children to the shin/extrusion above the foot pad.`)
+      const kids = components.filter(c => c.attach_to === comp.link_name)
+      if (kids.length > 0) {
+        out.push({
+          severity: 'warning', code: 'FOOT_PAD_HAS_CHILDREN', link_name: comp.link_name,
+          message:
+            `${comp.link_name} (mobility_rubber_foot_pad) has children ` +
+            `(${kids.map(k => k.link_name).join(', ')}). Foot pads are auto-leveled ` +
+            `ground contacts; children inherit that leveling.`,
+          suggested_repair:
+            `if these are limb segments, reparent them to the shin/extrusion above the foot pad`,
+        })
       }
     }
-    // Rule 5: link names must be unique.
-    const dupes = components.filter(c => c.link_name === comp.link_name)
-    if (dupes.length > 1) {
-      errors.push(`Duplicate link_name "${comp.link_name}"`)
+  }
+
+  // SHAFT_FANOUT: >1 child on a single-use shaft port.
+  {
+    const shaftGroups = new Map<string, { children: string[] }>()
+    for (const comp of components) {
+      if (!comp.attach_to) continue
+      const parentDef = byName.get(comp.attach_to)
+      if (!parentDef) continue
+      const pp = ctx.findPreset(parentDef.component_id)
+      if (!pp) continue
+      const face = comp.attach_face || 'top'
+      const port = resolveFaceToPort(face, portsForComponent(pp))
+      if (port?.cls === 'shaft' && port.single) {
+        const key = `${comp.attach_to}::${face}`
+        const entry = shaftGroups.get(key) || { children: [] }
+        entry.children.push(comp.link_name)
+        shaftGroups.set(key, entry)
+      }
+    }
+    for (const [key, entry] of shaftGroups) {
+      if (entry.children.length <= 1) continue
+      const [parentName] = key.split('::')
+      const extras = entry.children.slice(1).join(', ')
+      out.push({
+        severity: 'warning', code: 'SHAFT_FANOUT', link_name: parentName,
+        message:
+          `${parentName}: shaft has ${entry.children.length} children ` +
+          `(${entry.children.join(', ')}). A shaft drives exactly one load.`,
+        suggested_repair:
+          `keep one child on the shaft and reparent the others (${extras}) to the nearest structural extrusion`,
+      })
     }
   }
 
-  // Rule 8 — SHAFT_FANOUT: >1 child on a single-use shaft port.
-  const shaftGroups = new Map<string, { children: string[] }>()
-  for (const comp of components) {
-    if (!comp.attach_to) continue
-    const parentDef = components.find(c => c.link_name === comp.attach_to)
-    if (!parentDef) continue
-    const pp = ctx.findPreset(parentDef.component_id)
-    if (!pp) continue
-    const face = comp.attach_face || 'top'
-    const port = resolveFaceToPort(face, portsForComponent(pp))
-    if (port?.cls === 'shaft' && port.single) {
-      const key = `${comp.attach_to}::${face}`
-      const entry = shaftGroups.get(key) || { children: [] }
-      entry.children.push(comp.link_name)
-      shaftGroups.set(key, entry)
-    }
-  }
-  for (const [key, entry] of shaftGroups) {
-    if (entry.children.length <= 1) continue
-    const [parentName] = key.split('::')
-    const extras = entry.children.slice(1).join(', ')
-    errors.push(
-      `[SHAFT_FANOUT] ${parentName}: shaft has ${entry.children.length} children (${entry.children.join(', ')}). A shaft drives exactly one load; extra children on the same shaft are mechanically invalid. Fix: keep one child on the shaft and reparent the others (${extras}) to the nearest structural extrusion.`,
-    )
-  }
-
-  // Rule 9 — SENSOR_ON_ACTUATOR: sensor directly parented to an actuator/motor.
-  const isActuatorId = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
-  const isSensorId = (id: string) => id.startsWith('sensor_')
-  for (const comp of components) {
-    if (!comp.attach_to) continue
-    if (!isSensorId(comp.component_id)) continue
-    const parentComp = components.find(c => c.link_name === comp.attach_to)
-    if (!parentComp) continue
-    if (isActuatorId(parentComp.component_id)) {
-      errors.push(
-        `[SENSOR_ON_ACTUATOR] ${comp.link_name}: sensor attached to ${parentComp.link_name} (${parentComp.component_id}). Sensors on actuators rotate/vibrate with the joint and have no rigid mounting face. Fix: attach ${comp.link_name} to a structural extrusion near the actuator instead.`,
-      )
+  // SENSOR_ON_ACTUATOR: sensor directly parented to an actuator/motor.
+  {
+    const isActuatorId = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
+    for (const comp of components) {
+      if (!comp.attach_to || !comp.component_id.startsWith('sensor_')) continue
+      const parentComp = byName.get(comp.attach_to)
+      if (!parentComp || !isActuatorId(parentComp.component_id)) continue
+      const structural = findStructuralAncestor(components, parentComp)
+      out.push({
+        severity: 'warning', code: 'SENSOR_ON_ACTUATOR', link_name: comp.link_name,
+        message:
+          `${comp.link_name}: sensor attached to ${parentComp.link_name} ` +
+          `(${parentComp.component_id}). Sensors on actuators rotate/vibrate with ` +
+          `the joint and have no rigid mounting face.`,
+        suggested_repair:
+          `attach ${comp.link_name} to ${structural ? structural.link_name : 'a structural extrusion near the actuator'} instead`,
+      })
     }
   }
 
-  // Rule 12 — DIRECT_SERVO_STACK (warning): actuator/motor directly parented to
-  // another actuator/motor with no structural link between them. Emitted as a
-  // warning because (a) the port-mismatch auto-repair already inserts a bracket
-  // for most cases, and (b) a real physical assembly uses an extrusion for this,
-  // not a bracket — the AI should learn to emit that pattern.
-  //
-  // Delivery: warnings flow through `resolveAssemblyGraph`'s `topologyWarnings`
-  // return field into `viewportChat.ts`, where they surface inline in the chat
-  // panel and append to the redesign-retry prompt so subsequent Claude turns
-  // see them as feedback.
-  for (const comp of components) {
-    if (!comp.attach_to) continue
-    if (!isActuatorId(comp.component_id)) continue
-    const parentComp = components.find(c => c.link_name === comp.attach_to)
-    if (!parentComp) continue
-    if (isActuatorId(parentComp.component_id)) {
-      // Split servos own their yoke + horn-link adapter internally, and
-      // Repair 1b intentionally collapses any spacer between two split
-      // servos. Warning here would contradict the auto-repair and feed
-      // back into the AI redesign prompt as bad guidance.
+  // DIRECT_SERVO_STACK: actuator directly on actuator with no structural link.
+  {
+    const isActuatorId = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
+    for (const comp of components) {
+      if (!comp.attach_to || !isActuatorId(comp.component_id)) continue
+      const parentComp = byName.get(comp.attach_to)
+      if (!parentComp || !isActuatorId(parentComp.component_id)) continue
+      // Split servos stacking on split servos form the compound 2-DOF joint —
+      // the compiler inserts the carrier bracket itself.
       if (
         isSplitServoComponentId(comp.component_id) &&
         isSplitServoComponentId(parentComp.component_id)
       ) continue
-      warnings.push(
-        `[DIRECT_SERVO_STACK] ${comp.link_name} (${comp.component_id}) mounts directly on ${parentComp.link_name} (${parentComp.component_id}). Insert a bracket or extrusion between them for a realistic assembly.`,
-      )
+      out.push({
+        severity: 'warning', code: 'DIRECT_SERVO_STACK', link_name: comp.link_name,
+        message:
+          `${comp.link_name} (${comp.component_id}) mounts directly on ` +
+          `${parentComp.link_name} (${parentComp.component_id}).`,
+        suggested_repair: 'insert a bracket or extrusion between them for a realistic assembly',
+      })
     }
   }
 
-  // Rule 13 — BARE_TIRE: tire preset attached directly to a non-drivetrain parent.
-  // A tire without a drivetrain axle/motor has no defined contact patch or spin
-  // axis, causing it to fall off or clip in simulation.
+  // SERVO_SPACER: explicit coupler/bracket spacer inside a servo chain. The
+  // compiler's split servos own their yoke + horn-link adapter internally, so
+  // an authored spacer usually doubles the offset. Deliberate adapters for
+  // creative articulation are legitimate — warning only.
   for (const comp of components) {
-    if (!isTireComponentId(comp.component_id)) continue
+    const parent = comp.attach_to ? byName.get(comp.attach_to) : undefined
+    const kids = components.filter(c => c.attach_to === comp.link_name)
+    const isServoCoupler = comp.component_id === 'structural_servo_coupler_disc'
+    const isServoToServoBracket = comp.component_id.startsWith('structural_bracket_')
+      && !!parent
+      && isSplitServoComponentId(parent.component_id)
+      && kids.some(c => isSplitServoComponentId(c.component_id))
+    if (!isServoCoupler && !isServoToServoBracket) continue
+    const touchesServo = !!(
+      (parent && isSplitServoComponentId(parent.component_id)) ||
+      kids.some(c => isSplitServoComponentId(c.component_id))
+    )
+    if (!touchesServo) continue
+    out.push({
+      severity: 'warning', code: 'SERVO_SPACER', link_name: comp.link_name,
+      message:
+        `${comp.link_name} (${comp.component_id}) is a spacer inside a servo chain. ` +
+        `Split servos already include their own yoke and horn adapter, so an extra ` +
+        `spacer offsets the next joint twice.`,
+      suggested_repair:
+        `remove ${comp.link_name} and attach its children directly to ` +
+        `${comp.attach_to ?? 'the servo'} — keep it only if the extra offset is deliberate`,
+    })
+  }
+
+  // BARE_TIRE: tire attached to a non-drivetrain parent. No spin axis.
+  for (const comp of components) {
+    if (!isTireComponentId(comp.component_id) || !comp.attach_to) continue
+    const parentComp = byName.get(comp.attach_to)
+    if (!parentComp || isDrivetrainComponentId(parentComp.component_id)) continue
+    out.push({
+      severity: 'warning', code: 'BARE_TIRE', link_name: comp.link_name,
+      message:
+        `${comp.link_name} (${comp.component_id}) is attached directly to ` +
+        `${parentComp.link_name} (${parentComp.component_id}) with no drivetrain — ` +
+        `it has no spin axis and will not roll.`,
+      suggested_repair:
+        `insert a drivetrain_hub_motor_80 (attach_face=${comp.attach_face || 'bottom'}, ` +
+        `joint_type=continuous, joint_axis=y) between ${parentComp.link_name} and the tire, ` +
+        `then attach the tire to it with attach_face=coaxial — unless the wheel is deliberately decorative`,
+    })
+  }
+
+  // PORT_MISMATCH: shaft↔mount_face pairing without a bracket.
+  for (const comp of components) {
     if (!comp.attach_to) continue
-    const parentComp = components.find(c => c.link_name === comp.attach_to)
-    if (!parentComp) continue
-    if (!isDrivetrainComponentId(parentComp.component_id)) {
-      errors.push(
-        `[BARE_TIRE] ${comp.link_name} (${comp.component_id}) is attached directly to ${parentComp.link_name} (${parentComp.component_id}). Tires must attach to a drivetrain parent (e.g. drivetrain_hub_motor_80). Fix: insert a drivetrain between the chassis and the tire.`,
-      )
-    }
+    const parentComp = byName.get(comp.attach_to)
+    const diag = checkPortCompatibility(ctx, parentComp, comp)
+    if (diag) out.push(diag)
   }
 
-  // Rule 6: exactly one root.
-  const roots = components.filter(c => !c.attach_to)
-  if (roots.length > 1) {
-    errors.push(`Multiple root components: ${roots.map(r => r.link_name).join(', ')}`)
-  }
-
-  // Rule 7: no cycles (topological sort completes).
-  const visited = new Set<string>()
-  const remaining = components.filter(c => c.attach_to)
-  let maxIter = remaining.length * 2
-  const toProcess = [...remaining]
-  // Seed every root so that a multi-root graph (already flagged by Rule 6)
-  // doesn't produce a redundant "cycle or disconnected" error for components
-  // hanging off roots[1..n].
-  for (const r of roots) visited.add(r.link_name)
-  while (toProcess.length > 0 && maxIter-- > 0) {
-    const idx = toProcess.findIndex(c => visited.has(c.attach_to!))
-    if (idx === -1) break
-    visited.add(toProcess.splice(idx, 1)[0].link_name)
-  }
-  if (toProcess.length > 0) {
-    errors.push(`Cycle or disconnected components: ${toProcess.map(c => c.link_name).join(', ')}`)
-  }
-
-  // Rule 10 — TIPPY_PROPORTIONS (only for baseplate-rooted robots).
-  //
-  // Emitted as a WARNING, not a hard error: the 5× threshold is unverified
-  // (postmortem: test robot at 4.1× was likely unstable, so 5× may be too
-  // lenient) AND only one baseplate preset exists at 200mm wide, so a tall
-  // arm may be unsatisfiable by any preset combo — the same failure mode that
-  // forced BASEPLATE_TOO_THIN's revert. Keep as warning until a fixture pair
-  // + feasibility precheck are added; only then promote to a hard error.
-  //
-  // BASEPLATE_TOO_THIN was removed entirely for the same reason —
-  // see project_topology_validator_attempt.md for the postmortem.
+  // TIPPY_PROPORTIONS (only for baseplate-rooted robots).
   const rootComp = components.find(c => !c.attach_to)
   if (rootComp && rootComp.component_id.startsWith('structural_baseplate')) {
     const rootPreset = ctx.findPreset(rootComp.component_id)
@@ -349,382 +477,30 @@ export function validateTopology(
 
       if (baseW > 0 && totalHeightMm / baseW > 5) {
         const ratio = (totalHeightMm / baseW).toFixed(1)
-        warnings.push(
-          `[TIPPY_PROPORTIONS] Robot is ~${Math.round(totalHeightMm)}mm tall but baseplate is only ${Math.round(baseW)}mm wide (${ratio}x ratio — unstable). Fix: use a wider baseplate (at least ${Math.round(totalHeightMm / 3)}mm across) or reduce arm height.`,
-        )
+        out.push({
+          severity: 'warning', code: 'TIPPY_PROPORTIONS', link_name: rootComp.link_name,
+          message:
+            `Robot is ~${Math.round(totalHeightMm)}mm tall but the baseplate is only ` +
+            `${Math.round(baseW)}mm wide (${ratio}x ratio — unstable).`,
+          suggested_repair:
+            `use a wider baseplate (at least ${Math.round(totalHeightMm / 3)}mm across) or reduce the height`,
+        })
       }
     }
   }
 
-  return { errors, warnings }
+  return out
 }
 
-// Auto-repairs mutate `graph.components` in place and return a repair log.
-// Order: duplicate names -> effector children -> sensor-on-actuator ->
-// bare-tire drivetrain insertion -> shaft fan-out.
-export function autoRepairTopology(
-  graph: AssemblyGraph,
+/** Legacy string view — errors block compilation, warnings flow to the
+ * redesign loop. Thin adapter over validateTopologyStructured. */
+export function validateTopology(
+  components: AssemblyComponent[],
   ctx: ValidationContext,
-): RepairResult {
-  const repairs: RepairLogEntry[] = []
-
-  const claimUniqueName = (base: string, existing: Set<string>): string => {
-    let candidate = base
-    let suffix = 1
-    while (existing.has(candidate)) {
-      suffix++
-      candidate = `${base}_${suffix}`
-    }
-    existing.add(candidate)
-    return candidate
+): ValidationResult {
+  const structured = validateTopologyStructured(components, ctx)
+  return {
+    errors: structured.filter(d => d.severity === 'error').map(formatStructuredDiagnostic),
+    warnings: structured.filter(d => d.severity === 'warning').map(formatStructuredDiagnostic),
   }
-
-  // Repair 1: duplicate link_names get incrementing suffix; later children
-  // in the array that referenced the old name are rewritten to the new name.
-  const seen = new Set<string>()
-  for (let i = 0; i < graph.components.length; i++) {
-    const comp = graph.components[i]
-    if (!seen.has(comp.link_name)) {
-      seen.add(comp.link_name)
-      continue
-    }
-    const oldName = comp.link_name
-    const baseName = oldName.replace(/_\d+$/, '')
-    let suffix = 2
-    while (seen.has(`${baseName}_${suffix}`)) suffix++
-    const newName = `${baseName}_${suffix}`
-    for (let j = i + 1; j < graph.components.length; j++) {
-      if (graph.components[j].attach_to === oldName) {
-        graph.components[j].attach_to = newName
-      }
-    }
-    comp.link_name = newName
-    seen.add(newName)
-    repairs.push({ kind: 'duplicate_name', message: `"${oldName}" → "${newName}"` })
-  }
-
-  // Repair 1a: remove named mate connectors that do not exist on the actual
-  // parent/child presets. Claude sometimes copies child-side L-bracket names
-  // like "plate_top" into attach_connector on a servo/baseplate joint. If left
-  // intact, the connector engine correctly hard-errors in dev; dropping the
-  // bad override lets attach_face use the six default face connectors.
-  for (const comp of graph.components) {
-    if (!comp.attach_to) continue
-    const parent = graph.components.find(c => c.link_name === comp.attach_to)
-    if (!parent) continue
-    const parentPreset = ctx.findPreset(parent.component_id)
-    const childPreset = ctx.findPreset(comp.component_id)
-    if (!parentPreset || !childPreset) continue
-
-    const removed: string[] = []
-    if (comp.attach_connector) {
-      const parentIds = connectorIdsForPreset(parentPreset)
-      if (!parentIds.has(comp.attach_connector)) {
-        removed.push(`attach_connector="${comp.attach_connector}"`)
-        delete comp.attach_connector
-      }
-    }
-    if (comp.mate_connector) {
-      const childIds = connectorIdsForPreset(childPreset)
-      if (!childIds.has(comp.mate_connector)) {
-        removed.push(`mate_connector="${comp.mate_connector}"`)
-        delete comp.mate_connector
-      }
-    }
-    if (removed.length > 0) {
-      if (!comp.attach_connector && !comp.mate_connector) delete comp.mate_type
-      repairs.push({
-        kind: 'invalid_connector_removed',
-        message: `${comp.link_name}: removed invalid ${removed.join(', ')}`,
-      })
-    }
-  }
-
-  // Repair 1b: remove explicit coupler/bracket spacers from servo chains.
-  // Side-axis split servos own their yoke + horn-link adapter internally.
-  // Leaving a separate spacer in the graph rotates/translates the next servo
-  // frame again, which sends pitch limbs upward or coaxial with the shaft.
-  // NOVEL MODE: skipped — Claude can deliberately use coupler discs and
-  // brackets between servos for creative articulation patterns.
-  for (let i = graph.components.length - 1; i >= 0; i--) {
-    const comp = graph.components[i]
-    const parent = graph.components.find(c => c.link_name === comp.attach_to)
-    const children = directChildren(graph.components, comp.link_name)
-    const isServoCoupler = comp.component_id === 'structural_servo_coupler_disc'
-    const isServoToServoBracket = comp.component_id.startsWith('structural_bracket_')
-      && !!parent
-      && isSplitServoComponentId(parent.component_id)
-      && children.some(c => isSplitServoComponentId(c.component_id))
-    if (!isServoCoupler && !isServoToServoBracket) continue
-    const touchesServo = !!(
-      (parent && isSplitServoComponentId(parent.component_id)) ||
-      children.some(c => isSplitServoComponentId(c.component_id))
-    )
-    if (!touchesServo) continue
-    for (const child of children) {
-      child.attach_to = comp.attach_to ?? null
-      if (!child.attach_face && comp.attach_face) child.attach_face = comp.attach_face
-    }
-    graph.components.splice(i, 1)
-    repairs.push({
-      kind: 'servo_coupler_removed',
-      message: `removed servo spacer "${comp.link_name}" and reparented ${children.length} child link(s)`,
-    })
-  }
-
-  // Repair 2: an effector with children reparents those children to the
-  // effector's own parent (effectors must be terminal).
-  // NOVEL MODE: skipped — Claude is allowed to mount sensors/decorations
-  // past a gripper for creative designs (e.g. a feeler past a pincer).
-  {
-    for (const comp of graph.components) {
-      if (!comp.component_id.startsWith('effector_')) continue
-      const effectorChildren = graph.components.filter(c => c.attach_to === comp.link_name)
-      if (effectorChildren.length === 0) continue
-      for (const child of effectorChildren) {
-        const oldParent = child.attach_to
-        child.attach_to = comp.attach_to
-        repairs.push({
-          kind: 'effector_children',
-          message: `"${child.link_name}" reparented from effector "${oldParent}" to "${child.attach_to}"`,
-        })
-      }
-    }
-  }
-
-  // Repair 2b: a foot pad with children reparents those children to the
-  // foot pad's own parent (foot pads must be terminal leaf nodes).
-  // NOVEL MODE: skipped — Claude can use foot pads as decorative bumps
-  // or as anchor points for non-locomotion structures (antenna bases,
-  // tail nubs, body-shell corners).
-  {
-    for (const comp of graph.components) {
-      if (!isFootPadComponentId(comp.component_id)) continue
-      const footChildren = graph.components.filter(c => c.attach_to === comp.link_name)
-      if (footChildren.length === 0) continue
-      for (const child of footChildren) {
-        const oldParent = child.attach_to
-        child.attach_to = comp.attach_to
-        repairs.push({
-          kind: 'foot_pad_children',
-          message: `"${child.link_name}" reparented from foot pad "${oldParent}" to "${child.attach_to}"`,
-        })
-      }
-    }
-  }
-
-  // Repair 3: sensor directly on actuator → nearest structural ancestor.
-  for (const comp of graph.components) {
-    if (!comp.component_id.startsWith('sensor_')) continue
-    if (!comp.attach_to) continue
-    const parent = graph.components.find(c => c.link_name === comp.attach_to)
-    if (!parent) continue
-    const parentIsActuator =
-      parent.component_id.startsWith('actuator_') || parent.component_id.startsWith('motor_')
-    if (!parentIsActuator) continue
-    const newParent =
-      findStructuralAncestor(graph.components, parent) ??
-      graph.components.find(c => c.link_name === parent.attach_to)
-    if (!newParent) continue
-    comp.attach_to = newParent.link_name
-    repairs.push({
-      kind: 'sensor_on_actuator',
-      message: `sensor "${comp.link_name}" moved off actuator "${parent.link_name}" → "${newParent.link_name}"`,
-    })
-  }
-
-  // Repair 4: legacy bare tires -> synthesize an intermediate drivetrain.
-  // NOVEL MODE: skipped — Claude can use wheels as decorative elements
-  // (a turret wheel, a kinetic-sculpture flourish, a wheel as a body shell)
-  // without forcing them to be locomotion drivetrains.
-  const existingNamesForDrivetrain = new Set(graph.components.map(c => c.link_name))
-  const drivetrainInsertions: Array<{ drivetrain: AssemblyComponent; beforeLinkName: string }> = []
-  let drivetrainSerial = 0
-  for (const tire of graph.components) {
-    if (!isTireComponentId(tire.component_id)) continue
-    if (!tire.attach_to) continue
-    const parent = graph.components.find(c => c.link_name === tire.attach_to)
-    if (!parent || isDrivetrainComponentId(parent.component_id)) continue
-
-    drivetrainSerial++
-    const drivetrainName = claimUniqueName(`drivetrain_auto_${drivetrainSerial}`, existingNamesForDrivetrain)
-    const originalParent = tire.attach_to
-    const originalFace = tire.attach_face || 'bottom'
-    const drivetrain: AssemblyComponent = {
-      link_name: drivetrainName,
-      component_id: 'drivetrain_hub_motor_80',
-      attach_to: originalParent,
-      attach_face: originalFace,
-      joint_type: 'continuous',
-      joint_axis: 'y',
-    }
-    drivetrainInsertions.push({ drivetrain, beforeLinkName: tire.link_name })
-    tire.attach_to = drivetrainName
-    tire.attach_face = 'coaxial'
-    tire.joint_type = 'fixed'
-    tire.joint_axis = 'z'
-    repairs.push({
-      kind: 'bare_tire_drivetrain',
-      message: `inserted "${drivetrainName}" between "${originalParent}" and tire "${tire.link_name}"`,
-    })
-  }
-  for (const ins of drivetrainInsertions) {
-    const tireIdx = graph.components.findIndex(c => c.link_name === ins.beforeLinkName)
-    if (tireIdx >= 0) graph.components.splice(tireIdx, 0, ins.drivetrain)
-    else graph.components.push(ins.drivetrain)
-  }
-
-  // Repair 5: multiple non-tire children on a single-use shaft -> keep the
-  // first, reparent the rest. Tire fanout is a hard topology issue for the AI
-  // to redesign, because reparenting a tire off its drivetrain would be invalid.
-  const shaftRepairGroups = new Map<string, AssemblyComponent[]>()
-  for (const comp of graph.components) {
-    if (!comp.attach_to) continue
-    const parent = graph.components.find(c => c.link_name === comp.attach_to)
-    if (!parent) continue
-    const pp = ctx.findPreset(parent.component_id)
-    if (!pp) continue
-    const face = comp.attach_face || 'top'
-    const port = resolveFaceToPort(face, portsForComponent(pp))
-    if (port?.cls === 'shaft' && port.single) {
-      const key = `${comp.attach_to}::${face}`
-      const list = shaftRepairGroups.get(key) || []
-      list.push(comp)
-      shaftRepairGroups.set(key, list)
-    }
-  }
-  for (const [key, children] of shaftRepairGroups) {
-    if (children.length < 2) continue
-    if (children.some(c => isTireComponentId(c.component_id))) continue
-    const parent = graph.components.find(c => c.link_name === children[0].attach_to)
-    if (!parent) continue
-    const newParent =
-      findStructuralAncestor(graph.components, parent) ??
-      graph.components.find(c => c.link_name === parent.attach_to)
-    if (!newParent) continue
-    for (let i = 1; i < children.length; i++) {
-      const oldParent = children[i].attach_to
-      children[i].attach_to = newParent.link_name
-      repairs.push({
-        kind: 'shaft_fanout',
-        message: `shaft "${key}" extra "${children[i].link_name}" moved from "${oldParent}" to "${newParent.link_name}"`,
-      })
-    }
-  }
-
-  // Repair 5: shaft ↔ mount_face port mismatch → insert a structural bracket
-  // between parent and child. Fires when an actuator/motor child connects to a
-  // parent via a class mismatch (the quadruped "hip servo shaft facing the
-  // baseplate" pattern, or a direct servo→servo stack). Skipped for mobility
-  // children on motor shafts — wheels on shafts are a legitimate connection.
-  // Skipped if the parent is already an auto-inserted bracket (idempotent).
-  //
-  // Limitation: inserting a bracket cleans the parent↔bracket connection
-  // (mount_face ↔ mount_face) but leaves the bracket↔child mismatch intact
-  // (brackets have only mount_face ports). The placement engine still emits
-  // the compatibility warning on the child side, but the assembly graph now
-  // reflects the structural intermediate a physical robot would have.
-  // NOVEL MODE: skipped — Claude can deliberately attach actuators in
-  // port-mismatched ways for creative articulation. The placement compiler
-  // will still warn but won't auto-inject brackets.
-  const existingNames = new Set(graph.components.map(c => c.link_name))
-  const isRepairableChild = (id: string) =>
-    id.startsWith('actuator_') || id.startsWith('motor_')
-  const insertions: Array<{ bracket: AssemblyComponent; beforeLinkName: string }> = []
-  let bracketSerial = 0
-
-  for (const comp of graph.components) {
-    if (!comp.attach_to) continue
-    if (!isRepairableChild(comp.component_id)) continue
-    // Split servos now carry their own body holder + horn adapter. Inserting
-    // a coupler disc here puts the next limb coaxial with the shaft again,
-    // which prevents pitch joints from bending the leg.
-    if (isSplitServoComponentId(comp.component_id)) continue
-    const parent = graph.components.find(c => c.link_name === comp.attach_to)
-    if (!parent) continue
-    // Idempotency: skip when parent is already a coupler-type structural.
-    // Covers user-emitted brackets (structural_bracket_u / structural_bracket_l)
-    // AND the auto-inserted servo coupler disc. Without this, a second run
-    // of autoRepair (e.g., via modify_topology reverse-parse) would insert
-    // another coupler between the existing coupler and the servo.
-    if (
-      parent.component_id.startsWith('structural_bracket_') ||
-      parent.component_id === 'structural_servo_coupler_disc'
-    ) continue
-    const parentPreset = ctx.findPreset(parent.component_id)
-    const childPreset = ctx.findPreset(comp.component_id)
-    if (!parentPreset || !childPreset) continue
-    const parentFace = comp.attach_face || 'top'
-    const childFace = OPPOSITE_FACE[parentFace] || 'bottom'
-    const pClass = portClassAtFace(parentPreset, parentFace)
-    const cClass = portClassAtFace(childPreset, childFace)
-    if (!pClass || !cClass) continue
-    const mismatched =
-      (pClass === 'shaft' && cClass === 'mount_face') ||
-      (pClass === 'mount_face' && cClass === 'shaft')
-    if (!mismatched) continue
-
-    bracketSerial++
-    let bracketName = `structural_bracket_auto_${bracketSerial}`
-    while (existingNames.has(bracketName)) {
-      bracketSerial++
-      bracketName = `structural_bracket_auto_${bracketSerial}`
-    }
-    existingNames.add(bracketName)
-
-    const bracket: AssemblyComponent = {
-      link_name: bracketName,
-      // Use the thin 25T servo coupler disc instead of the bulky U-bracket —
-      // keeps shaft↔mount_face mechanically correct while collapsing the
-      // visual gap at each junction from ~40mm to ~6mm.
-      component_id: 'structural_servo_coupler_disc',
-      attach_to: parent.link_name,
-      attach_face: parentFace,
-      joint_type: 'fixed',
-      // 'z' resolves through urdfAssembly's axisMap to '0 0 1' intentionally,
-      // instead of landing in the fallback branch via an unrecognized literal.
-      joint_axis: 'z',
-    }
-    // Route both mismatch cases through the mate-connector resolver.
-    //
-    // Case 1 (shaft parent, mount_face child): coupler's shaft_hole
-    // mates concentrically onto the parent's shaft_out. Without this,
-    // a shaft-in-hole would be encoded as a flat stack in URDF and the
-    // visual seam at the shaft tip wouldn't close.
-    //
-    // Case 2 (mount_face parent, shaft child): coupler mounts flat on
-    // the parent face via default face connectors (fastened). Bit-
-    // identical to the legacy bbox path while every parent still carries
-    // default connectors, but flips the auto-repair path onto the
-    // connector engine so it picks up authored parent connectors
-    // automatically as Phase 2 lands them. Multi-child distribution is
-    // preserved — computeMatePlacement threads totalOnFace/childIdx
-    // through the connector resolver so N coupler discs still spread
-    // across one face.
-    if (pClass === 'shaft' && cClass === 'mount_face') {
-      bracket.attach_connector = 'shaft_out'
-      bracket.mate_connector = 'shaft_hole'
-      bracket.mate_type = 'concentric'
-    } else if (pClass === 'mount_face' && cClass === 'shaft') {
-      bracket.attach_connector = parentFace
-      bracket.mate_connector = childFace
-      bracket.mate_type = 'fastened'
-    }
-    insertions.push({ bracket, beforeLinkName: comp.link_name })
-    comp.attach_to = bracketName
-    repairs.push({
-      kind: 'port_mismatch_bracket',
-      message: `inserted "${bracketName}" between "${parent.link_name}" (${pClass}) and "${comp.link_name}" (${cClass})`,
-    })
-  }
-
-  // Splice brackets into the components array just before their paired child so
-  // any order-sensitive consumer (e.g. placement's topo sort) sees parents first.
-  for (const ins of insertions) {
-    const childIdx = graph.components.findIndex(c => c.link_name === ins.beforeLinkName)
-    if (childIdx >= 0) graph.components.splice(childIdx, 0, ins.bracket)
-    else graph.components.push(ins.bracket)
-  }
-
-  return { graph, repairs }
 }

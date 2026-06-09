@@ -26,7 +26,7 @@ import type { ComponentVisualBounds, ResolvedComponentVisual } from './component
 import { isParametricSpec, resolveComponent, resolveComponentBboxMm, resolveComponentMassKg } from './componentResolver.ts'
 import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
 import { urdfVecToSceneVec, URDF_TO_SCENE_Q } from './coordinates.ts'
-import { validateTopology as runValidateTopology, autoRepairTopology as runAutoRepair } from './topologyValidation.ts'
+import { validateTopology as runValidateTopology } from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
@@ -3731,9 +3731,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
       findPreset: (id: string): ValidationPreset | null => findPreset(id) as ValidationPreset | null,
     }
 
-    const { repairs } = runAutoRepair(graph, validationCtx)
-    void repairs
-
+    // WS2: no auto-repair pass. Hard errors abort below; warnings carry a
+    // suggested_repair and flow to the redesign loop via topologyWarnings.
     const { errors: topologyErrors, warnings: topologyWarnings } = runValidateTopology(graph.components, validationCtx)
     if (topologyWarnings.length > 0) {
       for (const w of topologyWarnings) console.warn(`[assembly][topology][warning] ${w}`)

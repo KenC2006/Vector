@@ -70,7 +70,7 @@ interface Fixture {
   graph: { base_link: string; components: ComponentInput[] }
   mutation: GraphMutation
   expect:
-    | { ok: true;  summaryIncludes?: string; graphContainsLink?: string }
+    | { ok: true;  summaryIncludes?: string; graphContainsLink?: string; warningIncludes?: string }
     | { ok: false; code: string }
 }
 
@@ -263,7 +263,10 @@ const fixtures: Fixture[] = [
     expect: { ok: true, graphContainsLink: 'cam1' },
   },
   {
-    name: 'attach_sensor: camera on servo shaft — SENSOR_ON_ACTUATOR rejects',
+    // WS2: sensor-on-actuator is a WARNING with a suggested_repair, not a
+    // reject — the mutation lands and Claude decides whether to apply the
+    // suggested move on its next turn.
+    name: 'attach_sensor: camera on servo shaft — accepted with SENSOR_ON_ACTUATOR warning',
     graph: GRAPH_WITH_EXTRUSION_AND_SERVO,
     mutation: {
       kind: 'attach_sensor',
@@ -272,7 +275,7 @@ const fixtures: Fixture[] = [
         component_id: 'sensor_depth_camera_small', mount_face: 'top',
       },
     },
-    expect: { ok: false, code: 'SENSOR_ON_ACTUATOR' },
+    expect: { ok: true, graphContainsLink: 'cam1', warningIncludes: '[SENSOR_ON_ACTUATOR]' },
   },
   {
     name: 'attach_sensor: non-sensor preset — NOT_A_SENSOR',
@@ -379,6 +382,10 @@ function runFixture(f: Fixture, ctx: ValidationContext): CaseResult {
       if (!found.includes(f.expect.graphContainsLink)) {
         return { name: f.name, passed: false, reason: `graph did not contain link "${f.expect.graphContainsLink}". links: [${found.join(', ')}]` }
       }
+    }
+    const wantWarning = f.expect.warningIncludes
+    if (wantWarning && !result.warnings.some(w => w.includes(wantWarning))) {
+      return { name: f.name, passed: false, reason: `expected a warning containing "${wantWarning}". got: ${JSON.stringify(result.warnings)}` }
     }
     // Guard against accidental base_link-field mutation — the dispatcher should
     // never touch it, and we don't want a regression that silently renames the root.
