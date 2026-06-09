@@ -367,12 +367,6 @@ export function autoRepairTopology(
   ctx: ValidationContext,
 ): RepairResult {
   const repairs: RepairLogEntry[] = []
-  // Novel mode relaxes a small set of repairs that otherwise block creative
-  // component reuse: foot pads as non-terminal mounts, effectors with
-  // children (e.g. a sensor "just past the gripper"), bare wheels used as
-  // decorative or non-locomotion elements. Repairs that catch genuine
-  // bugs (duplicate names, invalid connectors, shaft fanout) keep firing.
-  const isNovel = graph._archetype_mode === 'novel'
 
   const claimUniqueName = (base: string, existing: Set<string>): string => {
     let candidate = base
@@ -452,7 +446,7 @@ export function autoRepairTopology(
   // frame again, which sends pitch limbs upward or coaxial with the shaft.
   // NOVEL MODE: skipped — Claude can deliberately use coupler discs and
   // brackets between servos for creative articulation patterns.
-  if (!isNovel) for (let i = graph.components.length - 1; i >= 0; i--) {
+  for (let i = graph.components.length - 1; i >= 0; i--) {
     const comp = graph.components[i]
     const parent = graph.components.find(c => c.link_name === comp.attach_to)
     const children = directChildren(graph.components, comp.link_name)
@@ -482,7 +476,7 @@ export function autoRepairTopology(
   // effector's own parent (effectors must be terminal).
   // NOVEL MODE: skipped — Claude is allowed to mount sensors/decorations
   // past a gripper for creative designs (e.g. a feeler past a pincer).
-  if (!isNovel) {
+  {
     for (const comp of graph.components) {
       if (!comp.component_id.startsWith('effector_')) continue
       const effectorChildren = graph.components.filter(c => c.attach_to === comp.link_name)
@@ -503,7 +497,7 @@ export function autoRepairTopology(
   // NOVEL MODE: skipped — Claude can use foot pads as decorative bumps
   // or as anchor points for non-locomotion structures (antenna bases,
   // tail nubs, body-shell corners).
-  if (!isNovel) {
+  {
     for (const comp of graph.components) {
       if (!isFootPadComponentId(comp.component_id)) continue
       const footChildren = graph.components.filter(c => c.attach_to === comp.link_name)
@@ -546,7 +540,7 @@ export function autoRepairTopology(
   const existingNamesForDrivetrain = new Set(graph.components.map(c => c.link_name))
   const drivetrainInsertions: Array<{ drivetrain: AssemblyComponent; beforeLinkName: string }> = []
   let drivetrainSerial = 0
-  if (!isNovel) for (const tire of graph.components) {
+  for (const tire of graph.components) {
     if (!isTireComponentId(tire.component_id)) continue
     if (!tire.attach_to) continue
     const parent = graph.components.find(c => c.link_name === tire.attach_to)
@@ -639,7 +633,7 @@ export function autoRepairTopology(
   const insertions: Array<{ bracket: AssemblyComponent; beforeLinkName: string }> = []
   let bracketSerial = 0
 
-  if (!isNovel) for (const comp of graph.components) {
+  for (const comp of graph.components) {
     if (!comp.attach_to) continue
     if (!isRepairableChild(comp.component_id)) continue
     // Split servos now carry their own body holder + horn adapter. Inserting

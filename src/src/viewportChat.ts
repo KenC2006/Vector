@@ -1112,7 +1112,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         sessionId: deps.getCurrentChatId(),
         images: imagesForThisSend.map(({ media_type, data }) => ({ media_type, data })),
         assemblyGraph: canonicalGraphForAi ?? undefined,
-      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[]; archetype_mode?: 'standard' | 'novel' }
+      }) as { explanation: string; new_urdf: string; stats: string; assembly_graph?: unknown; topology_ops?: TopologyOp[] }
 
       if (cancelToken.cancelled) return
       thinking.remove()
@@ -1134,14 +1134,9 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         if (!currentGraph) {
           addVCMessage('assistant', `<span style="color:#f85149;">Could not parse current URDF for topology editing. Try "start over" to redesign from scratch.</span>`)
         } else {
-          // Forward Claude's per-turn archetype_mode declaration through to the
-          // modified graph so resolveAssemblyGraph keeps novel-mode placement
-          // active. Without this, every modify_topology edit silently reverts
-          // to standard mode and the dog/arm/wheeled template is reapplied.
           const modifiedGraph = urdfAssemblyApi.applyTopologyOps(
             currentGraph,
             result.topology_ops,
-            result.archetype_mode,
           )
           console.log(`[AI] Modified graph: ${modifiedGraph.components.length} components (was ${currentGraph.components.length})`)
           const assemblyOut = urdfAssemblyApi.resolveAssemblyGraph(modifiedGraph)

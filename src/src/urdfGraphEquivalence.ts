@@ -47,38 +47,22 @@ export interface AssemblyComponent {
    * to skip bbox-based correction — connector positions are authoritative,
    * bbox-derived deltas would stomp them. Runtime state, not authored. */
   placed_via_connector?: boolean
-  // ── Tier-A novel-mode authoring fields ──
-  // These are the small set of creative-authority levers that novel-mode
-  // designs can use to break the deterministic placement template (radial
-  // grids, computed splay angles). Stripped by `strip_forbidden_fields` in
-  // standard mode so dog/arm/wheeled stay byte-identical.
-  /** Position offset in MILLIMETERS [dx, dy, dz] applied AFTER face placement.
-   * Clamped to ±50mm per axis. Use for asymmetric layouts (front pincer arms
-   * longer than back walking legs, off-center electronics). Novel mode only. */
-  placement_offset_mm?: number[]
-  /** Override the auto-computed splay angle (degrees) for this child on a
-   * bottom-face attach. Default splay is from `splayAngleForLegCount`.
-   * Range -75 to +75 degrees. Novel mode only. */
-  splay_angle_deg?: number
-  /** Tier-B "complete control" — raw [x, y, z] joint-origin position relative
-   * to parent, in METERS. When present, the placement compiler bypasses face/
-   * mate placement and uses this verbatim as the URDF joint origin's xyz.
-   * Stripped in standard mode (Phase-3 contract preserved for dog/arm/wheeled).
-   * Novel-mode only. */
+  /** Raw [x, y, z] joint-origin position relative to parent, in METERS. When
+   * present, the placement compiler bypasses face/mate placement and uses
+   * this verbatim as the URDF joint origin's xyz. Always-available creative
+   * authoring — the strongest position lever. */
   xyz?: number[]
-  /** Tier-B "complete control" — raw [roll, pitch, yaw] joint origin rotation
-   * in RADIANS. When present, bypasses the auto-computed face/splay/servo-flip
-   * orientation. Different from `attach_rpy` (which is the joint rest-pose
-   * within a fixed mounting); `rpy` is the mounting orientation itself.
-   * Stripped in standard mode. Novel-mode only. */
+  /** Raw [roll, pitch, yaw] joint origin rotation in RADIANS. When present,
+   * bypasses the auto-computed face/splay/servo-flip orientation. Different
+   * from `attach_rpy` (which is the joint rest-pose within a fixed mounting);
+   * `rpy` is the mounting orientation itself. */
   rpy?: number[]
-  /** Novel-mode primitive composition: an array of free-form
-   * box/cylinder/sphere primitives (millimetres) that replace the preset's
-   * rendered visuals. Lets the AI compose body shells (humanoid torso,
-   * drone frame, tank hull, snake segment, sculpture, ...) without expanding
-   * the preset catalog. Bounds/collision/connectors auto-derive from the
-   * AABB of the primitives. Stripped in standard mode. See linkGeometry.ts
-   * for the wire format. */
+  /** Primitive composition: an array of free-form box/cylinder/sphere
+   * primitives (millimetres) that replace the preset's rendered visuals.
+   * Lets the AI compose body shells (humanoid torso, drone frame, tank hull,
+   * snake segment, sculpture, ...) without expanding the preset catalog.
+   * Bounds/collision/connectors auto-derive from the primitives. See
+   * linkGeometry.ts for the wire format. */
   link_geometry?: unknown[]
 }
 
@@ -86,13 +70,6 @@ export interface AssemblyGraph {
   base_link: string
   ground_offset?: boolean
   components: AssemblyComponent[]
-  /** Set by the Python AI pipeline when Claude declares the design archetype.
-   * 'standard' = quadruped/arm/wheeled/biped/humanoid — full archetype scaffolding
-   * applies. 'novel' = non-standard creature/topology; the placement compiler
-   * relaxes archetype-shaped layouts (4-corner symmetric grid → radial), and the
-   * archetype normalizer skips quadruped-template enforcement. Optional;
-   * unset behaves like 'standard'. */
-  _archetype_mode?: 'standard' | 'novel'
 }
 
 /** Deep clone an AssemblyGraph — use when you don't want callers to mutate the canonical copy. */
@@ -100,11 +77,9 @@ export function cloneAssemblyGraph(graph: AssemblyGraph): AssemblyGraph {
   return {
     base_link: graph.base_link,
     ground_offset: graph.ground_offset,
-    _archetype_mode: graph._archetype_mode,
     components: graph.components.map(c => ({
       ...c,
       attach_rpy: c.attach_rpy ? [...c.attach_rpy] : undefined,
-      placement_offset_mm: c.placement_offset_mm ? [...c.placement_offset_mm] : undefined,
       xyz: c.xyz ? [...c.xyz] : undefined,
       rpy: c.rpy ? [...c.rpy] : undefined,
       link_geometry: c.link_geometry ? c.link_geometry.map(p => ({ ...(p as object) })) : undefined,

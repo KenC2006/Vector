@@ -5,7 +5,6 @@
 
 import * as THREE from 'three'
 import { tangentBasisFromAxis, type MateConnector } from '../mateConnectors.ts'
-import { isNovelMode } from './context.ts'
 
 export interface ParentHalfExtentsM {
   hx: number
@@ -91,23 +90,28 @@ export function _buildMultiChildPositions(
   if (cached) return cached
   let positions: Array<{ u: number; v: number }>
 
-  if (isNovelMode() && total >= 3) {
-    // Novel-archetype mode: distribute children evenly around the face center
-    // on an ellipse inscribed in the face's UV extents. Replaces the
-    // 4-corner-plus-edge-cycle pattern that produced "dog with extra legs in
-    // 2-2-2 stance" for hexapods/octopods/spiders/crabs/etc. The ellipse
-    // adapts to non-square faces (a long-thin baseplate yields an elongated
-    // distribution rather than crammed into the square corner pattern).
+  if (total >= 3) {
+    // Radial distribution: children spread evenly around the face center on
+    // an ellipse inscribed in the face's UV extents. Replaces the legacy
+    // 4-corner-plus-edge-cycle pattern that piled extra children onto the
+    // face CENTER for N≥5 (hexapods got two legs inside the body) and forced
+    // "dog with extra legs" stances on radial creatures. The ellipse adapts
+    // to non-square faces.
     //
-    // Angle 0 starts at +U (face's "right" edge) and increments
-    // counter-clockwise. The first child going to +U rather than +V is
-    // arbitrary but consistent — what matters is the even spacing.
+    // Corner parity for total===4: phase by 45° and stretch by √2 (clamped to
+    // the face extent) so quadrupeds keep their corner stance — at the
+    // cardinal-diagonal angles cos/sin are ±1/√2, and the √2 stretch lands
+    // children exactly on the legacy (±inset·extU, ±inset·extV) corners.
     positions = []
+    const phase = total === 4 ? Math.PI / 4 : 0
+    const stretch = total === 4 ? Math.SQRT2 : 1
     for (let i = 0; i < total; i++) {
-      const theta = (2 * Math.PI * i) / total
+      const theta = (2 * Math.PI * i) / total + phase
+      const u = inset * extU * stretch * Math.cos(theta)
+      const v = inset * extV * stretch * Math.sin(theta)
       positions.push({
-        u: inset * extU * Math.cos(theta),
-        v: inset * extV * Math.sin(theta),
+        u: Math.max(-extU, Math.min(extU, u)),
+        v: Math.max(-extV, Math.min(extV, v)),
       })
     }
   } else if (total === 2) {
@@ -115,34 +119,6 @@ export function _buildMultiChildPositions(
       { u: -inset * extU, v: 0 },
       { u: inset * extU, v: 0 },
     ]
-  } else if (total === 3) {
-    positions = [
-      { u: 0, v: inset * extV },
-      { u: -inset * extU, v: -inset * 0.5 * extV },
-      { u: inset * extU, v: -inset * 0.5 * extV },
-    ]
-  } else if (total === 4) {
-    positions = [
-      { u: inset * extU, v: inset * extV },
-      { u: -inset * extU, v: inset * extV },
-      { u: inset * extU, v: -inset * extV },
-      { u: -inset * extU, v: -inset * extV },
-    ]
-  } else if (total >= 5) {
-    positions = [
-      { u: inset * extU, v: inset * extV },
-      { u: -inset * extU, v: inset * extV },
-      { u: inset * extU, v: -inset * extV },
-      { u: -inset * extU, v: -inset * extV },
-    ]
-    const extras = [
-      { u: 0, v: 0 },
-      { u: 0, v: inset * extV },
-      { u: 0, v: -inset * extV },
-      { u: inset * extU, v: 0 },
-      { u: -inset * extU, v: 0 },
-    ]
-    for (let i = 4; i < total; i++) positions.push(extras[(i - 4) % extras.length])
   } else {
     positions = []
     const step = (2 * inset * extU) / Math.max(total - 1, 1)

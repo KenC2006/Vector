@@ -80,14 +80,38 @@ def test_passive_limb_attach_rpy_warned_not_stripped():
     assert "attach_rpy" in graph[0], "passive-limb attach_rpy must remain (warn-only, shadow mode)"
 
 
-def test_xyz_field_flagged_and_stripped():
+def test_raw_xyz_is_first_class_authoring():
+    # Raw xyz/rpy are always-available creative authoring — no diagnostic,
+    # never stripped. Only the alias spellings are forbidden.
     graph = [
-        {"link_name": "rogue_1", "component_id": "sensor_imu_9dof", "attach_to": "base_1", "xyz": [0.1, 0, 0]},
+        {"link_name": "wing_1", "component_id": "sensor_imu_9dof", "attach_to": "base_1",
+         "xyz": [0.1, 0, 0], "rpy": [0, 0.5, 0]},
+    ]
+    assert validate_semantic_graph(graph) == []
+    strip_forbidden_fields(graph)
+    assert "xyz" in graph[0] and "rpy" in graph[0]
+
+
+def test_xyz_aliases_flagged_and_stripped():
+    graph = [
+        {"link_name": "rogue_1", "component_id": "sensor_imu_9dof", "attach_to": "base_1",
+         "origin_xyz": [0.1, 0, 0]},
     ]
     diags = validate_semantic_graph(graph)
     assert _codes(diags) == ["semantic_graph_forbidden_field"]
     strip_forbidden_fields(graph)
-    assert "xyz" not in graph[0]
+    assert "origin_xyz" not in graph[0]
+
+
+def test_removed_legacy_fields_stripped_silently():
+    graph = [
+        {"link_name": "leg_1", "component_id": "structural_limb_link_slim", "attach_to": "base_1",
+         "placement_offset_mm": [10, 0, 0], "splay_angle_deg": 30, "archetype_mode": "novel"},
+    ]
+    strip_forbidden_fields(graph)
+    assert "placement_offset_mm" not in graph[0]
+    assert "splay_angle_deg" not in graph[0]
+    assert "archetype_mode" not in graph[0]
 
 
 def test_owner_for_known_codes():
@@ -136,7 +160,7 @@ def test_normalize_and_validate_pipeline_stashes_diagnostics():
         "base_link": "base_1",
         "components": [
             {"link_name": "base_1", "component_id": "structural_baseplate", "attach_to": None},
-            {"link_name": "rogue_1", "component_id": "sensor_imu_9dof", "attach_to": "base_1", "xyz": [0.1, 0, 0]},
+            {"link_name": "rogue_1", "component_id": "sensor_imu_9dof", "attach_to": "base_1", "origin_xyz": [0.1, 0, 0]},
         ],
     }
     out = normalize_and_validate(assembly)
@@ -145,8 +169,8 @@ def test_normalize_and_validate_pipeline_stashes_diagnostics():
     diag = assembly["_diagnostics"]
     assert "routed" in diag and "ai_feedback" in diag
     assert diag["ai_feedback"] is not None and "rogue_1" in diag["ai_feedback"]
-    # And the forbidden field should be gone from the graph.
-    assert "xyz" not in assembly["components"][1]
+    # And the forbidden alias should be gone from the graph.
+    assert "origin_xyz" not in assembly["components"][1]
 
 
 def test_normalize_and_validate_clean_assembly_has_no_diagnostics_key():
@@ -165,7 +189,9 @@ _TESTS = [
     test_split_servo_link_name_flagged,
     test_foot_pad_attach_rpy_flagged_and_stripped,
     test_passive_limb_attach_rpy_warned_not_stripped,
-    test_xyz_field_flagged_and_stripped,
+    test_raw_xyz_is_first_class_authoring,
+    test_xyz_aliases_flagged_and_stripped,
+    test_removed_legacy_fields_stripped_silently,
     test_owner_for_known_codes,
     test_router_buckets_diagnostics_by_owner,
     test_format_for_ai_includes_only_ai_owned,

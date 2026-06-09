@@ -48,7 +48,6 @@ def _get_client():
         _client = _anthropic.Anthropic(api_key=api_key)
     return _client
 
-
 _gemini_client = None
 
 def _get_gemini_client():
@@ -66,7 +65,6 @@ def _get_gemini_client():
         _gemini_client = _genai.Client(api_key=api_key)
     return _gemini_client
 
-
 # ── Prompt cache logging ─────────────────────────────────────────────────────
 def _log_cache_usage(label: str, response) -> None:
     """Log prompt cache hit/miss stats for debugging rate limit and cost issues."""
@@ -82,7 +80,6 @@ def _log_cache_usage(label: str, response) -> None:
         file=sys.stderr,
     )
 
-
 # ── Conversation history store (keyed by session_id) ──────────────────────────
 # Each entry is a list of {"role": "user"|"assistant", "content": str} dicts.
 # Capped to last 20 messages to avoid unbounded token growth.
@@ -94,7 +91,6 @@ def _log_cache_usage(label: str, response) -> None:
 # (they'd bloat localStorage 5MB+ per turn and don't survive a reload anyway).
 _conversation_history: dict[str, list] = defaultdict(list)
 _MAX_HISTORY_MESSAGES = 20
-
 
 def _build_user_content(text: str, images: list | None):
     """
@@ -132,7 +128,6 @@ def _build_user_content(text: str, images: list | None):
         return text
     return [{"type": "text", "text": text}, *image_blocks]
 
-
 # Component IDs the AI may use. Auto-derived from the full preset registry so
 # Claude has access to every component the library ships — including parts
 # without bespoke GLB meshes (they fall back to parametric box/cylinder
@@ -152,9 +147,7 @@ def _compute_allowed_component_ids() -> set:
             'mobility_rubber_foot_pad',
         }
 
-
 _ALLOWED_COMPONENT_IDS = _compute_allowed_component_ids()
-
 
 def _build_component_catalog() -> str:
     """Build a compact summary of available preset components for the AI system prompt.
@@ -199,235 +192,12 @@ def _build_component_catalog() -> str:
 
 _COMPONENT_CATALOG = None
 
-def _get_component_catalog(
-    user_prompt: str | None = None,
-    kg_json: dict | None = None,
-    tried_preset_ids=None,
-    force_full_catalog: bool = False,
-) -> str:
-    """Return the preset catalog text for the system prompt.
-
-    Default path (VECTOR_DYNAMIC_CATALOG unset): the cached full dump,
-    identical to pre-WS4 behavior. This keeps a clean A/B baseline for
-    measuring the dynamic-catalog change in isolation after WS1/WS3 ship.
-
-    When VECTOR_DYNAMIC_CATALOG is truthy: delegate to the scoped selector,
-    which returns only presets relevant to this request + a core floor.
-
-    `force_full_catalog`: bypass scoping for novel-archetype prompts where
-    keyword-scoring would starve the design of parts whose names don't
-    match unusual creature words like "crab" or "snake".
-    """
-    from core.ai.catalog_selector import dynamic_catalog_enabled, build_scoped_catalog
-    if dynamic_catalog_enabled() and user_prompt is not None:
-        try:
-            return build_scoped_catalog(
-                user_prompt=user_prompt,
-                allowed_ids=_ALLOWED_COMPONENT_IDS,
-                kg_json=kg_json,
-                tried_preset_ids=tried_preset_ids,
-                force_full_catalog=force_full_catalog,
-            )
-        except Exception as e:
-            # Scoring failure must never block a request — fall through
-            # to the full catalog, log so regressions are visible.
-            print(f"[ai_catalog] scoped catalog failed, using full dump: {e}", file=sys.stderr)
+def _get_component_catalog() -> str:
+    """Return the full preset catalog text for the system prompt (cached)."""
     global _COMPONENT_CATALOG
     if _COMPONENT_CATALOG is None:
         _COMPONENT_CATALOG = _build_component_catalog()
     return _COMPONENT_CATALOG
-
-
-# Pre-call hint prepended to the system prompt when the keyword classifier
-# guesses the user is asking for a non-standard archetype (crab, snake, etc.).
-# This is a hint, not a directive — Claude is the source of truth via the
-# `archetype_mode` tool param. The preamble's job is to (a) bias Claude
-# toward noticing that the user's prompt may not fit the standard templates
-# and (b) explicitly invite component variety, since Claude's default
-# behavior is to repeat the same servo+limb+foot chain N times for any
-# multi-limbed creature even when the rules don't require it.
-_NOVEL_ARCHETYPE_PREAMBLE = r"""## Hint — your prompt looks non-standard
-
-The user's request does not obviously match a quadruped, robotic arm, or wheeled vehicle. Decide whether `archetype_mode` should be `"novel"`. Examples that should be novel: crab, spider, snake, octopus, hexapod, starfish, scorpion, sprawled walker, radial layout, tentacle/tail chain, or anything where "robot dog with extra legs" or "arm with funny gripper" would be a wrong answer.
-
-The full component catalog is shown below (scoped catalog bypassed) so you can reach for parts that don't keyword-match standard creatures.
-
-### Component variety is REQUIRED for novel designs
-
-A real crab has two large grasping cheliped legs and six smaller walking legs — different limbs use different parts. A real spider has four leg pairs that vary slightly in length. A real scorpion has walking legs, pincer arms, AND a segmented tail. A snake has a head segment that is structurally different from middle and tail segments.
-
-**For novel designs, do NOT repeat the same chain N times.** That is the #1 sign you've fallen back on a quadruped template even after declaring novel. Concretely:
-- DO vary servo torque tier across limbs (`actuator_servo_high_torque` for primary load-bearing, `actuator_servo_standard` or smaller for distal/lighter joints, `actuator_servo_micro` for fine appendages).
-- DO use different structural parts per limb role: `structural_limb_link_slim` for slender legs, `structural_extrusion_2020` for stiff exoskeleton segments, `structural_bracket_l` as a body shell or pincer base, `structural_extrusion_4040` for spine/dorsal segments.
-- DO mix end-effectors and terminals across limbs — `effector_parallel_gripper_small` as a claw/pincer for grasping limbs, `mobility_rubber_foot_pad` for walking limbs, `sensor_*` (camera, IMU, ultrasonic) as feelers/antennae, an `effector_suction_cup` as a holdfast.
-- DO use different limb LENGTHS — front legs might be longer/stronger than back, claw arms shorter than walking legs, etc.
-- DO consider differentiating the body itself with stacked/extended structural members (multi-segment torso, articulated tail) instead of a single bare baseplate.
-
-Counterexample to avoid: 6 legs each = (high_torque hip yaw → high_torque hip pitch → slim_link → high_torque knee → slim_link → foot pad) = byte-identical legs. That's a hexapod-shaped quadruped. A real hexapod biology has variation. Use it.
-
-### Layout reminders
-
-Multiple children on the same baseplate face are auto-distributed radially around the face center in novel mode (not the standard 4-corner grid), and each child's outward splay is aligned with its radial position. So legs you place on `bottom` will fan outward radially, sensors on `top` will fan around the body. You can also place limbs on side faces (`front`, `back`, `left`, `right`) if the creature is more horizontally-extending than vertically-stacked.
-
-### Novel-only authoring fields (full creative authority)
-
-Four per-component fields give you geometric authority the deterministic placement compiler normally owns. All stripped silently in standard mode — only available when `archetype_mode="novel"`. Listed in order of strength (weakest first):
-
-- **`placement_offset_mm: [dx, dy, dz]`** — small position nudge in millimeters applied AFTER the auto-derived face placement. Clamped to ±50mm per axis. Use for minor asymmetry without abandoning the auto-distribution: front pincer arms slightly forward of the radial grid, electronics off-center.
-- **`splay_angle_deg: <number>`** — override the auto-computed splay angle for a child. On `bottom`-face the default is per-leg-count (e.g. 35° for 6 legs). On other faces splay is OPT-IN. Use to fan sensors/antennae outward, or vary leg posture per limb. Range -75° to +75°.
-- **`xyz: [x, y, z]`** — **RAW PLACEMENT** in METERS, parent-relative. **Bypasses the entire face-placement / multi-child distribution / mate-resolver pipeline.** When set, this becomes the URDF joint origin's xyz verbatim. Use for designs the auto-distribution can't reach: exact creature poses, asymmetric anatomy, sculpture-style robots, components positioned where face-mounting would never put them. This is the strongest position lever — if a design isn't coming out right with `placement_offset_mm`, reach for `xyz`.
-- **`rpy: [roll, pitch, yaw]`** — **RAW ROTATION** in RADIANS, parent-relative. Bypasses auto-orient / splay / servo-flip. Pair with `xyz` for full placement control. Note: this is DIFFERENT from `attach_rpy`. `attach_rpy` is the joint REST POSE (rotation around the joint axis at zero state — for pose like "thigh starts rotated 30° forward"). `rpy` is the JOINT ORIGIN's mounting orientation (where the joint frame itself sits in the parent frame). Use `rpy` only when auto-orient is fighting your design; `attach_rpy` covers most needs.
-
-**When to reach for which:** `placement_offset_mm` for small nudges (~10-50mm). `xyz` for "the auto-distribution put it on the wrong side of the body and I need it elsewhere." `rpy` for "the auto-orientation flipped my component and I want it in a specific orientation." `attach_rpy` for "I want this joint to start at a non-zero angle."
-
-### Custom body shells via `link_geometry` — for shapes the catalog can't express
-
-The preset catalog covers FUNCTIONAL hardware: servos, brackets, baseplates, limb links, sensors, batteries, wheels, grippers, extrusions. It does NOT cover free-form body shape — there is no `humanoid_torso`, `drone_airframe`, `tank_hull`, `dragon_body`, or `snake_segment` preset, because there's no general way to enumerate every body silhouette a robot might need.
-
-For body shells, use **`link_geometry`** on the component. This replaces that link's rendered visuals with a free-form union of authored primitives (box, cylinder, sphere). Bounds, collision, mate connectors (top/bottom/front/back/left/right of the AABB), and inertia all auto-derive from the primitive union, so the resulting link mounts servos/sensors/limbs exactly like any catalog part.
-
-**Mental division of labor:**
-- Catalog presets → mechanical FUNCTION (anything that moves, senses, mounts, or attaches).
-- `link_geometry` primitives → visual STRUCTURE (the body's silhouette, fairings, hulls, plates, segments).
-
-Don't try to draw a humanoid torso as stacked extrusions. Don't try to draw a tank chassis as a baseplate. Reach for `link_geometry` whenever the silhouette matters and no preset fits.
-
-**Each entry** is an object — see the tool schema for full grammar. Minimal forms:
-- Box: `{shape:'box', size_mm:[w,d,h], xyz_mm?:[x,y,z], rpy?:[r,p,y], color?:[r,g,b]}`
-- Cylinder: `{shape:'cylinder', radius_mm, length_mm, xyz_mm?, rpy?, color?}` (axis along local +Z)
-- Sphere: `{shape:'sphere', radius_mm, xyz_mm?, color?}`
-
-`xyz_mm` is the primitive's centre offset from the link origin in millimetres. Default [0,0,0].
-
-**Example — humanoid torso** (chest box + head sphere + shoulder cylinders + pelvis box, all on ONE link with `link_geometry`; then mount shoulder servos to that link's left/right faces and a neck servo to the top, with arm chains hanging off the shoulder servos):
-```
-link_geometry: [
-  {shape:'box',      size_mm:[200,100,300], xyz_mm:[0,0,150]},
-  {shape:'sphere',   radius_mm:80,         xyz_mm:[0,0,360]},
-  {shape:'cylinder', radius_mm:25, length_mm:60, xyz_mm:[100,0,260],  rpy:[0,1.5708,0]},
-  {shape:'cylinder', radius_mm:25, length_mm:60, xyz_mm:[-100,0,260], rpy:[0,1.5708,0]},
-  {shape:'box',      size_mm:[180,90,80],   xyz_mm:[0,0,-40]}
-]
-```
-
-**Example — tank hull** (long hull box + sloped front armor plate + turret base cylinder):
-```
-link_geometry: [
-  {shape:'box',      size_mm:[400,250,90]},
-  {shape:'box',      size_mm:[120,250,60], xyz_mm:[180,0,30],  rpy:[0,-0.5,0]},
-  {shape:'cylinder', radius_mm:90, length_mm:30, xyz_mm:[0,0,60]}
-]
-```
-
-**Example — snake body segment** (slender capsule = cylinder with hemispherical caps): one cylinder + two spheres at the ends.
-
-When to skip `link_geometry`: standard archetypes (dog/arm/wheeled/humanoid) — the preset templates already cover them. Single-purpose links where a real preset exists (a baseplate IS the right part for a flat chassis; an extrusion IS the right part for a spar). The point of `link_geometry` is body skin, not reimplementing the catalog.
-
-### Bending limbs — break the "all legs are straight chains" default
-
-By default, a chain of `servo → limb → servo → limb → foot` comes out as a STRAIGHT line because each component's body sits on the previous one's joint axis with zero rest pose. Without explicit bend authoring you get a row of straight downward sticks — the "robot dog legs in a line, same bend at every joint" failure mode.
-
-**To create natural creature legs, author rest poses on every joint servo using `attach_rpy`** (or Tier-B `rpy` for full override). Examples:
-
-- **Z-shape stance** (mantis / spider crouch): hip_pitch `attach_rpy=[0, 0.5, 0]` (thigh tilts forward 30°), knee `attach_rpy=[0, -0.9, 0]` (shin tilts back 50°), ankle `attach_rpy=[0, 0.4, 0]` (foot levels out).
-- **Sprawled stance** (crab): hip_yaw `attach_rpy=[0, 0, theta]` for radial direction, hip_pitch `attach_rpy=[0, 1.0, 0]` (thigh splays nearly horizontal), knee `attach_rpy=[0, -1.4, 0]` (shin drops vertical to the ground).
-- **Curled stance** (scorpion tail): each tail-segment servo `attach_rpy=[0, -0.3, 0]` (each joint bends back 17°), accumulating into a curl.
-
-**Vary the bends across legs** — front legs tighter (smaller bend), back legs straighter (less bend), grasping legs almost folded (large knee bend). A real creature has asymmetric leg rest poses.
-
-**Novel-mode no-mirroring guarantee**: in standard mode, Y-axis servos on the back half of the body get axis-sign mirrored — front-right hip pitch +0.5 becomes back-right hip pitch -0.5 (creates dog symmetry). **In novel mode this mirroring is DISABLED.** Each leg's `attach_rpy` is applied verbatim — so you can have all 6 hexapod legs bend the SAME direction (insect-style, synchronized stance) or each leg bend differently (asymmetric posture). The mirroring no longer fights your per-leg authoring.
-
-### Novel-mode component-reuse freedom (relaxed auto-repair)
-
-In standard mode, several "topology validators" silently rewrite your design. **In novel mode, ALL auto-repairs are relaxed**, letting you reuse components in non-canonical ways:
-
-- **Effectors can have children.** Mount a sensor "just past the gripper" as a feeler. Use a gripper as a body shell with appendages mounted on it. Stack a sub-effector on a primary effector for compound claws.
-- **Foot pads can have children.** Use them as decorative bumps with a sensor on top, as anchor points for antennae or tail nubs, as corner caps for a body shell.
-- **Wheels can be decorative.** Mount a wheel as a turret element, a hat, a flourish on a sculpture-robot — without forcing it through a drivetrain. Bare wheels stay bare in novel mode.
-- **Servos as passive structures.** A servo that you set `joint_type="fixed"` on becomes a structural body segment without a rotating output (the visual horn still renders, but it won't move in sim).
-- **Servo couplers between servos stay.** Standard mode silently strips coupler discs and brackets between split servos. Novel mode preserves them — use intermediate adapters for creative articulation patterns.
-- **Port-mismatch is allowed.** Standard mode auto-injects a coupler disc when an actuator's port class doesn't match its parent's. Novel mode lets the mismatch through — sometimes a "wrong" port pairing is the right creative choice.
-
-Use these freedoms. The point of novel mode is creative reuse — pick whatever components fit the creature's anatomy, even if they're typically used elsewhere. A crab's pincers might literally be `effector_parallel_gripper_small`. A scorpion's tail segments might be servos chained for articulation. A starfish's "eyes" might be five tiny `sensor_imu_6dof` modules splayed around a central hub.
-
-These fields and freedoms, combined with picking different `component_id`s, `length_mm`s, and torque tiers across limbs, are what differentiates a real creative novel design from "hexapod-shaped quadruped".
-
----
-
-"""
-
-
-def _maybe_freedom_mode(prompt: str | None) -> tuple[str, bool]:
-    """Return (preamble, is_novel) for the given user prompt.
-
-    Centralizes the prompt-classification → freedom-mode decision so the
-    three SYSTEM_PROMPT.replace call sites stay in sync.
-    """
-    try:
-        from core.ai.prompt_archetype import is_novel
-    except Exception:
-        return "", False
-    if is_novel(prompt):
-        return _NOVEL_ARCHETYPE_PREAMBLE, True
-    return "", False
-
-
-import re as _re_arch
-_ARCH_BLOCK_RE = _re_arch.compile(r"<!--ARCH-->.*?<!--/ARCH-->", _re_arch.DOTALL)
-
-
-def _apply_archetype_mode(system_prompt: str, novel: bool) -> str:
-    """Strip archetype-specific guidance from the prompt body in novel mode.
-
-    Each archetype-specific block (canonical quadruped 12-DOF layout, arm
-    torso-stem rule, vehicle vocabulary, etc.) is wrapped with
-    `<!--ARCH-->...<!--/ARCH-->` markers. In standard mode the markers are
-    removed and the content is preserved verbatim. In novel mode the
-    marked content is removed entirely so the dog/arm/wheeled templates
-    don't pull Claude's design back toward known archetypes.
-
-    The general topology rules (joint axes, sensors on structural,
-    electronics on baseplate, etc.) live OUTSIDE the markers and survive
-    both modes.
-    """
-    if novel:
-        out = _ARCH_BLOCK_RE.sub("", system_prompt)
-        # Collapse triple+ blank lines that the strip can leave behind.
-        out = _re_arch.sub(r"\n{3,}", "\n\n", out)
-        return out
-    return system_prompt.replace("<!--ARCH-->", "").replace("<!--/ARCH-->", "")
-
-
-def _tried_preset_ids(kg_json: dict | None) -> list[str]:
-    """Extract the preset_ids currently attached in the graph.
-
-    Used to surface "you already picked these" on retry — the scorer always
-    includes them in the scoped catalog so Claude's next turn can either
-    keep them or explicitly swap them out. Without this, the scorer might
-    drop a preset Claude just used if retry tokens look unrelated to it.
-    """
-    if not kg_json or not isinstance(kg_json, dict):
-        return []
-    seen: list[str] = []
-    unique: set[str] = set()
-    candidates = []
-    links = kg_json.get("links")
-    if isinstance(links, list):
-        candidates.extend(links)
-    elif isinstance(links, dict):
-        candidates.extend(links.values())
-    comps = kg_json.get("components")
-    if isinstance(comps, list):
-        candidates.extend(comps)
-    for entry in candidates:
-        if not isinstance(entry, dict):
-            continue
-        cid = entry.get("component_id") or entry.get("preset_id")
-        if isinstance(cid, str) and cid not in unique:
-            unique.add(cid)
-            seen.append(cid)
-    return seen
-
 
 def _build_spatial_context(kg_json: dict) -> str:
     """
@@ -464,7 +234,6 @@ def _build_spatial_context(kg_json: dict) -> str:
     except Exception as e:
         return f"(Spatial context unavailable: {e})"
 
-
 def _build_mounting_context() -> str:
     """
     Build a mounting rules context from the preset library's mounting_logic
@@ -494,7 +263,6 @@ def _build_mounting_context() -> str:
     except Exception as e:
         return f"(Mounting context unavailable: {e})"
 
-
 _MOUNTING_CONTEXT = None
 
 def _get_mounting_context() -> str:
@@ -503,21 +271,9 @@ def _get_mounting_context() -> str:
         _MOUNTING_CONTEXT = _build_mounting_context()
     return _MOUNTING_CONTEXT
 
-
 SYSTEM_PROMPT = r"""You are a robot assembly agent for Vector IDE.
 
 You design robots by specifying TOPOLOGY ONLY -- which components connect to which, and how. A backend placement engine handles all 3D positioning, rotation, scaling, and URDF generation. You never write coordinates or URDF XML.
-
-## Archetype Mode (decide BEFORE designing)
-
-Every `design_robot` call MUST include an `archetype_mode` field — `"standard"` or `"novel"`. Decide first, design second.
-
-- **standard**: the robot's primary morphology is a quadruped (dog/Spot/Go1), robotic arm, wheeled vehicle (rover/car/truck), biped, or humanoid. The archetype-specific rules below (12-DOF Go1 leg layout, mandatory arm torso stem, 4-wheel default, "NEVER emit a 2-wheel car", etc.) apply as written.
-- **novel**: the robot is a non-standard creature or topology — crab, spider, snake, octopus, hexapod, starfish, scorpion, sprawled walker, radial-symmetric layout, articulated tail/tentacle chain, or any design that does not fit the five standard archetypes above. In novel mode: the archetype-specific rules below become **reference material, not requirements**. You are NOT required to use 4 legs, paired hip/shoulder, Go1 stance, "torso stem + shoulder", or 4 wheels. Design for the actual creature.
-
-**Pick honestly.** A crab is NOT a "robot dog with extra legs" — it has radial leg symmetry, a wide low body, no head/tail axis, and legs that sweep laterally. If you classify it as "standard" you will produce a wrong design. The user will be unhappy. The default-to-standard bias is the bug we are fixing.
-
-**General rules still apply in novel mode:** joint-axis semantics (rule 3), sensors mount on structural links (rule 11), electronics mount directly on the baseplate (rule 12), no zero-length series revolute joints (rule 15), foot pads are terminal leaves (no children), no extrusion as root, exactly one root, etc. Only the archetype-specific scaffolding (quadruped 12-DOF, arm torso-stem, 4-wheel default) is relaxed.
 
 ## Coordinate System (URDF standard)
 
@@ -613,10 +369,33 @@ Examples (note which side each named connector belongs to):
 - Camera mounted on that L-bracket's inside wall (bracket is now the PARENT, so `wall_inner` moves to `attach_connector`; camera's `mount_back` is the child-side name):
   `{"link_name": "sensor_depth_camera_small_1", "component_id": "sensor_depth_camera_small", "attach_to": "structural_bracket_l_1", "attach_connector": "wall_inner", "mate_connector": "mount_back", "mate_type": "fastened", "joint_type": "fixed", "joint_axis": "z"}`
 
+## Creative Authoring (always available)
+
+### Raw placement: `xyz` / `rpy`
+- **`xyz: [x, y, z]`** — RAW joint-origin position in METERS, parent-relative. Bypasses the face-placement / multi-child distribution / mate-resolver pipeline; becomes the URDF joint origin verbatim. Use when the auto-derived placement can't express the design: exact creature poses, asymmetric anatomy, sculpture-style robots.
+- **`rpy: [roll, pitch, yaw]`** — RAW joint-origin rotation in RADIANS, parent-relative. Bypasses auto-orient / splay / servo-flip. Pair with `xyz` for full control. This is DIFFERENT from `attach_rpy`: `attach_rpy` is the joint REST POSE (rotation about the joint axis at zero state); `rpy` is the joint frame's mounting orientation in the parent.
+- Default face placement is correct for most components — reach for raw authoring only when face/connector mounting can't express the design.
+
+### Custom body shells: `link_geometry`
+The catalog covers FUNCTIONAL hardware (servos, brackets, baseplates, limb links, sensors, batteries, wheels, grippers, extrusions). It does NOT cover free-form body silhouettes. For body shells, set `link_geometry` on a component: a union of authored primitives that replaces that link's rendered visuals.
+- Box: `{shape:'box', size_mm:[w,d,h], xyz_mm?, rpy?, color?}`
+- Cylinder: `{shape:'cylinder', radius_mm, length_mm, xyz_mm?, rpy?, color?}` (axis local +Z)
+- Sphere: `{shape:'sphere', radius_mm, xyz_mm?, color?}`
+`xyz_mm` is the primitive's centre offset from the link origin in millimetres. Division of labor: catalog presets = mechanical FUNCTION; `link_geometry` = body SILHOUETTE (torso, hull, carapace, fairing, segment). Don't draw a humanoid torso as stacked extrusions — use one link with `link_geometry`.
+
+### Component variety
+Real creatures vary their limbs — do NOT repeat one identical chain N times. Vary servo torque tier by load (high_torque at root-adjacent joints, standard/micro distally), vary structural parts by role, vary limb lengths, and mix terminals (grippers as pincers, foot pads for walking legs, sensors as feelers/antennae).
+
+### Bending limbs: `attach_rpy` rest poses
+A chain of servo -> limb -> servo -> limb -> foot comes out STRAIGHT unless you author rest poses on the joint servos via `attach_rpy`. Examples: Z-stance crouch hip `[0, 0.5, 0]` + knee `[0, -0.9, 0]`; sprawled crab hip_pitch `[0, 1.0, 0]` + knee `[0, -1.4, 0]`; scorpion tail segments `[0, -0.3, 0]` each, accumulating into a curl.
+**Rest poses apply VERBATIM, per component — no automatic left/right mirroring.** Author each side explicitly: a symmetric crouch needs the appropriate sign on each side's joints. (The engine still mirrors the physical horn-shaft direction for ±Y mounted servo pairs so hardware faces outward; only your authored rest angles are untouched.)
+
+### Layout
+Multiple children on the same face distribute RADIALLY around the face center (4 children land on the corners), and each bottom-face child's outward splay follows its radial direction. Limbs may also mount on side faces (`front`/`back`/`left`/`right`) for horizontally-extending creatures.
+
 ## Topology Rules
 
-1. Root is ALWAYS a baseplate.<!--ARCH--> Pick `structural_baseplate` (200×150×5mm) for small rovers and tabletop arms; pick `structural_baseplate_large` (350×250×8mm) for quadrupeds, humanoid torsos, or any robot whose hip/shoulder span or payload mass outgrows the small plate. Never use an extrusion as root. **Do NOT downgrade a quadruped/humanoid from `structural_baseplate_large` to `structural_baseplate` on a redesign retry — the small plate is too narrow for the hip span. If a validator says "body is too wide, narrow to ~140mm", IGNORE IT: no preset in the palette is 140mm wide, and the hip/shoulder spacing needs the 250mm width. The large plate is the correct answer.**<!--/ARCH-->
-   **NOVEL MODE EXCEPTION**: in novel mode you may use ANY structural component as root, not just a baseplate. A snake's root might be a single `structural_extrusion_2020` (its head/spine segment). A starfish's root might be a `structural_bracket_l` (a central hub). A dragon's root might be a stack of extrusions forming a body spine. The "always baseplate" rule exists because dog/arm/wheeled designs need a flat chassis; novel creatures often don't. Rule of thumb in novel mode: pick the component that best matches the creature's anatomical center.
+1. Root is the component that best matches the robot's anatomical/structural center. Flat-chassis robots (rovers, dogs, tabletop arms) use a baseplate (`structural_baseplate` 200x150x5mm, or `structural_baseplate_large` 350x250x8mm for wide hip spans / heavy payloads). Creatures with other anatomies may root differently: a snake on a `structural_extrusion_2020` spine segment, a starfish on a `structural_bracket_l` hub, a sculpted body on a component carrying `link_geometry`. Exactly one component has `attach_to: null`.
 2. Drivetrain motors (drivetrain_hub_motor_80, drivetrain_geared_dc_with_coupler) use joint_type="continuous" — unbounded spin, torque-controlled in sim. Servo actuators (actuator_servo_*, actuator_bldc_*, actuator_stepper_*) use joint_type="revolute" — bounded angle, PD-controlled. Everything else uses "fixed".
 3. joint_axis by motion type — the axis is the rotation axis; the child sweeps in the plane PERPENDICULAR to it:
    - "y" — leg pitches forward/back, arm pitches up/down, knee bends, elbow bends, head nods
@@ -629,131 +408,21 @@ Examples (note which side each named connector belongs to):
 6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
 7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
 8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". DO NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire — emit only `attach_face="coaxial"` and let the engine handle the rest. (Setting `attach_connector="bottom"` in particular drops the wheel inboard, under the chassis, on every corner.) The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
-9. length_mm overrides parametric structural links (default 100mm). Pick a length appropriate to the segment's role and the parts it connects.<!--ARCH--> Standard archetypes:
-   - Quadruped/animal legs (thighs/shins): `structural_limb_link_slim` 80–120mm. `structural_extrusion_2020/4040` are FORBIDDEN as leg bones — they look clunky on sleek animals.
-   - Humanoid limbs (sleek bipedal): `structural_limb_link_slim` 150–250mm. Same reason as above.
-   - **Arm upper-arm/forearm/torso-stem: `structural_extrusion_2020` (20×20mm cross-section), MANDATORY.** Lengths: stem 60–100mm, upper arm 180–220mm, forearm 130–170mm. `structural_limb_link_slim` (6×6mm) is FORBIDDEN for arm bones — it looks like a twig under the chunky high-torque shoulder/elbow servos. Examples:
-     - ✅ `shoulder_servo → structural_extrusion_2020 (length_mm=200) → elbow_servo`
-     - ❌ `shoulder_servo → structural_limb_link_slim → elbow_servo` (looks fragile, banned for arms)
-     - ❌ `base_servo → shoulder_servo` directly (no torso stem — the arm reads as stubby; insert `structural_extrusion_2020` between them)
-   - Frame/chassis rails (non-articulated structural members): `structural_extrusion_2020/4040`.
-   - Short connectors (50–80mm): either, depending on aesthetic.<!--/ARCH-->
+9. length_mm overrides parametric structural links (default 100mm). Pick a length appropriate to the segment's role and the parts it connects.
 10. **Rotary servos drive exactly ONE child.** The backend splits each rotary servo into a fixed body (bolted to its parent) and a rotating horn (the output). For `joint_axis="x"` or `"y"`, it also inserts effective side-yoke plus slim horn-link adapter hardware so the physical horn shaft is on the red/blue hinge axis. Children you attach to a servo link are automatically routed to the horn/adapter — you do not need to name `_body` or `_horn` links yourself; just use the servo's `link_name` as `attach_to`. Attach exactly ONE child per servo; never fan out multiple children from the same servo.
 11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front face), not to `wrist_servo`. Place the camera near the WRIST END of the forearm (close to the gripper), not at the elbow end — the user wants the camera to see what the gripper grabs.
-<!--ARCH-->   **Robot arms specifically: do NOT include any sensor (depth_camera, lidar, IMU on the arm tip, etc.) by default.** A bare arm has zero sensors. ONLY add a sensor when the user EXPLICITLY says "arm with a camera", "vision-guided arm", "arm with a depth sensor", etc. ❌ A user request like "build a robot arm" or "robotic arm with a gripper" → NO camera, NO lidar.<!--/ARCH-->
-12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face by default — NOT routed through an intermediate structural_extrusion.** This rule prevents "ironing board on stilts" and "torso tower" anti-patterns on quadrupeds, rovers, and tabletop arms.<!--ARCH-->These shapes are FORBIDDEN for quadrupeds / wheeled vehicles / tabletop arms:
-    - 4 vertical extrusions (one per electronic) → "ironing board on stilts"
-    - 1 central vertical extrusion hosting multiple electronics → "torso tower" (validator will flag it AS WELL as the 4-standoff case)
-    - An extrusion named `torso_extrusion_*` or `body_extrusion_*` used to "elevate" or "enclose" electronics
-    The baseplate's top face distributes multiple children across its area automatically — four electronics on the top face become four compact pads at the corners, not any form of tower. If a validator tells you the body "needs to be a volumetric torso" or "boxier chassis", IGNORE IT — no preset in this palette implements a 3D body block, so pretending a vertical extrusion is one just produces a worse design.<!--/ARCH-->
+
+12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face by default — NOT routed through an intermediate structural_extrusion.** This rule prevents "ironing board on stilts" and "torso tower" anti-patterns on quadrupeds, rovers, and tabletop arms.
     **EXCEPTION — humanoids and bipeds genuinely need a vertical torso.** A humanoid's baseplate IS the pelvis; the torso, shoulders, head, and electronics chain UPWARD from it. Use ONE central `structural_extrusion_4040` (200–300mm vertical, attach_face=top) as the torso/spine, then attach electronics + shoulder cross-bar + head to it. The "torso tower" prohibition does NOT apply to humanoids — for those, a torso extrusion is the correct structure.
 13. **Cameras and lidars NEVER mount directly to a baseplate face.** Always interpose a `structural_bracket_l`: the bracket mates to the baseplate via `mate_connector: "wall_outer"` on the chosen face (front/back/left/right), then the sensor mates to the bracket via `attach_connector: "wall_inner"` (or `"plate_top"` for an upward-facing sensor) + `mate_connector: "mount_back"` + `mate_type: "fastened"`. See the L-bracket + camera example in the Mate Connectors section above for the exact fields. This rule is canonical — it holds across redesign cycles. If a validator says the camera is "floating", "not visibly mounted", or "offset from the baseplate edge", the fix is to ADD a bracket or reposition the existing bracket's mount face — NEVER move the sensor onto `attach_face: "top"` of the baseplate to "make it sit flat". A top-face baseplate mount with no bracket is the same bug in a different orientation. **For humanoids: mount the head camera atop the torso extrusion (not on the baseplate). Topology: `torso_extrusion → structural_bracket_l (top, mate_connector=plate_top) → camera`. The bracket sits on top of the torso; the camera mounts on the bracket's wall face — putting the camera at full robot height instead of pelvis height.**
-14. **Match servo torque class to kinematic depth.** The further a joint is from the root, the less load it carries — scale down accordingly. Vary across limbs in the SAME design (different limbs may have different load profiles).<!--ARCH--> Standard archetypes (quadruped/arm/humanoid):
-    - Hip/shoulder (root-adjacent, carries full limb weight): `actuator_servo_high_torque`
-    - Knee/elbow (carries segment + distal chain): `actuator_servo_high_torque` or `actuator_servo_standard` depending on payload
-    - Wrist/ankle/neck (effector-only load): `actuator_servo_standard`
-    - Finger/fine manipulator: `actuator_servo_standard` or micro variant
-    ❌ `actuator_servo_standard` at the hip/shoulder of a walking robot — it will stall under leg weight.
-    ❌ `actuator_servo_high_torque` at a wrist for a lightweight gripper — unnecessary mass, no benefit.<!--/ARCH-->
-15. **All series revolute joints (non-compound) require a structural limb link between them.** The limb link is the bone — its `length_mm` is the segment length. Skipping the link produces zero-length limbs that collapse in sim.<!--ARCH--> Standard archetypes choose link type per rule 9: `structural_limb_link_slim` for legs (dog/humanoid), `structural_extrusion_2020` for arm upper/forearm.
-    - ✅ `hip_pitch_servo → thigh_link_slim (100mm, fixed) → knee_servo → shin_link_slim (120mm, fixed) → foot`
-    - ❌ `hip_pitch_servo → knee_servo` — zero-length thigh, robot collapses
-    - ❌ `elbow_servo → wrist_servo` — zero-length forearm, arm folds flat<!--/ARCH-->
+14. **Match servo torque class to kinematic depth.** The further a joint is from the root, the less load it carries — scale down accordingly. Vary across limbs in the SAME design (different limbs may have different load profiles).
+15. **All series revolute joints (non-compound) require a structural limb link between them.** The limb link is the bone — its `length_mm` is the segment length. Skipping the link produces zero-length limbs that collapse in sim.
     The ONE exception: the compound 2-DOF hip/shoulder (two perpendicular-axis servos stacked directly). The engine auto-inserts a short bracket between them; you do not emit it.
 16. `structural_limb_link_slim` mounts to servo horns on its broad flat face. Do NOT add `attach_rpy` or custom `orientation` to slim limb links to make them look flush; that rotates the bone itself and can make it attach edge-on. Emit slim links as fixed children on the correct face, with only `length_mm`. Put crouch/rest angles on the driving servo's `attach_rpy`, not on the passive limb link.
 
 ## Common Patterns (topology only -- no coordinates needed)
 
-<!--ARCH-->Arms: baseplate -> base_servo(top, revolute z) -> torso_stem(top, fixed, structural_extrusion_2020, 80mm) -> shoulder_servo(top, revolute y) -> upper_arm_extrusion(top, fixed, structural_extrusion_2020, 200mm) -> elbow_servo(top, revolute y) -> forearm_extrusion(top, fixed, structural_extrusion_2020, 150mm) -> wrist_servo(top, revolute y) -> gripper(top, fixed)
-Arm-specific layout rules (these apply ONLY to robots whose primary structure is an arm; do NOT apply to legs, wheels, or quadrupeds):
-- Center the base_servo on the baseplate. Place electronics (LiPo, MCU, etc.) AROUND it, not in the base servo's spot. The base joint must sit at the baseplate's geometric center so the arm rotates around the chassis center, not a corner.
-- Use the small `structural_baseplate` (200×150) for tabletop arms; use `structural_baseplate_large` only when the arm is industrial-scale.
-- **REQUIRED**: insert a `structural_extrusion_2020` torso stem (60–100 mm, attach_face=top) between the base_servo and the shoulder_servo. Without this stem, the shoulder hangs directly off the base servo's horn through a tiny compound bracket and the arm reads as "stubby". The stem makes the base→shoulder transition visible and gives the shoulder real height above the baseplate. Topology: `base_servo → torso_stem (fixed) → shoulder_servo`. NOT `base_servo → shoulder_servo` directly.
-- Use `structural_extrusion_2020` (20×20mm) for the torso stem, upper arm, and forearm — NOT `structural_limb_link_slim`. Slim links (6×6mm cross-section) are appropriate for dog/quadruped legs but read as flimsy sticks under the chunky high-torque servos at the shoulder/elbow. Lengths: stem 60–100mm, upper arm 180–220mm, forearm 130–170mm. (For arms only — keep using `structural_limb_link_slim` for legs.)
-- Do NOT add a wrist/forearm camera (depth_camera, lidar, etc.) to a robot arm by default. The arm baseline is base_servo → torso_stem → shoulder → upper_arm → elbow → forearm → wrist_servo → gripper. ONLY include a sensor if the user explicitly asks for one ("arm with a camera", "vision-guided arm", etc.). If a sensor IS requested, attach it via `structural_bracket_l` to `forearm_extrusion` near the WRIST end (close to the gripper).
-- Match servo torque to depth (rule 14): base/shoulder/elbow = high_torque, wrist = standard.
-Note: arm extrusions go UPWARD from the base (vertical at rest). Joints control the angle. Do NOT use orientation="horizontal" for arm links.<!--/ARCH-->
-
-<!--ARCH-->Wheeled base (differential drive / rover): baseplate -> 4x drivetrain_hub_motor_80(bottom, continuous y) -> 4x mobility_wheel_driven(coaxial, fixed). The drivetrain mounts on the baseplate bottom face; the tire attaches coaxially. The placement engine handles the axial offset (so the tire sits beside the motor, not inside it) and auto-flips drivetrains on one side of the baseplate so wheels land outboard on both sides — do not try to encode per-corner positions or rotations. Do NOT attach tires directly to the baseplate. Tires ALWAYS use attach_face="coaxial" when their parent is a drivetrain.
-
-Caster: baseplate -> drivetrain_caster_swivel(bottom, fixed) -> mobility_wheel_driven(coaxial, fixed). Use for passive support points.<!--/ARCH-->
-
 Rubber foot pad: `shin_link → mobility_rubber_foot_pad(bottom, fixed)`. ONE node — no parent drivetrain, no children. NEVER set attach_rpy on a foot pad; the assembly engine auto-levels it flat to the world floor. Do NOT use attach_face="coaxial".
-
-<!--ARCH-->Steered car (Ackermann): front pair uses baseplate -> drivetrain_steering_knuckle(bottom, revolute z) -> drivetrain_hub_motor_80(top, continuous y) -> mobility_wheel_driven(coaxial, fixed). Rear pair uses plain hub motors as above.
-
-Mecanum base: baseplate -> 4x drivetrain_hub_motor_80(bottom, continuous y) -> 4x mobility_mecanum_wheel(coaxial, fixed), alternating handedness (FL/RR left-handed, FR/RL right-handed).
-
-Vehicle vocabulary (all map to wheeled base above — DEFAULT 4 wheels):
-- "car", "truck", "vehicle", "rover", "buggy", "cart" → 4 drivetrain_hub_motor_80 + 4 mobility_wheel_driven. NEVER emit a 2-wheel car; real cars have 4 wheels at corners. Only drop below 4 if the user explicitly says "two-wheeled" or "bike/motorcycle/unicycle".
-- "6-wheeled rover" / "hexapod rover" / "Mars rover" → 6 wheels (backend distributes 2 rows × 3).
-- "tank" / "tracked" → still use 4 hub motors + wheels (closest palette match); no track preset exists.
-- Always add at least 1 sensor (camera on front face) and electronics (battery + SBC on top) for any vehicle request — a bare chassis with wheels is not a recognizable car.<!--/ARCH-->
-
-<!--ARCH-->Quadruped (canonical 12-DOF, Unitree Go1 / Boston Dynamics Spot style).
-
-Anatomical joint order (IMPORTANT — joints drive the segment BELOW them, not above):
-  body → hip_yaw → hip_pitch → THIGH → knee → SHIN → foot
-                    ↑ compound hip ↑         ↑ knee joint drives shin, not thigh
-
-  structural_baseplate_large  (use the large plate, 350×250×8mm — small plate is too narrow for a Go1-class hip span)
-    -> 4x hip_yaw_servo (bottom, revolute z)                             — horn faces downward; swings the whole leg in the XY plane (compound hip axis 1)
-      -> 4x hip_pitch_servo (bottom, revolute y, attach_rpy=[0, 0.52, 0]) — pitches THIGH forward ≈+30° for crouch (compound hip axis 2). PAIRED WITH KNEE attach_rpy — see crouch rule below.
-        -> 4x thigh_link_slim (bottom, fixed, 100mm, vertical)            — sleek structural thigh bone (`structural_limb_link_slim`)
-          -> 4x knee_servo (bottom, revolute y, attach_rpy=[0, 1.05, 0]) — pitches SHIN into the crouch using assembler-side mirrored horn signs. PAIRED WITH HIP_PITCH attach_rpy — see crouch rule below.
-            -> 4x shin_link_slim (bottom, fixed, 120mm, vertical)         — sleek structural shin bone (`structural_limb_link_slim`)
-              -> 4x mobility_rubber_foot_pad (bottom, fixed)               — ONE node, no attach_rpy, no children; auto-leveled by engine
-
-- Total: 12 DOF (3 per leg × 4 legs). Each pitch servo drives the limb segment DIRECTLY BELOW it: hip_pitch rotates the thigh (and everything below), knee rotates the shin (and everything below). If you put the thigh between hip_yaw and hip_pitch, the hip_pitch rpy will bend the SHIN instead of the thigh — producing a broken scissor pose.
-- The hip (yaw + pitch) is a compound 2-DOF joint at the body — the two servos stack directly. The port system auto-inserts a short bracket between them; you do not need to emit it. This is the ONE exception to "never stack servos directly."
-- Structural limb links MUST appear between hip_pitch→knee (the thigh) and knee→foot (the shin). Use `structural_limb_link_slim` for dog legs; reserve T-slot extrusions for chassis/frame rails.
-- For a rest "Z-shape crouch" / dog-stand stance, emit attach_rpy on hip_pitch (≈+0.52 rad / +30°) AND knee (≈+1.05 rad / 60° magnitude) **as a pair — both or neither, never one without the other.** Do not hand-mirror knee signs per side; the assembler converts knee bend magnitude into the correct local horn sign for mirrored left/right hardware. This is the #1 crouch-emission bug: emitting knee.attach_rpy while leaving hip_pitch.attach_rpy unset (or [0,0,0]) leaves thighs hanging vertical while shins rotate off them, producing a broken horizontal-splay pose where shins stick out sideways from the body instead of folding under it. If you set knee attach_rpy, you MUST also set hip_pitch attach_rpy with the matching crouch value. If you're not sure whether to emit them, emit BOTH — a full crouch is always better than a half-crouch.
-- For a straight stance (neutral), omit attach_rpy from BOTH hip_pitch AND knee servos — never just one. If you find yourself setting attach_rpy on only one of the two, stop: that always produces a broken pose. The two values travel together.
-- A simpler 8-DOF variant (no planar hip sweep) is acceptable if the user asks for "simple" or "cheap": baseplate -> 4x hip_pitch_servo -> thigh_link_slim -> knee_servo -> shin_link_slim -> mobility_rubber_foot_pad(bottom, fixed). Do not substitute `structural_extrusion_2020` for these dog leg links.
-
-Head/camera for robot dogs: attach a fixed depth camera directly to the baseplate front face. Do NOT add a neck servo, head servo, head bracket, or head limb unless the user explicitly asks for an articulated head/neck.
-
-Do NOT add a tail to quadrupeds unless the user explicitly asks for one. A default robot dog should spend parts/mass on legs, body electronics, and an optional head/camera, not a cosmetic tail.<!--/ARCH-->
-
-<!--ARCH-->Humanoid (canonical bipedal — pelvis + torso + arms + head + 2 legs).
-
-Anatomical structure (CRITICAL — humanoids extend UPWARD from the pelvis-baseplate, NOT laterally on it):
-  baseplate (PELVIS, structural_baseplate or _large)
-    -> 1x torso_extrusion (top, fixed, structural_extrusion_4040, length_mm=200–300, vertical)
-       — the spine; hosts electronics on its top/sides AND mounts the shoulder cross-bar AND the head
-       -> 4x electronics (battery, PDU, SBC, IMU) attached DIRECTLY to torso_extrusion's faces
-          — front/back/left/right face mounts work; the auto-distribute spreads them around the torso
-       -> 1x shoulder_cross (top, fixed, structural_extrusion_2020, length_mm=200–280, **horizontal**)
-          — the cross-bar that splays the shoulders left/right at chest height
-          -> 2x shoulder_servo (left + right side, revolute y) — pitches the upper arm
-             -> 2x upper_arm_extrusion (top, fixed, structural_extrusion_2020, length_mm=180–220)
-                -> 2x elbow_servo (top, revolute y)
-                   -> 2x forearm_extrusion (top, fixed, structural_extrusion_2020, length_mm=130–170)
-                      -> 2x wrist_servo (top, revolute y)
-                         -> 2x effector_parallel_gripper_small (top, fixed) — hands
-       -> head_bracket (top, structural_bracket_l, mate_connector="plate_top") — sits ON TOP of torso
-          -> depth_camera (front via wall_inner, fastened) — head at full robot height, NOT at pelvis level
-    -> 2x hip_yaw_servo (bottom, revolute z) — swings each leg forward/back in the sagittal plane
-       -> 2x hip_pitch_servo (compound — auto-bracket inserted by engine, revolute y)
-          -> 2x thigh_extrusion (bottom, fixed, structural_extrusion_2020, length_mm=180–250)
-             -> 2x knee_servo (bottom, revolute y)
-                -> 2x shin_extrusion (bottom, fixed, structural_extrusion_2020, length_mm=180–250)
-                   -> 2x ankle_servo (bottom, revolute y)
-                      -> 2x mobility_rubber_foot_pad (bottom, fixed)
-
-Total: 12 DOF (6 per arm × 0... wait: shoulder + elbow + wrist = 3 DOF/arm × 2 arms = 6 arm DOF; hip_yaw + hip_pitch + knee + ankle = 4 DOF/leg × 2 legs = 8 leg DOF; total 14 DOF + optional neck servo).
-
-Critical humanoid rules:
-- The baseplate is the PELVIS, not the chassis. Treat it as a horizontal pad at hip-height.
-- The torso_extrusion is REQUIRED — without it, arms+head+electronics flatten onto the pelvis at hip-height and the design reads as a quadruped's chassis with arms instead of front legs (the #1 humanoid failure mode).
-- Use `structural_extrusion_4040` (40×40mm cross-section) for the torso, not `structural_extrusion_2020`. The thicker section accommodates electronics on its sides and gives the robot visual presence.
-- Use `structural_extrusion_2020` for the SHOULDER CROSS-BAR (horizontal) — the cross-bar makes the shoulders splay laterally, so arms drop to the sides instead of fanning out from a single torso point.
-- Use `structural_extrusion_2020` for arm bones (NOT slim_link — humanoid arms aren't dog-leg sleek).
-- Use `structural_extrusion_2020` for THIGHS AND SHINS (NOT slim_link — humanoids have proportionally thick legs vs quadrupeds).
-- Mount the head camera ATOP the torso via `structural_bracket_l` with `mate_connector="plate_top"` so the bracket sits flat on the torso's top face and the camera mounts on the bracket's wall.
-- 2 legs, 2 arms — exactly 2 of each. No more, no less. Don't mirror quadruped 4-leg patterns.
-
-The "tower forbidden" rules in section 12/Forbidden Patterns DO NOT apply to humanoids — those rules are quadruped/wheeled-specific. Humanoids genuinely need a torso.<!--/ARCH-->
 
 Sensor mount: any_structural_link -> sensor(top/front/left/right, fixed). Remember — sensors attach to structural links (extrusions, baseplates, brackets), never to servo shafts or effectors.
 Angled sensor: any_link -> depth_camera(front, fixed, elevation_angle=-20) — tilts 20° downward to see the floor.
@@ -840,35 +509,24 @@ DESIGN_ROBOT_TOOL = {
                             "enum": ["fastened", "planar", "concentric"],
                             "description": "Mate semantics. 'fastened' = rigid face-to-face weld (default when connectors are named). 'concentric' = shaft-in-hole (servo shaft_out ↔ coupler shaft_hole); antiparallel axes, axial slide free. 'planar' = face-flush with in-plane offset. Omit unless emitting a concentric shaft mate.",
                         },
-                        "placement_offset_mm": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "minItems": 3,
-                            "maxItems": 3,
-                            "description": "**NOVEL MODE ONLY** — small position nudge in millimeters applied AFTER face placement. Use when you need asymmetric layouts: front pincer arms longer than back walking legs, electronics positioned off-center, varied leg spacing on a non-radial creature. Format: [dx, dy, dz] in millimeters. Clamped to ±50mm per axis (anything larger should be expressed via component sizing, not offsets). Stripped silently in standard mode (set archetype_mode='novel' to use). Default placement (face-derived xyz) is correct ~95% of the time — only emit this field when you need to break symmetry.",
-                        },
-                        "splay_angle_deg": {
-                            "type": "number",
-                            "description": "**NOVEL MODE ONLY** — override the auto-computed splay angle (in degrees) for this child on a bottom-face attach. Default splay is computed per leg count (4 legs=30°, 6 legs=35°, etc.). Override when limbs need varied posture: front legs sprawled flatter (60°) for a crab while back legs upright (15°), or all legs splayed wider (45°) for a stable hexapod stance. Range -75° to +75°. Stripped in standard mode.",
-                        },
                         "xyz": {
                             "type": "array",
                             "items": {"type": "number"},
                             "minItems": 3,
                             "maxItems": 3,
-                            "description": "**NOVEL MODE ONLY — RAW PLACEMENT** — full [x, y, z] position of this component's joint origin relative to its parent, in METERS. When set, BYPASSES the deterministic face-placement / multi-child distribution / mate-connector resolver entirely — this xyz becomes the URDF joint origin verbatim. Use this when the auto-derived placement can't express your design (asymmetric anatomy, exact creature poses, sculpture-style robots). Pair with `rpy` for rotation. Combine with `placement_offset_mm` for an additional bounded nudge if needed. Stripped in standard mode (use `placement_offset_mm` for small adjustments there).",
+                            "description": "RAW PLACEMENT — full [x, y, z] position of this component's joint origin relative to its parent, in METERS. When set, BYPASSES the deterministic face-placement / multi-child distribution / mate-connector resolver entirely — this xyz becomes the URDF joint origin verbatim. Use when the auto-derived placement can't express your design (asymmetric anatomy, exact creature poses, sculpture-style robots). Pair with `rpy` for rotation.",
                         },
                         "rpy": {
                             "type": "array",
                             "items": {"type": "number"},
                             "minItems": 3,
                             "maxItems": 3,
-                            "description": "**NOVEL MODE ONLY — RAW ROTATION** — full [roll, pitch, yaw] of this component's joint origin in RADIANS. When set, BYPASSES the auto-computed face-orientation / splay / servo-flip logic entirely — this rpy becomes the URDF joint origin's rpy verbatim. Use with `xyz` to fully author placement. Note: this is DIFFERENT from `attach_rpy` — `attach_rpy` is the joint's REST POSE (how the joint is rotated at zero state). `rpy` is the joint origin's mounting orientation. Most novel designs only need `attach_rpy`; reach for `rpy` only when the auto-orient is fighting your design.",
+                            "description": "RAW ROTATION — full [roll, pitch, yaw] of this component's joint origin in RADIANS. When set, BYPASSES the auto-computed face-orientation / splay / servo-flip logic entirely — this rpy becomes the URDF joint origin's rpy verbatim. Use with `xyz` to fully author placement. Note: this is DIFFERENT from `attach_rpy` — `attach_rpy` is the joint's REST POSE (how the joint is rotated at zero state). `rpy` is the joint origin's mounting orientation. Most designs only need `attach_rpy`; reach for `rpy` only when the auto-orient is fighting your design.",
                         },
                         "link_geometry": {
                             "type": "array",
                             "description": (
-                                "**NOVEL MODE ONLY — CUSTOM BODY SHELL** — list of primitive shapes (box / cylinder / sphere) "
+                                "CUSTOM BODY SHELL — list of primitive shapes (box / cylinder / sphere) "
                                 "that compose this link's rendered appearance. When set, REPLACES the preset's mesh/rendered visuals with a "
                                 "free-form union of authored primitives. Bounds, collision envelope, mate-face connectors (top/bottom/front/back/left/right), "
                                 "and inertia all auto-derive from the AABB of these primitives, so the resulting link behaves like any other "
@@ -896,8 +554,7 @@ DESIGN_ROBOT_TOOL = {
                                 "  [ {shape:'box', size_mm:[80,80,30]}, \n"
                                 "    {shape:'box', size_mm:[20,200,15], xyz_mm:[0,100,0], rpy:[0,0,0.785]}, \n"
                                 "    {shape:'box', size_mm:[20,200,15], xyz_mm:[0,100,0], rpy:[0,0,-0.785]} ] \n\n"
-                                "Stripped in standard mode — quadruped/arm/wheeled/humanoid templates rely on preset-shaped components. "
-                                "Use this in NOVEL MODE for anything where the silhouette matters more than off-the-shelf hardware."
+                                "Use this for anything where the silhouette matters more than off-the-shelf hardware."
                             ),
                             "items": {
                                 "type": "object",
@@ -912,20 +569,8 @@ DESIGN_ROBOT_TOOL = {
                 "type": "string",
                 "description": "Brief summary: N components, M DOF",
             },
-            "archetype_mode": {
-                "type": "string",
-                "enum": ["standard", "novel"],
-                "description": (
-                    "Self-classification of the design's primary structure. "
-                    "'standard' = the robot is a quadruped, robotic arm, wheeled vehicle, biped, or humanoid — apply the archetype-specific rules in the system prompt. "
-                    "'novel' = the robot is a non-standard creature/topology (crab, spider, snake, octopus, hexapod, sprawled walker, radial-symmetric design, articulated tail-like chain, anything where the dog/arm/wheeled rules don't fit). "
-                    "When 'novel': the archetype-specific rules in the system prompt (12-DOF Go1 layout, mandatory torso stem, 4-wheel default, 'NEVER emit a 2-wheel car', etc.) become reference material, not requirements. The general topology rules (joint axes, sensors-on-structural, electronics-on-baseplate, no-zero-length-limbs, terminal foot pads) STILL APPLY. "
-                    "Pick honestly — defaulting to 'standard' for a non-standard creature will produce 'robot dog with extra legs' outputs. Default to 'standard' only when the design genuinely matches one of the listed archetypes. "
-                    "If unsure: a robot whose primary morphology matches NONE of {dog/quadruped, arm, wheeled vehicle, biped, humanoid} is novel."
-                ),
-            },
         },
-        "required": ["explanation", "base_link", "components", "changes_summary", "archetype_mode"],
+        "required": ["explanation", "base_link", "components", "changes_summary"],
     },
 }
 
@@ -1007,20 +652,9 @@ MODIFY_TOPOLOGY_TOOL = {
                             "enum": ["fastened", "planar", "concentric"],
                             "description": "Mate type: 'fastened' | 'planar' | 'concentric'. Same semantics as design_robot.",
                         },
-                        "placement_offset_mm": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "minItems": 3,
-                            "maxItems": 3,
-                            "description": "**NOVEL MODE ONLY** — same as design_robot. Position nudge in mm [dx, dy, dz] applied after face placement. Clamped to ±50mm/axis.",
-                        },
-                        "splay_angle_deg": {
-                            "type": "number",
-                            "description": "**NOVEL MODE ONLY** — same as design_robot. Override the auto-computed splay angle for this child on a bottom-face attach. Range -75° to +75°.",
-                        },
                         "link_geometry": {
                             "type": "array",
-                            "description": "**NOVEL MODE ONLY — CUSTOM BODY SHELL** — same as design_robot.link_geometry. Replaces the preset's rendered visuals with a free-form union of box/cylinder/sphere primitives. Each entry: {shape: 'box'|'cylinder'|'sphere', size_mm | radius_mm + length_mm | radius_mm, xyz_mm?, rpy?, color?}. Use for body shells (torso, hull, fairing, segment) that no preset can express.",
+                            "description": "CUSTOM BODY SHELL — same as design_robot.link_geometry. Replaces the preset's rendered visuals with a free-form union of box/cylinder/sphere primitives. Each entry: {shape: 'box'|'cylinder'|'sphere', size_mm | radius_mm + length_mm | radius_mm, xyz_mm?, rpy?, color?}. Use for body shells (torso, hull, fairing, segment) that no preset can express.",
                             "items": {"type": "object", "additionalProperties": True},
                         },
                     },
@@ -1031,22 +665,12 @@ MODIFY_TOPOLOGY_TOOL = {
                 "type": "string",
                 "description": "Brief summary: what was added/removed/changed",
             },
-            "archetype_mode": {
-                "type": "string",
-                "enum": ["standard", "novel"],
-                "description": (
-                    "REQUIRED. Re-declare the design's archetype mode every turn — modify_topology must explicitly state whether the design (after these edits) is 'standard' or 'novel'. "
-                    "If the existing assembly is a novel-mode design (crab, hexapod, snake, etc.), set 'novel' here too — otherwise the iterative edit silently reverts to standard mode and the next render reapplies the dog/arm/wheeled template, undoing the user's novel design. "
-                    "Same semantics as design_robot.archetype_mode: 'novel' relaxes archetype-template enforcement and unlocks placement_offset_mm + splay_angle_deg authoring."
-                ),
-            },
         },
-        "required": ["explanation", "operations", "changes_summary", "archetype_mode"],
+        "required": ["explanation", "operations", "changes_summary"],
     },
 }
 
 ROBOT_TOOLS = [DESIGN_ROBOT_TOOL, MODIFY_TOPOLOGY_TOOL]
-
 
 # ── Workstream #2: Tool-Call Edit Surface ───────────────────────────────────
 #
@@ -1236,14 +860,12 @@ Rules:
 - Use link/joint names from ===ROBOT=== when available.
 - Match the indentation style of the surrounding code."""
 
-
 # Phase 3b.7: _assemble_from_graph(assembly) was deleted (~926 LOC). It had
 # zero callers — the actual hot path runs through _extract_tool_result →
 # normalize_and_validate(), and the frontend is the single source of truth
 # for graph→URDF compilation. Phase 3b.5 will reintroduce a Python entry
 # point that calls the shared placementCompiler over a Node subprocess
 # rather than re-implementing the geometry rules in Python.
-
 
 # ───── Tool-Use Assembly Agent ─────────────────────────────────────────────────
 
@@ -1326,7 +948,6 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 - If something looks wrong in the state (overlap, wrong position), you can adjust by adding a corrective component.
 - Call finish when the robot is complete.
 """
-
 
 def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
     """Append a component to the topology and recompile via the shared compiler.
@@ -1443,7 +1064,6 @@ def _execute_add_component(assembly_state: dict, tool_input: dict) -> dict:
         "assembly_state": "\n".join(state_lines),
     }
 
-
 def _axis_name_from_vector(axis) -> str:
     """Best-effort conversion for legacy add_component state."""
     try:
@@ -1454,7 +1074,6 @@ def _axis_name_from_vector(axis) -> str:
         return "z"
     best_i = max(range(3), key=lambda i: abs(vals[i]))
     return ("x", "y", "z")[best_i]
-
 
 def _assembly_graph_from_state(assembly_state: dict) -> dict:
     """
@@ -1489,7 +1108,6 @@ def _assembly_graph_from_state(assembly_state: dict) -> dict:
         "ground_offset": True,
         "components": components,
     }
-
 
 def _build_urdf_from_state(assembly_state: dict) -> str:
     """Generate URDF XML from the assembly state dict."""
@@ -1578,7 +1196,6 @@ def _build_urdf_from_state(assembly_state: dict) -> str:
     indent(robot)
     return '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
 
-
 def generate_assembly_with_tools(prompt: str, session_id: str = "default",
                                   on_progress=None,
                                   model: str = "claude-sonnet-4-6",
@@ -1592,7 +1209,7 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
 
     system_prompt = ASSEMBLY_SYSTEM_PROMPT.replace(
         "{COMPONENT_CATALOG}",
-        _get_component_catalog(user_prompt=prompt),
+        _get_component_catalog(),
     )
 
     first_user_content = _build_user_content(f"Build this robot: {prompt}", images)
@@ -1702,7 +1319,6 @@ def generate_assembly_with_tools(prompt: str, session_id: str = "default",
         "stats": f"{n_links} components, {n_joints} joints, {round_num} rounds",
     }
 
-
 def _validate_and_log(urdf: str) -> str:
     """Run spatial validation on generated URDF and log warnings."""
     try:
@@ -1721,14 +1337,8 @@ def _validate_and_log(urdf: str) -> str:
         print(f"[ai_edit] Post-generation validation skipped: {e}", file=sys.stderr)
     return urdf
 
-
-def _extract_tool_result(response, current_urdf: str, archetype_mode: str | None = None) -> dict:
-    """Extract structured result from a Claude response with tool-use or text fallback.
-
-    `archetype_mode`: when 'novel', tells normalize_and_validate to skip
-    archetype-template enforcement (no auto-quadruped / auto-arm rewrites
-    on the AI's output). See core.ai.prompt_archetype.
-    """
+def _extract_tool_result(response, current_urdf: str) -> dict:
+    """Extract structured result from a Claude response with tool-use or text fallback."""
     # Check for tool_use blocks first (structured output)
     for block in response.content:
         if block.type == "tool_use":
@@ -1739,15 +1349,6 @@ def _extract_tool_result(response, current_urdf: str, archetype_mode: str | None
                     "ground_offset": True,
                     "components": tool_input.get("components", []),
                 }
-                # Claude's tool-param declaration is the source of truth for
-                # archetype mode. The keyword-classifier hint passed in via
-                # `archetype_mode` is only used as a fallback for older calls
-                # or when Claude omits the field.
-                claude_mode = tool_input.get("archetype_mode")
-                if claude_mode in ("standard", "novel"):
-                    assembly["_archetype_mode"] = claude_mode
-                elif archetype_mode:
-                    assembly["_archetype_mode"] = archetype_mode
                 # Phase 3: run the post-LLM contract pipeline (semantic-graph
                 # validator + archetype normalizer + diagnostic router) on the
                 # AI's raw output so the assembly_graph that flows downstream
@@ -1770,17 +1371,10 @@ def _extract_tool_result(response, current_urdf: str, archetype_mode: str | None
                 }
             elif block.name == "modify_topology":
                 operations = tool_input.get("operations", [])
-                # Claude must re-declare archetype_mode every modify_topology turn
-                # — without this, the frontend's applyTopologyOps strips it and
-                # the next render reapplies the standard-mode template (the
-                # user's novel design silently reverts to dog/arm/wheeled).
-                claude_mode = tool_input.get("archetype_mode")
-                modify_archetype_mode = claude_mode if claude_mode in ("standard", "novel") else archetype_mode
-                print(f"[ai_edit] Tool-use modify_topology: {len(operations)} operations, archetype={modify_archetype_mode!r}", file=sys.stderr)
+                print(f"[ai_edit] Tool-use modify_topology: {len(operations)} operations", file=sys.stderr)
                 return {
                     "explanation": tool_input.get("explanation", "Topology modified"),
                     "topology_ops": operations,
-                    "archetype_mode": modify_archetype_mode,
                     "new_urdf": current_urdf,
                     "stats": tool_input.get("changes_summary", f"{len(operations)} topology changes"),
                 }
@@ -1799,8 +1393,6 @@ def _extract_tool_result(response, current_urdf: str, archetype_mode: str | None
 
     if "assembly" in result and result["assembly"]:
         assembly = result["assembly"]
-        if archetype_mode:
-            assembly["_archetype_mode"] = archetype_mode
         # Phase 3: same post-LLM contract pipeline as the tool-use path.
         from core.ai.semantic_graph import normalize_and_validate
         normalize_and_validate(assembly)
@@ -1827,7 +1419,6 @@ def _extract_tool_result(response, current_urdf: str, archetype_mode: str | None
             "new_urdf": current_urdf,
             "stats": result.get("changes_summary", "No structured output"),
         }
-
 
 def _build_edit_user_message(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                               kinematic_context: str | None,
@@ -1886,7 +1477,6 @@ User Request: {prompt}"""
 
     return user_message
 
-
 def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                    kinematic_context: str = None, session_id: str = "default",
                    model: str = "claude-sonnet-4-6",
@@ -1926,20 +1516,7 @@ def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    preamble, is_novel_prompt = _maybe_freedom_mode(prompt)
-    archetype_mode = "novel" if is_novel_prompt else None
-    system_prompt = preamble + _apply_archetype_mode(
-        SYSTEM_PROMPT.replace(
-            "{COMPONENT_CATALOG}",
-            _get_component_catalog(
-                user_prompt=prompt,
-                kg_json=kinematic_graph_json,
-                tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
-                force_full_catalog=is_novel_prompt,
-            ),
-        ),
-        novel=is_novel_prompt,
-    )
+    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
     response = client.messages.create(
         model=model,
@@ -1961,7 +1538,7 @@ def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
     history.append({"role": "user", "content": f"[Edit request] {prompt}"})
 
     # Handle tool-use response (structured output)
-    result = _extract_tool_result(response, current_urdf, archetype_mode=archetype_mode)
+    result = _extract_tool_result(response, current_urdf)
 
     # Store richer assistant response with tool context
     history.append({"role": "assistant", "content": _build_history_summary(result)})
@@ -1969,7 +1546,6 @@ def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
         history.pop(0)
 
     return result
-
 
 def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                              kinematic_context: str = None, session_id: str = "default",
@@ -1992,20 +1568,7 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
     history = _conversation_history[session_id]
     messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, images)}]
 
-    preamble, is_novel_prompt = _maybe_freedom_mode(prompt)
-    archetype_mode = "novel" if is_novel_prompt else None
-    system_prompt = preamble + _apply_archetype_mode(
-        SYSTEM_PROMPT.replace(
-            "{COMPONENT_CATALOG}",
-            _get_component_catalog(
-                user_prompt=prompt,
-                kg_json=kinematic_graph_json,
-                tried_preset_ids=_tried_preset_ids(kinematic_graph_json),
-                force_full_catalog=is_novel_prompt,
-            ),
-        ),
-        novel=is_novel_prompt,
-    )
+    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
     if on_progress:
         on_progress("thinking", "Analyzing model...")
@@ -2047,14 +1610,13 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
     history.append({"role": "user", "content": f"[Edit request] {prompt}"})
 
     # Extract result from tool-use or text fallback
-    result = _extract_tool_result(final_response, current_urdf, archetype_mode=archetype_mode)
+    result = _extract_tool_result(final_response, current_urdf)
 
     history.append({"role": "assistant", "content": _build_history_summary(result)})
     while len(history) > _MAX_HISTORY_MESSAGES:
         history.pop(0)
 
     return result
-
 
 def generate_edit_turn(
     session_id: str,
@@ -2206,18 +1768,7 @@ def generate_edit_turn(
     # Use the first-turn prompt for archetype classification so freedom mode
     # stays consistent across the whole tool-loop (cache stays warm and the
     # rules don't flip mid-loop).
-    _seed_prompt = session.get("initial_prompt") or prompt
-    _preamble, _is_novel = _maybe_freedom_mode(_seed_prompt)
-    system_prompt = _preamble + _apply_archetype_mode(
-        SYSTEM_PROMPT.replace(
-            "{COMPONENT_CATALOG}",
-            _get_component_catalog(
-                user_prompt=_seed_prompt,
-                force_full_catalog=_is_novel,
-            ),
-        ),
-        novel=_is_novel,
-    )
+    system_prompt = SYSTEM_PROMPT.replace("{COMPONENT_CATALOG}", _get_component_catalog())
 
     response = client.messages.create(
         model=model,
@@ -2287,7 +1838,6 @@ def generate_edit_turn(
         "done": done,
     }
 
-
 def _build_history_summary(result: dict) -> str:
     """Build a richer history entry so Claude remembers what tool it used and what it built."""
     explanation = result.get("explanation", "Done")
@@ -2310,7 +1860,6 @@ def _build_history_summary(result: dict) -> str:
     else:
         return f"[Response] {explanation}. {stats}"
 
-
 def _extract_partial_explanation(text: str) -> str:
     """Try to extract the explanation field from partial JSON for live preview."""
     # Look for "explanation": "..." pattern
@@ -2318,7 +1867,6 @@ def _extract_partial_explanation(text: str) -> str:
     if match:
         return match.group(1).replace('\\"', '"').replace('\\n', ' ')
     return ""
-
 
 def set_conversation_history(session_id: str, messages: list) -> dict:
     """
@@ -2371,11 +1919,9 @@ def set_conversation_history(session_id: str, messages: list) -> dict:
     print(f"[ai_history] Restored {count} messages for session {session_id}", file=sys.stderr)
     return {"status": "ok", "count": count}
 
-
 def clear_conversation(session_id: str = "default") -> None:
     """Clear conversation history for a session."""
     _conversation_history.pop(session_id, None)
-
 
 def _parse_json_response(text: str) -> dict:
     """
@@ -2424,7 +1970,6 @@ def _parse_json_response(text: str) -> dict:
     raise ValueError(
         f"Failed to parse JSON from response. Response text:\n{text[:500]}"
     )
-
 
 def _postprocess_completion(completion: str, cursor_prefix: str) -> str:
     """
@@ -2521,7 +2066,6 @@ def _postprocess_completion(completion: str, cursor_prefix: str) -> str:
 
     return completion
 
-
 def _is_low_quality_completion(completion: str, cursor_prefix: str, context_after: str) -> bool:
     """
     Filter out low-value completions that would annoy more than help.
@@ -2552,7 +2096,6 @@ def _is_low_quality_completion(completion: str, cursor_prefix: str, context_afte
         return True
 
     return False
-
 
 def _strip_suffix_overlap(completion: str, suffix: str) -> str:
     """
@@ -2594,17 +2137,14 @@ def _strip_suffix_overlap(completion: str, suffix: str) -> str:
 
     return completion
 
-
 # ── Completion cache ──────────────────────────────────────────────────────────
 import hashlib
 _completion_cache: dict[str, str] = {}
 _CACHE_MAX_SIZE = 50
 
-
 def _cache_key(cursor_prefix: str, context_before: str, context_after: str) -> str:
     raw = f"{cursor_prefix}||{context_before[-200:]}||{context_after[:200]}"
     return hashlib.md5(raw.encode()).hexdigest()
-
 
 def _find_parent_element(urdf_content: str, cursor_index: int) -> tuple[str, str]:
     try:
@@ -2640,7 +2180,6 @@ def _find_parent_element(urdf_content: str, cursor_index: int) -> tuple[str, str
     context_before = urdf_content[max(0, cursor_index - 2000):cursor_index]
     context_after = urdf_content[cursor_index:min(len(urdf_content), cursor_index + 1000)]
     return context_before, context_after
-
 
 def generate_completion(
     urdf_content: str, cursor_line: int, cursor_column: int,
@@ -2696,7 +2235,6 @@ def generate_completion(
         oldest_key = next(iter(_completion_cache))
         del _completion_cache[oldest_key]
     return completion_text
-
 
 # ── Assembly Validation (2nd-pass correction) ────────────────────────────────
 
@@ -2759,7 +2297,6 @@ CRITICAL RULES:
 REMINDER: Return ONLY JSON. Start with { end with }.
 """
 
-
 def validate_assembly(urdf_content: str, original_prompt: str,
                       session_id: str = "default",
                       screenshot_base64: str = None,
@@ -2810,7 +2347,6 @@ def validate_assembly(urdf_content: str, original_prompt: str,
             print(f"[ai_validate] Gemini validation failed: {e}", file=sys.stderr)
             return {"ok": True, "notes": f"Validation skipped: Gemini error — {e}"}
 
-
 def _classify_and_enrich(valresult: dict, original_prompt: str, engine_summary: dict = None) -> dict:
     """
     Run the critique classifier over Gemini's checklist and attach drop flags
@@ -2832,7 +2368,6 @@ def _classify_and_enrich(valresult: dict, original_prompt: str, engine_summary: 
     except Exception as e:
         print(f"[ai_validate] critique classifier failed, passing raw checklist: {e}", file=sys.stderr)
     return valresult
-
 
 def _format_engine_summary_block(engine_summary: dict) -> str:
     """
@@ -2913,7 +2448,6 @@ def _format_engine_summary_block(engine_summary: dict) -> str:
     )
     lines.append("")
     return "\n".join(lines)
-
 
 def _validate_assembly_gemini(urdf_content: str, original_prompt: str,
                                screenshot_base64: str = None,
@@ -3016,7 +2550,6 @@ Assembled URDF:
     print(f"[ai_validate] [Gemini] Responded in {elapsed:.1f}s: {response_text[:200]}", file=sys.stderr)
     return _process_validation_result(response_text)
 
-
 def _process_validation_result(response_text: str) -> dict:
     """Shared parsing logic for validation responses from Gemini or Claude."""
     result = _parse_json_response(response_text)
@@ -3054,7 +2587,6 @@ def _process_validation_result(response_text: str) -> dict:
         "notes": result.get("notes", "Assembly looks correct"),
         "checklist": checklist,
     }
-
 
 # ── Sim Script Generator ──────────────────────────────────────────────────────
 
@@ -3227,14 +2759,12 @@ The script runs in a restricted sandbox. Violations will be rejected.
 Return ONLY the Python code. No markdown fences, no prose before or after.
 Do not include `import math`. Do not wrap in ```python. Just the code."""
 
-
 def _format_sim_vec(vec) -> str:
     try:
         vals = [float(x) for x in vec[:3]]
     except Exception:
         vals = [0.0, 0.0, 0.0]
     return "(" + ", ".join(f"{v:+.3f}" for v in vals) + ")"
-
 
 def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> tuple[str, str]:
     if not joint_metadata:
@@ -3382,7 +2912,6 @@ def _format_sim_joint_blocks(joint_names: list, joint_metadata: list | None) -> 
 
     return "\n".join(joint_rows) or "  (none)", wheel_block + leg_block + arm_block + gripper_block
 
-
 def _leg_role(meta: dict) -> str:
     return (
         meta.get("leg_role")
@@ -3391,7 +2920,6 @@ def _leg_role(meta: dict) -> str:
             "bend" if "bend_sign" in meta else
             "aux")
     )
-
 
 def _phase_map_for_legs(leg_ids: list[str]) -> dict[str, float]:
     unique = sorted(set(leg_ids))
@@ -3402,7 +2930,6 @@ def _phase_map_for_legs(leg_ids: list[str]) -> dict[str, float]:
     if len(unique) == 6:
         return {leg: (0.0 if i % 2 == 0 else 3.141592653589793) for i, leg in enumerate(unique)}
     return {leg: (0.0 if i % 2 == 0 else 3.141592653589793) for i, leg in enumerate(unique)}
-
 
 def _default_terrain_profile(terrain_config: dict | None) -> dict:
     """
@@ -3439,7 +2966,6 @@ def _default_terrain_profile(terrain_config: dict | None) -> dict:
         "wheel_throttle_frac": 0.15,
         "settle_time_wheel": 0.5,
     }
-
 
 def _physics_gait_profile(leg_geometry: dict | None, terrain_config: dict | None) -> dict | None:
     """
@@ -3504,7 +3030,6 @@ def _physics_gait_profile(leg_geometry: dict | None, terrain_config: dict | None
         "_source": "physics",
     }
 
-
 def _classify_joints_for_default(
     joint_names: list,
     by_name: dict,
@@ -3566,7 +3091,6 @@ def _classify_joints_for_default(
         out["hold"].append(name)
     return out
 
-
 # Each handler returns either None (no joints in its category) or a dict:
 #   {"name": str, "consts": [(NAME, repr-string), ...], "body": [str, ...]}
 # where `body` lines are inserted into the shared step() body and may reference
@@ -3605,7 +3129,6 @@ def _legged_section(classified: dict, profile: dict) -> dict | None:
     ]
     return {"name": "legged", "consts": consts, "body": body}
 
-
 def _wheeled_section(classified: dict, profile: dict) -> dict | None:
     if not classified["wheel"]:
         return None
@@ -3622,7 +3145,6 @@ def _wheeled_section(classified: dict, profile: dict) -> dict | None:
         "    cmds[row['joint']] = wheel_ramp * throttle * row['sign']",
     ]
     return {"name": "wheeled", "consts": consts, "body": body}
-
 
 def _arm_section(classified: dict, profile: dict) -> dict | None:
     if not classified["arm"]:
@@ -3649,7 +3171,6 @@ def _arm_section(classified: dict, profile: dict) -> dict | None:
     ]
     return {"name": "arm", "consts": consts, "body": body}
 
-
 def _gripper_section(classified: dict, profile: dict) -> dict | None:
     if not classified["gripper"]:
         return None
@@ -3668,9 +3189,7 @@ def _gripper_section(classified: dict, profile: dict) -> dict | None:
     ]
     return {"name": "gripper", "consts": consts, "body": body}
 
-
 _DEFAULT_SECTION_HANDLERS = (_legged_section, _wheeled_section, _arm_section, _gripper_section)
-
 
 def _assemble_default_script(sections: list, hold_joints: list) -> str:
     section_names = ", ".join(s["name"] for s in sections)
@@ -3694,7 +3213,6 @@ def _assemble_default_script(sections: list, hold_joints: list) -> str:
     lines.append("    return cmds")
     return "\n".join(lines)
 
-
 def _generate_default_sim_script(
     joint_names: list,
     joint_metadata: list | None,
@@ -3717,7 +3235,6 @@ def _generate_default_sim_script(
     if not sections:
         return ""
     return _assemble_default_script(sections, classified["hold"])
-
 
 def _arm_physics_profile(arm_geometry: dict | None) -> dict | None:
     """
@@ -3746,7 +3263,6 @@ def _arm_physics_profile(arm_geometry: dict | None) -> dict | None:
         "_reach_m": round(R, 4),
         "_source": "physics",
     }
-
 
 def generate_sim_script(
     prompt: str,

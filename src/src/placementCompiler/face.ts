@@ -16,7 +16,6 @@ import {
   splayAngleForLegCount,
   verticalExtentForRotation,
 } from './multiChild.ts'
-import { isNovelMode } from './context.ts'
 
 /** Parent bounds in METERS, after RPY-bake / parametric splice / split-servo
  *  body-vs-horn routing (resolved by the caller). */
@@ -34,11 +33,6 @@ export interface FacePlacementHints {
   childIsTire?: boolean
   childIsDrivetrain?: boolean
   childUsesRollingBottomPose?: boolean
-  /** Tier-A novel-mode authoring override. When set, replaces the auto-computed
-   * splay angle (from `splayAngleForLegCount`) for this child only. Allows
-   * varied posture across limbs in the same design — e.g. front legs sprawled,
-   * back legs upright. Clamped to ±75°. Set to undefined to use auto. */
-  splayAngleDegOverride?: number
 }
 
 export interface FacePlacementResult {
@@ -136,26 +130,8 @@ export function computeFacePlacement(
     ?? (childIsDrivetrain || childIsTire || childComponentId.startsWith('mobility_swerve_'))
   let splayAngle = 0
   let insetOverride: number | undefined
-  const authoredSplayDeg = placementHints.splayAngleDegOverride
-  const hasAuthoredSplay = typeof authoredSplayDeg === 'number' && Number.isFinite(authoredSplayDeg)
   if (face === 'bottom' && !usesRollingBottomPose && !noSplay && totalOnFace >= 2) {
     splayAngle = splayAngleForLegCount(totalOnFace)
-    // Tier-A creative override: when Claude authored splay_angle_deg on this
-    // child, replace the auto-derived value. Clamp to ±75° to keep stances
-    // physically sensible (90°+ would lay legs flat on the ground).
-    if (hasAuthoredSplay) {
-      const clamped = Math.max(-75, Math.min(75, authoredSplayDeg!))
-      splayAngle = clamped * Math.PI / 180
-    }
-    insetOverride = Math.max(0.4, 0.7 - (Math.abs(splayAngle) / (Math.PI / 2)) * 0.3)
-  } else if (isNovelMode() && hasAuthoredSplay && !noSplay && totalOnFace >= 2) {
-    // Novel-mode top/side face splay — opt-in via Claude's splay_angle_deg.
-    // Lets sensors/antennae fan radially outward from a top face center, or
-    // limbs fan from a side face. Default behavior (no override) preserves
-    // batteries/compute mounted flat on top — splay only fires when Claude
-    // explicitly authors it. Bottom face still gets auto-splay above.
-    const clamped = Math.max(-75, Math.min(75, authoredSplayDeg!))
-    splayAngle = clamped * Math.PI / 180
     insetOverride = Math.max(0.4, 0.7 - (Math.abs(splayAngle) / (Math.PI / 2)) * 0.3)
   }
 
@@ -203,18 +179,6 @@ export function computeFacePlacement(
       const childContact = childConnOriginM ? -childConnOriginM[2] : childBodyHZ
       const oz = (connOriginM ? connOriginM[2] : parentBodyHZ) + childContact + gap - engagementM
       const yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
-      // Tier-A novel-mode opt-in radial splay. When Claude authored
-      // splay_angle_deg on a top-face child, fan it outward from the face
-      // center along its radial position. Mirror of the bottom-face trig
-      // (same magnitudes, opposite signs because face normal is +Z, not -Z).
-      // Children without authored splay sit flat as before — batteries,
-      // compute boards, and most top-mounts keep their existing behavior.
-      if (isNovelMode() && hasAuthoredSplay && splayAngle !== 0 && (tu !== 0 || tv !== 0)) {
-        const theta = Math.atan2(tv, tu)
-        const rollRad  = -splayAngle * Math.sin(theta)
-        const pitchRad =  splayAngle * Math.cos(theta) - elevRad
-        return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `${rollRad.toFixed(4)} ${pitchRad.toFixed(4)} ${yawRad.toFixed(4)}` }
-      }
       const rpy = elevRad !== 0 || hasNumericOrient
         ? `0 ${(-elevRad).toFixed(4)} ${yawRad.toFixed(4)}`
         : '0 0 0'
@@ -231,23 +195,15 @@ export function computeFacePlacement(
         // which dropped back-side wheels INBOARD instead of outboard.
         rollRad = (childIsDrivetrain && tv < 0) ? Math.PI / 2 : -Math.PI / 2
       } else if (splayAngle > 0 && (tu !== 0 || tv !== 0)) {
-        if (isNovelMode()) {
-          // Radial splay: tilt each leg along its actual angular position
-          // around the face center, not along cardinal axes. Without this,
-          // a hexapod at radial positions (60° spacing) gets cardinal
-          // roll/pitch (±splay if tu/tv != 0) which ignores the angle and
-          // bends every leg into NE/NW/SE/SW dog-stance directions. The trig
-          // form below smoothly aligns each leg's tilt with its radial
-          // outward direction; at cardinal angles (0°, 90°, 180°, 270°) it
-          // matches the standard-mode rule, so dog-style 4-leg layouts
-          // would be a continuous extension if novel mode were enabled.
-          const theta = Math.atan2(tv, tu)
-          rollRad  =  splayAngle * Math.sin(theta)
-          pitchRad = -splayAngle * Math.cos(theta)
-        } else {
-          rollRad  = tv > 0 ?  splayAngle : tv < 0 ? -splayAngle : 0
-          pitchRad = tu > 0 ? -splayAngle : tu < 0 ?  splayAngle : 0
-        }
+        // Radial splay: tilt each leg along its actual angular position
+        // around the face center, not along cardinal axes. A hexapod at
+        // radial positions (60° spacing) gets a tilt aligned with its
+        // outward direction; at the cardinal/diagonal angles of a 4-corner
+        // quadruped layout the trig reduces to the legacy ±splay rule's
+        // diagonal blend, so dog stances stay outward-splayed.
+        const theta = Math.atan2(tv, tu)
+        rollRad  =  splayAngle * Math.sin(theta)
+        pitchRad = -splayAngle * Math.cos(theta)
       }
       let yawRad = hasNumericOrient ? orientDeg * Math.PI / 180 : 0
       if (elevRad !== 0) pitchRad += elevRad

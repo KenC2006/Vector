@@ -29,7 +29,6 @@ import {
   worldLevelRpyForParent,
   worldOffsetFromParent,
   formatRpyTuple,
-  servoAxisSignFromParentWorld,
   servoLocalRestRpyFromJointRpy,
 } from './transforms.ts'
 import {
@@ -44,7 +43,6 @@ import {
   computeFacePlacement as _pureComputeFacePlacement,
   type ParentBoundsM,
 } from './face.ts'
-import { isNovelMode } from './context.ts'
 import {
   faceUVHalfExtents,
 } from './multiChild.ts'
@@ -556,8 +554,8 @@ export function compileAssembly(
 
     // ── Placement (xyz, rpy) ──────────────────────────────────────────────
     // Four sources, in priority order:
-    // 0. Tier-B raw authoring (novel mode only): Claude wrote `xyz` / `rpy`
-    //    on the component — bypass everything below and use them verbatim.
+    // 0. Raw authoring: Claude wrote `xyz` / `rpy` on the component —
+    //    bypass everything below and use them verbatim.
     // 1. Servo-driven: when parent is a split servo, use the closed-form
     //    limb / child placement helpers (replaces face/mate entirely).
     // 2. Mate connector: closed-form connector mate.
@@ -565,12 +563,7 @@ export function compileAssembly(
     let placement: { xyz: string; rpy: string } | null = null
     let placedViaConnectorFlag = false
 
-    // Tier-B raw authoring — only honored in novel mode. `strip_forbidden_fields`
-    // already removes these in standard mode, but the explicit `isNovelMode()`
-    // guard here is a defense in depth: if any TS-side path constructs a graph
-    // with xyz set (e.g. modify_topology op without re-stripping), standard
-    // mode still ignores the raw fields and uses the deterministic placement.
-    if (isNovelMode()) {
+    {
       const rawXyz = Array.isArray(c.xyz) && c.xyz.length === 3 ? c.xyz : null
       const rawRpy = Array.isArray(c.rpy) && c.rpy.length === 3 ? c.rpy : null
       if (rawXyz || rawRpy) {
@@ -665,10 +658,6 @@ export function compileAssembly(
             && typeof childResolved.assembledOuterRadiusM === 'number') {
           effectiveChildY = childResolved.assembledOuterRadiusM * 2
         }
-        // Tier-A novel-mode authoring: `splay_angle_deg` is honored only when
-        // the graph is in novel mode. Standard mode ignores it entirely so the
-        // bulletproof determinism for dog/arm/wheeled stays byte-identical.
-        const splayAngleDegOverride = isNovelMode() ? c.splay_angle_deg : undefined
         placement = _pureComputeFacePlacement(
           parentBoundsM, parentComp!.link_name,
           childX, effectiveChildY, childZ,
@@ -681,33 +670,9 @@ export function compileAssembly(
           parentPresetConnectors.length > 0 ? parentPresetConnectors : undefined,
           undefined,
           childPresetConnectors.length > 0 ? childPresetConnectors : undefined,
-          { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose, splayAngleDegOverride },
+          { parentIsDrivetrain, childIsTire, childIsDrivetrain, childUsesRollingBottomPose },
           parentResolved.parametricLengthMm,
         )
-      }
-    }
-
-    // Tier-A novel-mode authoring: `placement_offset_mm` adds a small bounded
-    // [dx, dy, dz] (millimeters) to the face-derived xyz, after all face/mate
-    // logic has run. Lets Claude break radial symmetry — front pincer arms
-    // longer than back walking legs, off-center electronics, etc. Standard
-    // mode ignores this field; novel mode clamps each axis to ±50mm.
-    if (isNovelMode() && Array.isArray(c.placement_offset_mm) && c.placement_offset_mm.length === 3) {
-      const off = c.placement_offset_mm
-      const clamp = (v: unknown) => {
-        const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
-        return Math.max(-50, Math.min(50, n))
-      }
-      const dx = clamp(off[0]) / 1000
-      const dy = clamp(off[1]) / 1000
-      const dz = clamp(off[2]) / 1000
-      if (dx !== 0 || dy !== 0 || dz !== 0) {
-        const xyz = parseXyzString(placement.xyz)
-        xyz[0] += dx; xyz[1] += dy; xyz[2] += dz
-        placement = {
-          xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' '),
-          rpy: placement.rpy,
-        }
       }
     }
 
@@ -723,9 +688,10 @@ export function compileAssembly(
     // Side-axis servo dz nudge (cIsActuated only) runs INSIDE the servo
     // emit branch, after these — same order as assembler line ~4277.
     const servoAxisName = axisNameFromComponentAxis(c.joint_axis)
-    const servoAxisSign = cIsActuated
-      ? servoAxisSignFromParentWorld(parentWorld, servoAxisName, parseXyzString(placement.xyz))
-      : 1
+    // NOTE: the GEOMETRIC mount mirror (which way the horn shaft physically
+    // faces for ±Y-side pairs) is computed inside servoMountRpyForParentWorld
+    // via servoAxisSignFromParentWorld. The REST-POSE sign is intentionally
+    // not mirrored — authored attach_rpy applies verbatim per component.
 
     // Distal-beam 'bottom' flip. servoDrivenStructuralLimbPlacement mounts the
     // beam with local +Z as the radial-outward (free-tip) end and -Z toward
@@ -780,12 +746,12 @@ export function compileAssembly(
       ])
       if (cIsActuated) {
         const explicitTuple = parseRpyString(explicitRpyStr)
-        // NOVEL MODE: rest pose applied verbatim per leg (no sign flip across
-        // body Y). The geometric horn-axis mirror (servoMountRpyForParentWorld
-        // call below) still uses the real `servoAxisSign` so symmetric pairs
+        // Rest pose applied VERBATIM per leg — no sign flip across body Y.
+        // The geometric horn-axis mirror (servoMountRpyForParentWorld call
+        // below) still uses the real `servoAxisSign` so symmetric pairs
         // physically face outward, but Claude's authored `attach_rpy` reaches
-        // each leg unchanged so per-leg pose authority is preserved.
-        const restPoseSign = isNovelMode() ? 1 : servoAxisSign
+        // each leg unchanged: per-leg pose authority belongs to the author.
+        const restPoseSign = 1
         if (servoAxisName === 'y' && parentComp
             && isDistalBeamComponentId(parentComp.component_id)
             && c.attach_face === 'bottom') {
