@@ -1663,10 +1663,16 @@ let urdfAssemblyApi: UrdfAssemblyApi | null = null
 // (sample URDF) is fine — measureLinkDims is correct for that simple model.
 const getPresetBboxMm = (compId: string) => urdfAssemblyApi?.getPresetBoundingBoxMm(compId) ?? null
 
+// Links with authored link_geometry shells keep their URDF primitives — the
+// rich pass replacing them with the donor preset's stock visual is what made
+// sculpted bodies render as plain baseplates.
+const hasCustomGeometryLink = (linkName: string) =>
+  urdfAssemblyApi?.getCustomGeometryLinkNames().has(linkName) ?? false
+
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
 refreshConnectorOverlay(parsedRobot)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
@@ -2429,7 +2435,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
           refreshConnectorOverlay(parsedRobot)
           // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
           const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
@@ -2476,7 +2482,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
     refreshConnectorOverlay(parsedRobot)
     // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
     const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true

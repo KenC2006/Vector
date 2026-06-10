@@ -254,6 +254,11 @@ export interface UrdfAssemblyApi {
    * Returns null when the preset has only a 2-tuple cross_section_mm (extrusions),
    * where per-instance length_mm makes the link's URDF box the authoritative source. */
   getPresetBoundingBoxMm(compId: string): [number, number, number] | null
+  /** URDF link names whose component authored a `link_geometry` body shell.
+   * The rich-visual pass must NOT replace these links' rendered geometry —
+   * their URDF primitives ARE the authored design, and swapping in the donor
+   * preset's stock visual silently hides the sculpted body. */
+  getCustomGeometryLinkNames(): Set<string>
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -4837,6 +4842,13 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         return null
       }
       return null
+    },
+    getCustomGeometryLinkNames: (): Set<string> => {
+      const out = new Set<string>()
+      for (const c of _lastAssemblyGraph?.components ?? []) {
+        if (hasLinkGeometry(c)) out.add(c.link_name)
+      }
+      return out
     },
   }
 }

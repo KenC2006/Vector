@@ -168,11 +168,19 @@ export function applyRichVisuals(
    *  current measureLinkDims behavior (right for single-primitive components like
    *  extrusions, where per-instance length_mm is already in the URDF box). */
   getPresetBoundingBoxMm?: (compId: string) => [number, number, number] | null,
+  /** Links whose URDF primitives ARE the authored design (`link_geometry`
+   *  body shells). The rich pass must NOT replace their geometry — swapping
+   *  in the donor preset's stock visual silently hides the sculpted body
+   *  while bounds/collision/placement keep using the real shell (the
+   *  "baseplate always looks the same" defect). */
+  hasCustomGeometry?: (linkName: string) => boolean,
 ): void {
   // Dispose and clear previous tinted materials
   for (const mat of _tintedMatCache.values()) mat.dispose()
   _tintedMatCache.clear()
   for (const [linkName, linkGroup] of parsedRobot.linkGroups) {
+    // Authored body shells render their URDF primitives verbatim.
+    if (hasCustomGeometry?.(linkName)) continue
     // Split-servo body/horn links (`<id>_<N>_body` / `_horn`) intentionally
     // skip the rich-visual replacement: the URDF primitives emitted by
     // `resolveSplitServoVisual` (servoBodyShape + servoHornShape) are the
