@@ -24,10 +24,12 @@
     "test:placement-compiler": "node --experimental-strip-types src/placementCompilerCorpus.ts",
     "test:rotation-parity": "node --experimental-strip-types src/rotationParityCorpus.ts",
     "test:rotation-parity-py": "pushd .. && python -m core.sim.tests.test_rotation_parity && popd",
+    "test:anchor-parity": "node --experimental-strip-types src/primitiveAnchorCorpus.ts",
+    "test:anchor-parity-py": "pushd .. && python -m core.sim.tests.test_anchor_parity && popd",
     "test:collision-envelope-py": "pushd .. && python -m core.sim.tests.test_collision_envelope && popd",
     "test:quadruped-contact-py": "pushd .. && python -m core.sim.tests.test_quadruped_contact && popd",
     "test:compiler-client": "pushd .. && python -m core.ai.test_compiler_client && popd",
-    "check": "npm run validate:component-specs && npm run check:coordinates-seam && tsc --noEmit && npm run test:mate-corpus && npm run test:validator && npm run test:graph-preservation && npm run test:tool-dispatch && npm run test:alignment-corpus && npm run test:visual-parity && npm run check:mesh-extents && npm run test:semantic-graph && npm run test:placement-compiler && npm run test:rotation-parity && npm run test:rotation-parity-py && npm run test:collision-envelope-py && npm run test:quadruped-contact-py && npm run test:compiler-client"
+    "check": "npm run validate:component-specs && npm run check:coordinates-seam && tsc --noEmit && npm run test:mate-corpus && npm run test:validator && npm run test:graph-preservation && npm run test:tool-dispatch && npm run test:alignment-corpus && npm run test:visual-parity && npm run check:mesh-extents && npm run test:semantic-graph && npm run test:placement-compiler && npm run test:rotation-parity && npm run test:rotation-parity-py && npm run test:anchor-parity && npm run test:anchor-parity-py && npm run test:collision-envelope-py && npm run test:quadruped-contact-py && npm run test:compiler-client"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

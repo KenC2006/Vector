@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { compileAssembly } from './placementCompiler/index.ts'
 import { resolveJointLimitsRad } from './placementCompiler/joints.ts'
 import { resolveComponent as resolveSpec, resolveComponentMassKg, isParametricSpec } from './componentResolver.ts'
+import { hasLinkGeometry } from './linkGeometry.ts'
 import { setMeshExtentsCatalog } from './meshExtents.ts'
 import type { ComponentResolver } from './placementCompiler/index.ts'
 import type { MeasuredMeshCatalog } from './meshExtents.ts'
@@ -80,7 +81,11 @@ const resolver: ComponentResolver = (componentId, instance) => {
       shape: resolved.bounds.shape,
     },
     connectors: resolved.connectors,
-    presetConnectors: (preset.connectors as MateConnector[] | undefined),
+    // Authored shells: the face path's connector-snap must target the union
+    // faces, not the donor preset's authored surfaces.
+    presetConnectors: hasLinkGeometry(instance)
+      ? resolved.connectors
+      : (preset.connectors as MateConnector[] | undefined),
     assembledOuterRadiusM: outerRadiusMm !== undefined ? outerRadiusMm / 1000 : undefined,
     parametricLengthMm: instance?.length_mm && isParametricSpec(preset as Parameters<typeof resolveSpec>[0]['spec'])
       ? instance.length_mm

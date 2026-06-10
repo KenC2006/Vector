@@ -6,6 +6,15 @@ import type {
 } from './componentSpec.ts'
 import { _resolverInternal_generateDefaultConnectors, mergeConnectors } from './mateConnectors.ts'
 import type { MateConnector } from './mateConnectors.ts'
+import {
+  hasLinkGeometry,
+  linkGeometryCollisionDescriptors,
+  linkGeometryConnectors,
+  linkGeometryUnionAabbMm,
+  linkGeometryVolumeM3,
+  LINK_GEOMETRY_DEFAULT_DENSITY_KG_M3,
+} from './linkGeometry.ts'
+import type { LinkPrimitive } from './linkGeometry.ts'
 
 /**
  * Loose preset shape accepted by the resolver. Wider than `ComponentSpec` to
@@ -43,6 +52,43 @@ export interface ResolveComponentArgs {
 
 export function resolveComponent(args: ResolveComponentArgs): ResolvedComponentRecord {
   const spec = normalizeSpec(args.spec, args.category ?? args.spec.category ?? inferComponentCategory(args.spec.id))
+
+  // Authored body shell: every geometric fact derives from the primitive
+  // union, not the donor preset's envelope — bounds (center generally ≠ 0),
+  // the 6 face connectors (so children mount on the REAL surfaces), and
+  // per-primitive collision descriptors. Authored preset connectors still
+  // merge over the derived defaults.
+  const prims = hasLinkGeometry(args.instance)
+    ? (args.instance!.link_geometry as LinkPrimitive[])
+    : null
+  const union = prims ? linkGeometryUnionAabbMm(prims) : null
+  if (prims && union) {
+    const bounds = {
+      half: union.half,
+      center: union.center,
+      shape: 'box' as const,
+    }
+    // The shell REPLACES the donor preset's geometry, so the donor's authored
+    // connectors (which describe the donor's surfaces — e.g. a baseplate's
+    // 'top' at +2.5mm) must NOT override the union faces. Union-derived
+    // connectors are the only valid mounting surfaces on a shell.
+    const connectors = linkGeometryConnectors(prims)
+    const ports = portsFromConnectors(connectors)
+    return {
+      id: spec.id,
+      spec,
+      bounds,
+      collision: {
+        source: 'urdf_primitives',
+        bounds,
+        descriptors: linkGeometryCollisionDescriptors(prims),
+      },
+      ports,
+      connectors,
+      warnings: [],
+    }
+  }
+
   const halfBounds = resolveComponentHalfBoundsMm(spec, args.instance)
   const shape: 'box' | 'cylinder' = spec.physical.inertia_primitive === 'cylinder' ? 'cylinder' : 'box'
   const bounds = {
@@ -54,13 +100,7 @@ export function resolveComponent(args: ResolveComponentArgs): ResolvedComponentR
     _resolverInternal_generateDefaultConnectors(halfBounds),
     spec.connectors,
   )
-  const ports = resolveComponentPortsForBounds(
-    spec.id,
-    halfBounds.hxMm / 1000,
-    halfBounds.hyMm / 1000,
-    halfBounds.hzMm / 1000,
-    spec.mounting_logic,
-  )
+  const ports = portsFromConnectors(connectors)
   const collision = resolveCollisionRecord(spec, bounds)
   const warnings = [
     ...buildResolverWarnings(spec),
@@ -129,6 +169,13 @@ export function resolveComponentMassKg(
   fallbackKg = 0.1,
 ): number {
   const phys = spec.physical
+  // Authored body shells: derive mass from the primitive volume at shell
+  // density. Takes priority over the donor preset's mass_kg — a 300mm torso
+  // drawn over a baseplate must not weigh 450g.
+  if (hasLinkGeometry(instance)) {
+    const vol = linkGeometryVolumeM3(instance!.link_geometry as LinkPrimitive[])
+    if (vol > 0) return vol * LINK_GEOMETRY_DEFAULT_DENSITY_KG_M3
+  }
   if (typeof phys.mass_kg === 'number') return phys.mass_kg
   if (typeof phys.mass_kg_per_100mm === 'number') {
     if (typeof instance?.length_mm === 'number') {
@@ -237,21 +284,6 @@ export function inferComponentCategory(componentId: string): string {
   return 'misc'
 }
 
-export function resolveDefaultFacePortsForBoxDims(
-  hx: number,
-  hy: number,
-  hz: number,
-): AttachmentNodeDef[] {
-  return [
-    { nodeId: 'top',     label: 'Top',  cls: 'mount_face', origin_xyz: [0,   0,   hz],  origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'bottom',  label: 'Bot',  cls: 'mount_face', origin_xyz: [0,   0,  -hz],  origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'x_plus',  label: '+X',   cls: 'mount_face', origin_xyz: [hx,  0,   0],   origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'x_minus', label: '-X',   cls: 'mount_face', origin_xyz: [-hx, 0,   0],   origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'y_plus',  label: '+Y',   cls: 'mount_face', origin_xyz: [0,   hy,  0],   origin_rpy: [0, 0, 0], single: true },
-    { nodeId: 'y_minus', label: '-Y',   cls: 'mount_face', origin_xyz: [0,  -hy,  0],   origin_rpy: [0, 0, 0], single: true },
-  ]
-}
-
 export function isTireComponentId(componentId: string): boolean {
   return (
     componentId.startsWith('mobility_wheel_') ||
@@ -269,78 +301,39 @@ export function isFootPadComponentId(componentId: string): boolean {
   return componentId === 'mobility_rubber_foot_pad'
 }
 
-export function resolveComponentPortsForBounds(
-  componentId: string,
-  hx: number,
-  hy: number,
-  hz: number,
-  mountingLogic?: Record<string, unknown>,
-): AttachmentNodeDef[] {
-  if (isTireComponentId(componentId)) {
-    return [{
-      nodeId: 'hub_bore',
-      label: 'Hub Bore',
-      cls: 'bore',
-      origin_xyz: [0, 0, 0],
-      origin_rpy: [0, 0, 0],
-      kinematic: { joint_type: 'fixed', axis_xyz: [0, 0, 1] },
-      single: true,
-    }]
-  }
+function _defaultClsForConnectorType(type: MateConnector['type']): AttachmentNodeDef['cls'] {
+  if (type === 'planar') return 'mount_face'
+  if (type === 'point') return 'generic'
+  // Cylindrical without an authored cls — the catalog CI forbids this, so it
+  // only happens for runtime-injected specs. 'generic' mates with anything.
+  return 'generic'
+}
 
-  if (isFootPadComponentId(componentId)) {
-    return [{
-      nodeId: 'top',
-      label: 'Top',
-      cls: 'mount_face',
-      origin_xyz: [0, 0, hz],
-      origin_rpy: [0, 0, 0],
-      single: true,
-    }]
-  }
+function _humanizeConnectorId(id: string): string {
+  return id.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
+}
 
-  const nodes = resolveDefaultFacePortsForBoxDims(hx, hy, hz)
-
-  if (isDrivetrainComponentId(componentId) || mountingLogic?.output === 'axial_shaft') {
-    const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) {
-      topNode.cls = 'shaft'
-      topNode.label = 'Axial Shaft'
-      topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] }
+/** WS4: attachment "ports" derive from the merged connector list — one
+ * vocabulary for geometry (mates) AND compatibility (port classes). Replaces
+ * the deleted `resolveComponentPortsForBounds` string-prefix heuristics:
+ * a servo's shaft is a shaft because its `shaft_out`/`top` connector is
+ * AUTHORED `cls: 'shaft'`, not because its id starts with `actuator_servo`.
+ * Connector origins are mm; port origins stay meters (legacy contract). */
+export function portsFromConnectors(connectors: MateConnector[]): AttachmentNodeDef[] {
+  return connectors.map(c => {
+    const cls = c.cls ?? _defaultClsForConnectorType(c.type)
+    return {
+      nodeId: c.id,
+      label: _humanizeConnectorId(c.id),
+      cls,
+      origin_xyz: [
+        c.origin_xyz_mm[0] / 1000,
+        c.origin_xyz_mm[1] / 1000,
+        c.origin_xyz_mm[2] / 1000,
+      ] as [number, number, number],
+      origin_rpy: [0, 0, 0] as [number, number, number],
+      kinematic: { joint_type: 'fixed' as const, axis_xyz: [...c.axis_xyz] as [number, number, number] },
+      single: c.single ?? (cls === 'shaft' || cls === 'bore'),
     }
-  }
-
-  if (componentId.startsWith('actuator_servo') || componentId.startsWith('actuator_continuous')) {
-    const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) {
-      topNode.cls = 'shaft'
-      topNode.label = 'Shaft Output'
-      topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] }
-    }
-    const bottomNode = nodes.find(n => n.nodeId === 'bottom')
-    if (bottomNode) bottomNode.label = 'Bracket Mount'
-  }
-
-  if (componentId.startsWith('motor_') || componentId.startsWith('actuator_bldc')) {
-    const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) {
-      topNode.cls = 'shaft'
-      topNode.label = 'Shaft'
-      topNode.kinematic = { joint_type: 'fixed', axis_xyz: [0, 0, 1] }
-    }
-  }
-
-  if (componentId.includes('extrusion')) {
-    const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) topNode.label = 'End A (+Z)'
-    const bottomNode = nodes.find(n => n.nodeId === 'bottom')
-    if (bottomNode) bottomNode.label = 'End B (-Z)'
-  }
-
-  if (componentId.startsWith('effector_')) {
-    const topNode = nodes.find(n => n.nodeId === 'top')
-    if (topNode) topNode.label = 'Tool Output'
-  }
-
-  return nodes
+  })
 }

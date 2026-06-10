@@ -1,0 +1,325 @@
+{
+ "base_link": "pelvis",
+ "ground_offset": true,
+ "components": [
+  {
+   "link_name": "pelvis",
+   "component_id": "structural_baseplate",
+   "attach_to": null,
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "torso",
+   "component_id": "structural_extrusion_4040",
+   "attach_to": "pelvis",
+   "attach_face": "top",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 250,
+   "link_geometry": [
+    {
+     "name": "chest",
+     "shape": "box",
+     "size_mm": [
+      180,
+      100,
+      260
+     ],
+     "xyz_mm": [
+      0,
+      0,
+      130
+     ]
+    },
+    {
+     "name": "head",
+     "shape": "sphere",
+     "radius_mm": 70,
+     "xyz_mm": [
+      0,
+      0,
+      330
+     ]
+    },
+    {
+     "name": "shoulder_l",
+     "shape": "cylinder",
+     "radius_mm": 25,
+     "length_mm": 60,
+     "xyz_mm": [
+      0,
+      -115,
+      230
+     ],
+     "rpy": [
+      1.5708,
+      0,
+      0
+     ]
+    },
+    {
+     "name": "shoulder_r",
+     "shape": "cylinder",
+     "radius_mm": 25,
+     "length_mm": 60,
+     "xyz_mm": [
+      0,
+      115,
+      230
+     ],
+     "rpy": [
+      1.5708,
+      0,
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "link_name": "shoulder_servo_l",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "torso",
+   "attach_face": "left",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_primitive": "shoulder_l",
+   "attach_anchor": "+axis_end"
+  },
+  {
+   "link_name": "upper_arm_l",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "shoulder_servo_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 180
+  },
+  {
+   "link_name": "elbow_l",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "upper_arm_l",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "forearm_l",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "elbow_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 140
+  },
+  {
+   "link_name": "wrist_l",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "forearm_l",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "hand_l",
+   "component_id": "effector_parallel_gripper_small",
+   "attach_to": "wrist_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "shoulder_servo_r",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "torso",
+   "attach_face": "right",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_primitive": "shoulder_r",
+   "attach_anchor": "-axis_end"
+  },
+  {
+   "link_name": "upper_arm_r",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "shoulder_servo_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 180
+  },
+  {
+   "link_name": "elbow_r",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "upper_arm_r",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "forearm_r",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "elbow_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 140
+  },
+  {
+   "link_name": "wrist_r",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "forearm_r",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y"
+  },
+  {
+   "link_name": "hand_r",
+   "component_id": "effector_parallel_gripper_small",
+   "attach_to": "wrist_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_l",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "pelvis",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.3,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_l",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "hip_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 200
+  },
+  {
+   "link_name": "knee_l",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "thigh_l",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -0.6,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_l",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "knee_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 200
+  },
+  {
+   "link_name": "ankle_l",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "shin_l",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.3,
+    0
+   ]
+  },
+  {
+   "link_name": "foot_l",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "ankle_l",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "hip_r",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "pelvis",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.3,
+    0
+   ]
+  },
+  {
+   "link_name": "thigh_r",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "hip_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 200
+  },
+  {
+   "link_name": "knee_r",
+   "component_id": "actuator_servo_high_torque",
+   "attach_to": "thigh_r",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    -0.6,
+    0
+   ]
+  },
+  {
+   "link_name": "shin_r",
+   "component_id": "structural_extrusion_2020",
+   "attach_to": "knee_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "length_mm": 200
+  },
+  {
+   "link_name": "ankle_r",
+   "component_id": "actuator_servo_standard",
+   "attach_to": "shin_r",
+   "attach_face": "bottom",
+   "joint_type": "revolute",
+   "joint_axis": "y",
+   "attach_rpy": [
+    0,
+    0.3,
+    0
+   ]
+  },
+  {
+   "link_name": "foot_r",
+   "component_id": "mobility_rubber_foot_pad",
+   "attach_to": "ankle_r",
+   "attach_face": "bottom",
+   "joint_type": "fixed",
+   "joint_axis": "z"
+  },
+  {
+   "link_name": "camera_1",
+   "component_id": "sensor_depth_camera_small",
+   "attach_to": "torso",
+   "attach_face": "front",
+   "joint_type": "fixed",
+   "joint_axis": "z",
+   "attach_primitive": "head",
+   "attach_anchor": "+x_pole"
+  }
+ ]
+}

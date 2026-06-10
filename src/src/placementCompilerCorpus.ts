@@ -14,6 +14,14 @@ import {
   ALL_PLACEMENT_CLASSES,
   type ComponentResolver,
 } from './placementCompiler/index.ts'
+import { resolveComponent as resolveSpec, resolveComponentMassKg } from './componentResolver.ts'
+import { parseOrientation } from './placementCompiler/face.ts'
+import {
+  linkGeometryUnionAabbMm,
+  linkGeometryConnectors,
+  LINK_GEOMETRY_DEFAULT_DENSITY_KG_M3,
+  type LinkPrimitive,
+} from './linkGeometry.ts'
 import type { MateConnector } from './mateConnectors.ts'
 import {
   compareGraphs,
@@ -66,6 +74,159 @@ test('compileAssembly empty graph: no links, all non-root classes skipped', () =
   assert(!result.skippedClasses.includes('ground_offset'), 'ground_offset must NOT be in skippedClasses after slice 4.H')
   assert(!result.skippedClasses.includes('mirrored_hardware'), 'mirrored_hardware must NOT be in skippedClasses after slice 4.G')
   assert(!result.skippedClasses.includes('archetype_axis_normalize'), 'archetype_axis_normalize must NOT be in skippedClasses after slice 4.I')
+})
+
+// ── WS6 — orientation grammar ────────────────────────────────────────────────
+
+test('parseOrientation: every documented form parses', () => {
+  const cases: Array<[string | undefined, { horizontal: boolean; yawDeg: number; auto: boolean }]> = [
+    [undefined,        { horizontal: false, yawDeg: 0, auto: true }],
+    ['auto',           { horizontal: false, yawDeg: 0, auto: true }],
+    ['vertical',       { horizontal: false, yawDeg: 0, auto: false }],
+    ['horizontal',     { horizontal: true, yawDeg: 0, auto: false }],
+    ['horizontal+45',  { horizontal: true, yawDeg: 45, auto: false }],
+    ['horizontal+-30', { horizontal: true, yawDeg: -30, auto: false }],
+    ['45',             { horizontal: false, yawDeg: 45, auto: false }],
+    ['-30',            { horizontal: false, yawDeg: -30, auto: false }],
+    ['garbage',        { horizontal: false, yawDeg: 0, auto: true }],
+  ]
+  for (const [raw, want] of cases) {
+    const got = parseOrientation(raw)
+    assert(got.horizontal === want.horizontal && got.yawDeg === want.yawDeg && got.auto === want.auto,
+      `parseOrientation(${JSON.stringify(raw)}) = ${JSON.stringify(got)}, want ${JSON.stringify(want)}`)
+  }
+})
+
+// One elongated stub (long axis Z) for the orientation matrix.
+const elongatedResolver: ComponentResolver = (componentId, _instance) => ({
+  componentId,
+  bounds: {
+    half: componentId === 'structural_baseplate' ? [0.1, 0.075, 0.0025] : [0.01, 0.01, 0.1],
+    center: [0, 0, 0],
+    shape: 'box',
+  },
+})
+
+function orientGraph(face: string, orientation: string | undefined): AssemblyGraph {
+  return {
+    base_link: 'plate_1',
+    components: [
+      { link_name: 'plate_1', component_id: 'structural_baseplate',
+        attach_to: null, attach_face: 'top', joint_type: 'fixed', joint_axis: 'z' },
+      { link_name: 'boom_1', component_id: 'structural_extrusion_2020',
+        attach_to: 'plate_1', attach_face: face, joint_type: 'fixed', joint_axis: 'z',
+        orientation },
+    ],
+  }
+}
+
+function boomRpy(face: string, orientation: string | undefined): [number, number, number] {
+  const result = compileAssembly(orientGraph(face, orientation), { resolveComponent: elongatedResolver })
+  const boom = result.links.find(l => l.logicalName === 'boom_1')
+  assert(boom, `boom_1 missing for face=${face} orientation=${orientation}`)
+  return boom!.localRpy
+}
+
+test('orientation matrix: horizontal works on every face (previously top-only)', () => {
+  const approxEq = (a: number, b: number) => Math.abs(a - b) < 1e-3
+  // top/bottom: long axis pitched into the face plane (along +X).
+  for (const face of ['top', 'bottom']) {
+    const [, p] = boomRpy(face, 'horizontal')
+    assert(approxEq(Math.abs(p), Math.PI / 2), `${face} horizontal: |pitch| should be 90°, got ${p}`)
+  }
+  // side faces: long axis along the outward normal.
+  const frontRpy = boomRpy('front', 'horizontal')
+  assert(approxEq(frontRpy[1], Math.PI / 2), `front horizontal: pitch 90°, got ${frontRpy[1]}`)
+  const backRpy = boomRpy('back', 'horizontal')
+  assert(approxEq(backRpy[1], -Math.PI / 2), `back horizontal: pitch -90°, got ${backRpy[1]}`)
+  const rightRpy = boomRpy('right', 'horizontal')
+  assert(approxEq(rightRpy[0], -Math.PI / 2), `right horizontal: roll -90°, got ${rightRpy[0]}`)
+  const leftRpy = boomRpy('left', 'horizontal')
+  assert(approxEq(leftRpy[0], Math.PI / 2), `left horizontal: roll 90°, got ${leftRpy[0]}`)
+})
+
+test('orientation matrix: horizontal+45 composes yaw (previously parsed as NaN and ignored)', () => {
+  const [, p, y] = boomRpy('top', 'horizontal+45')
+  assert(Math.abs(p - Math.PI / 2) < 1e-3, `pitch 90°, got ${p}`)
+  assert(Math.abs(y - Math.PI / 4) < 1e-3, `yaw 45°, got ${y}`)
+})
+
+test('orientation matrix: numeric yaw applies on side faces (previously ignored)', () => {
+  // front face normal is +X — a 30° yaw about it shows up as roll.
+  const [r] = boomRpy('front', '30')
+  assert(Math.abs(r - Math.PI / 6) < 1e-3, `front yaw 30°: roll should be 0.5236, got ${r}`)
+  // identity check: no orientation → no rotation.
+  const [r0, p0, y0] = boomRpy('front', undefined)
+  assert(Math.abs(r0) < 1e-6 && Math.abs(p0) < 1e-6 && Math.abs(y0) < 1e-6, 'front default stays unrotated')
+})
+
+test('orientation matrix: horizontal boom on front extends along +X by half its LENGTH', () => {
+  const result = compileAssembly(orientGraph('front', 'horizontal'), { resolveComponent: elongatedResolver })
+  const boom = result.links.find(l => l.logicalName === 'boom_1')!
+  // plate half-x 0.1 + boom half-length 0.1 → x ≈ 0.2 (not half-width 0.01).
+  assert(Math.abs(boom.localXyz[0] - 0.2) < 1e-3,
+    `boom x should clear by half-length (0.2), got ${boom.localXyz[0]}`)
+})
+
+// ── WS3 — link_geometry first-class resolution ──────────────────────────────
+
+const SHELL_PRIMS: LinkPrimitive[] = [
+  { name: 'carapace', shape: 'box', size_mm: [260, 180, 60], xyz_mm: [0, 0, 30] },
+  { name: 'head', shape: 'box', size_mm: [80, 120, 50], xyz_mm: [160, 0, 25] },
+]
+
+test('link_geometry: union AABB has non-zero center and covers all primitives', () => {
+  const union = linkGeometryUnionAabbMm(SHELL_PRIMS)
+  assert(union !== null, 'union exists')
+  // carapace spans x[-130,130] z[0,60]; head spans x[120,200] z[0,50]
+  // → union x[-130,200] y[-90,90] z[0,60]
+  assert(Math.abs(union!.center[0] - 35) < 1e-6, `center.x expected 35, got ${union!.center[0]}`)
+  assert(Math.abs(union!.half[0] - 165) < 1e-6, `half.x expected 165, got ${union!.half[0]}`)
+  assert(Math.abs(union!.center[2] - 30) < 1e-6, `center.z expected 30, got ${union!.center[2]}`)
+  assert(Math.abs(union!.half[2] - 30) < 1e-6, `half.z expected 30, got ${union!.half[2]}`)
+})
+
+test('link_geometry: face connectors sit on the union surfaces (center-offset aware)', () => {
+  const conns = linkGeometryConnectors(SHELL_PRIMS)
+  const top = conns.find(c => c.id === 'top')!
+  const bottom = conns.find(c => c.id === 'bottom')!
+  const front = conns.find(c => c.id === 'front')!
+  assert(Math.abs(top.origin_xyz_mm[2] - 60) < 1e-6, `top.z expected 60, got ${top.origin_xyz_mm[2]}`)
+  assert(Math.abs(bottom.origin_xyz_mm[2] - 0) < 1e-6, `bottom.z expected 0, got ${bottom.origin_xyz_mm[2]}`)
+  assert(Math.abs(front.origin_xyz_mm[0] - 200) < 1e-6, `front.x expected 200, got ${front.origin_xyz_mm[0]}`)
+})
+
+test('link_geometry: resolveComponent derives bounds/connectors from the shell, not the donor preset', () => {
+  const donor = {
+    id: 'structural_baseplate',
+    physical: { mass_kg: 0.45, bounding_box_mm: [200, 150, 5] },
+    mechanical_electrical: {},
+    mounting_logic: {},
+    // Donor authors a 'top' connector at its own 2.5mm surface — must NOT win.
+    connectors: [{ id: 'top', origin_xyz_mm: [0, 0, 2.5] as [number, number, number], axis_xyz: [0, 0, 1] as [number, number, number], type: 'planar' as const }],
+  }
+  const resolved = resolveSpec({ spec: donor, instance: { link_geometry: SHELL_PRIMS } })
+  assert(Math.abs(resolved.bounds.half[2] - 30) < 1e-6, `shell half.z expected 30mm, got ${resolved.bounds.half[2]}`)
+  assert(Math.abs(resolved.bounds.center[2] - 30) < 1e-6, `shell center.z expected 30mm, got ${resolved.bounds.center[2]}`)
+  const top = resolved.connectors.find(c => c.id === 'top')!
+  assert(Math.abs(top.origin_xyz_mm[2] - 60) < 1e-6,
+    `shell top connector expected z=60 (union surface), got ${top.origin_xyz_mm[2]} — donor connector must not override`)
+  assert(resolved.collision.source === 'urdf_primitives', 'collision source is urdf_primitives')
+  assert((resolved.collision.descriptors?.length ?? 0) === 2, 'one collision descriptor per primitive')
+})
+
+test('link_geometry: mass derives from primitive volume × shell density', () => {
+  const donor = {
+    id: 'structural_baseplate',
+    physical: { mass_kg: 0.45, bounding_box_mm: [200, 150, 5] },
+    mechanical_electrical: {},
+    mounting_logic: {},
+  }
+  const mass = resolveComponentMassKg(donor, { link_geometry: SHELL_PRIMS })
+  const volM3 = (260 * 180 * 60 + 80 * 120 * 50) * 1e-9
+  const expected = volM3 * LINK_GEOMETRY_DEFAULT_DENSITY_KG_M3
+  assert(Math.abs(mass - expected) < 1e-6, `expected ${expected}, got ${mass}`)
+  assert(mass > 0.45, 'shell mass must not silently stay at the donor preset mass')
 })
 
 test('compiler version is present and non-empty', () => {

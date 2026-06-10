@@ -76,6 +76,21 @@ function validateConnector(file, categoryName, componentId, connector, index, bb
   if (connector.engagement_depth_mm !== undefined && !isFiniteNumber(connector.engagement_depth_mm)) {
     error(file, `${prefix}.engagement_depth_mm must be a number when present`)
   }
+  // WS4: port classes are authored connector data, never guessed at runtime.
+  // Planar/point connectors default (mount_face/generic), but every
+  // cylindrical connector must declare its class explicitly — that's where
+  // shaft-vs-bore ambiguity lives. Run scripts/add_port_classes.py for new
+  // catalog entries.
+  const PORT_CLASSES = new Set(['mount_face', 'shaft', 'bore', 'rail', 'generic'])
+  if (connector.cls !== undefined && !PORT_CLASSES.has(connector.cls)) {
+    error(file, `${prefix}.cls must be one of ${Array.from(PORT_CLASSES).join(', ')}`)
+  }
+  if (connector.type === 'cylindrical' && connector.cls === undefined) {
+    error(file, `${prefix} is cylindrical but has no explicit cls (shaft/bore/generic) — run scripts/add_port_classes.py`)
+  }
+  if (connector.single !== undefined && typeof connector.single !== 'boolean') {
+    error(file, `${prefix}.single must be a boolean when present`)
+  }
   // Connector origin must lie within bbox half-extents (±0.5mm slack for
   // float noise). Connectors floating outside the AABB indicate a preset
   // bug — either bbox is undersized or the connector is mis-authored.

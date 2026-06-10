@@ -19,6 +19,8 @@
 
 import * as THREE from 'three'
 
+import type { AttachmentNodeClass } from './componentSpec.ts'
+
 export type ConnectorType = 'planar' | 'cylindrical' | 'point'
 export type MateType = 'fastened' | 'planar' | 'concentric'
 
@@ -31,6 +33,14 @@ export interface MateConnector {
    * read so authored values stay stable round-trip). */
   axis_xyz: [number, number, number]
   type: ConnectorType
+  /** Port class for compatibility checks (shaft↔bore, mount_face↔mount_face).
+   * WS4: ports derive FROM connectors, so the class is authored connector
+   * data — never guessed from component-id strings at runtime. Defaults by
+   * `type` when omitted: planar → mount_face, point → generic; cylindrical
+   * connectors in the catalog must author it explicitly (CI-enforced). */
+  cls?: AttachmentNodeClass
+  /** If true, only one child may attach at this connector (shafts/bores). */
+  single?: boolean
   /** Only meaningful for cylindrical; used for port-compat diagnostics. */
   diameter_mm?: number
   /** Signed depth (mm) the mating child should sink INTO the parent along

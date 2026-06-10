@@ -52,11 +52,11 @@ export interface ComponentVisualPresetLike {
 
 export interface ComponentVisualInstanceLike {
   length_mm?: number
-  // Novel-mode primitive composition: when present, replaces the preset's
+  // Authored primitive composition: when present, replaces the preset's
   // rendered visuals with a free-form union of authored boxes/cylinders/spheres.
   // See linkGeometry.ts for the wire format. Bounds / collision / connectors
-  // all derive from the AABB of the primitives.
-  link_geometry?: unknown
+  // all derive from the primitives.
+  link_geometry?: unknown[]
 }
 
 export interface ComponentVisualBounds {
@@ -85,6 +85,10 @@ export interface ResolvedComponentVisual {
     source: ComponentCollisionSource
     bounds: ComponentVisualBounds
     meshFile?: string
+    /** Per-primitive collision shapes (meters) for authored link_geometry
+     * bodies. When present, the URDF emitter writes one <collision> per
+     * entry instead of a single AABB box. */
+    descriptors?: UrdfVisualDesc[]
   }
   connectors: MateConnector[]
   ports: AttachmentNodeDef[]
@@ -135,7 +139,15 @@ export function resolveComponentVisual(args: ResolveComponentVisualArgs): Resolv
     ? { bounds: visualBounds, boundsSource: 'urdf_primitives' as const, scalePolicy: 'none' as const }
     : resolveCurrentBounds(preset, visuals)
   const meshMetadata = getMeshVisualMetadata(preset.id)
-  const collision = resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
+  // Authored body shells collide per-primitive (the visuals ARE the collision
+  // geometry); everything else keeps the Phase-5b single-AABB envelope.
+  const collision = customGeometry && customGeometry.length > 0 && visualBounds
+    ? {
+        source: 'urdf_primitives' as const,
+        bounds: visualBounds,
+        descriptors: customGeometry,
+      }
+    : resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
   const resolvedLogical = resolveComponent({ spec: preset, instance: args.instance, category: args.category })
   // When custom link_geometry is in play, suppress GLB/rich-visual paths so
   // the authored primitives are what gets rendered (otherwise the preset's

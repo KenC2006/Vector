@@ -9,6 +9,7 @@ import { resolveComponentVisual, resolveSplitServoVisual, visualBoundsFromDescri
 import type { ComponentVisualPresetLike, ResolvedComponentVisual } from './componentVisualResolver.ts'
 import type { UrdfVisualDesc } from './componentMeshes.ts'
 import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
+import { resolveFaceToPort } from './attachmentNodes.ts'
 import { componentVisualWorldQuat, renderVisualQuaternionForSource } from './richVisuals/index.ts'
 import { URDF_TO_SCENE_Q } from './coordinates.ts'
 import { setCachedMeshGroup, markMeshLoadInProgress, clearMeshLoadInProgress } from './richVisuals/meshCache.ts'
@@ -215,6 +216,10 @@ function assertResolvedParity(
 }
 
 function assertResolvedConnectorsAndPorts(): Case {
+  // WS4 contract: ports derive FROM connectors. The shaft class is authored
+  // connector data (cls: 'shaft'), and face resolution picks the functional
+  // port geometrically — the servo's `top` FACE resolves to the shaft_out
+  // port even though a planar `top` mount_face port coexists at the same z.
   const component = preset('actuator_servo_standard', [40, 20, 37])
   component.mounting_logic = { output: 'axial_shaft' }
   component.connectors = [{
@@ -222,13 +227,15 @@ function assertResolvedConnectorsAndPorts(): Case {
     origin_xyz_mm: [0, 0, 19],
     axis_xyz: [0, 0, 1],
     type: 'cylindrical',
+    cls: 'shaft',
+    single: true,
     diameter_mm: 6,
   }]
 
   const resolved = resolveComponentVisual({ preset: component, category: 'actuators' })
   const topConnector = resolved.connectors.find(c => c.id === 'top')
   const shaftConnector = resolved.connectors.find(c => c.id === 'shaft_out')
-  const topPort = resolved.ports.find(p => p.nodeId === 'top')
+  const shaftPort = resolved.ports.find(p => p.nodeId === 'shaft_out')
 
   if (!topConnector || !shaftConnector) {
     return {
@@ -237,11 +244,19 @@ function assertResolvedConnectorsAndPorts(): Case {
       reason: `missing connector(s): ids=${resolved.connectors.map(c => c.id).join(',')}`,
     }
   }
-  if (!topPort || topPort.cls !== 'shaft') {
+  if (!shaftPort || shaftPort.cls !== 'shaft' || !shaftPort.single) {
     return {
       name: 'resolver contract: connectors and ports are emitted',
       passed: false,
-      reason: `expected servo top port to be shaft, got ${topPort?.cls ?? 'missing'}`,
+      reason: `expected a single-use shaft port derived from shaft_out, got ${JSON.stringify(shaftPort)}`,
+    }
+  }
+  const topFacePort = resolveFaceToPort('top', resolved.ports)
+  if (topFacePort?.nodeId !== 'shaft_out') {
+    return {
+      name: 'resolver contract: connectors and ports are emitted',
+      passed: false,
+      reason: `expected face 'top' to resolve to the shaft_out port, got ${topFacePort?.nodeId ?? 'none'}`,
     }
   }
   if (resolved.connectors.length < 7 || shaftConnector.origin_xyz_mm[2] !== 19) {

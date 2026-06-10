@@ -24,6 +24,7 @@ import { quatToRpy, rpyToQuat } from './rotationIO'
 import { resolveComponentVisual, resolveSplitServoVisual, visualBoundsFromDescriptors } from './componentVisualResolver'
 import type { ComponentVisualBounds, ResolvedComponentVisual } from './componentVisualResolver'
 import { isParametricSpec, resolveComponent, resolveComponentBboxMm, resolveComponentMassKg } from './componentResolver.ts'
+import { hasLinkGeometry } from './linkGeometry.ts'
 import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
 import { urdfVecToSceneVec, URDF_TO_SCENE_Q } from './coordinates.ts'
 import { validateTopology as runValidateTopology } from './topologyValidation.ts'
@@ -2201,15 +2202,21 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     link.appendChild(collision)
   }
 
-  // Phase 5b: URDF collision is always the canonical AABB envelope the placement
+  // Phase 5b: URDF collision is the canonical AABB envelope the placement
   // compiler reads (resolved.collision.bounds). MJCF inherits the same envelope,
   // so contact and placement agree by construction. The authored mesh file is
   // still tracked on the resolver (and used for the rich visual), but it is
   // intentionally NOT emitted as a collision shape — its convex hull can drift
   // from the AABB by up to the 15 % collision-divergence ceiling, which would
   // mean MuJoCo contacts wouldn't line up with where children were placed.
+  //
+  // WS3 exception: authored link_geometry bodies carry per-primitive collision
+  // descriptors — emit one <collision> per primitive so MJCF gets the real
+  // silhouette (a humanoid torso with spread shoulders must not collide as one
+  // giant box). The placement compiler reads the same union-AABB bounds these
+  // descriptors derive from, so placement and contact still agree.
   function addResolvedCollisionElements(doc: Document, link: Element, resolved: ResolvedComponentVisual) {
-    addBoundsCollisionElement(doc, link, resolved.collision.bounds)
+    addResolvedCollisionSourceElements(doc, link, resolved.collision, [])
   }
 
   function addResolvedCollisionSourceElements(
@@ -2218,6 +2225,10 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     collision: ResolvedComponentVisual['collision'],
     _primitiveVisuals: UrdfVisualDesc[],
   ) {
+    if (collision.source === 'urdf_primitives' && collision.descriptors?.length) {
+      for (const desc of collision.descriptors) addCollisionElement(doc, link, desc)
+      return
+    }
     addBoundsCollisionElement(doc, link, collision.bounds)
   }
 
@@ -3968,7 +3979,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           componentId,
           bounds: { half: [b.hx, b.hy, b.hz], center: [b.cx, b.cy, b.cz], shape: b.shape },
           connectors: resolveComponentConnectors(preset, instance),
-          presetConnectors: preset.connectors,
+          // Authored shells: the face path's connector-snap must target the
+          // union faces, not the donor preset's authored surfaces.
+          presetConnectors: hasLinkGeometry(instance)
+            ? resolveComponentConnectors(preset, instance)
+            : preset.connectors,
           assembledOuterRadiusM: typeof preset.mounting_logic?.assembled_outer_radius_mm === 'number'
             ? preset.mounting_logic.assembled_outer_radius_mm / 1000 : undefined,
           parametricLengthMm: (instance?.length_mm && isParametricSpec(preset))

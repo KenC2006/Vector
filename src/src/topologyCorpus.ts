@@ -77,6 +77,9 @@ function completeComponent(c: AssemblyComponentInput): AssemblyComponent {
     attach_connector: c.attach_connector,
     mate_connector: c.mate_connector,
     mate_type: c.mate_type,
+    link_geometry: c.link_geometry,
+    attach_primitive: c.attach_primitive,
+    attach_anchor: c.attach_anchor,
   }
 }
 
@@ -427,6 +430,73 @@ const fixtures: Fixture[] = [
       components: [
         { link_name: 'plate', component_id: 'structural_baseplate',      attach_to: null },
         { link_name: 'ext1',  component_id: 'structural_extrusion_2020', attach_to: 'plate', attach_face: 'top', length_mm: 100 },
+      ],
+    },
+  },
+
+  // Primitive anchors (WS5) ────────────────────────────────────────────────
+  {
+    name: 'PRIMITIVE_ANCHOR: valid anchor on a named primitive passes',
+    expected_pass: true,
+    forbidden_errors: ['[BAD_PRIMITIVE_REF]', '[BAD_ANCHOR]', '[PRIMITIVE_ON_NON_CAD_BODY]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate', attach_to: null,
+          link_geometry: [
+            { name: 'shoulder_l', shape: 'cylinder', radius_mm: 25, length_mm: 60, xyz_mm: [0, -115, 230], rpy: [1.5708, 0, 0] },
+          ] },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'body',
+          attach_primitive: 'shoulder_l', attach_anchor: '+axis_end',
+          attach_face: 'left', joint_type: 'revolute', joint_axis: 'y' },
+      ],
+    },
+  },
+  {
+    name: 'BAD_PRIMITIVE_REF: typo in primitive name → hard error with closest-match hint',
+    expected_pass: false,
+    // formatStructuredDiagnostic folds suggested_repair into the error string,
+    // so the closest-match hint is assertable as a plain substring.
+    expected_errors: ['[BAD_PRIMITIVE_REF]', 'shoulder_l'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate', attach_to: null,
+          link_geometry: [
+            { name: 'shoulder_l', shape: 'cylinder', radius_mm: 25, length_mm: 60 },
+          ] },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'body',
+          attach_primitive: 'sholder_l', attach_anchor: '+axis_end',
+          attach_face: 'left', joint_type: 'revolute', joint_axis: 'y' },
+      ],
+    },
+  },
+  {
+    name: 'BAD_ANCHOR: pole anchor on a box → hard error listing valid anchors',
+    expected_pass: false,
+    expected_errors: ['[BAD_ANCHOR]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate', attach_to: null,
+          link_geometry: [{ name: 'chest', shape: 'box', size_mm: [180, 100, 260] }] },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'body',
+          attach_primitive: 'chest', attach_anchor: '+z_pole',
+          attach_face: 'top', joint_type: 'revolute', joint_axis: 'y' },
+      ],
+    },
+  },
+  {
+    name: 'PRIMITIVE_ON_NON_CAD_BODY: attach_primitive on a plain preset → hard error',
+    expected_pass: false,
+    expected_errors: ['[PRIMITIVE_ON_NON_CAD_BODY]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate', attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'plate',
+          attach_primitive: 'chest', attach_anchor: '+z_face',
+          attach_face: 'top', joint_type: 'revolute', joint_axis: 'y' },
       ],
     },
   },

@@ -48,9 +48,25 @@ export function isFootPadComponentId(componentId: string): boolean {
   return resolverIsFootPadComponentId(componentId)
 }
 
+const FACE_NORMALS: Record<string, [number, number, number]> = {
+  top: [0, 0, 1], bottom: [0, 0, -1],
+  front: [1, 0, 0], back: [-1, 0, 0],
+  right: [0, 1, 0], left: [0, -1, 0],
+}
+
+const PORT_CLASS_PRIORITY: Record<string, number> = {
+  shaft: 0, bore: 1, rail: 2, mount_face: 3, generic: 4,
+}
+
 /**
- * Resolve a face name ("top", "front", etc.) to the corresponding attachment node.
- * Returns the node's position offset from the component center.
+ * Resolve a face name ("top", "front", etc.) to the corresponding attachment
+ * node. WS4: ports derive from connectors, so a face can host several
+ * co-located ports (a servo's planar `top` AND its cylindrical `shaft_out`).
+ * Selection is geometric: among ports whose axis is parallel to the face's
+ * outward normal, prefer functional classes (shaft > bore > rail >
+ * mount_face), tie-broken by reach along the normal. This reproduces the old
+ * "servo/motor/drivetrain tops are shafts" behavior from authored connector
+ * data alone — no component-id string matching.
  */
 export function resolveFaceToPort(
   face: string,
@@ -58,17 +74,34 @@ export function resolveFaceToPort(
 ): AttachmentNodeDef | undefined {
   if (face === 'coaxial') {
     return nodes.find(n => n.nodeId === 'hub_bore')
-      ?? nodes.find(n => n.cls === 'shaft')
       ?? nodes.find(n => n.cls === 'bore')
+      ?? nodes.find(n => n.cls === 'shaft')
       ?? nodes.find(n => n.nodeId === 'top')
   }
-  const faceToNodeId: Record<string, string> = {
-    'top': 'top', 'bottom': 'bottom',
-    'front': 'x_plus', 'back': 'x_minus',
-    'right': 'y_plus', 'left': 'y_minus',
+  const normal = FACE_NORMALS[face] ?? FACE_NORMALS.top
+  const candidates = nodes.filter(n => {
+    const axis = n.kinematic?.axis_xyz
+    if (!axis) return n.nodeId === face
+    const len = Math.hypot(axis[0], axis[1], axis[2])
+    if (len < 1e-9) return n.nodeId === face
+    const dot = (axis[0] * normal[0] + axis[1] * normal[1] + axis[2] * normal[2]) / len
+    return Math.abs(dot) > 0.999
+  })
+  if (candidates.length === 0) {
+    return nodes.find(n => n.nodeId === face)
   }
-  const nodeId = faceToNodeId[face] || 'top'
-  return nodes.find(n => n.nodeId === nodeId)
+  const reach = (n: AttachmentNodeDef) =>
+    n.origin_xyz[0] * normal[0] + n.origin_xyz[1] * normal[1] + n.origin_xyz[2] * normal[2]
+  // Only ports on the face's outward side compete (within 2mm of the plane
+  // through the farthest port — drops the OPPOSITE face's port, which is also
+  // axis-parallel).
+  const maxReach = Math.max(...candidates.map(reach))
+  const onFace = candidates.filter(n => reach(n) >= maxReach - 0.002)
+  onFace.sort((a, b) =>
+    (PORT_CLASS_PRIORITY[a.cls] ?? 9) - (PORT_CLASS_PRIORITY[b.cls] ?? 9)
+    || reach(b) - reach(a),
+  )
+  return onFace[0]
 }
 
 export function nodeOccupied(

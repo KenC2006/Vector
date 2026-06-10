@@ -64,6 +64,13 @@ export interface AssemblyComponent {
    * Bounds/collision/connectors auto-derive from the primitives. See
    * linkGeometry.ts for the wire format. */
   link_geometry?: unknown[]
+  /** Primitive-anchor placement: name of a primitive on the PARENT's
+   * link_geometry that this child mounts on. Pair with attach_anchor.
+   * Validated hard (BAD_PRIMITIVE_REF) — never a silent fallthrough. */
+  attach_primitive?: string
+  /** Anchor on the named primitive's real surface — box ±x/y/z_face,
+   * cylinder ±axis_end / tangent_±x|y|z, sphere ±x/y/z_pole. */
+  attach_anchor?: string
 }
 
 export interface AssemblyGraph {

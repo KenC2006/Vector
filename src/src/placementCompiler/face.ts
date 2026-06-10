@@ -8,7 +8,9 @@
 // All math is otherwise verbatim from the original — bit-identical output is
 // the parity gate for sub-phase 3b.4 (frontend cutover).
 
+import * as THREE from 'three'
 import { isDrivetrainComponentId, isTireComponentId } from '../componentResolver.ts'
+import { quatToRpy, rpyToQuat } from '../rotationIO.ts'
 import type { MateConnector } from '../mateConnectors.ts'
 import { componentIdFromLinkName } from './componentNaming.ts'
 import {
@@ -38,6 +40,57 @@ export interface FacePlacementHints {
 export interface FacePlacementResult {
   xyz: string
   rpy: string
+}
+
+/** Parsed `orientation` grammar (WS6). Accepted forms:
+ *  - 'auto' / '' / undefined → engine default (vertical)
+ *  - 'vertical'              → explicit default
+ *  - 'horizontal'            → long axis rotated into/along the face
+ *  - 'horizontal+30'         → horizontal, then 30° yaw about the face normal
+ *  - '45' / '-30'            → yaw about the face normal only
+ *  Previously 'horizontal+N' parsed as NaN and side-face yaw was ignored —
+ *  documented controls that silently did nothing. */
+export interface ParsedOrientation {
+  horizontal: boolean
+  yawDeg: number
+  auto: boolean
+}
+
+const FACE_NORMAL: Record<string, [number, number, number]> = {
+  top: [0, 0, 1], bottom: [0, 0, -1],
+  front: [1, 0, 0], back: [-1, 0, 0],
+  right: [0, 1, 0], left: [0, -1, 0],
+}
+
+/** Compose "spin about the face's outward normal" with a base rotation,
+ * returning a URDF rpy string. q = Q(normal, spin) · Q(baseRpy). */
+function composeNormalSpin(
+  normal: [number, number, number],
+  spinRad: number,
+  baseRpy: [number, number, number],
+): string {
+  const qBase = rpyToQuat(baseRpy)
+  if (spinRad === 0) {
+    const [r, p, y] = quatToRpy(qBase)
+    return `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`
+  }
+  const qSpin = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(normal[0], normal[1], normal[2]), spinRad,
+  )
+  const [r, p, y] = quatToRpy(qSpin.multiply(qBase))
+  return `${r.toFixed(4)} ${p.toFixed(4)} ${y.toFixed(4)}`
+}
+
+export function parseOrientation(raw: string | null | undefined): ParsedOrientation {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (!v || v === 'auto') return { horizontal: false, yawDeg: 0, auto: true }
+  if (v === 'vertical') return { horizontal: false, yawDeg: 0, auto: false }
+  if (v === 'horizontal') return { horizontal: true, yawDeg: 0, auto: false }
+  const combo = v.match(/^horizontal\+(-?\d+(?:\.\d+)?)$/)
+  if (combo) return { horizontal: true, yawDeg: Number(combo[1]), auto: false }
+  const n = Number(v)
+  if (Number.isFinite(n)) return { horizontal: false, yawDeg: n, auto: false }
+  return { horizontal: false, yawDeg: 0, auto: true }
 }
 
 /** Pure face-mount placement.
@@ -149,27 +202,52 @@ export function computeFacePlacement(
     }
   }
 
-  const orientDeg = parseFloat(orientation)
-  const hasNumericOrient = !isNaN(orientDeg) && orientDeg !== 0
+  const parsedOrient = parseOrientation(orientation)
+  const yawRad0 = parsedOrient.yawDeg * Math.PI / 180
+  const hasNumericOrient = yawRad0 !== 0
+  const orientDeg = parsedOrient.yawDeg
+  // 'horizontal' rotates the child's LONG axis out of the default vertical:
+  //  - top/bottom faces: long axis lies flat in the face plane (along +X,
+  //    then yawed about the face normal) — booms, rails, flat-mounted tubes.
+  //  - side faces: long axis extends OUTWARD along the face normal — tails,
+  //    horizontal booms off a body side.
+  const wantsHorizontal = parsedOrient.horizontal && isChildElongated
+    && [childX, childY, childZ].indexOf([childX, childY, childZ].slice().sort((a, b) => a - b)[2]) === 2
 
-  let shouldRotateHorizontal = false
-  if (isChildElongated) {
-    if (orientation === 'horizontal') {
-      shouldRotateHorizontal = true
-    }
+  if (wantsHorizontal && (face === 'top' || face === 'bottom')) {
+    const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
+    const sign = face === 'top' ? 1 : -1
+    const baseZ = connOriginM ? connOriginM[2] : sign * parent.hz
+    const oz = baseZ + sign * (vExtent / 2 + gap) - sign * engagementM
+    const yaw = ` ${yawRad0.toFixed(4)}`
+    return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
   }
 
-  if (shouldRotateHorizontal && face === 'top') {
-    const dims = [childX, childY, childZ]
-    const sortedDims = [...dims].sort((a, b) => a - b)
-    const longest = sortedDims[2]
-    const longestAxisIdx = dims.indexOf(longest)
-    if (longestAxisIdx === 2) {
-      const vExtent = verticalExtentForRotation(childX, childY, childZ, 0, Math.PI / 2)
-      const oz = (connOriginM ? connOriginM[2] : parent.hz) + vExtent / 2 + gap - engagementM
-      const yaw = hasNumericOrient ? ` ${(orientDeg * Math.PI / 180).toFixed(4)}` : ' 0'
-      return { xyz: `${tu.toFixed(4)} ${tv.toFixed(4)} ${oz.toFixed(4)}`, rpy: `0 1.5708${yaw}` }
+  // Side-face horizontal: child +Z (long axis) maps onto the face's outward
+  // normal; contact extent along the normal is the child's half-LENGTH. Yaw
+  // spins about the same normal (consistent with the documented "yaw rotation
+  // around the face normal" rule). elevation_angle is a vertical-mount
+  // concept and is not composed here.
+  if (wantsHorizontal && (face === 'front' || face === 'back' || face === 'left' || face === 'right')) {
+    const halfLen = childBodyHZ
+    const normal = FACE_NORMAL[face]
+    const baseRot: Record<string, [number, number, number]> = {
+      front: [0, Math.PI / 2, 0],    // +Z → +X
+      back:  [0, -Math.PI / 2, 0],   // +Z → -X
+      right: [-Math.PI / 2, 0, 0],   // +Z → +Y
+      left:  [Math.PI / 2, 0, 0],    // +Z → -Y
     }
+    const rpyStr = composeNormalSpin(normal, yawRad0, baseRot[face])
+    if (face === 'front' || face === 'back') {
+      const sign = face === 'front' ? 1 : -1
+      const baseX = connOriginM ? connOriginM[0] : sign * parentBodyHX
+      const ox = baseX + sign * (halfLen + gap) - sign * engagementM
+      return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${tv.toFixed(4)}`, rpy: rpyStr }
+    }
+    const sign = face === 'right' ? 1 : -1
+    const baseY = connOriginM ? connOriginM[1] : sign * parentBodyHY
+    const oy = baseY + sign * (halfLen + gap) - sign * engagementM
+    return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${tv.toFixed(4)}`, rpy: rpyStr }
   }
 
   const elevRad = elevationAngleDeg * (Math.PI / 180)
@@ -216,28 +294,36 @@ export function computeFacePlacement(
     }
     case 'front': {
       const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
-      const rpy = elevRad !== 0 ? `0 ${(-elevRad).toFixed(4)} 0` : '0 0 0'
+      const rpy = (elevRad !== 0 || hasNumericOrient)
+        ? composeNormalSpin(FACE_NORMAL.front, yawRad0, [0, -elevRad, 0])
+        : '0 0 0'
       const childContact = childConnOriginM ? -childConnOriginM[0] : childBodyHX
       const ox = (connOriginM ? connOriginM[0] : parentBodyHX) + childContact + gap - engagementM
       return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
     }
     case 'back': {
       const zOffset = tv + (elevRad !== 0 ? parentBodyHX * Math.sin(elevRad) : 0)
-      const rpy = elevRad !== 0 ? `0 ${elevRad.toFixed(4)} 0` : '0 0 0'
+      const rpy = (elevRad !== 0 || hasNumericOrient)
+        ? composeNormalSpin(FACE_NORMAL.back, yawRad0, [0, elevRad, 0])
+        : '0 0 0'
       const childContact = childConnOriginM ? childConnOriginM[0] : childBodyHX
       const ox = (connOriginM ? connOriginM[0] : -parentBodyHX) - childContact - gap + engagementM
       return { xyz: `${ox.toFixed(4)} ${tu.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
     }
     case 'right': {
       const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
-      const rpy = elevRad !== 0 ? `${elevRad.toFixed(4)} 0 0` : '0 0 0'
+      const rpy = (elevRad !== 0 || hasNumericOrient)
+        ? composeNormalSpin(FACE_NORMAL.right, yawRad0, [elevRad, 0, 0])
+        : '0 0 0'
       const childContact = childConnOriginM ? -childConnOriginM[1] : childBodyHY
       const oy = (connOriginM ? connOriginM[1] : parentBodyHY) + childContact + gap - engagementM
       return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }
     }
     case 'left': {
       const zOffset = tv + (elevRad !== 0 ? parentBodyHY * Math.sin(elevRad) : 0)
-      const rpy = elevRad !== 0 ? `${(-elevRad).toFixed(4)} 0 0` : '0 0 0'
+      const rpy = (elevRad !== 0 || hasNumericOrient)
+        ? composeNormalSpin(FACE_NORMAL.left, yawRad0, [-elevRad, 0, 0])
+        : '0 0 0'
       const childContact = childConnOriginM ? childConnOriginM[1] : childBodyHY
       const oy = (connOriginM ? connOriginM[1] : -parentBodyHY) - childContact - gap + engagementM
       return { xyz: `${tu.toFixed(4)} ${oy.toFixed(4)} ${zOffset.toFixed(4)}`, rpy }

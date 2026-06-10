@@ -19,6 +19,12 @@
 // urdfAssembly pipeline.
 
 import { resolveFaceToPort } from './attachmentNodes.ts'
+import {
+  hasLinkGeometry,
+  primitiveNames,
+  anchorNamesForPrimitive,
+  type LinkPrimitive,
+} from './linkGeometry.ts'
 import type { AssemblyComponent } from './urdfAssembly.ts'
 import {
   isDrivetrainComponentId,
@@ -144,6 +150,32 @@ function portClassAtFace(preset: ValidationPreset, face: string): string | undef
   return resolveFaceToPort(face, portsForComponent(preset))?.cls
 }
 
+/** Smallest-edit-distance candidate for "did you mean" hints. */
+function _closestName(target: string, candidates: string[]): string | null {
+  let best: string | null = null
+  let bestDist = Infinity
+  for (const cand of candidates) {
+    const d = _levenshtein(target.toLowerCase(), cand.toLowerCase())
+    if (d < bestDist) { bestDist = d; best = cand }
+  }
+  return bestDist <= Math.max(2, Math.floor(target.length / 2)) ? best : null
+}
+
+function _levenshtein(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)])
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+  }
+  return dp[a.length][b.length]
+}
+
 // ── Shared port-compatibility check ─────────────────────────────────────────
 // Single source of truth for shaft↔mount_face pairing, used by BOTH edit
 // surfaces: validateTopologyStructured (design_robot batch path) and
@@ -244,6 +276,60 @@ export function validateTopologyStructured(
       message: `Multiple root components: ${roots.map(r => r.link_name).join(', ')}.`,
       suggested_repair: 'exactly one component may have attach_to: null — attach the others to it',
     })
+  }
+
+  // Primitive-anchor references (WS5). Hard errors — an unresolvable
+  // primitive/anchor name would otherwise fall through to AABB-face placement
+  // and scatter the child somewhere meaningless (the documented humanoid
+  // "servos at chest center" failure).
+  for (const comp of components) {
+    const hasPrim = typeof comp.attach_primitive === 'string' && comp.attach_primitive.trim() !== ''
+    const hasAnchor = typeof comp.attach_anchor === 'string' && comp.attach_anchor.trim() !== ''
+    if (!hasPrim && !hasAnchor) continue
+    if (!hasPrim || !hasAnchor) {
+      out.push({
+        severity: 'error', code: 'BAD_PRIMITIVE_REF', link_name: comp.link_name,
+        message: `${comp.link_name} sets ${hasPrim ? 'attach_primitive' : 'attach_anchor'} without its partner field.`,
+        suggested_repair: 'primitive-anchor placement needs BOTH attach_primitive (a named primitive on the parent) AND attach_anchor',
+      })
+      continue
+    }
+    const parent = comp.attach_to ? byName.get(comp.attach_to) : undefined
+    if (!parent) continue   // UNKNOWN_PARENT already covers
+    if (!hasLinkGeometry(parent)) {
+      out.push({
+        severity: 'error', code: 'PRIMITIVE_ON_NON_CAD_BODY', link_name: comp.link_name,
+        message:
+          `${comp.link_name} uses attach_primitive="${comp.attach_primitive}" but parent ` +
+          `${parent.link_name} has no link_geometry.`,
+        suggested_repair: `use attach_face/attach_connector on ${parent.link_name}, or give it a link_geometry body`,
+      })
+      continue
+    }
+    const prims = parent.link_geometry as LinkPrimitive[]
+    const names = primitiveNames(prims)
+    const prim = prims.find(p => p.name === comp.attach_primitive)
+    if (!prim) {
+      const closest = _closestName(comp.attach_primitive!, names)
+      out.push({
+        severity: 'error', code: 'BAD_PRIMITIVE_REF', link_name: comp.link_name,
+        message:
+          `${comp.link_name}: attach_primitive="${comp.attach_primitive}" is not a named ` +
+          `primitive on ${parent.link_name}. Available: [${names.join(', ') || 'none — primitives need name fields'}].`,
+        suggested_repair: closest ? `did you mean "${closest}"?` : `name the target primitive in ${parent.link_name}'s link_geometry`,
+      })
+      continue
+    }
+    const validAnchors = anchorNamesForPrimitive(prim)
+    if (!validAnchors.includes(comp.attach_anchor!)) {
+      out.push({
+        severity: 'error', code: 'BAD_ANCHOR', link_name: comp.link_name,
+        message:
+          `${comp.link_name}: attach_anchor="${comp.attach_anchor}" is not valid for ` +
+          `${prim.shape} primitive "${comp.attach_primitive}".`,
+        suggested_repair: `use one of [${validAnchors.join(', ')}]`,
+      })
+    }
   }
 
   // Cycles / disconnected components (topological sort must complete).

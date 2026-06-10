@@ -1125,8 +1125,12 @@ class JSONRPCServer:
             raise ValueError("Parameter 'urdf_content' must be a string")
 
         # Model whitelist — reject unknown IDs by falling back to Sonnet
-        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"}
-        model = params.get("model") or "claude-sonnet-4-6"
+        # VECTOR_AI_MODEL overrides the default; env-supplied defaults are
+        # trusted (joins the allowed set) while client-supplied values stay
+        # whitelisted.
+        _env_model = os.environ.get("VECTOR_AI_MODEL")
+        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"} | ({_env_model} if _env_model else set())
+        model = params.get("model") or _env_model or "claude-sonnet-4-6"
         if model not in _ALLOWED_MODELS:
             print(f"[ai_edit] Unknown model '{model}', falling back to claude-sonnet-4-6", file=sys.stderr)
             model = "claude-sonnet-4-6"
@@ -1250,8 +1254,9 @@ class JSONRPCServer:
         kinematic_context = params.get("kinematic_context")
         tool_results = params.get("tool_results")
 
-        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"}
-        model = params.get("model") or "claude-sonnet-4-6"
+        _env_model = os.environ.get("VECTOR_AI_MODEL")
+        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"} | ({_env_model} if _env_model else set())
+        model = params.get("model") or _env_model or "claude-sonnet-4-6"
         if model not in _ALLOWED_MODELS:
             model = "claude-sonnet-4-6"
 

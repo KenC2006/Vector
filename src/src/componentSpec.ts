@@ -56,6 +56,10 @@ export interface ComponentSpec {
 
 export interface ComponentInstanceSpec {
   length_mm?: number
+  /** Authored primitive composition (see linkGeometry.ts). When present, the
+   * resolver derives bounds, default face connectors, collision descriptors,
+   * and mass from the primitive union instead of the preset envelope. */
+  link_geometry?: unknown[]
 }
 
 export type AttachmentNodeClass =

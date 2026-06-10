@@ -84,7 +84,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 4.6
+              "diameter_mm": 4.6,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -169,7 +171,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 5.9
+              "diameter_mm": 5.9,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -255,7 +259,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -342,7 +348,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 12
+              "diameter_mm": 12,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -429,7 +437,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 10
+              "diameter_mm": 10,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -516,7 +526,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 14
+              "diameter_mm": 14,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -602,7 +614,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 5
+              "diameter_mm": 5,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -688,7 +702,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 6.35
+              "diameter_mm": 6.35,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -771,7 +787,8 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "generic"
             },
             {
               "id": "top",
@@ -854,7 +871,8 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "generic"
             },
             {
               "id": "top",
@@ -937,7 +955,8 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "generic"
             },
             {
               "id": "top",
@@ -1021,7 +1040,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 5.9
+              "diameter_mm": 5.9,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1106,7 +1127,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 4.6
+              "diameter_mm": 4.6,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1199,7 +1222,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 2
+              "diameter_mm": 2,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1287,7 +1312,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 3.17
+              "diameter_mm": 3.17,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1376,7 +1403,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 5
+              "diameter_mm": 5,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1464,7 +1493,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 3
+              "diameter_mm": 3,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1552,7 +1583,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 6
+              "diameter_mm": 6,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1640,7 +1673,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1728,7 +1763,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 1
+              "diameter_mm": 1,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1817,7 +1854,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 6
+              "diameter_mm": 6,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -1911,7 +1950,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 10
+              "diameter_mm": 10,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -1925,7 +1966,9 @@
                 0,
                 1
               ],
-              "type": "planar"
+              "type": "planar",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -2006,7 +2049,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 14
+              "diameter_mm": 14,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -2020,7 +2065,9 @@
                 0,
                 1
               ],
-              "type": "planar"
+              "type": "planar",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -2094,7 +2141,9 @@
                 0,
                 1
               ],
-              "type": "planar"
+              "type": "planar",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -2168,7 +2217,9 @@
                 0,
                 1
               ],
-              "type": "planar"
+              "type": "planar",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -2240,7 +2291,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 4
+              "diameter_mm": 4,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -2326,7 +2379,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 2
+              "diameter_mm": 2,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -2412,7 +2467,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 3.17
+              "diameter_mm": 3.17,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -3127,7 +3184,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 6
+              "diameter_mm": 6,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "mount_back",
@@ -3402,7 +3461,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 6
+              "diameter_mm": 6,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "mount_back",
@@ -5687,7 +5748,9 @@
                 -1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top_face",
@@ -7008,7 +7071,9 @@
                 0
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -7084,7 +7149,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -7359,7 +7426,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -7439,7 +7508,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 25
+              "diameter_mm": 25,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -7518,7 +7589,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -7603,7 +7676,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -7913,7 +7988,9 @@
                 -1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "shaft_out",
@@ -7928,7 +8005,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -8009,7 +8088,9 @@
                 -1
               ],
               "type": "cylindrical",
-              "diameter_mm": 5
+              "diameter_mm": 5,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "shaft_out",
@@ -8024,7 +8105,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -8103,7 +8186,9 @@
                 -1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "shaft_out",
@@ -8118,7 +8203,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 8
+              "diameter_mm": 8,
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "top",
@@ -8233,7 +8320,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 50
+              "diameter_mm": 50,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -8315,7 +8404,9 @@
                 1
               ],
               "type": "cylindrical",
-              "diameter_mm": 130
+              "diameter_mm": 130,
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "top",
@@ -9070,7 +9161,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "tread_outer",
@@ -9232,7 +9325,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "tread_outer",
@@ -9331,7 +9426,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "bore",
+              "single": true
             },
             {
               "id": "tread_outer",
@@ -9721,7 +9818,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -9796,7 +9895,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -9869,7 +9970,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -9942,7 +10045,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",
@@ -10019,7 +10124,9 @@
                 0,
                 1
               ],
-              "type": "cylindrical"
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
             },
             {
               "id": "bottom",

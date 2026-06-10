@@ -58,7 +58,7 @@ export function computeMatePlacement(
   childConnectors: MateConnector[],
   parentPresetBboxMm: { hxMm: number; hyMm: number; hzMm: number },
   multiChild: MatePlacementMultiChild | undefined,
-  options: { useMateConnectors: boolean },
+  options: { useMateConnectors: boolean; rotationRad?: number },
 ): MatePlacementResult | MatePlacementMiss {
   if (!options.useMateConnectors) return { miss: 'feature_disabled' }
   if (!hasMateConnectorFields(comp)) return { miss: 'no_mate_fields' }
@@ -84,7 +84,13 @@ export function computeMatePlacement(
     return { miss: 'unknown_mate_type', details: `mate_type="${mateType}" for ${comp.link_name}` }
   }
 
-  const childLocal = resolveMate(new THREE.Matrix4(), parentConn, childConn, mateType, {})
+  // WS6: numeric `orientation` yaw on a mate spins the child about the mate
+  // axis — the anchored-mount path uses this so e.g. a camera on a sphere
+  // pole can face a chosen direction.
+  const childLocal = resolveMate(
+    new THREE.Matrix4(), parentConn, childConn, mateType,
+    options.rotationRad ? { rotation_rad: options.rotationRad } : {},
+  )
   const pos = new THREE.Vector3()
   const quat = new THREE.Quaternion()
   const scl = new THREE.Vector3()

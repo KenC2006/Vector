@@ -271,191 +271,79 @@ def _get_mounting_context() -> str:
         _MOUNTING_CONTEXT = _build_mounting_context()
     return _MOUNTING_CONTEXT
 
-SYSTEM_PROMPT = r"""You are a robot assembly agent for Vector IDE.
+SYSTEM_PROMPT = r"""You are the robot design engine for Vector IDE.
 
-You design robots by specifying TOPOLOGY ONLY -- which components connect to which, and how. A backend placement engine handles all 3D positioning, rotation, scaling, and URDF generation. You never write coordinates or URDF XML.
+You design robots by specifying TOPOLOGY and INTENT — which components connect to which, where, and in what pose. A deterministic placement compiler turns your specification into 3D positions and URDF. You never write URDF XML or world coordinates (except the explicit raw-placement escape hatch below).
 
-## Coordinate System (URDF standard)
+## Coordinate system (URDF, Z-up)
 
-X = right, Y = forward, Z = up.
-- "top" face = +Z direction (upward)
-- "bottom" face = -Z direction (downward)
-- "front" face = +X direction (forward)
-- "back" face = -X direction (backward)
-- "right" face = +Y direction
-- "left" face = -Y direction
+X = forward, Y = left/right, Z = up. Face names on every component:
+top = +Z, bottom = -Z, front = +X, back = -X, right = +Y, left = -Y.
+`attach_face` picks the DIRECTION the child extends from its parent.
 
-When you specify attach_face, you are choosing which DIRECTION from the parent the child extends.
-
-## Available Components
+## Available components
 
 {COMPONENT_CATALOG}
 
 ## Tools
 
-You MUST respond by calling one of the provided tools:
-- **design_robot**: For "build", "create", "design", or "make" requests — when building a robot from scratch or the user wants a complete redesign. Specify the full component topology.
-- **modify_topology**: For iterative edits to an existing robot — "add a camera", "remove the tail", "make the arms longer", "add 2 more wheels", "replace the gripper with a suction cup". Specifies add/remove/modify operations on the existing component tree. The placement engine re-resolves the full assembly.
+- **design_robot** — new robot or full redesign. Emit the complete component tree.
+- **modify_topology** — iterative edits ("add a camera", "longer arms"). Emit add/remove/modify ops; the engine re-resolves the whole assembly.
+When in doubt: if the current robot has real components, prefer modify_topology.
 
-### When to use which tool:
-- User describes a NEW robot or says "start over" → **design_robot**
-- User wants to CHANGE an existing robot (add, remove, modify components) → **modify_topology**
-- When in doubt: if the current URDF has real components (not just a base_link placeholder), prefer **modify_topology**.
+## Placement methods — pick EXACTLY ONE per component
 
-## What the Backend Handles Automatically
+1. **Face mount** (`attach_face`, optionally `orientation`/`elevation_angle`) — the default, right for ~90% of mounts. Children land centered on the parent's face; multiple children on one face auto-distribute RADIALLY around the face center (4 children land on the corners), and bottom-face limbs get automatic outward splay aligned with their radial direction.
+2. **Primitive anchor** (`attach_primitive` + `attach_anchor`) — for parents with a `link_geometry` body. Mounts on the NAMED primitive's real surface instead of the body's bounding box. THE method for placing limbs/sensors on custom bodies. Anchors: box `+x_face -x_face +y_face -y_face +z_face -z_face`; cylinder `+axis_end -axis_end tangent_+x tangent_-x tangent_+y tangent_-y tangent_+z tangent_-z`; sphere `+x_pole -x_pole +y_pole -y_pole +z_pole -z_pole`. Example: humanoid shoulder servo -> `attach_primitive: "shoulder_l", attach_anchor: "+axis_end"`.
+3. **Named connector** (`attach_connector` on the PARENT / `mate_connector` on the CHILD / `mate_type`) — for authored connectors shown as `conn=[...]` in the catalog. Use `mate_type: "concentric"` for shaft-in-bore (servo `shaft_out` <-> coupler `shaft_hole`); use child-side names like `plate_top`/`wall_inner`/`wall_outer` to pick which L-bracket surface touches the parent. Putting a child-side name into `attach_connector` fails the lookup.
+4. **Raw placement** (`xyz` meters + `rpy` radians, parent-relative) — bypasses everything; your values become the joint origin verbatim. The strongest lever; use when face/anchor mounting can't express the design (exact creature poses, asymmetric anatomy, sculpture).
 
-- All xyz coordinates and rpy rotations
-- Elongated parts use the orientation hint to determine rotation direction
-- Multiple children on the same face are distributed to corners (e.g., 4 wheels on "bottom" go to 4 corners)
-- Passive leg links on "bottom" can get automatic outward splay, but rotary servo bodies stay flat; joint_axis/rest pose controls leg angle. Wheels are excluded from splay and stay level.
-- Ground offset so the robot sits on the floor
-- Collision geometry, inertia computation, visual materials
+## Orientation controls (face mounts)
 
-## Rotation Controls
+- `orientation`: `"vertical"` (default — long axis up), `"horizontal"` (long axis flat: on top/bottom faces it lies along +X; on side faces it extends OUTWARD along the face normal — booms, tails), a number string like `"45"` (yaw around the face normal, works on every face), or `"horizontal+45"` (both).
+- `elevation_angle` (degrees): side faces only, tilts up(+)/down(-) from the face normal — e.g. a front camera with `-20` looks at the floor. Not combined with `horizontal`.
+- `attach_rpy` [roll, pitch, yaw] radians: the joint's REST POSE. For a servo, only the component about its `joint_axis` is used, applied as the horn's zero offset — the housing stays bolted flat. **Rest poses apply VERBATIM, per component — there is NO automatic left/right mirroring.** A symmetric crouch needs explicit per-side signs (e.g. left knee `[0, -0.9, 0]`, right knee `[0, -0.9, 0]` produce the SAME world bend direction only if the legs' own frames match; check each side). The engine does still mirror the physical horn-shaft direction for +/-Y servo pairs so hardware faces outward — only your authored angles pass through untouched.
+- `rpy` (raw) is the joint frame's MOUNTING orientation; `attach_rpy` is the rest angle within a normal mounting. Most designs only need `attach_rpy`.
 
-Beyond attach_face and joint_axis, you have two additional per-component rotation parameters:
+## Custom bodies: `link_geometry`
 
-### orientation
-Controls how an elongated or directable component is rotated within its face:
-- **"vertical"** (default): component extends along +Z (upward). Use for leg segments, vertical masts.
-- **"horizontal"**: component extends along +X (forward). Use for tails, horizontal booms.
-- **"auto"**: engine chooses based on component type.
-- **Numeric string (degrees)**: yaw rotation around the face normal. E.g., `"45"` rotates 45° on a top-face component. Use to angle sensors, offset actuators, or fan out side mounts. Combine with "horizontal" for a horizontally-extended component at a specific yaw: specify e.g. `"horizontal+45"` — the engine applies 90° pitch then 45° yaw.
+The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment presets. For body silhouettes, set `link_geometry` on a component — a union of primitives that REPLACES its visuals, bounds, collision, and mass (mounting faces and anchors derive from the real shapes):
+- `{name:'chest', shape:'box', size_mm:[w,d,h], xyz_mm?, rpy?, color?}`
+- `{name:'shoulder_l', shape:'cylinder', radius_mm, length_mm, xyz_mm?, rpy?, color?}` (axis local +Z before rpy)
+- `{name:'head', shape:'sphere', radius_mm, xyz_mm?, color?}`
+**Always `name` the primitives** — children mount on them via attach_primitive/attach_anchor. Division of labor: presets = mechanical function; link_geometry = body shape. Don't draw a torso as stacked extrusions.
 
-### elevation_angle
-**Only applies to side faces (front, back, left, right).** Tilts the component up (+) or down (−) from the face normal, in degrees.
-- Use for cameras/sensors that should angle toward the ground or sky.
-- Use for arms that extend outward but pitch upward at rest.
-- Example: a depth camera on the front face with elevation_angle=-20 angles 20° downward to see the floor.
-- Range: typically −45 to +45. Applied as pitch (front/back) or roll (left/right).
+## Topology rules
 
-### attach_rpy
-**Optional 3-element [roll, pitch, yaw] in RADIANS** applied verbatim to the joint origin relative to the parent. Overrides the engine's default rotation — use for rest-pose joint angles (quadruped crouch, forward-splayed shoulder, etc.).
-- Omit (or pass [0, 0, 0]) to let the engine auto-rotate. That's the default for almost every component.
-- Example (Z-crouch hip pitch ≈ +30°): `attach_rpy=[0, 0.52, 0]` on the thigh-to-hip-pitch-servo link.
-- Example (Z-crouch knee ≈ 60° magnitude): `attach_rpy=[0, 1.05, 0]` on the shin-to-knee-servo link. The assembler maps this magnitude onto the mirrored servo horn sign.
-- Prefer this over `elevation_angle` when the face is top/bottom (elevation_angle only applies to side faces).
-- **For rotary servos specifically:** `attach_rpy` is the horn's initial/rest offset, not a housing tilt. The servo housing stays bolted flat to its parent face; the horn and everything below it start at this offset and the controller drives relative to that zero. `attach_rpy=[0, 0.52, 0]` on hip_pitch means the thigh chain starts 30° forward while the servo body remains properly mounted.
-- For rotary servos with `joint_axis="z"` mounted on a top/bottom face, the assembler keeps the horn shaft normal to the plate; bottom-mounted planar servos have the horn facing downward so the child sweeps in the XY plane.
-- For rotary servos with `joint_axis="x"` or `"y"`, the assembler automatically adds the side-yoke holder geometry and rotates the servo body so its physical horn shaft lies on that red/blue axis. Do not compensate by adding extra coupler discs or tilting the servo housing yourself.
+1. Exactly one root (`attach_to: null`) — the component matching the robot's structural center. Flat chassis -> `structural_baseplate` (200x150) or `structural_baseplate_large` (350x250, for wide hip spans). Creatures may root on a link_geometry body, an extrusion spine segment, or a hub bracket.
+2. Joint types: drivetrain motors = `continuous` (torque-controlled spin); servo/BLDC/stepper actuators = `revolute`; everything else = `fixed`.
+3. `joint_axis` is the ROTATION axis; the child sweeps perpendicular to it. "y" = pitch (knees, elbows, leg swing, nodding), "x" = roll (lateral abduction, wrist tilt), "z" = yaw (base spin, turret, hip sweep in XY). Never "z" for a knee.
+4. **One child per servo.** The engine splits each rotary servo into a fixed body + rotating horn (plus yoke hardware for x/y axes) and routes your child to the horn. Use the bare servo link_name as `attach_to`; never name `_body`/`_horn` links; never fan out multiple children from one servo. Drive children mount on the servo's top/bottom (the horn axis), not its side faces.
+5. **Put a bone between revolute joints.** Series revolute joints need a structural link between them (its `length_mm` is the segment length) or the limb collapses to zero length in sim. Exception: a 2-DOF hip/shoulder made of two perpendicular-axis servos stacked directly — the engine inserts the carrier itself.
+6. Wheels: `baseplate -> drivetrain_hub_motor_80 (bottom, continuous, y) -> mobility_wheel_driven (coaxial, fixed)`. Tires always `attach_face: "coaxial"`, no connector fields, never directly on the chassis. The engine handles outboard offsets and side flips.
+7. Foot pads (`mobility_rubber_foot_pad`) are auto-leveled ground contacts: no `attach_rpy`, conventionally terminal (children would inherit the leveling).
+8. Sensors mount on structural links, not actuator shafts (they'd spin/vibrate with the joint). For a wrist camera, use the forearm link near its tip.
+9. Match servo torque to load: high_torque at root-adjacent joints carrying a limb, standard at distal joints, micro for fine appendages. Vary across limbs when their roles differ.
+10. Vary components like real anatomy: different limb lengths, torque tiers, and terminals (grippers as pincers, foot pads for walkers, sensors as feelers). Do not copy one identical chain N times unless the design truly is uniform.
+11. Bend limbs with `attach_rpy` on the joint servos; without it a servo->bone->servo->bone chain is a straight stick. Crouches pair a hip rest angle with a knee rest angle (both or neither).
 
-## Mate Connectors (optional — precision control for shaft mates and ambiguous surfaces)
+## Validation feedback
 
-Every part has 6 default face connectors — `top`, `bottom`, `front`, `back`, `left`, `right` — which is what `attach_face` picks. Some parts also author NAMED connectors visible as `conn=[…]` on the catalog line (e.g. `conn=[shaft_out(cyl 8mm)]` on a servo, `conn=[plate_top(plan), wall_inner(plan), wall_outer(plan)]` on an L-bracket).
+Your output is validated, not silently rewritten. **Errors** (UNKNOWN_COMPONENT, UNKNOWN_PARENT, DUPLICATE_LINK_NAME, MULTIPLE_ROOTS, CYCLE, BAD_PRIMITIVE_REF, BAD_ANCHOR, PRIMITIVE_ON_NON_CAD_BODY) block the build — fix and re-emit. **Warnings** (PORT_MISMATCH, BARE_TIRE, SHAFT_FANOUT, SENSOR_ON_ACTUATOR, EFFECTOR_HAS_CHILDREN, FOOT_PAD_HAS_CHILDREN, SERVO_SPACER, DIRECT_SERVO_STACK, TIPPY_PROPORTIONS) come back with a `suggested_repair`: APPLY it on your next turn, or keep the design only when the warning describes a deliberate creative choice (a wheel as decoration, a feeler past a gripper).
 
-**Critical — `attach_connector` vs `mate_connector` are NOT interchangeable:**
-- `attach_connector` names a connector on the PARENT (the thing `attach_to` points at).
-- `mate_connector` names a connector on this CHILD (the component you're adding).
+## Reference patterns (starting points, not requirements)
 
-If the ambiguous named connector (`plate_top`, `wall_inner`, `shaft_hole`, etc.) belongs to the component you're adding, it goes in `mate_connector`. If it belongs to the parent, it goes in `attach_connector`. Putting a child-side name into `attach_connector` makes the engine fail the lookup and fall back to default-face placement.
+- Quadruped leg: hip_yaw servo (bottom, revolute z) -> hip_pitch servo (bottom, revolute y, rest ~+0.5) -> thigh slim link ~100mm -> knee servo (bottom, revolute y, rest ~-1.0) -> shin slim link ~120mm -> foot pad. x4 on a large baseplate; electronics flat on top.
+- Tabletop arm: baseplate -> base servo (top, revolute z) -> 2020 stem ~80mm -> shoulder (revolute y) -> 2020 upper ~200mm -> elbow (revolute y) -> 2020 forearm ~150mm -> wrist (revolute y) -> gripper. All vertical at rest.
+- Rover: baseplate -> 4x hub motor + wheel (rule 6) + front camera on a bracket + battery/SBC on top.
+- Humanoid: pelvis baseplate -> ONE torso link with link_geometry (named chest box, head sphere, shoulder_l/shoulder_r cylinders) -> shoulder servos at the cylinder `+axis_end`/`-axis_end` anchors -> arms; 2 legs below the pelvis; camera at a head-sphere pole.
+- Creature bodies (crab, scorpion, snake...): one link_geometry body with named leg-socket primitives, limbs anchored on them, varied per role.
 
-Two cases where named connectors beat `attach_face`:
+## Critical rules
 
-1. **Concentric shaft mates** (servo/motor output → coupler/horn). When the user explicitly asks for a servo-shaft coupling, emit:
-   - `attach_connector: "shaft_out"` (parent servo's shaft)
-   - `mate_connector: "shaft_hole"` (child coupler's/horn's bore)
-   - `mate_type: "concentric"` (shaft-in-hole, antiparallel axes — the engine aligns them)
-   For ordinary servo→bracket/extrusion attachments, keep using `attach_face: "top"` — the engine auto-inserts the coupler/bracket and wires the concentric mate itself.
-
-2. **Face-ambiguous parts** (L-bracket — has BOTH a horizontal plate and a vertical wall). When the L-bracket is the CHILD, use `mate_connector` to pick which bracket surface sits against the parent: `"plate_top"` (horizontal plate face up — mount on parent using the underside of the plate), `"wall_inner"` (concave inside face), `"wall_outer"` (convex back of wall). When the L-bracket is the PARENT and something mounts on it, use `attach_connector` with the same names.
-
-Leave all three fields omitted for normal face-to-face mounts — `attach_face` is the right choice ~95% of the time.
-
-Examples (note which side each named connector belongs to):
-- Servo → coupler (concentric shaft mate). `shaft_out` lives on the parent servo, `shaft_hole` lives on the child coupler:
-  Do not insert `structural_servo_coupler_disc` between a rotary servo and a limb/joint servo. Side-axis servos already get an internal yoke + horn-link adapter, and children attached to the servo are routed to that driven adapter.
-- L-bracket mounted to baseplate's front face with its wall flush against the baseplate (plate sticks out forward as a shelf). `wall_outer` lives on the BRACKET — it's the child — so it goes in `mate_connector`, NOT `attach_connector`:
-  `{"link_name": "structural_bracket_l_1", "component_id": "structural_bracket_l", "attach_to": "structural_baseplate_large_1", "attach_face": "front", "mate_connector": "wall_outer", "joint_type": "fixed", "joint_axis": "z"}`
-- Camera mounted on that L-bracket's inside wall (bracket is now the PARENT, so `wall_inner` moves to `attach_connector`; camera's `mount_back` is the child-side name):
-  `{"link_name": "sensor_depth_camera_small_1", "component_id": "sensor_depth_camera_small", "attach_to": "structural_bracket_l_1", "attach_connector": "wall_inner", "mate_connector": "mount_back", "mate_type": "fastened", "joint_type": "fixed", "joint_axis": "z"}`
-
-## Creative Authoring (always available)
-
-### Raw placement: `xyz` / `rpy`
-- **`xyz: [x, y, z]`** — RAW joint-origin position in METERS, parent-relative. Bypasses the face-placement / multi-child distribution / mate-resolver pipeline; becomes the URDF joint origin verbatim. Use when the auto-derived placement can't express the design: exact creature poses, asymmetric anatomy, sculpture-style robots.
-- **`rpy: [roll, pitch, yaw]`** — RAW joint-origin rotation in RADIANS, parent-relative. Bypasses auto-orient / splay / servo-flip. Pair with `xyz` for full control. This is DIFFERENT from `attach_rpy`: `attach_rpy` is the joint REST POSE (rotation about the joint axis at zero state); `rpy` is the joint frame's mounting orientation in the parent.
-- Default face placement is correct for most components — reach for raw authoring only when face/connector mounting can't express the design.
-
-### Custom body shells: `link_geometry`
-The catalog covers FUNCTIONAL hardware (servos, brackets, baseplates, limb links, sensors, batteries, wheels, grippers, extrusions). It does NOT cover free-form body silhouettes. For body shells, set `link_geometry` on a component: a union of authored primitives that replaces that link's rendered visuals.
-- Box: `{shape:'box', size_mm:[w,d,h], xyz_mm?, rpy?, color?}`
-- Cylinder: `{shape:'cylinder', radius_mm, length_mm, xyz_mm?, rpy?, color?}` (axis local +Z)
-- Sphere: `{shape:'sphere', radius_mm, xyz_mm?, color?}`
-`xyz_mm` is the primitive's centre offset from the link origin in millimetres. Division of labor: catalog presets = mechanical FUNCTION; `link_geometry` = body SILHOUETTE (torso, hull, carapace, fairing, segment). Don't draw a humanoid torso as stacked extrusions — use one link with `link_geometry`.
-
-### Component variety
-Real creatures vary their limbs — do NOT repeat one identical chain N times. Vary servo torque tier by load (high_torque at root-adjacent joints, standard/micro distally), vary structural parts by role, vary limb lengths, and mix terminals (grippers as pincers, foot pads for walking legs, sensors as feelers/antennae).
-
-### Bending limbs: `attach_rpy` rest poses
-A chain of servo -> limb -> servo -> limb -> foot comes out STRAIGHT unless you author rest poses on the joint servos via `attach_rpy`. Examples: Z-stance crouch hip `[0, 0.5, 0]` + knee `[0, -0.9, 0]`; sprawled crab hip_pitch `[0, 1.0, 0]` + knee `[0, -1.4, 0]`; scorpion tail segments `[0, -0.3, 0]` each, accumulating into a curl.
-**Rest poses apply VERBATIM, per component — no automatic left/right mirroring.** Author each side explicitly: a symmetric crouch needs the appropriate sign on each side's joints. (The engine still mirrors the physical horn-shaft direction for ±Y mounted servo pairs so hardware faces outward; only your authored rest angles are untouched.)
-
-### Layout
-Multiple children on the same face distribute RADIALLY around the face center (4 children land on the corners), and each bottom-face child's outward splay follows its radial direction. Limbs may also mount on side faces (`front`/`back`/`left`/`right`) for horizontally-extending creatures.
-
-## Topology Rules
-
-1. Root is the component that best matches the robot's anatomical/structural center. Flat-chassis robots (rovers, dogs, tabletop arms) use a baseplate (`structural_baseplate` 200x150x5mm, or `structural_baseplate_large` 350x250x8mm for wide hip spans / heavy payloads). Creatures with other anatomies may root differently: a snake on a `structural_extrusion_2020` spine segment, a starfish on a `structural_bracket_l` hub, a sculpted body on a component carrying `link_geometry`. Exactly one component has `attach_to: null`.
-2. Drivetrain motors (drivetrain_hub_motor_80, drivetrain_geared_dc_with_coupler) use joint_type="continuous" — unbounded spin, torque-controlled in sim. Servo actuators (actuator_servo_*, actuator_bldc_*, actuator_stepper_*) use joint_type="revolute" — bounded angle, PD-controlled. Everything else uses "fixed".
-3. joint_axis by motion type — the axis is the rotation axis; the child sweeps in the plane PERPENDICULAR to it:
-   - "y" — leg pitches forward/back, arm pitches up/down, knee bends, elbow bends, head nods
-   - "x" — hip abducts laterally, shoulder rolls, wrist tilts side-to-side
-   - "z" — base yaws in place, turret spins, hip/shoulder sweeps in the XY plane
-   ❌ joint_axis="z" for a knee or elbow — that spins the limb around its long axis, not bends it.
-   ❌ joint_axis="y" for hip abduction — abduction is lateral (frontal plane), use "x".
-4. Multiple children on the same parent face are auto-distributed (wheels to corners, sensors to edges).
-5. Include ALL components the user mentions. Do not skip or simplify.
-6. For legs/downward extensions: use attach_face="bottom" so components extend DOWNWARD from their parent. Never use "top" for leg segments — "top" extends upward.
-7. For arms: all links chain via "top" face going UPWARD. Do NOT use orientation="horizontal" — arm extrusions stand vertical at rest position, and joint servos control the angle. The shoulder servo pitches the upper arm, the elbow servo pitches the forearm.
-8. For wheels: use a drivetrain assembly — baseplate → drivetrain_hub_motor_80 (bottom, **continuous** y) → mobility_wheel_driven (coaxial, fixed). The drivetrain IS the motor; it uses joint_type="continuous" (not "revolute") so the sim treats it as a torque motor, not a servo. Tires ALWAYS use attach_face="coaxial". DO NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire — emit only `attach_face="coaxial"` and let the engine handle the rest. (Setting `attach_connector="bottom"` in particular drops the wheel inboard, under the chassis, on every corner.) The placement engine axially offsets the tire so its bore face seats against the motor body and auto-flips drivetrains on the -Y half of the baseplate so wheels end up outboard on both sides — you do not need to specify positions, orientations, or per-corner flips. Tires MUST NOT attach directly to the baseplate.
-9. length_mm overrides parametric structural links (default 100mm). Pick a length appropriate to the segment's role and the parts it connects.
-10. **Rotary servos drive exactly ONE child.** The backend splits each rotary servo into a fixed body (bolted to its parent) and a rotating horn (the output). For `joint_axis="x"` or `"y"`, it also inserts effective side-yoke plus slim horn-link adapter hardware so the physical horn shaft is on the red/blue hinge axis. Children you attach to a servo link are automatically routed to the horn/adapter — you do not need to name `_body` or `_horn` links yourself; just use the servo's `link_name` as `attach_to`. Attach exactly ONE child per servo; never fan out multiple children from the same servo.
-11. **Sensors mount on STRUCTURAL links, not actuator shafts.** To mount a sensor near the end effector (e.g., "wrist camera"), attach it to the last extrusion in the chain, NOT to the wrist servo or the gripper. Example: `forearm_extrusion → wrist_servo → gripper`; the camera attaches to `forearm_extrusion` (front face), not to `wrist_servo`. Place the camera near the WRIST END of the forearm (close to the gripper), not at the elbow end — the user wants the camera to see what the gripper grabs.
-
-12. **Electronics (battery, PDU, SBC, IMU, motor drivers) mount DIRECTLY on the baseplate's top face by default — NOT routed through an intermediate structural_extrusion.** This rule prevents "ironing board on stilts" and "torso tower" anti-patterns on quadrupeds, rovers, and tabletop arms.
-    **EXCEPTION — humanoids and bipeds genuinely need a vertical torso.** A humanoid's baseplate IS the pelvis; the torso, shoulders, head, and electronics chain UPWARD from it. Use ONE central `structural_extrusion_4040` (200–300mm vertical, attach_face=top) as the torso/spine, then attach electronics + shoulder cross-bar + head to it. The "torso tower" prohibition does NOT apply to humanoids — for those, a torso extrusion is the correct structure.
-13. **Cameras and lidars NEVER mount directly to a baseplate face.** Always interpose a `structural_bracket_l`: the bracket mates to the baseplate via `mate_connector: "wall_outer"` on the chosen face (front/back/left/right), then the sensor mates to the bracket via `attach_connector: "wall_inner"` (or `"plate_top"` for an upward-facing sensor) + `mate_connector: "mount_back"` + `mate_type: "fastened"`. See the L-bracket + camera example in the Mate Connectors section above for the exact fields. This rule is canonical — it holds across redesign cycles. If a validator says the camera is "floating", "not visibly mounted", or "offset from the baseplate edge", the fix is to ADD a bracket or reposition the existing bracket's mount face — NEVER move the sensor onto `attach_face: "top"` of the baseplate to "make it sit flat". A top-face baseplate mount with no bracket is the same bug in a different orientation. **For humanoids: mount the head camera atop the torso extrusion (not on the baseplate). Topology: `torso_extrusion → structural_bracket_l (top, mate_connector=plate_top) → camera`. The bracket sits on top of the torso; the camera mounts on the bracket's wall face — putting the camera at full robot height instead of pelvis height.**
-14. **Match servo torque class to kinematic depth.** The further a joint is from the root, the less load it carries — scale down accordingly. Vary across limbs in the SAME design (different limbs may have different load profiles).
-15. **All series revolute joints (non-compound) require a structural limb link between them.** The limb link is the bone — its `length_mm` is the segment length. Skipping the link produces zero-length limbs that collapse in sim.
-    The ONE exception: the compound 2-DOF hip/shoulder (two perpendicular-axis servos stacked directly). The engine auto-inserts a short bracket between them; you do not emit it.
-16. `structural_limb_link_slim` mounts to servo horns on its broad flat face. Do NOT add `attach_rpy` or custom `orientation` to slim limb links to make them look flush; that rotates the bone itself and can make it attach edge-on. Emit slim links as fixed children on the correct face, with only `length_mm`. Put crouch/rest angles on the driving servo's `attach_rpy`, not on the passive limb link.
-
-## Common Patterns (topology only -- no coordinates needed)
-
-Rubber foot pad: `shin_link → mobility_rubber_foot_pad(bottom, fixed)`. ONE node — no parent drivetrain, no children. NEVER set attach_rpy on a foot pad; the assembly engine auto-levels it flat to the world floor. Do NOT use attach_face="coaxial".
-
-Sensor mount: any_structural_link -> sensor(top/front/left/right, fixed). Remember — sensors attach to structural links (extrusions, baseplates, brackets), never to servo shafts or effectors.
-Angled sensor: any_link -> depth_camera(front, fixed, elevation_angle=-20) — tilts 20° downward to see the floor.
-Rotated top sensor: any_link -> lidar(top, fixed, orientation="45") — yaws 45° on the top face.
-
-## Forbidden Patterns (these WILL be rejected by the placement engine)
-
-- ❌ Sensor attached to another sensor — sensors must attach to structural or actuator links
-- ❌ End effector with children — effectors (grippers, suction cups) are ALWAYS terminal nodes
-- ❌ Multiple children on a servo/motor shaft — each servo/motor output drives exactly ONE child
-- ❌ Duplicate link_name values — every link_name must be unique
-- ❌ Multiple root components — exactly one component has attach_to=null (the baseplate)
-- ❌ Cycles in the topology — A→B→C→A is invalid; the topology must be a tree
-- ❌ Extrusion as root — root is always structural_baseplate
-- ❌ `structural_extrusion_2020` / `structural_extrusion_4040` as dog or quadruped thigh/shin bones — use `structural_limb_link_slim` for every leg segment.
-- ❌ Electronics on an extrusion standoff above the baseplate **for quadrupeds, wheeled vehicles, tabletop arms** — any of these shapes:
-    · `baseplate → 4x vertical structural_extrusion_4040 → each hosts one of (battery, PDU, SBC, IMU)` (the 4-standoff case)
-    · `baseplate → 1x vertical structural_extrusion_4040 → [battery, PDU, SBC, IMU all on its top face]` (the central-tower case — also wrong for these archetypes)
-    · `baseplate → torso_extrusion → electronics` — for these archetypes, any named-as-torso intermediate is still a tower
-  For these archetypes attach every electronic module DIRECTLY to `baseplate.top`. The placement engine spreads multiple children across the face automatically. **HUMANOIDS / BIPEDS are the exception: a single vertical torso extrusion hosting electronics + arms + head is the canonical humanoid pattern. See "Common Patterns: Humanoid" above.**
-- ❌ Two `attach_to` entries pointing at the same servo link_name — the horn drives exactly ONE child. The servo backend has `_body` and `_horn` links internally, but you must never name them; use only the bare servo link_name. One servo → one child, always.
-- ❌ Driven child (joint_type != "fixed") attached to a servo side face — side faces are the housing ears (bolted to parent structure), not the horn output. Driven children must use attach_face="top" or "bottom" to align with the horn output direction.
-- ❌ Series revolute joints with no structural extrusion between them (except the compound hip/shoulder) — zero-length limbs collapse in sim.
-- ❌ mobility_rubber_foot_pad with attach_rpy set — the assembly engine auto-levels foot pads to the world floor; setting attach_rpy bypasses leveling and leaves the pad sideways. Never set attach_rpy on a foot pad.
-- ❌ mobility_rubber_foot_pad with children — foot pads are terminal leaf nodes. Never attach anything to a foot pad.
-- ❌ mobility_rubber_foot_pad with a drivetrain parent — foot pads attach directly to structural links (shin, extrusion), not to hub motors or drivetrain components.
-
-## Critical Rules
-
-- ALWAYS use design_robot or modify_topology. NEVER write raw URDF.
-- Use modify_topology when the user wants to change an existing robot. Use design_robot only for new builds or complete redesigns.
-- Use component IDs exactly as listed in the library.
-- The backend handles ALL geometry. You handle ALL design decisions.
+- ALWAYS respond with design_robot or modify_topology. Never raw URDF.
+- Use component IDs exactly as listed. Include everything the user asked for.
+- You own the design decisions; the engine owns the geometry.
 """
 
 # ── Tool schemas for structured output ──────────────────────────────────────
@@ -495,6 +383,14 @@ DESIGN_ROBOT_TOOL = {
                             "minItems": 3,
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS applied to the joint origin. Use for rest-pose joint angles (quadruped crouch, splayed shoulders). Example: [0, 0.52, 0] for +30° pitch, [0, -1.05, 0] for -60° pitch. Omit or pass [0,0,0] to let the engine auto-rotate.",
+                        },
+                        "attach_primitive": {
+                            "type": "string",
+                            "description": "PRIMITIVE-ANCHOR PLACEMENT (pair with attach_anchor) — the `name` of a primitive on the PARENT's link_geometry to mount this child on. Mounts land on the primitive's REAL surface (a shoulder cylinder's end, a head sphere's pole), not the body's bounding box. Requires the parent's link_geometry entries to carry `name` fields. Validated hard: a name that doesn't exist returns BAD_PRIMITIVE_REF with the available list.",
+                        },
+                        "attach_anchor": {
+                            "type": "string",
+                            "description": "Anchor on the named primitive's surface. Box: '+x_face','-x_face','+y_face','-y_face','+z_face','-z_face'. Cylinder: '+axis_end','-axis_end' (along its rotated axis), 'tangent_+x','tangent_-x','tangent_+y','tangent_-y','tangent_+z','tangent_-z' (side-wall points, link-frame directions; tangents parallel to the cylinder axis are invalid). Sphere: '+x_pole','-x_pole','+y_pole','-y_pole','+z_pole','-z_pole'. Example: shoulder servo on a humanoid torso -> attach_primitive='shoulder_l', attach_anchor='+axis_end'.",
                         },
                         "attach_connector": {
                             "type": "string",
@@ -639,6 +535,14 @@ MODIFY_TOPOLOGY_TOOL = {
                             "maxItems": 3,
                             "description": "Optional [roll, pitch, yaw] in RADIANS. Same as design_robot — use for rest-pose joint angles like quadruped crouch.",
                         },
+                        "attach_primitive": {
+                            "type": "string",
+                            "description": "PRIMITIVE-ANCHOR PLACEMENT (pair with attach_anchor) — the `name` of a primitive on the PARENT's link_geometry to mount this child on. Mounts land on the primitive's REAL surface (a shoulder cylinder's end, a head sphere's pole), not the body's bounding box. Requires the parent's link_geometry entries to carry `name` fields. Validated hard: a name that doesn't exist returns BAD_PRIMITIVE_REF with the available list.",
+                        },
+                        "attach_anchor": {
+                            "type": "string",
+                            "description": "Anchor on the named primitive's surface. Box: '+x_face','-x_face','+y_face','-y_face','+z_face','-z_face'. Cylinder: '+axis_end','-axis_end' (along its rotated axis), 'tangent_+x','tangent_-x','tangent_+y','tangent_-y','tangent_+z','tangent_-z' (side-wall points, link-frame directions; tangents parallel to the cylinder axis are invalid). Sphere: '+x_pole','-x_pole','+y_pole','-y_pole','+z_pole','-z_pole'. Example: shoulder servo on a humanoid torso -> attach_primitive='shoulder_l', attach_anchor='+axis_end'.",
+                        },
                         "attach_connector": {
                             "type": "string",
                             "description": "Optional parent-side connector id (e.g. 'shaft_out', 'plate_top'). Same semantics as design_robot.",
@@ -697,8 +601,9 @@ ADD_LINK_TOOL = {
         "Add a new component to the existing robot. Use for structural parts, actuators, and "
         "effectors. For sensors, prefer attach_sensor (it enforces the fixed-joint convention). "
         "The mutation is validated immediately; if the attach would trip port-class incompatibility "
-        "(shaft↔mount_face) or SHAFT_FANOUT/SENSOR_ON_ACTUATOR, you get a structured error and can "
-        "retry in the same turn."
+        "(shaft↔mount_face) or SHAFT_FANOUT/SENSOR_ON_ACTUATOR, the mutation lands with a structured "
+        "warning carrying a suggested_repair — apply it next call or justify the design. Hard errors "
+        "(UNKNOWN_PARENT, DUPLICATE_LINK, BAD_PRIMITIVE_REF, ...) reject and can be retried in the same turn."
     ),
     "input_schema": {
         "type": "object",
@@ -715,6 +620,14 @@ ADD_LINK_TOOL = {
             "attach_rpy": {
                 "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
                 "description": "Rest-pose [roll, pitch, yaw] in radians (e.g. quadruped crouch [0, 0.52, 0]). Omit for auto.",
+            },
+            "attach_primitive": {
+                "type": "string",
+                "description": "Primitive-anchor placement: name of a primitive on the parent's link_geometry (pair with attach_anchor).",
+            },
+            "attach_anchor": {
+                "type": "string",
+                "description": "Anchor on the named primitive: box +/-x|y|z_face, cylinder +/-axis_end / tangent_+/-x|y|z, sphere +/-x|y|z_pole.",
             },
             "attach_connector": {
                 "type": "string",
@@ -739,7 +652,7 @@ ATTACH_SENSOR_TOOL = {
     "description": (
         "Attach a sensor_* preset to a structural/actuator parent. Joint is forced to 'fixed' so "
         "the sensor frame stays stable as the robot articulates. Attaching a sensor directly to an "
-        "actuator's shaft face returns SENSOR_ON_ACTUATOR — mount on a nearby structural extrusion."
+        "actuator's shaft face is accepted with a SENSOR_ON_ACTUATOR warning — prefer a nearby structural extrusion."
     ),
     "input_schema": {
         "type": "object",
@@ -759,7 +672,7 @@ REPLACE_COMPONENT_TOOL = {
     "description": (
         "Swap the preset on an existing link while preserving its attach_to / attach_face / children. "
         "Use for 'change the gripper to a suction cup' or 'make this servo the high-torque variant'. "
-        "If the new preset's port class doesn't mate with the parent face, returns PORT_MISMATCH."
+        "If the new preset's port class doesn't mate with the parent face, the swap lands with a PORT_MISMATCH warning + suggested repair."
     ),
     "input_schema": {
         "type": "object",
@@ -1420,6 +1333,33 @@ def _extract_tool_result(response, current_urdf: str) -> dict:
             "stats": result.get("changes_summary", "No structured output"),
         }
 
+def _build_anchor_context(assembly_graph: dict | None) -> str:
+    """Per-primitive anchor tables for every link_geometry body in the graph.
+
+    Rendered from core.ai.primitive_anchors (parity-pinned against the TS
+    resolver) so the positions Claude reasons about match what the placement
+    compiler produces for attach_primitive/attach_anchor mounts."""
+    if not isinstance(assembly_graph, dict):
+        return ""
+    try:
+        from core.ai.primitive_anchors import render_anchor_table
+    except Exception:
+        return ""
+    tables: list[str] = []
+    for comp in assembly_graph.get("components") or []:
+        if not isinstance(comp, dict):
+            continue
+        prims = comp.get("link_geometry")
+        if not isinstance(prims, list) or not prims:
+            continue
+        table = render_anchor_table(str(comp.get("link_name", "?")), prims)
+        if table:
+            tables.append(table)
+    if not tables:
+        return ""
+    return "## Primitive anchors (mount points on custom bodies)\n" + "\n".join(tables)
+
+
 def _build_edit_user_message(prompt: str, current_urdf: str, kinematic_graph_json: dict,
                               kinematic_context: str | None,
                               assembly_graph: dict | None) -> str:
@@ -1446,6 +1386,9 @@ def _build_edit_user_message(prompt: str, current_urdf: str, kinematic_graph_jso
 ```"""
         if spatial_context:
             user_message += f"\n\n{spatial_context}"
+        anchor_context = _build_anchor_context(assembly_graph)
+        if anchor_context:
+            user_message += f"\n\n{anchor_context}"
         if kinematic_context:
             user_message += f"\n\nRobot Structure Summary:\n{kinematic_context}"
         user_message += f"\n\nUser Request: {prompt}"
@@ -1705,14 +1648,17 @@ def generate_edit_turn(
                 "Current AssemblyGraph (authoritative — reason and edit against this):\n"
                 f"```json\n{json.dumps(assembly_graph, indent=2)}\n```"
             )
+        anchor_context = _build_anchor_context(assembly_graph)
+        if anchor_context:
+            parts.append(anchor_context)
         if kinematic_context:
             parts.append(f"Robot Structure Summary:\n{kinematic_context}")
         parts.append(f"User Request: {prompt}")
         parts.append(
             "Use the add_link / attach_sensor / replace_component / set_joint / "
             "remove_link tools to mutate the graph. Each call is validated immediately — "
-            "if you see a structured error (PORT_MISMATCH, SENSOR_ON_ACTUATOR, etc.), "
-            "adjust and try again in the same turn. When the edit is complete, respond "
+            "hard errors reject the call; warnings (PORT_MISMATCH, SENSOR_ON_ACTUATOR, ...) land with a "
+            "suggested_repair — apply it or proceed deliberately. When the edit is complete, respond "
             "with a short plain-text confirmation and stop (no further tool calls)."
         )
         user_text = "\n\n".join(parts)

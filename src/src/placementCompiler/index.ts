@@ -41,6 +41,7 @@ import {
 } from './joints.ts'
 import {
   computeFacePlacement as _pureComputeFacePlacement,
+  parseOrientation,
   type ParentBoundsM,
 } from './face.ts'
 import {
@@ -50,6 +51,7 @@ import {
   computeMatePlacement as _pureComputeMatePlacement,
   hasMateConnectorFields,
 } from './mate.ts'
+import { resolvePrimitiveAnchorPose, type LinkPrimitive } from '../linkGeometry.ts'
 import {
   servoDrivenStructuralLimbPlacement,
   servoDrivenChildPlacement,
@@ -614,6 +616,49 @@ export function compileAssembly(
       // (the servo horn IS the connector). Reconcile must not re-flush them.
       placedViaConnectorFlag = true
     } else if (placement === null) {
+      // Primitive-anchor placement (WS5): child mounts at a named anchor on a
+      // named primitive of the parent's link_geometry. Resolve the anchor to
+      // a synthetic connector and route through the ordinary fastened-mate
+      // solver. Unresolvable names are unreachable here — the validator
+      // hard-errors first — but keep a defensive diagnostic, never a silent
+      // fallthrough to AABB-face placement.
+      if (typeof c.attach_anchor === 'string' && typeof c.attach_primitive === 'string' && parentComp) {
+        const anchorConn = resolvePrimitiveAnchorPose(
+          parentComp.link_geometry as LinkPrimitive[] | undefined,
+          c.attach_primitive,
+          c.attach_anchor,
+        )
+        if (anchorConn) {
+          const anchored: AssemblyComponent = {
+            ...c,
+            attach_connector: anchorConn.id,
+            mate_connector: c.mate_connector ?? 'bottom',
+            mate_type: c.mate_type ?? 'fastened',
+          }
+          const anchorYawRad = parseOrientation(c.orientation).yawDeg * Math.PI / 180
+          const mateResult = _pureComputeMatePlacement(
+            anchored, [...parentConnectors, anchorConn], childConnectors,
+            { hxMm: parentBoundsM.hx * 1000, hyMm: parentBoundsM.hy * 1000, hzMm: parentBoundsM.hz * 1000 },
+            undefined,
+            { useMateConnectors: true, rotationRad: anchorYawRad },
+          )
+          if (!('miss' in mateResult)) {
+            placement = mateResult
+            placedViaConnectorFlag = true
+          }
+        }
+        if (placement === null) {
+          diagnostics.push({
+            code: 'compiler.bad_primitive_anchor', severity: 'error',
+            owner: DiagnosticOwner.PlacementCompiler,
+            message:
+              `${c.link_name}: attach_primitive="${c.attach_primitive}" / ` +
+              `attach_anchor="${c.attach_anchor}" did not resolve on ${parentComp.link_name} ` +
+              `(validator should have caught this upstream)`,
+          })
+          continue
+        }
+      }
       // Tier-B short-circuited above (raw xyz/rpy authored) — skip the mate
       // and face paths entirely so they don't overwrite the authored values.
       // Tire-on-drivetrain has exactly one correct placement (motor body's
@@ -626,7 +671,7 @@ export function compileAssembly(
       const tireOnDrivetrain =
         isTireComponentId(c.component_id)
         && !!parentComp && isDrivetrainComponentId(parentComp.component_id)
-      if (!tireOnDrivetrain && hasMateConnectorFields(c)) {
+      if (placement === null && !tireOnDrivetrain && hasMateConnectorFields(c)) {
         const mateMulti = totalOnFace > 1
           ? { total: totalOnFace, index: childIdx, face: c.attach_face || 'top', childSizes: faceChildSizes.get(faceKey) }
           : undefined
