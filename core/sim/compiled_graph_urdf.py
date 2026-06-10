@@ -72,9 +72,13 @@ def _add_link(
         inertia = _cylinder_inertia(mass, max(hx, hy), 2 * hz)
     else:
         inertia = _box_inertia(mass, 2 * hx, 2 * hy, 2 * hz)
+    # Scientific notation, NOT the fixed 6-decimal _fmt: small/light output
+    # discs (split-rotary horns) have tensor entries near 1e-6 — fixed-point
+    # rounding corrupted the triangle inequality (ixx+iyy >= izz) and MuJoCo
+    # rejected the model. Exact-formula values always satisfy it.
     ET.SubElement(
         inertial, "inertia",
-        ixx=_fmt(inertia["ixx"]), iyy=_fmt(inertia["iyy"]), izz=_fmt(inertia["izz"]),
+        ixx=f"{inertia['ixx']:.9e}", iyy=f"{inertia['iyy']:.9e}", izz=f"{inertia['izz']:.9e}",
         ixy="0", ixz="0", iyz="0",
     )
 

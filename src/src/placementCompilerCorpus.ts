@@ -15,6 +15,7 @@ import {
   type ComponentResolver,
 } from './placementCompiler/index.ts'
 import { resolveComponent as resolveSpec, resolveComponentMassKg } from './componentResolver.ts'
+import { capabilitiesForSpec } from './componentCapabilities.ts'
 import { parseOrientation } from './placementCompiler/face.ts'
 import {
   linkGeometryUnionAabbMm,
@@ -1135,6 +1136,130 @@ test('compileAssembly: every link\'s worldXyz/worldRpy matches the chain of loca
     checked++
   }
   assert(checked >= 2, `expected to check >=2 non-servo links in this fixture, only checked ${checked}`)
+})
+
+// ── Capability-driven rotary split (componentCapabilities.ts) ───────────────
+// Locks the data-driven behavior: which components split is decided by the
+// authored `cls: 'shaft'` connector + sim_metadata, never by id prefixes.
+
+const _BLDC_SPEC = {
+  id: 'actuator_bldc_small',
+  connectors: [{
+    id: 'shaft_out', type: 'cylindrical' as const,
+    origin_xyz_mm: [0, 0, 24] as [number, number, number],
+    axis_xyz: [0, 0, 1] as [number, number, number],
+    cls: 'shaft' as const, single: true,
+  }],
+  sim_metadata: { mjcf_actuator_type: 'motor' },
+}
+const _GEARMOTOR_SPEC = {
+  id: 'motor_gear_small_n20',
+  connectors: [{
+    id: 'shaft_out', type: 'cylindrical' as const,
+    origin_xyz_mm: [0, 0, 24.5] as [number, number, number],
+    axis_xyz: [0, 0, 1] as [number, number, number],
+    cls: 'shaft' as const, single: true,
+  }],
+  sim_metadata: { mjcf_actuator_type: 'motor' },
+}
+const _WHEEL_SPEC = {
+  id: 'mobility_wheel_driven',
+  connectors: [],
+  sim_metadata: { contact_class: 'wheel' },
+}
+const _PLAIN_SPEC = { id: 'plain', connectors: [], sim_metadata: {} }
+
+const capabilityResolver: ComponentResolver = (componentId, _instance) => {
+  const spec = componentId === 'actuator_bldc_small' ? _BLDC_SPEC
+    : componentId === 'motor_gear_small_n20' ? _GEARMOTOR_SPEC
+    : componentId === 'mobility_wheel_driven' ? _WHEEL_SPEC
+    : _PLAIN_SPEC
+  const half: [number, number, number] =
+    componentId === 'actuator_bldc_small' ? [0.038, 0.038, 0.024]
+    : componentId === 'motor_gear_small_n20' ? [0.012, 0.012, 0.0245]
+    : componentId === 'mobility_wheel_driven' ? [0.05, 0.05, 0.015]
+    : [0.1, 0.075, 0.0025]
+  return {
+    componentId,
+    bounds: { half, center: [0, 0, 0], shape: 'box' },
+    jointLimitsRad: [-Math.PI / 2, Math.PI / 2],
+    maxTorqueNm: 2,
+    capabilities: capabilitiesForSpec(spec),
+  }
+}
+
+test('capability split: BLDC with authored shaft connector splits body+horn, output at the AUTHORED origin', () => {
+  const graph: AssemblyGraph = {
+    base_link: 'plate_1',
+    components: [
+      { link_name: 'plate_1', component_id: 'structural_baseplate',
+        attach_to: null, attach_face: 'top', joint_type: 'fixed', joint_axis: 'z' },
+      { link_name: 'knee', component_id: 'actuator_bldc_small',
+        attach_to: 'plate_1', attach_face: 'bottom', joint_type: 'revolute', joint_axis: 'y' },
+    ],
+  }
+  const r = compileAssembly(graph, { resolveComponent: capabilityResolver })
+  const knee = r.links.find(l => l.logicalName === 'knee')
+  assert(knee !== undefined, 'BLDC revolute child must COMPILE (was silently dropped pre-capabilities)')
+  assert(knee!.physicalLinks.length === 2
+    && knee!.physicalLinks[0].endsWith('_body') && knee!.physicalLinks[1].endsWith('_horn'),
+    `BLDC must split into body+horn, got ${JSON.stringify(knee!.physicalLinks)}`)
+  const rev = knee!.joints[knee!.joints.length - 1]
+  assert(rev.type === 'revolute', `expected revolute output joint, got ${rev.type}`)
+  assert(Math.abs(rev.originXyz[2] - 0.024) < 1e-9,
+    `horn origin must come from the authored shaft connector (24mm), got ${rev.originXyz[2] * 1000}mm`)
+})
+
+test('capability split: wheel on a gearmotor mounts AXIALLY on the horn (drive wheel on any rotary actuator)', () => {
+  const graph: AssemblyGraph = {
+    base_link: 'plate_1',
+    components: [
+      { link_name: 'plate_1', component_id: 'structural_baseplate',
+        attach_to: null, attach_face: 'top', joint_type: 'fixed', joint_axis: 'z' },
+      { link_name: 'drive', component_id: 'motor_gear_small_n20',
+        attach_to: 'plate_1', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+      { link_name: 'wheel', component_id: 'mobility_wheel_driven',
+        attach_to: 'drive', attach_face: 'coaxial', joint_type: 'fixed', joint_axis: 'z' },
+    ],
+  }
+  const r = compileAssembly(graph, { resolveComponent: capabilityResolver })
+  const drive = r.links.find(l => l.logicalName === 'drive')
+  assert(drive !== undefined && drive!.physicalLinks.length === 2, 'gearmotor must split')
+  const driveOut = drive!.joints[drive!.joints.length - 1]
+  assert(driveOut.type === 'continuous' && driveOut.limits === undefined,
+    `continuous joint_type must survive the split path without limits, got ${driveOut.type} limits=${JSON.stringify(driveOut.limits)}`)
+  const wheel = r.links.find(l => l.logicalName === 'wheel')
+  assert(wheel !== undefined, 'wheel must compile')
+  const wj = wheel!.joints[0]
+  assert(wj.parentLink.endsWith('_horn'), `wheel must hang off the horn (the shaft), got ${wj.parentLink}`)
+  assert(Math.abs(wj.originXyz[0]) < 1e-9 && Math.abs(wj.originXyz[1]) < 1e-9
+    && Math.abs(wj.originXyz[2] - 0.017) < 1e-9,
+    `wheel mounts axially at +Z (2mm clearance + 15mm half-width), got ${JSON.stringify(wj.originXyz)}`)
+  assert(wj.originRpy.every(v => Math.abs(v) < 1e-9),
+    `wheel bore axis = horn +Z, no extra rotation, got ${JSON.stringify(wj.originRpy)}`)
+})
+
+test('authored frame respected: raw rpy on a y-axis servo is kept VERBATIM (no shaft-align override)', () => {
+  const graph: AssemblyGraph = {
+    base_link: 'plate_1',
+    components: [
+      { link_name: 'plate_1', component_id: 'structural_baseplate',
+        attach_to: null, attach_face: 'top', joint_type: 'fixed', joint_axis: 'z' },
+      { link_name: 'hip', component_id: 'actuator_bldc_small',
+        attach_to: 'plate_1', attach_face: 'top', joint_type: 'revolute', joint_axis: 'y',
+        xyz: [0.05, -0.04, 0.03], rpy: [0.1, 0.2, 0.3] },
+    ],
+  }
+  const r = compileAssembly(graph, { resolveComponent: capabilityResolver })
+  const hip = r.links.find(l => l.logicalName === 'hip')
+  assert(hip !== undefined, 'raw-placed rotary must compile')
+  const mount = hip!.joints[0]
+  assert(Math.abs(mount.originXyz[0] - 0.05) < 1e-9 && Math.abs(mount.originXyz[1] + 0.04) < 1e-9
+    && Math.abs(mount.originXyz[2] - 0.03) < 1e-9,
+    `raw xyz must be verbatim (no clearance nudge), got ${JSON.stringify(mount.originXyz)}`)
+  assert(Math.abs(mount.originRpy[0] - 0.1) < 1e-6 && Math.abs(mount.originRpy[1] - 0.2) < 1e-6
+    && Math.abs(mount.originRpy[2] - 0.3) < 1e-6,
+    `raw rpy must be the mount frame verbatim for x/y-axis rotaries, got ${JSON.stringify(mount.originRpy)}`)
 })
 
 // ── Runner ──────────────────────────────────────────────────────────────────

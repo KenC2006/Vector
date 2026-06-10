@@ -214,7 +214,16 @@ export function resolveSplitServoVisual(args: {
   const w = bb[0] / 1000
   const d = bb[1] / 1000
   const h = bb[2] / 1000
-  const bodyBase = servoBodyShape(w, h, d, args.category)
+  // Classic hobby-servo silhouette only for the servo family. Other split
+  // rotary actuators (BLDC drums, stepper blocks, gearmotor cans — split via
+  // their authored `cls: 'shaft'` connector, see componentCapabilities.ts)
+  // keep their own generated body shape; the horn disc marks the output.
+  const classicServoLook = preset.id.startsWith('actuator_servo')
+    || preset.id.startsWith('actuator_continuous_rotation_servo')
+    || preset.id.startsWith('actuator_high_speed')
+  const bodyBase = classicServoLook
+    ? servoBodyShape(w, h, d, args.category)
+    : generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
   // Body box uses the canonical servoBodyShape dimensions (h*0.76 along Z),
   // which sits under the horn at h*SERVO_HORN_ORIGIN_Z_RATIO. Earlier we
   // replaced this with the measured collision OBJ extent, but that coupled
@@ -245,10 +254,21 @@ export function resolveSplitServoVisual(args: {
       bounds: bodyBounds,
     }
 
+  // Output origin: the authored `cls: 'shaft'` connector when the preset
+  // declares one — same source the placement compiler uses for the revolute
+  // joint origin (placementCompiler/index.ts), so the visual horn sits exactly
+  // on the joint. Ratio fallback for presets without capability data.
+  const _conns = (preset as { connectors?: Array<{ cls?: string; single?: boolean; origin_xyz_mm?: number[] }> }).connectors ?? []
+  const _shaftConns = _conns.filter(c => c?.cls === 'shaft')
+  const _shaft = _shaftConns.find(c => c.single === true) ?? _shaftConns[0] ?? null
+  const hornOriginZ = (_shaft && Array.isArray(_shaft.origin_xyz_mm))
+    ? (Number(_shaft.origin_xyz_mm[2]) || 0) / 1000
+    : h * SERVO_HORN_ORIGIN_Z_RATIO
+
   return {
     componentId: preset.id,
     frame: 'urdf-z-up',
-    hornOriginZ: h * SERVO_HORN_ORIGIN_Z_RATIO,
+    hornOriginZ,
     bodyVisuals,
     hornVisuals,
     bodyCollision,

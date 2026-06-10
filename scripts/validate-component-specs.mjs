@@ -91,6 +91,18 @@ function validateConnector(file, categoryName, componentId, connector, index, bb
   if (connector.single !== undefined && typeof connector.single !== 'boolean') {
     error(file, `${prefix}.single must be a boolean when present`)
   }
+  // Rotary-output convention: shaft connectors point along local ±Z. The
+  // capability layer (componentCapabilities.ts) places the body/horn split's
+  // output frame at the shaft connector's z-origin and assumes the spin axis
+  // is local Z — an off-axis shaft would silently compile to a joint that
+  // spins about the wrong axis. (Bores are exempt: passive bores feed the
+  // axis-agnostic mate solver, e.g. the pillow block's horizontal shaft_hole.)
+  if (connector.cls === 'shaft' && numberTuple(connector.axis_xyz, 3)) {
+    const [ax, ay, az] = connector.axis_xyz
+    if (Math.abs(ax) > 1e-6 || Math.abs(ay) > 1e-6 || Math.abs(Math.abs(az) - 1) > 1e-6) {
+      error(file, `${prefix} is cls=shaft but axis_xyz [${ax}, ${ay}, ${az}] is not ±Z — rotary output shafts must point along local Z (see componentCapabilities.ts)`)
+    }
+  }
   // Connector origin must lie within bbox half-extents (±0.5mm slack for
   // float noise). Connectors floating outside the AABB indicate a preset
   // bug — either bbox is undersized or the connector is mis-authored.

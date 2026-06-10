@@ -50,6 +50,9 @@ export interface ComponentSpec {
   physical: ComponentPhysicalSpec
   mechanical_electrical: Record<string, unknown>
   mounting_logic?: Record<string, unknown>
+  /** Simulation metadata (mjcf_actuator_type, contact_class, …). Drives the
+   * data-derived capability predicates in componentCapabilities.ts. */
+  sim_metadata?: Record<string, unknown>
   connectors?: MateConnector[]
   [key: string]: unknown
 }

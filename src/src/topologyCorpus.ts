@@ -232,15 +232,27 @@ const fixtures: Fixture[] = [
 
   // PORT_MISMATCH (warning, shared with graphMutations) ────────────────────
   {
-    name: 'PORT_MISMATCH: BLDC motor shaft against baseplate face → warning with coupler hint',
+    name: 'PORT_MISMATCH: passive gearbox shaft against baseplate face → warning with coupler hint',
     expected_pass: true,
     expected_warnings: ['[PORT_MISMATCH]'],
     expected_repair_hints: ['structural_servo_coupler_disc'],
     input: {
       base_link: 'base_link',
       components: [
-        { link_name: 'plate',  component_id: 'structural_baseplate',  attach_to: null },
-        { link_name: 'motor1', component_id: 'actuator_bldc_small',   attach_to: 'plate', attach_face: 'bottom' },
+        { link_name: 'plate', component_id: 'structural_baseplate',           attach_to: null },
+        { link_name: 'gbx1',  component_id: 'transmission_planetary_gearbox', attach_to: 'plate', attach_face: 'bottom' },
+      ],
+    },
+  },
+  {
+    name: 'PORT_MISMATCH: BLDC on baseplate stays silent (split rotary owns its body mount + shaft output)',
+    expected_pass: true,
+    forbidden_warnings: ['[PORT_MISMATCH]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate', attach_to: null },
+        { link_name: 'motor1', component_id: 'actuator_bldc_small',  attach_to: 'plate', attach_face: 'bottom', joint_type: 'revolute', joint_axis: 'y' },
       ],
     },
   },
@@ -358,7 +370,7 @@ const fixtures: Fixture[] = [
 
   // DIRECT_SERVO_STACK (warning) ───────────────────────────────────────────
   {
-    name: 'DIRECT_SERVO_STACK: actuator on servo emits warning',
+    name: 'DIRECT_SERVO_STACK: non-split actuator on servo emits warning',
     expected_pass: true,
     expected_warnings: ['[DIRECT_SERVO_STACK]'],
     input: {
@@ -366,7 +378,20 @@ const fixtures: Fixture[] = [
       components: [
         { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
         { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate',  attach_face: 'top' },
-        { link_name: 'motor1', component_id: 'actuator_bldc_small', attach_to: 'servo1', attach_face: 'top' },
+        { link_name: 'lin1',   component_id: 'actuator_linear_small',   attach_to: 'servo1', attach_face: 'top' },
+      ],
+    },
+  },
+  {
+    name: 'DIRECT_SERVO_STACK: BLDC on servo stays silent (split rotaries form the compound 2-DOF joint)',
+    expected_pass: true,
+    forbidden_warnings: ['[DIRECT_SERVO_STACK]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate',  component_id: 'structural_baseplate',    attach_to: null },
+        { link_name: 'servo1', component_id: 'actuator_servo_standard', attach_to: 'plate',  attach_face: 'top', joint_type: 'revolute', joint_axis: 'z' },
+        { link_name: 'motor1', component_id: 'actuator_bldc_small',     attach_to: 'servo1', attach_face: 'top', joint_type: 'revolute', joint_axis: 'y' },
       ],
     },
   },

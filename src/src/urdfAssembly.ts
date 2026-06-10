@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { invoke } from '@tauri-apps/api/core'
-import { CATEGORY_COLORS, SERVO_HORN_ORIGIN_Z_RATIO } from './componentMeshes'
+import { CATEGORY_COLORS } from './componentMeshes'
 import type { UrdfVisualDesc } from './componentMeshes'
 import {
   isMountLinkName,
@@ -24,6 +24,7 @@ import { quatToRpy, rpyToQuat } from './rotationIO'
 import { resolveComponentVisual, resolveSplitServoVisual, visualBoundsFromDescriptors } from './componentVisualResolver'
 import type { ComponentVisualBounds, ResolvedComponentVisual } from './componentVisualResolver'
 import { isParametricSpec, resolveComponent, resolveComponentBboxMm, resolveComponentMassKg } from './componentResolver.ts'
+import { capabilitiesForSpec } from './componentCapabilities.ts'
 import { hasLinkGeometry } from './linkGeometry.ts'
 import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
 import { urdfVecToSceneVec, URDF_TO_SCENE_Q } from './coordinates.ts'
@@ -1708,7 +1709,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
     if (!preset) return FALLBACK
 
-    if ((isBody || isHorn) && isSplitServoComponentId(preset.id)) {
+    if ((isBody || isHorn) && capabilitiesForSpec(preset).splitRotary) {
       const split = resolveSplitServoVisual({
         preset: preset as Parameters<typeof resolveSplitServoVisual>[0]['preset'],
         category: 'actuators',
@@ -1970,7 +1971,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     // and the ghost renders a shape that doesn't exist anywhere in the
     // placed component.
     const resolved = resolveComponentVisual({ preset: comp, category: catName })
-    if (isSplitServoComponentId(comp.id)) {
+    if (capabilitiesForSpec(comp).splitRotary) {
       const split = resolveSplitServoVisual({
         preset: comp as Parameters<typeof resolveSplitServoVisual>[0]['preset'],
         category: catName,
@@ -2366,7 +2367,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     }
 
     const category = comp.id.split('_')[0]
-    const isActuated = isSplitServoComponentId(comp.id)
+    const isActuated = capabilitiesForSpec(comp).splitRotary
     const isNonSplitActuated = !isActuated && (category === 'actuator' || category === 'motor')
 
     const changed = commitUrdf(doc => {
@@ -3898,8 +3899,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
     for (const comp of components) {
       const axis = axisNameFromComponentAxis(comp.joint_axis)
       const parent = comp.attach_to ? componentByName.get(comp.attach_to) : undefined
-      const hasServoChild = components.some(c => c.attach_to === comp.link_name && isSplitServoComponentId(c.component_id))
-      const isCompoundHipBaseServo = isSplitServoComponentId(comp.component_id)
+      const _splitRotaryById = (componentId: string): boolean => {
+        const p = findPreset(componentId)
+        return p ? capabilitiesForSpec(p).splitRotary : isSplitServoComponentId(componentId)
+      }
+      const hasServoChild = components.some(c => c.attach_to === comp.link_name && _splitRotaryById(c.component_id))
+      const isCompoundHipBaseServo = _splitRotaryById(comp.component_id)
         && axis !== 'z'
         && (comp.attach_face === 'top' || comp.attach_face === 'bottom')
         && !!parent
@@ -3994,6 +3999,11 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             : (typeof preset.mechanical_electrical?.holding_torque_nm === 'number'
               ? preset.mechanical_electrical.holding_torque_nm : undefined),
           massKg: resolveComponentMassKg(preset, instance),
+          // Shells replace the donor's geometry — shaft/bore connectors don't
+          // exist on the shell; only contact-class capabilities survive.
+          capabilities: hasLinkGeometry(instance)
+            ? capabilitiesForSpec({ id: preset.id, connectors: [], sim_metadata: preset.sim_metadata })
+            : capabilitiesForSpec(preset),
         }
       },
     })
@@ -4102,16 +4112,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         instance: comp,
       })
       const cVisuals = resolvedVisual.visuals
-      const cIsActuated = isSplitServoComponentId(preset.id)
-      const servoAxisName = axisNameFromUrdf(jointAxis)
-      const servoUsesSideYoke = cIsActuated && servoAxisName !== 'z'
-      const useCompoundServoCarrier = !!(
-        cIsActuated &&
-        parentCompDef &&
-        isSplitServoComponentId(parentCompDef.component_id)
-      )
-      const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
-
       // ── Phase 3b.4.K — placement values sourced from CompiledGraph ────────
       // The placement compiler is now the single owner of: face/mate/servo
       // placement, distal-beam-bottom flip, arm rest pose, attach_rpy override,
@@ -4124,6 +4124,14 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         processed.add(comp.link_name)
         continue
       }
+      // Split decisions are STRUCTURAL reads from the compiled link — the
+      // compiler (capability-driven, componentCapabilities.ts) is the only
+      // place that decides which components split into body/horn.
+      const cIsActuated = _cl.physicalLinks.length > 1
+      const servoAxisName = axisNameFromUrdf(jointAxis)
+      const servoUsesSideYoke = cIsActuated && servoAxisName !== 'z'
+      const useCompoundServoCarrier = _cl.physicalLinks.length === 3
+      const parentWorldTransform = linkWorldTransforms.get(parentLinkName)
       const _fmt4 = (t: [number, number, number]) =>
         t.map(v => Number(v || 0).toFixed(4)).join(' ')
       const _fmtAxis = (t: [number, number, number]) =>
@@ -4151,7 +4159,12 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         servoBodyMountRpy = finalRpy   // unused for non-actuated; satisfies type
       }
       if (_cl.placedViaConnector) viaConnectorMap.set(comp.link_name, true)
-      const servoHornOriginZ = cIsActuated ? czm * SERVO_HORN_ORIGIN_Z_RATIO : 0
+      // Output (horn) origin comes from the compiled revolute joint — which
+      // derives it from the authored `cls: 'shaft'` connector (ratio fallback
+      // inside the compiler). Never re-derive locally.
+      const servoHornOriginZ = cIsActuated
+        ? _cl.joints[_cl.joints.length - 1].originXyz[2]
+        : 0
 
       const changed = commitUrdf(urdfDoc => {
         const robot = urdfDoc.querySelector('robot')
@@ -4176,7 +4189,7 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
             category: cCatName,
             includeSideYoke: servoUsesSideYoke,
           })
-          const hornOriginZ = splitVisual.hornOriginZ.toFixed(6)
+          const hornOriginZ = servoHornOriginZ.toFixed(6)
           const bodyVisuals = splitVisual.bodyVisuals
           const hornVisuals = splitVisual.hornVisuals
 
@@ -4236,15 +4249,22 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
           hornVisuals.forEach((vis, i) => addVisualElement(urdfDoc, hornLink, vis, i))
           addResolvedCollisionSourceElements(urdfDoc, hornLink, splitVisual.hornCollision, hornVisuals)
 
-          // Revolute joint: body → horn at horn origin
-          const revJoint = urdfDoc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', 'revolute')
+          // Actuated joint: body → horn at horn origin. Type comes from the
+          // compiled joint — continuous-capable rotaries (continuous-rotation
+          // servos, BLDC props, gearmotor drives) keep their unbounded spin
+          // instead of inheriting revolute limits.
+          const _compiledRevType = _cl.joints[_cl.joints.length - 1].type
+          const revJointType = _compiledRevType === 'continuous' ? 'continuous' : 'revolute'
+          const revJoint = urdfDoc.createElement('joint'); revJoint.setAttribute('name', jointName); revJoint.setAttribute('type', revJointType)
           const revParentEl = urdfDoc.createElement('parent'); revParentEl.setAttribute('link', bodyLinkName)
           const revChildEl = urdfDoc.createElement('child'); revChildEl.setAttribute('link', hornLinkName)
           const revOrigin = urdfDoc.createElement('origin'); revOrigin.setAttribute('xyz', `0 0 ${hornOriginZ}`); revOrigin.setAttribute('rpy', servoHornZeroRpy)
           const revAxis = urdfDoc.createElement('axis'); revAxis.setAttribute('xyz', '0 0 1')
           const revLimit = urdfDoc.createElement('limit')
-          const [rLo2, rHi2] = resolveJointLimitsRad(preset)
-          revLimit.setAttribute('lower', rLo2.toFixed(5)); revLimit.setAttribute('upper', rHi2.toFixed(5))
+          if (revJointType === 'revolute') {
+            const [rLo2, rHi2] = resolveJointLimitsRad(preset)
+            revLimit.setAttribute('lower', rLo2.toFixed(5)); revLimit.setAttribute('upper', rHi2.toFixed(5))
+          }
           const me = preset.mechanical_electrical || {}
           const maxTorque = (me.max_torque_nm as number) ?? (me.holding_torque_nm as number) ?? 10
           revLimit.setAttribute('effort', String(maxTorque)); revLimit.setAttribute('velocity', '3.14')

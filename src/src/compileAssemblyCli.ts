@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { compileAssembly } from './placementCompiler/index.ts'
 import { resolveJointLimitsRad } from './placementCompiler/joints.ts'
 import { resolveComponent as resolveSpec, resolveComponentMassKg, isParametricSpec } from './componentResolver.ts'
+import { capabilitiesForSpec } from './componentCapabilities.ts'
 import { hasLinkGeometry } from './linkGeometry.ts'
 import { setMeshExtentsCatalog } from './meshExtents.ts'
 import type { ComponentResolver } from './placementCompiler/index.ts'
@@ -93,6 +94,20 @@ const resolver: ComponentResolver = (componentId, instance) => {
     jointLimitsRad: resolveJointLimitsRad(preset),
     maxTorqueNm: torque,
     massKg: resolveComponentMassKg(preset as Parameters<typeof resolveSpec>[0]['spec'], instance),
+    // Authored shells replace the donor's geometry — its shaft/bore
+    // connectors don't exist on the shell, so only contact-class capabilities
+    // survive. Plain instances derive everything from the preset.
+    capabilities: hasLinkGeometry(instance)
+      ? capabilitiesForSpec({
+          id: componentId,
+          connectors: [],
+          sim_metadata: preset.sim_metadata as Record<string, unknown> | undefined,
+        })
+      : capabilitiesForSpec({
+          id: componentId,
+          connectors: preset.connectors as MateConnector[] | undefined,
+          sim_metadata: preset.sim_metadata as Record<string, unknown> | undefined,
+        }),
   }
 }
 

@@ -43,24 +43,36 @@ def validate_semantic_graph(components: List[Dict]) -> List[Dict]:
     Read-only — the caller decides whether to strip offending fields or just
     route the feedback into the next AI turn."""
     diagnostics: List[Dict] = []
+    all_names = {
+        str(c.get("link_name", "")) for c in components or [] if isinstance(c, dict)
+    }
     for comp in components or []:
         if not isinstance(comp, dict):
             continue
         link_name = str(comp.get("link_name", ""))
         cid = str(comp.get("component_id", ""))
 
-        # 1. Backend link names. The compiler emits `_body`/`_horn`; the AI
-        # must reference the bare logical servo only.
+        # 1. Backend link names. The compiler emits `<link>_body`/`<link>_horn`
+        # for split rotary actuators — an authored name only collides when its
+        # PREFIX is another link in this graph (e.g. 'hip_1_horn' next to
+        # 'hip_1'). Benign creative names like 'torso_body_1' or
+        # 'scorpion_body_1' are fine; flagging every '*_body*' burned a retry
+        # turn on most creature designs (live-3 finding, 2026-06-10).
         for infix in _FORBIDDEN_LINK_INFIXES:
-            if infix in link_name:
+            idx = link_name.find(infix)
+            if idx <= 0:
+                continue
+            prefix = link_name[:idx]
+            if prefix in all_names:
                 diagnostics.append({
                     "code": "semantic_graph_split_servo_link_name",
                     "severity": "error",
                     "component": link_name,
                     "message": (
-                        f"link_name '{link_name}' uses a backend-internal suffix "
-                        f"'{infix}'. Reference the bare logical servo link; the "
-                        "compiler routes children to the correct emitted link."
+                        f"link_name '{link_name}' collides with the compiler-"
+                        f"emitted '{infix}' link of '{prefix}'. Reference the "
+                        "bare logical link; the compiler routes children to "
+                        "the correct emitted link."
                     ),
                 })
                 break

@@ -305,6 +305,13 @@ When in doubt: if the current robot has real components, prefer modify_topology.
 - `attach_rpy` [roll, pitch, yaw] radians: the joint's REST POSE. For a servo, only the component about its `joint_axis` is used, applied as the horn's zero offset — the housing stays bolted flat. **Author ONE value per joint ROLE** (all knees `[0, 0.8, 0]`, all hip pitches `[0, -0.4, 0]`): the engine mirrors +/-Y-side pairs automatically so symmetric stances come out symmetric. You may still VARY values along the body (front legs vs rear legs, per-segment tail curl). For deliberately asymmetric per-leg poses, use raw `rpy` instead.
 - `rpy` (raw) is the joint frame's MOUNTING orientation; `attach_rpy` is the rest angle within a normal mounting. Most designs only need `attach_rpy`.
 
+## How rotary parts work
+
+Every rotary actuator (servo, BLDC, stepper, DC/gear motor) authors its output shaft in the catalog — `shaft_out(cyl 5.9mm out:+Z@18mm)` means the shaft exits the +Z face 18mm above center. The engine compiles each one into a fixed body + spinning output link at that authored shaft position; your child mounts on the output and rotates with it.
+- **Face-mounted** (the default): the engine rotates the whole actuator so its shaft lies along your `joint_axis`, mirrors +/-Y-side pairs so left/right limbs match, and seats the body flush. You pick the face and the semantic axis; the engine owns the body's orientation (`orientation` is ignored for x/y-axis actuators).
+- **Anchored / mated / raw-`rpy`**: your frame is kept VERBATIM and the joint spins about that frame's +Z — the physical shaft. Point the anchor/frame where the shaft should point; `joint_axis` does not re-orient a socketed mount.
+- **Wheels** lie coin-flat in their local frame (`hub_bore in:+Z`). On a drivetrain (`coaxial`) or as the child of ANY rotary actuator, the engine stands them upright on the shaft — a gearmotor (`continuous`, `y`) with a wheel child is a complete drive assembly.
+
 ## Custom bodies: `link_geometry`
 
 The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment presets. For body silhouettes, set `link_geometry` on a component — a union of primitives that REPLACES its visuals, bounds, collision, and mass (mounting faces and anchors derive from the real shapes):
@@ -316,11 +323,11 @@ The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment pr
 ## Topology rules
 
 1. Exactly one root (`attach_to: null`) — the component matching the robot's structural center. Flat chassis -> `structural_baseplate` (200x150) or `structural_baseplate_large` (350x250, for wide hip spans). Creatures may root on a link_geometry body, an extrusion spine segment, or a hub bracket.
-2. Joint types: drivetrain motors = `continuous` (torque-controlled spin); servo/BLDC/stepper actuators = `revolute`; everything else = `fixed`.
+2. Joint types: `continuous` = unbounded torque-controlled spin (drivetrain motors, gearmotor wheel drives, BLDC props); `revolute` = position-controlled joints (servos, BLDC/stepper articulation); everything else = `fixed`.
 3. `joint_axis` is the ROTATION axis; the child sweeps perpendicular to it. "y" = pitch (knees, elbows, leg swing, nodding), "x" = roll (lateral abduction, wrist tilt), "z" = yaw (base spin, turret, hip sweep in XY). Never "z" for a knee.
-4. **One child per servo.** The engine splits each rotary servo into a fixed body + rotating horn (plus yoke hardware for x/y axes) and routes your child to the horn. Use the bare servo link_name as `attach_to`; never name `_body`/`_horn` links; never fan out multiple children from one servo. Drive children mount on the servo's top/bottom (the horn axis), not its side faces.
-5. **Put a bone between revolute joints.** Series revolute joints need a structural link between them (its `length_mm` is the segment length) or the limb collapses to zero length in sim. Exception: a 2-DOF hip/shoulder made of two perpendicular-axis servos stacked directly — the engine inserts the carrier itself.
-6. Wheels: `baseplate -> drivetrain_hub_motor_80 (bottom, continuous, y) -> mobility_wheel_driven (coaxial, fixed)`. Tires always `attach_face: "coaxial"`, no connector fields, never directly on the chassis. The engine handles outboard offsets and side flips.
+4. **One drive child per rotary actuator.** The engine splits every rotary actuator (servo, BLDC, stepper, gearmotor) into a fixed body + rotating output (plus yoke hardware for x/y axes) and routes your child to the output. Use the bare link_name as `attach_to`; never name `_body`/`_horn` links; never fan out multiple children from one actuator. Drive children mount on its top/bottom (the shaft axis), not its side faces.
+5. **Put a bone between revolute joints.** Series revolute joints need a structural link between them (its `length_mm` is the segment length) or the limb collapses to zero length in sim. Exception: a 2-DOF hip/shoulder made of two perpendicular-axis rotary actuators stacked directly — the engine inserts the carrier itself.
+6. Wheels: `baseplate -> drivetrain_hub_motor_80 (bottom, continuous, y) -> mobility_wheel_driven (coaxial, fixed)`, or any rotary actuator (`continuous`, `y`) with the wheel as its child. Tires always `attach_face: "coaxial"`, no connector fields, never directly on the chassis. The engine handles outboard offsets and side flips.
 7. Foot pads (`mobility_rubber_foot_pad`) are auto-leveled ground contacts: no `attach_rpy`, conventionally terminal (children would inherit the leveling).
 8. Sensors mount on structural links, not actuator shafts (they'd spin/vibrate with the joint). For a wrist camera, use the forearm link near its tip.
 9. Match servo torque to load: high_torque at root-adjacent joints carrying a limb, standard at distal joints, micro for fine appendages. Vary across limbs when their roles differ.
@@ -421,7 +428,7 @@ DESIGN_ROBOT_TOOL = {
                             "items": {"type": "number"},
                             "minItems": 3,
                             "maxItems": 3,
-                            "description": "RAW ROTATION — full [roll, pitch, yaw] of this component's joint origin in RADIANS. When set, BYPASSES the auto-computed face-orientation / splay / servo-flip logic entirely — this rpy becomes the URDF joint origin's rpy verbatim. Use with `xyz` to fully author placement. Note: this is DIFFERENT from `attach_rpy` — `attach_rpy` is the joint's REST POSE (how the joint is rotated at zero state). `rpy` is the joint origin's mounting orientation. Most designs only need `attach_rpy`; reach for `rpy` only when the auto-orient is fighting your design.",
+                            "description": "RAW ROTATION — full [roll, pitch, yaw] of this component's joint origin in RADIANS. When set, BYPASSES the auto-computed face-orientation / splay / servo-flip logic entirely — this rpy becomes the mounting frame verbatim, including for rotary actuators (whose joint then spins about this frame's +Z, i.e. the physical shaft; `joint_axis` does not re-orient a raw-placed actuator). Note: this is DIFFERENT from `attach_rpy` — `attach_rpy` is the joint's REST POSE (how the joint is rotated at zero state). `rpy` is the joint origin's mounting orientation. Most designs only need `attach_rpy`; reach for `rpy` only when the auto-orient is fighting your design.",
                         },
                         "link_geometry": {
                             "type": "array",
@@ -851,9 +858,10 @@ ASSEMBLY_SYSTEM_PROMPT = r"""You are a robot assembly agent. You build robots by
 - For arms: servo(revolute z) -> structural_extrusion_2020(top) -> servo(revolute y) -> structural_extrusion_2020(top) -> gripper. Arm extrusions are VERTICAL at rest (orientation default), not horizontal — joints control the angle.
 - For legs: servo(revolute y) on bottom -> structural_limb_link_slim(vertical) -> servo(revolute y) -> structural_limb_link_slim(vertical)
 - For slim limb links: do not set attach_rpy/orientation to make the link look flush. The engine mounts `structural_limb_link_slim` on its broad flat face; rest/crouch angles belong on the servo that drives the link.
-- For wheels: NEVER attach a tire directly to the baseplate. Use a drivetrain assembly:
-  baseplate -> drivetrain_hub_motor_80 (attach_face="bottom", continuous y) -> mobility_wheel_driven (attach_face="coaxial", fixed).
-  The drivetrain IS the motor; the tire mounts coaxially on the hub (attach_face="coaxial"). The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner. Do NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire; those fields make the engine try to honor your connector choice and the wrong choice puts the wheel inboard.
+- For wheels: NEVER attach a tire directly to the baseplate — it needs a spin axis. Two working patterns:
+  baseplate -> drivetrain_hub_motor_80 (attach_face="bottom", continuous y) -> mobility_wheel_driven (attach_face="coaxial", fixed), or
+  any rotary actuator (e.g. motor_gear_medium_37mm, continuous y) -> mobility_wheel_driven (coaxial, fixed) — the wheel mounts axially on its output shaft.
+  The placement engine applies the axial offset and the side-flip automatically — emit the same (coaxial, fixed) annotation for every wheel regardless of corner. Do NOT set `attach_connector`, `mate_connector`, or `mate_type` on a tire; those fields make the engine try to honor your connector choice and the wrong choice puts the wheel inboard.
   Casters: baseplate -> drivetrain_caster_swivel (bottom, fixed) -> mobility_wheel_driven (coaxial, fixed).
   Mecanum: baseplate -> drivetrain_hub_motor_80 (bottom, continuous y) -> mobility_mecanum_wheel (coaxial, fixed).
   Default 4 wheels for any "car/truck/vehicle/rover/buggy/cart" request.

@@ -272,11 +272,16 @@ def metric_contact(compiled: Dict[str, Any], graph: Optional[Dict[str, Any]]) ->
         child_is_shell = bool((comps.get(cl["logicalName"]) or {}).get("link_geometry"))
         buried = (not child_is_shell) and any(b.contains(child_box) for b in parent_boxes)
 
-        # Designed-standoff idioms: chained servos sit across a carrier/yoke
-        # bracket; drivetrains hang with tire-radius clearance. Use the wider
-        # tolerance so the metric flags genuinely detached parts, not idioms.
+        # Designed-standoff idioms: chained rotary actuators sit across a
+        # carrier/yoke bracket; drivetrains hang with tire-radius clearance.
+        # Use the wider tolerance so the metric flags genuinely detached
+        # parts, not idioms. "Split rotary" is the STRUCTURAL signal —
+        # physicalLinks > 1 means the compiler emitted body+horn — so any
+        # actuator the capability predicates split (servo, BLDC, stepper,
+        # gearmotor) gets the standoff tolerance without an id list here.
         child_id = str(cl.get("componentId") or "")
-        if child_id.startswith(("actuator_servo", "actuator_continuous")):
+        child_is_split_rotary = len(cl.get("physicalLinks") or []) > 1
+        if child_is_split_rotary:
             gap_tol = GAP_TOL_SERVO_CHILD_M
         elif child_id.startswith("drivetrain_"):
             gap_tol = GAP_TOL_DRIVETRAIN_CHILD_M

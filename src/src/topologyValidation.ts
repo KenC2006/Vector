@@ -33,6 +33,7 @@ import {
   resolveComponent,
   resolveComponentHalfBoundsMm,
 } from './componentResolver.ts'
+import { capabilitiesForSpec } from './componentCapabilities.ts'
 import type { MateConnector } from './mateConnectors.ts'
 import {
   type Diagnostic,
@@ -50,6 +51,9 @@ export interface ValidationPreset {
   }
   mechanical_electrical: Record<string, unknown>
   mounting_logic: Record<string, unknown>
+  /** Simulation metadata (contact_class, mjcf_actuator_type, …) — feeds the
+   *  data-derived capability predicates (componentCapabilities.ts). */
+  sim_metadata?: Record<string, unknown>
   /** Authored mate connectors. Merged over the 6 default face connectors
    *  (top/bottom/front/back/left/right) by id. */
   connectors?: MateConnector[]
@@ -100,12 +104,29 @@ export function validateTopologyRouted(
   return { diagnostics, routed: routeDiagnostics(diagnostics) }
 }
 
-function isSplitServoComponentId(componentId: string): boolean {
+// Capability predicates — data-driven via the preset catalog (authored
+// connector `cls` + sim_metadata, see componentCapabilities.ts), with the
+// legacy id-prefix fallback only when the preset can't be found.
+function isSplitRotary(ctx: ValidationContext, componentId: string): boolean {
+  const preset = ctx.findPreset(componentId)
+  if (preset) return capabilitiesForSpec(preset).splitRotary
   return (
     componentId.startsWith('actuator_servo') ||
     componentId.startsWith('actuator_continuous_rotation_servo') ||
     componentId.startsWith('actuator_high_speed')
   )
+}
+
+function isWheel(ctx: ValidationContext, componentId: string): boolean {
+  const preset = ctx.findPreset(componentId)
+  if (preset) return capabilitiesForSpec(preset).wheel
+  return isTireComponentId(componentId)
+}
+
+function isDrivetrain(ctx: ValidationContext, componentId: string): boolean {
+  const preset = ctx.findPreset(componentId)
+  if (preset) return capabilitiesForSpec(preset).drivetrain
+  return isDrivetrainComponentId(componentId)
 }
 
 // Walk up from `start` to the nearest component whose id begins with `structural_`.
@@ -189,10 +210,16 @@ export function checkPortCompatibility(
   child: AssemblyComponent,
 ): StructuredDiagnostic | null {
   if (!parent) return null
-  const isActuator = (id: string) => id.startsWith('actuator_') || id.startsWith('motor_')
-  if (!isActuator(child.component_id)) return null
-  // Split servos carry their own body holder + horn adapter internally.
-  if (isSplitServoComponentId(child.component_id)) return null
+  // Shaft-bearing hardware that does NOT split: linear actuators, raw motors
+  // without capability data, and passive transmissions (gearboxes, couplers,
+  // u-joints) — pressing their shaft against a flat face needs a coupler.
+  const isShaftHardware = (id: string) =>
+    id.startsWith('actuator_') || id.startsWith('motor_') || id.startsWith('transmission_')
+  if (!isShaftHardware(child.component_id)) return null
+  // Split rotary actuators carry their own body holder + horn adapter
+  // internally — the engine mounts the BODY to the parent and the shaft
+  // becomes the output frame, so there is nothing to mismatch.
+  if (isSplitRotary(ctx, child.component_id)) return null
   // Brackets and coupler discs exist precisely to mate shaft↔mount_face — skip.
   if (
     parent.component_id.startsWith('structural_bracket_') ||
@@ -462,11 +489,11 @@ export function validateTopologyStructured(
       if (!comp.attach_to || !isActuatorId(comp.component_id)) continue
       const parentComp = byName.get(comp.attach_to)
       if (!parentComp || !isActuatorId(parentComp.component_id)) continue
-      // Split servos stacking on split servos form the compound 2-DOF joint —
-      // the compiler inserts the carrier bracket itself.
+      // Split rotaries stacking on split rotaries form the compound 2-DOF
+      // joint — the compiler inserts the carrier bracket itself.
       if (
-        isSplitServoComponentId(comp.component_id) &&
-        isSplitServoComponentId(parentComp.component_id)
+        isSplitRotary(ctx, comp.component_id) &&
+        isSplitRotary(ctx, parentComp.component_id)
       ) continue
       out.push({
         severity: 'warning', code: 'DIRECT_SERVO_STACK', link_name: comp.link_name,
@@ -488,12 +515,12 @@ export function validateTopologyStructured(
     const isServoCoupler = comp.component_id === 'structural_servo_coupler_disc'
     const isServoToServoBracket = comp.component_id.startsWith('structural_bracket_')
       && !!parent
-      && isSplitServoComponentId(parent.component_id)
-      && kids.some(c => isSplitServoComponentId(c.component_id))
+      && isSplitRotary(ctx, parent.component_id)
+      && kids.some(c => isSplitRotary(ctx, c.component_id))
     if (!isServoCoupler && !isServoToServoBracket) continue
     const touchesServo = !!(
-      (parent && isSplitServoComponentId(parent.component_id)) ||
-      kids.some(c => isSplitServoComponentId(c.component_id))
+      (parent && isSplitRotary(ctx, parent.component_id)) ||
+      kids.some(c => isSplitRotary(ctx, c.component_id))
     )
     if (!touchesServo) continue
     out.push({
@@ -508,11 +535,15 @@ export function validateTopologyStructured(
     })
   }
 
-  // BARE_TIRE: tire attached to a non-drivetrain parent. No spin axis.
+  // BARE_TIRE: tire attached to a parent with no spin axis. A drivetrain
+  // parent OR any split rotary actuator (gearmotor, BLDC — the wheel mounts
+  // on its horn) provides one.
   for (const comp of components) {
-    if (!isTireComponentId(comp.component_id) || !comp.attach_to) continue
+    if (!isWheel(ctx, comp.component_id) || !comp.attach_to) continue
     const parentComp = byName.get(comp.attach_to)
-    if (!parentComp || isDrivetrainComponentId(parentComp.component_id)) continue
+    if (!parentComp
+      || isDrivetrain(ctx, parentComp.component_id)
+      || isSplitRotary(ctx, parentComp.component_id)) continue
     out.push({
       severity: 'warning', code: 'BARE_TIRE', link_name: comp.link_name,
       message:

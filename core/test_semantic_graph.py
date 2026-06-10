@@ -39,12 +39,27 @@ def test_clean_graph_emits_no_diagnostics():
 
 
 def test_split_servo_link_name_flagged():
+    # Flag only when the name collides with the compiler-emitted split link
+    # of an EXISTING link ('servo_1' + 'servo_1_horn').
     graph = [
-        {"link_name": "servo_1_horn", "component_id": "actuator_servo_standard", "attach_to": "base_1"},
+        {"link_name": "servo_1", "component_id": "actuator_servo_standard", "attach_to": "base_1"},
+        {"link_name": "servo_1_horn", "component_id": "structural_bracket_l", "attach_to": "servo_1"},
     ]
     diags = validate_semantic_graph(graph)
     assert _codes(diags) == ["semantic_graph_split_servo_link_name"], _codes(diags)
     assert diags[0]["severity"] == "error"
+
+
+def test_creative_body_link_name_allowed():
+    # 'torso_body_1' / 'scorpion_body_1' are legitimate creature names — the
+    # infix only matters when its prefix is another link (live-3 finding:
+    # the blanket ban burned a retry turn on most creature designs).
+    graph = [
+        {"link_name": "torso_body_1", "component_id": "structural_baseplate", "attach_to": None,
+         "link_geometry": [{"name": "chest", "shape": "box", "size_mm": [120, 80, 160]}]},
+        {"link_name": "scorpion_body_1", "component_id": "structural_baseplate", "attach_to": "torso_body_1"},
+    ]
+    assert validate_semantic_graph(graph) == [], "creative *_body* names must not be flagged"
 
 
 def test_foot_pad_attach_rpy_flagged_and_stripped():
@@ -187,6 +202,7 @@ def test_normalize_and_validate_clean_assembly_has_no_diagnostics_key():
 _TESTS = [
     test_clean_graph_emits_no_diagnostics,
     test_split_servo_link_name_flagged,
+    test_creative_body_link_name_allowed,
     test_foot_pad_attach_rpy_flagged_and_stripped,
     test_passive_limb_attach_rpy_warned_not_stripped,
     test_raw_xyz_is_first_class_authoring,

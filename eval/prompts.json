@@ -59,6 +59,26 @@
       "expect_wheels": false,
       "expect_symmetry": true,
       "expect_ground_contact": true
+    },
+    {
+      "id": "bldc_quadruped",
+      "prompt": "build an agile quadruped robot that uses quasi-direct-drive BLDC actuators for its leg joints instead of hobby servos, with a crouched stance and onboard battery and controller",
+      "dof_range": [8, 16],
+      "min_legs": 4,
+      "max_legs": 4,
+      "expect_wheels": false,
+      "expect_symmetry": true,
+      "expect_ground_contact": true
+    },
+    {
+      "id": "gearmotor_rover",
+      "prompt": "build a four-wheeled rover where geared DC motors drive the wheels directly (no hub motors), with a front camera and a battery",
+      "dof_range": [4, 8],
+      "min_wheels": 4,
+      "max_wheels": 4,
+      "expect_wheels": true,
+      "expect_symmetry": true,
+      "expect_ground_contact": true
     }
   ]
 }

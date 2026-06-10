@@ -18,6 +18,7 @@ import type { AssemblyGraph, AssemblyComponent } from '../urdfGraphEquivalence.t
 import type { ComponentBoundsMm, ComponentInstanceSpec } from '../componentSpec.ts'
 import { DiagnosticOwner, type Diagnostic } from '../compilerDiagnostics.ts'
 import { isDrivetrainComponentId, isTireComponentId } from '../componentResolver.ts'
+import type { ComponentCapabilities } from '../componentCapabilities.ts'
 import type { MateConnector } from '../mateConnectors.ts'
 import {
   parseRpyString,
@@ -97,6 +98,11 @@ export interface ComponentResolution {
    * → parametric per-100mm × length → fallback). Copied onto CompiledLink so
    * headless consumers (eval harness, URDF emitters) don't re-derive it. */
   massKg?: number
+  /** Data-driven capabilities (`capabilitiesForSpec`): rotary split / wheel /
+   * drivetrain, derived from authored connector `cls` + sim_metadata. When
+   * omitted (older resolvers, hand-built fixtures), the compiler falls back
+   * to the legacy component-id prefix predicates. */
+  capabilities?: ComponentCapabilities
 }
 
 export type ComponentResolver = (
@@ -300,41 +306,41 @@ function deferredByGlobalBypass(
   return false
 }
 
-function isServoSplitCase(
-  c: AssemblyComponent,
-  parent: AssemblyComponent | undefined,
-): boolean {
-  return isSplitServoComponentId(c.component_id)
-    || (parent != null && isSplitServoComponentId(parent.component_id))
+// ── Capability accessors ─────────────────────────────────────────────────────
+// Data-driven when the resolver supplied `capabilities` (real preset catalogs:
+// browser + CLI paths); legacy id-prefix fallback for hand-built fixture
+// resolvers that predate the field. The fallback preserves old behavior for
+// tests; production behavior is governed by authored connector cls +
+// sim_metadata via `capabilitiesForSpec`.
+
+function splitRotaryOf(res: ComponentResolution | null | undefined, componentId: string): boolean {
+  const caps = res?.capabilities
+  return caps ? caps.splitRotary : isSplitServoComponentId(componentId)
 }
 
-/** Eligibility for face/mate placement (slices 4.C/4.D/4.E). Servos and
- * servo-children go through `eligibleForServoSplit` instead. */
+function wheelOf(res: ComponentResolution | null | undefined, componentId: string): boolean {
+  const caps = res?.capabilities
+  return caps ? caps.wheel : isTireComponentId(componentId)
+}
+
+function drivetrainOf(res: ComponentResolution | null | undefined, componentId: string): boolean {
+  const caps = res?.capabilities
+  return caps ? caps.drivetrain : isDrivetrainComponentId(componentId)
+}
+
+/** Eligibility for face/mate placement (slices 4.C/4.D/4.E). Rotary-split
+ * actuators and their children go through the servo-split path instead.
+ * `flags` are capability-derived at the call site. */
 function eligibleForFaceOrMatePlacement(
   c: AssemblyComponent,
-  parent: AssemblyComponent | undefined,
+  flags: { childWheel: boolean; childDrivetrain: boolean; parentDrivetrain: boolean },
 ): boolean {
-  if (deferredByGlobalBypass(c, parent)) return false
-  if (isServoSplitCase(c, parent)) return false               // servo_split path
-  // Drivetrain wheels are continuous joints but their LINK pose is independent
-  // of joint type; allow them through. Joint URDF emission stays deferred to
-  // slice 4.J. Other revolute/prismatic placements remain deferred.
-  const isDrivetrain = isDrivetrainComponentId(c.component_id)
-    || isTireComponentId(c.component_id)
-    || (parent != null && isDrivetrainComponentId(parent.component_id))
+  // Wheels/drivetrain hardware carry continuous joints but their LINK pose is
+  // independent of joint type; allow them through. Other actuated placements
+  // without split machinery (prismatic linear actuators) remain deferred.
+  const isDrivetrain = flags.childDrivetrain || flags.childWheel || flags.parentDrivetrain
   if (!isDrivetrain && (c.joint_type ?? 'fixed') !== 'fixed') return false
   return true
-}
-
-/** Eligibility for the servo split path (slice 4.F). Covers both `cIsActuated`
- * (current child IS a servo) and `parentIsServo` (current child mounts on a
- * servo horn). */
-function eligibleForServoSplit(
-  c: AssemblyComponent,
-  parent: AssemblyComponent | undefined,
-): boolean {
-  if (deferredByGlobalBypass(c, parent)) return false
-  return isServoSplitCase(c, parent)
 }
 
 /**
@@ -502,14 +508,22 @@ export function compileAssembly(
     placedCount++
 
     const parentComp = componentByName.get(c.attach_to!)
-    const isServo = isServoSplitCase(c, parentComp)
-    if (!isServo && !eligibleForFaceOrMatePlacement(c, parentComp)) continue
-    if (isServo && !eligibleForServoSplit(c, parentComp)) continue
-
     const parentCompiled = compiledByLogical.get(c.attach_to!)
     if (!parentCompiled) continue   // parent class not implemented yet
     const parentResolved = parentComp ? resolver(parentComp.component_id, parentComp) : null
     if (!parentResolved) continue
+
+    if (deferredByGlobalBypass(c, parentComp)) continue
+    const cSplitRotary = splitRotaryOf(childResolved, c.component_id)
+    const parentSplitRotary = parentComp
+      ? splitRotaryOf(parentResolved, parentComp.component_id)
+      : false
+    const isServo = cSplitRotary || parentSplitRotary
+    const childWheel = wheelOf(childResolved, c.component_id)
+    const childDrivetrain = drivetrainOf(childResolved, c.component_id)
+    const parentDrivetrain = !!parentComp && drivetrainOf(parentResolved, parentComp.component_id)
+    if (!isServo && !eligibleForFaceOrMatePlacement(c, { childWheel, childDrivetrain, parentDrivetrain })) continue
+
     const parentWorld = worldByLogical.get(c.attach_to!)!
 
     const pb = parentResolved.bounds
@@ -533,17 +547,18 @@ export function compileAssembly(
 
     // noSplay mirrors assembler line ~4031: rolling hardware (wheels, drivetrain,
     // swerves, anything carrying a tire), passive hardware (brackets/sheets/
-    // sensors/etc.), and split servos all suppress the multi-child outward tilt.
-    const _childIsTireForSplay = isTireComponentId(c.component_id)
-    const _childIsDriveForSplay = isDrivetrainComponentId(c.component_id)
+    // sensors/etc.), and split rotary actuators all suppress the multi-child
+    // outward tilt.
+    const _childIsTireForSplay = childWheel
+    const _childIsDriveForSplay = childDrivetrain
     const _hasTireChild = semanticGraph.components.some(
-      sc => sc.attach_to === c.link_name && isTireComponentId(sc.component_id)
+      sc => sc.attach_to === c.link_name && wheelOf(resolver(sc.component_id, sc), sc.component_id)
     )
     const _isRollingHardware = _childIsDriveForSplay || _childIsTireForSplay
       || c.component_id.startsWith('mobility_swerve_') || _hasTireChild
     const noSplay = _isRollingHardware
       || isPassiveHardware(c.component_id)
-      || isSplitServoComponentId(c.component_id)
+      || cSplitRotary
     const parentConnectors = parentResolved.connectors ?? []
     const childConnectors = childResolved.connectors ?? []
     // Face placement uses raw preset.connectors (no auto-defaults) so it
@@ -552,8 +567,8 @@ export function compileAssembly(
     const parentPresetConnectors = parentResolved.presetConnectors ?? parentResolved.connectors ?? []
     const childPresetConnectors = childResolved.presetConnectors ?? childResolved.connectors ?? []
 
-    const cIsActuated = isSplitServoComponentId(c.component_id)
-    const parentIsServo = !!(parentComp && isSplitServoComponentId(parentComp.component_id))
+    const cIsActuated = cSplitRotary
+    const parentIsServo = parentSplitRotary
 
     // ── Placement (xyz, rpy) ──────────────────────────────────────────────
     // Four sources, in priority order:
@@ -565,6 +580,14 @@ export function compileAssembly(
     // 3. Bbox face placement: fallback / standard path.
     let placement: { xyz: string; rpy: string } | null = null
     let placedViaConnectorFlag = false
+    // True when the model authored the mounting FRAME deliberately — raw
+    // `rpy`, a primitive anchor, or an explicit mate. Rotary actuators keep
+    // that frame: the engine's shaft-alignment override (which discards the
+    // placement rpy for x/y-axis servos) and the side-clearance nudge apply
+    // only to engine-derived face placements. This is what makes the schema's
+    // "raw placement bypasses the resolver" promise true for servos, and
+    // stops anchored hip sockets from being shoved back into the shell.
+    let authoredMountFrame = false
 
     {
       const rawXyz = Array.isArray(c.xyz) && c.xyz.length === 3 ? c.xyz : null
@@ -587,6 +610,9 @@ export function compileAssembly(
         // Mark as connector-placed so reconcile doesn't snap the child back
         // to bbox-min — Claude's authored position is authoritative.
         placedViaConnectorFlag = true
+        // Raw rpy is a deliberate frame. Raw xyz alone keeps engine
+        // orientation (rpy defaulted to zero is a placeholder, not intent).
+        authoredMountFrame = rawRpy !== null
       }
     }
 
@@ -601,7 +627,7 @@ export function compileAssembly(
         && (
           (
             !!grandParentComp
-            && isSplitServoComponentId(grandParentComp.component_id)
+            && splitRotaryOf(resolver(grandParentComp.component_id, grandParentComp), grandParentComp.component_id)
             && axisNameFromComponentAxis(grandParentComp.joint_axis) === 'x'
           )
           || parentRestPitch < -0.001
@@ -609,9 +635,16 @@ export function compileAssembly(
       const childBodyHX = Math.max(childX / 2 - Math.abs(cb.center[0]), 0)
       const childBodyHY = Math.max(childY / 2 - Math.abs(cb.center[1]), 0)
       const childBodyHZ = Math.max(childZ / 2 - Math.abs(cb.center[2]), 0)
-      placement = c.component_id === 'structural_limb_link_slim'
-        ? servoDrivenStructuralLimbPlacement(parentServoAxis, c.attach_face, childBodyHY, childBodyHZ, parentWorld)
-        : servoDrivenChildPlacement(parentServoAxis, c.attach_face, childBodyHX, childBodyHY, childBodyHZ, invertRadialSide, cIsActuated)
+      // Wheels (and anything mated `coaxial`) mount AXIALLY on the output:
+      // the horn's local +Z IS the shaft, so a wheel fixed to the horn at
+      // +Z spins about its bore exactly like a hub assembly. This is what
+      // lets a wheel mount on ANY rotary actuator (gearmotor, BLDC) — not
+      // just the dedicated drivetrain parts — and come out oriented right.
+      placement = (childWheel || c.attach_face === 'coaxial')
+        ? { xyz: `0.0000 0.0000 ${(0.002 + childBodyHZ).toFixed(4)}`, rpy: '0 0 0' }
+        : c.component_id === 'structural_limb_link_slim'
+          ? servoDrivenStructuralLimbPlacement(parentServoAxis, c.attach_face, childBodyHY, childBodyHZ, parentWorld)
+          : servoDrivenChildPlacement(parentServoAxis, c.attach_face, childBodyHX, childBodyHY, childBodyHZ, invertRadialSide, cIsActuated)
       if (!placement) continue
       // Mirror inline-path behavior: servo-driven children are connector-placed
       // (the servo horn IS the connector). Reconcile must not re-flush them.
@@ -646,6 +679,7 @@ export function compileAssembly(
           if (!('miss' in mateResult)) {
             placement = mateResult
             placedViaConnectorFlag = true
+            authoredMountFrame = true
           }
         }
         if (placement === null) {
@@ -669,9 +703,7 @@ export function compileAssembly(
       // it thinks "top" was consumed by the baseplate bolt-down, dropping the
       // wheel inboard. Skip the mate path entirely for this case so the face
       // short-circuit always wins regardless of which mate fields the AI sets.
-      const tireOnDrivetrain =
-        isTireComponentId(c.component_id)
-        && !!parentComp && isDrivetrainComponentId(parentComp.component_id)
+      const tireOnDrivetrain = childWheel && parentDrivetrain
       if (placement === null && !tireOnDrivetrain && hasMateConnectorFields(c)) {
         const mateMulti = totalOnFace > 1
           ? { total: totalOnFace, index: childIdx, face: c.attach_face || 'top', childSizes: faceChildSizes.get(faceKey) }
@@ -685,6 +717,7 @@ export function compileAssembly(
         if (!('miss' in mateResult)) {
           placement = mateResult
           placedViaConnectorFlag = true
+          authoredMountFrame = true
         }
       }
       if (placement === null) {
@@ -694,9 +727,9 @@ export function compileAssembly(
         // affects axle inference, and bottom-mounted hub motors swap their
         // y half-extent for the assembled tire's outer radius so the tire
         // clears the parent face instead of clipping through it.
-        const childIsTire = isTireComponentId(c.component_id)
-        const childIsDrivetrain = isDrivetrainComponentId(c.component_id)
-        const parentIsDrivetrain = !!(parentComp && isDrivetrainComponentId(parentComp.component_id))
+        const childIsTire = childWheel
+        const childIsDrivetrain = childDrivetrain
+        const parentIsDrivetrain = parentDrivetrain
         const childUsesRollingBottomPose = childIsDrivetrain || childIsTire
           || c.component_id.startsWith('mobility_swerve_')
         let effectiveChildY = childY
@@ -760,7 +793,8 @@ export function compileAssembly(
       const grandparent = parentComp.attach_to
         ? componentByName.get(parentComp.attach_to)
         : undefined
-      const beamMountedOnServo = !!(grandparent && isSplitServoComponentId(grandparent.component_id))
+      const beamMountedOnServo = !!(grandparent
+        && splitRotaryOf(resolver(grandparent.component_id, grandparent), grandparent.component_id))
       if (normalWorld.z > 0.0001 || beamMountedOnServo) {
         xyz[2] = -xyz[2]
         placement = { xyz: xyz.map(v => Number(v || 0).toFixed(4)).join(' '), rpy: placement.rpy }
@@ -799,7 +833,11 @@ export function compileAssembly(
       ])
       if (cIsActuated) {
         const explicitTuple = parseRpyString(explicitRpyStr)
-        const restPoseSign = servoAxisSign
+        // Engine mirroring applies only to engine-placed rotaries. A
+        // deliberate frame (anchor / mate / raw rpy) already encodes the
+        // side: anchored ±Y sockets have antiparallel shaft axes, so the
+        // SAME local rest spin mirrors in world space by construction.
+        const restPoseSign = authoredMountFrame ? 1 : servoAxisSign
         if (servoAxisName === 'y' && parentComp
             && isDistalBeamComponentId(parentComp.component_id)
             && c.attach_face === 'bottom') {
@@ -833,7 +871,10 @@ export function compileAssembly(
       // still seats flush.
       // axis-x shaft-align Ry(π/2): world(X,Y,Z) extents from body(Z,Y,X)
       // axis-y shaft-align Rx(-π/2): world(X,Y,Z) extents from body(X,Z,Y)
-      if (servoAxisName !== 'z') {
+      // ONLY for engine-derived face placements — an anchored / mated /
+      // raw-authored position is exact; nudging it buries the part (the
+      // live-eval "hip socket -20mm into the shell" defect).
+      if (servoAxisName !== 'z' && !authoredMountFrame) {
         const face = c.attach_face || 'top'
         const faceNormalAxis: 0 | 1 | 2 | null =
           face === 'top' || face === 'bottom' ? 2
@@ -857,10 +898,25 @@ export function compileAssembly(
         }
       }
 
-      const servoBodyMountRpy = servoAxisName === 'z'
-        ? servoPlanarMountRpyForParentWorld(parentWorld, c.attach_face, finalRpy)
-        : servoMountRpyForParentWorld(parentWorld, servoAxisName, parseXyzString(placement.xyz))
-      const hornOriginZ = childZ * SERVO_HORN_ORIGIN_Z_RATIO
+      // Body mount orientation. Engine-placed (face) rotaries get the
+      // shaft-alignment override: rotate the body so its +Z output lies on
+      // the semantic joint_axis, with the ±Y antiparallel mirror for
+      // left/right pairs. Deliberate frames (anchor / explicit mate / raw
+      // rpy) are kept VERBATIM — the joint then spins about that frame's +Z,
+      // i.e. the physical shaft, which is what a socketed servo does.
+      const servoBodyMountRpy = authoredMountFrame
+        ? finalRpy
+        : servoAxisName === 'z'
+          ? servoPlanarMountRpyForParentWorld(parentWorld, c.attach_face, finalRpy)
+          : servoMountRpyForParentWorld(parentWorld, servoAxisName, parseXyzString(placement.xyz))
+      // Output (horn) origin: the AUTHORED shaft connector when the preset
+      // declares one (catalog convention: output axis = local +Z, origin at
+      // the shaft face) — the data the WS4 migration classed `cls: 'shaft'`.
+      // Legacy ratio only for resolvers without capability data.
+      const shaftConn = childResolved.capabilities?.shaftConnector
+      const hornOriginZ = shaftConn
+        ? shaftConn.origin_xyz_mm[2] / 1000
+        : childZ * SERVO_HORN_ORIGIN_Z_RATIO
 
       const bodyName = `${physicalName}_body`
       const hornName = `${physicalName}_horn`
@@ -925,9 +981,16 @@ export function compileAssembly(
           originXyz: placementXyz, originRpy: placementRpy,
         })
       }
+      // Continuous-capable rotary actuators (continuous-rotation servos, BLDC
+      // props, gearmotor drives) keep the authored joint type — an unbounded
+      // torque-controlled spin must not inherit revolute ±90° limits.
+      const actuatedJointType = normalizeJointType(c.joint_type) === 'continuous'
+        ? 'continuous' as const
+        : 'revolute' as const
       servoJoints.push({
-        name: jointBaseName, type: 'revolute', axis: [0, 0, 1],
-        limits: limitsRad, effort: torque, velocity: 3.14,
+        name: jointBaseName, type: actuatedJointType, axis: [0, 0, 1],
+        limits: actuatedJointType === 'revolute' ? limitsRad : undefined,
+        effort: torque, velocity: 3.14,
         parentLink: bodyName, childLink: hornName,
         originXyz: [0, 0, hornOriginZ], originRpy: parseRpyString(servoHornZeroRpy),
       })
