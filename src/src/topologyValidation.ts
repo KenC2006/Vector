@@ -23,6 +23,8 @@ import {
   hasLinkGeometry,
   primitiveNames,
   anchorNamesForPrimitive,
+  resolvePrimitiveAnchorPose,
+  linkGeometryUnionAabbMm,
   type LinkPrimitive,
 } from './linkGeometry.ts'
 import type { AssemblyComponent } from './urdfAssembly.ts'
@@ -356,6 +358,42 @@ export function validateTopologyStructured(
           `${prim.shape} primitive "${comp.attach_primitive}".`,
         suggested_repair: `use one of [${validAnchors.join(', ')}]`,
       })
+      continue
+    }
+    // ANCHOR_POINTS_INWARD: a socket whose outward normal aims at the body
+    // interior mounts its child INSIDE the shell (live-eval failure: the
+    // model picks `+axis_end` for all four shoulder sockets; on the -Y side
+    // that end is the inboard one and the hip servo compiles buried).
+    // Warning, not error — pointing into the body is occasionally deliberate
+    // (recessed mounts), and the suggested flip self-corrects the common case.
+    {
+      const anchorConn = resolvePrimitiveAnchorPose(prims, comp.attach_primitive!, comp.attach_anchor!)
+      const union = linkGeometryUnionAabbMm(prims)
+      if (anchorConn && union) {
+        const rel = [
+          anchorConn.origin_xyz_mm[0] - union.center[0],
+          anchorConn.origin_xyz_mm[1] - union.center[1],
+          anchorConn.origin_xyz_mm[2] - union.center[2],
+        ]
+        const dot = rel[0] * anchorConn.axis_xyz[0]
+          + rel[1] * anchorConn.axis_xyz[1]
+          + rel[2] * anchorConn.axis_xyz[2]
+        if (dot < -1) {  // mm-scale; anchors at the union centre stay silent
+          const flipped = comp.attach_anchor!.includes('+')
+            ? comp.attach_anchor!.replace('+', '-')
+            : comp.attach_anchor!.replace('-', '+')
+          out.push({
+            severity: 'warning', code: 'ANCHOR_POINTS_INWARD', link_name: comp.link_name,
+            message:
+              `${comp.link_name}: anchor "${comp.attach_anchor}" on primitive ` +
+              `"${comp.attach_primitive}" points INTO the body interior — the child ` +
+              `will mount inside the shell.`,
+            suggested_repair:
+              `use attach_anchor="${flipped}" (the end facing away from the body), ` +
+              `or move the primitive so this end protrudes — keep only if the recessed mount is deliberate`,
+          })
+        }
+      }
     }
   }
 

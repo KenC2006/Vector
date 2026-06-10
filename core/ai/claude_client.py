@@ -340,15 +340,7 @@ The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment pr
 
 ## Validation feedback
 
-Your output is validated, not silently rewritten. **Errors** (UNKNOWN_COMPONENT, UNKNOWN_PARENT, DUPLICATE_LINK_NAME, MULTIPLE_ROOTS, CYCLE, BAD_PRIMITIVE_REF, BAD_ANCHOR, PRIMITIVE_ON_NON_CAD_BODY) block the build — fix and re-emit. **Warnings** (PORT_MISMATCH, BARE_TIRE, SHAFT_FANOUT, SENSOR_ON_ACTUATOR, EFFECTOR_HAS_CHILDREN, FOOT_PAD_HAS_CHILDREN, SERVO_SPACER, DIRECT_SERVO_STACK, TIPPY_PROPORTIONS) come back with a `suggested_repair`: APPLY it on your next turn, or keep the design only when the warning describes a deliberate creative choice (a wheel as decoration, a feeler past a gripper).
-
-## Reference patterns (starting points, not requirements)
-
-- Quadruped leg: hip_yaw servo (bottom, revolute z) -> hip_pitch servo (bottom, revolute y, rest ~+0.5) -> thigh slim link ~100mm -> knee servo (bottom, revolute y, rest ~-1.0) -> shin slim link ~120mm -> foot pad. x4 on a large baseplate; electronics flat on top.
-- Tabletop arm: baseplate -> base servo (top, revolute z) -> 2020 stem ~80mm -> shoulder (revolute y) -> 2020 upper ~200mm -> elbow (revolute y) -> 2020 forearm ~150mm -> wrist (revolute y) -> gripper. All vertical at rest.
-- Rover: baseplate -> 4x hub motor + wheel (rule 6) + front camera on a bracket + battery/SBC on top.
-- Humanoid: pelvis baseplate -> ONE torso link with link_geometry (named chest box, head sphere, shoulder_l/shoulder_r cylinders) -> shoulder servos at the cylinder `+axis_end`/`-axis_end` anchors -> arms; 2 legs below the pelvis; camera at a head-sphere pole.
-- Creature bodies (crab, scorpion, snake...): one link_geometry body with named leg-socket primitives, limbs anchored on them, varied per role.
+Your output is validated, not silently rewritten. **Errors** (UNKNOWN_COMPONENT, UNKNOWN_PARENT, DUPLICATE_LINK_NAME, MULTIPLE_ROOTS, CYCLE, BAD_PRIMITIVE_REF, BAD_ANCHOR, PRIMITIVE_ON_NON_CAD_BODY) block the build — fix and re-emit. **Warnings** (PORT_MISMATCH, BARE_TIRE, SHAFT_FANOUT, SENSOR_ON_ACTUATOR, EFFECTOR_HAS_CHILDREN, FOOT_PAD_HAS_CHILDREN, SERVO_SPACER, DIRECT_SERVO_STACK, ANCHOR_POINTS_INWARD, TIPPY_PROPORTIONS) come back with a `suggested_repair`: APPLY it on your next turn, or keep the design only when the warning describes a deliberate creative choice (a wheel as decoration, a feeler past a gripper).
 
 ## Critical rules
 

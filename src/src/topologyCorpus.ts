@@ -478,6 +478,43 @@ const fixtures: Fixture[] = [
     },
   },
   {
+    name: 'ANCHOR_POINTS_INWARD: socket anchor aimed at the body interior → warning with flipped-anchor hint',
+    expected_pass: true,
+    expected_warnings: ['[ANCHOR_POINTS_INWARD]', '+axis_end'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate', attach_to: null,
+          link_geometry: [
+            { name: 'torso', shape: 'box', size_mm: [200, 160, 80], xyz_mm: [0, 0, 0] },
+            // axis -Y after Rx(90°): '-axis_end' is the INBOARD end, pointing at the torso.
+            { name: 'shoulder_l', shape: 'cylinder', radius_mm: 25, length_mm: 60, xyz_mm: [0, -110, 0], rpy: [1.5708, 0, 0] },
+          ] },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'body',
+          attach_primitive: 'shoulder_l', attach_anchor: '-axis_end',
+          attach_face: 'left', joint_type: 'revolute', joint_axis: 'y' },
+      ],
+    },
+  },
+  {
+    name: 'ANCHOR_POINTS_INWARD: outboard socket end stays silent',
+    expected_pass: true,
+    forbidden_warnings: ['[ANCHOR_POINTS_INWARD]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'body', component_id: 'structural_baseplate', attach_to: null,
+          link_geometry: [
+            { name: 'torso', shape: 'box', size_mm: [200, 160, 80], xyz_mm: [0, 0, 0] },
+            { name: 'shoulder_l', shape: 'cylinder', radius_mm: 25, length_mm: 60, xyz_mm: [0, -110, 0], rpy: [1.5708, 0, 0] },
+          ] },
+        { link_name: 'servo1', component_id: 'actuator_servo_high_torque', attach_to: 'body',
+          attach_primitive: 'shoulder_l', attach_anchor: '+axis_end',
+          attach_face: 'left', joint_type: 'revolute', joint_axis: 'y' },
+      ],
+    },
+  },
+  {
     name: 'BAD_PRIMITIVE_REF: typo in primitive name → hard error with closest-match hint',
     expected_pass: false,
     // formatStructuredDiagnostic folds suggested_repair into the error string,
