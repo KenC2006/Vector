@@ -302,7 +302,7 @@ When in doubt: if the current robot has real components, prefer modify_topology.
 
 - `orientation`: `"vertical"` (default — long axis up), `"horizontal"` (long axis flat: on top/bottom faces it lies along +X; on side faces it extends OUTWARD along the face normal — booms, tails), a number string like `"45"` (yaw around the face normal, works on every face), or `"horizontal+45"` (both).
 - `elevation_angle` (degrees): side faces only, tilts up(+)/down(-) from the face normal — e.g. a front camera with `-20` looks at the floor. Not combined with `horizontal`.
-- `attach_rpy` [roll, pitch, yaw] radians: the joint's REST POSE. For a servo, only the component about its `joint_axis` is used, applied as the horn's zero offset — the housing stays bolted flat. **Rest poses apply VERBATIM, per component — there is NO automatic left/right mirroring.** A symmetric crouch needs explicit per-side signs (e.g. left knee `[0, -0.9, 0]`, right knee `[0, -0.9, 0]` produce the SAME world bend direction only if the legs' own frames match; check each side). The engine does still mirror the physical horn-shaft direction for +/-Y servo pairs so hardware faces outward — only your authored angles pass through untouched.
+- `attach_rpy` [roll, pitch, yaw] radians: the joint's REST POSE. For a servo, only the component about its `joint_axis` is used, applied as the horn's zero offset — the housing stays bolted flat. **Author ONE value per joint ROLE** (all knees `[0, 0.8, 0]`, all hip pitches `[0, -0.4, 0]`): the engine mirrors +/-Y-side pairs automatically so symmetric stances come out symmetric. You may still VARY values along the body (front legs vs rear legs, per-segment tail curl). For deliberately asymmetric per-leg poses, use raw `rpy` instead.
 - `rpy` (raw) is the joint frame's MOUNTING orientation; `attach_rpy` is the rest angle within a normal mounting. Most designs only need `attach_rpy`.
 
 ## Custom bodies: `link_geometry`
@@ -311,7 +311,7 @@ The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment pr
 - `{name:'chest', shape:'box', size_mm:[w,d,h], xyz_mm?, rpy?, color?}`
 - `{name:'shoulder_l', shape:'cylinder', radius_mm, length_mm, xyz_mm?, rpy?, color?}` (axis local +Z before rpy)
 - `{name:'head', shape:'sphere', radius_mm, xyz_mm?, color?}`
-**Always `name` the primitives** — children mount on them via attach_primitive/attach_anchor. Division of labor: presets = mechanical function; link_geometry = body shape. Don't draw a torso as stacked extrusions.
+**Always `name` the primitives** — children mount on them via attach_primitive/attach_anchor. Division of labor: presets = mechanical function; link_geometry = body shape. Don't draw a torso as stacked extrusions, and don't route extrusions THROUGH a shell — the shell IS the structure (it carries derived mass and collision).
 
 ## Topology rules
 
@@ -326,6 +326,10 @@ The catalog covers FUNCTIONAL hardware; it has no torso/hull/carapace/segment pr
 9. Match servo torque to load: high_torque at root-adjacent joints carrying a limb, standard at distal joints, micro for fine appendages. Vary across limbs when their roles differ.
 10. Vary components like real anatomy: different limb lengths, torque tiers, and terminals (grippers as pincers, foot pads for walkers, sensors as feelers). Do not copy one identical chain N times unless the design truly is uniform.
 11. Bend limbs with `attach_rpy` on the joint servos; without it a servo->bone->servo->bone chain is a straight stick. Crouches pair a hip rest angle with a knee rest angle (both or neither).
+12. **Always set `length_mm` on parametric links** (extrusions, limb links) — the 100mm default is rarely right. Legs: thighs 80-120, shins 100-130. Arms: stem 60-100, upper 180-220, forearm 130-170. Scale to the robot.
+13. Electronics (battery, SBC, MCU, drivers, IMU) mount flat on TOP faces of the chassis/body — never below it, never on standoff towers.
+14. Build only what the user asked for plus what's functionally required. No cosmetic tails, spoilers, or extra appendages unless requested.
+15. Anchored sockets must point AWAY from the body: a cylinder's `+axis_end`/`-axis_end` follows its local +Z after its `rpy` — pick the end outside the body shell, and place socket primitives so they protrude past the body surface.
 
 ## Validation feedback
 

@@ -356,12 +356,9 @@ def metric_interpenetration(compiled: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def metric_ground(compiled: Dict[str, Any], graph: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    comps = _components_by_name(graph)
     links = compiled.get("links") or []
-    has_children = {  # logical names that have at least one child
-        p for p in _logical_parent_map(compiled).values() if p
-    }
     lowest: List[Tuple[float, str, str]] = []  # (min_z, logicalName, componentId)
+    root_bottom = None
     for cl in links:
         b = cl.get("bounds") or {}
         box = WorldBox.from_oriented(
@@ -370,17 +367,27 @@ def metric_ground(compiled: Dict[str, Any], graph: Optional[Dict[str, Any]]) -> 
             list(b.get("center") or [0.0] * 3),
         )
         lowest.append((box.min_z(), cl["logicalName"], cl["componentId"]))
+        if not (cl.get("joints") or []):  # root link
+            root_bottom = box.min_z()
     if not lowest:
         return {"score": 0.0, "reason": "no links"}
     min_z = min(z for z, _, _ in lowest)
     offenders = []
     for z, name, comp_id in lowest:
-        if z - min_z <= GROUND_BAND_M:
-            terminal = name not in has_children
-            ok = bool(_TERMINAL_LOWEST_OK.match(comp_id)) or (terminal and comps.get(name, {}).get("link_geometry") is None and comp_id.startswith(("mobility_", "structural_baseplate")))
-            ok = ok or comp_id == _FOOT_ID or _TIRE_RE.match(comp_id) is not None
-            if not ok:
-                offenders.append({"link": name, "component": comp_id, "z_mm": round(z * 1000, 1)})
+        if z - min_z > GROUND_BAND_M:
+            continue
+        # Only links that hang BELOW the root body count as ground-contact
+        # candidates — a flat tabletop robot has everything within a few mm of
+        # the plate and none of it is "wrongly touching the ground".
+        if root_bottom is not None and z >= root_bottom - 0.002:
+            continue
+        ok = (
+            bool(_TERMINAL_LOWEST_OK.match(comp_id))
+            or comp_id == _FOOT_ID
+            or _TIRE_RE.match(comp_id) is not None
+        )
+        if not ok:
+            offenders.append({"link": name, "component": comp_id, "z_mm": round(z * 1000, 1)})
     score = 1.0 if not offenders else max(0.0, 1.0 - 0.34 * len(offenders))
     return {
         "score": score,

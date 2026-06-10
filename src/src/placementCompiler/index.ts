@@ -30,6 +30,7 @@ import {
   worldOffsetFromParent,
   formatRpyTuple,
   servoLocalRestRpyFromJointRpy,
+  servoAxisSignFromParentWorld,
 } from './transforms.ts'
 import {
   isSplitServoComponentId,
@@ -733,10 +734,17 @@ export function compileAssembly(
     // Side-axis servo dz nudge (cIsActuated only) runs INSIDE the servo
     // emit branch, after these — same order as assembler line ~4277.
     const servoAxisName = axisNameFromComponentAxis(c.joint_axis)
-    // NOTE: the GEOMETRIC mount mirror (which way the horn shaft physically
-    // faces for ±Y-side pairs) is computed inside servoMountRpyForParentWorld
-    // via servoAxisSignFromParentWorld. The REST-POSE sign is intentionally
-    // not mirrored — authored attach_rpy applies verbatim per component.
+    // Rest poses MIRROR with the hardware (live-eval finding, 2026-06): under
+    // auto-distribution the model cannot know which world side a leg lands
+    // on, so it naturally authors ONE value per joint role (both knees
+    // [0,0.8,0]) and expects a symmetric stance. Verbatim application made
+    // ±Y pairs bend opposite world directions and multi-legged robots
+    // collapsed in the settle test. The engine therefore multiplies the
+    // authored rest angle by the same geometric sign that mirrors the horn
+    // shaft. Deliberate per-leg asymmetry remains available via raw `rpy`.
+    const servoAxisSign = cIsActuated && placement
+      ? servoAxisSignFromParentWorld(parentWorld, servoAxisName, parseXyzString(placement.xyz))
+      : 1
 
     // Distal-beam 'bottom' flip. servoDrivenStructuralLimbPlacement mounts the
     // beam with local +Z as the radial-outward (free-tip) end and -Z toward
@@ -791,12 +799,7 @@ export function compileAssembly(
       ])
       if (cIsActuated) {
         const explicitTuple = parseRpyString(explicitRpyStr)
-        // Rest pose applied VERBATIM per leg — no sign flip across body Y.
-        // The geometric horn-axis mirror (servoMountRpyForParentWorld call
-        // below) still uses the real `servoAxisSign` so symmetric pairs
-        // physically face outward, but Claude's authored `attach_rpy` reaches
-        // each leg unchanged: per-leg pose authority belongs to the author.
-        const restPoseSign = 1
+        const restPoseSign = servoAxisSign
         if (servoAxisName === 'y' && parentComp
             && isDistalBeamComponentId(parentComp.component_id)
             && c.attach_face === 'bottom') {
