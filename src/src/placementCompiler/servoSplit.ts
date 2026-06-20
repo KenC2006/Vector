@@ -19,6 +19,11 @@ export function servoDrivenStructuralLimbPlacement(
   childBodyHY: number,
   childBodyHZ: number,
   parentWorld?: THREE.Matrix4,
+  /** Axial seat height above the horn origin for the on-top (z-axis) case —
+   * the parent servo's real horn-top surface. When omitted, falls back to the
+   * legacy fixed `adapterGap`. Ignored by the radial (x/y) branches, whose
+   * limbs sit within the horn disc radius. */
+  standoffM?: number,
 ): { xyz: string; rpy: string } | null {
   const adapterGap = 0.008
   const offset = adapterGap + childBodyHZ
@@ -57,8 +62,12 @@ export function servoDrivenStructuralLimbPlacement(
   }
 
   const sign = signedRadial([0, 0, 1])
+  // On-top (axial) seat: place the beam's near face on the servo's real horn
+  // output surface (standoffM) rather than a fixed 8mm clearance that floated
+  // the beam above the horn.
+  const axialOffset = (standoffM ?? adapterGap) + childBodyHZ
   return {
-    xyz: `0.0000 0.0000 ${(sign * offset).toFixed(4)}`,
+    xyz: `0.0000 0.0000 ${(sign * axialOffset).toFixed(4)}`,
     rpy: '0 0 0',
   }
 }

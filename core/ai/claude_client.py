@@ -1467,7 +1467,7 @@ def generate_edit(prompt: str, current_urdf: str, kinematic_graph_json: dict,
 
     response = client.messages.create(
         model=model,
-        max_tokens=64000,
+        max_tokens=16000,  # Anthropic reserves OTPM from max_tokens, not actual output; real designs are ~3-12k, so 16k fits with headroom while quartering the per-minute rate-limit cost vs 64k.
         system=[{
             "type": "text",
             "text": system_prompt,
@@ -1525,7 +1525,7 @@ def generate_edit_streaming(prompt: str, current_urdf: str, kinematic_graph_json
     try:
         with client.messages.stream(
             model=model,
-            max_tokens=64000,
+            max_tokens=16000,  # Anthropic reserves OTPM from max_tokens, not actual output; real designs are ~3-12k, so 16k fits with headroom while quartering the per-minute rate-limit cost vs 64k.
             system=[{
                 "type": "text",
                 "text": system_prompt,

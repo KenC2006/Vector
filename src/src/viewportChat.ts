@@ -923,8 +923,21 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
      * reports only the deltas vs. the discarded attempt, masking the bulk of
      * what changed since the user's original state. */
     originalUrdfOverride?: string,
+    /** Bounded counter for the validator-warning self-correction loop, distinct
+     * from `retryCount` (which gates the VLM redesign). Each pass feeds the
+     * topology validator's suggested_repairs back for a fresh design_robot
+     * re-emit; capped at MAX_WARN_PASSES so a deliberately-kept warning can't
+     * loop forever. Preserved across other retries so the bound is global. */
+    warnPass = 0,
   ) {
     if (!prompt.trim()) return
+    // Validator-warning self-correction loop config. Kept tight to bound the
+    // API burst (each pass is another full generation call): ONE corrective
+    // pass, and only for the high-severity codes that produce genuinely broken
+    // geometry — not soft/often-unfixable critiques (TIPPY_PROPORTIONS, sensor
+    // placement) that would just burn a call re-confirming a kept design.
+    const MAX_WARN_PASSES = 1
+    const HIGH_SEVERITY_WARNING_CODES = ['COAXIAL_LIMB_ON_SIDE_AXIS', 'ANCHOR_POINTS_INWARD', 'PORT_MISMATCH']
 
     if (!deps.getEditorValue()) {
       deps.createNewFile('robot.urdf', deps.SAMPLE_URDF, null)
@@ -936,9 +949,10 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
     let historyForBackend: Array<{ role: string; content: string }> = []
     let historySessionId = deps.getCurrentChatId()
 
-    if (retryCount === 0) {
+    if (retryCount === 0 && warnPass === 0) {
       // Snapshot history before recording the new message so the current prompt
-      // is not duplicated when generate_edit adds it separately.
+      // is not duplicated when generate_edit adds it separately. (A warnPass
+      // correction reuses the same user turn — don't re-echo the prompt.)
       historySessionId = deps.getCurrentChatId()
       historyForBackend = deps.exportForBackend(historySessionId)
 
@@ -998,7 +1012,11 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
       }
 
       const kinematicContext = deps.buildKinematicContext()
-      const isRedesign = retryCount > 0
+      // A validator-warning correction pass (warnPass > 0) is also a fresh full
+      // re-emit: blank the URDF, skip stale edit-context, route through the
+      // design_robot path — same treatment as a VLM redesign, but it does NOT
+      // consume the retryCount (VLM) budget.
+      const isRedesign = retryCount > 0 || warnPass > 0
       const currentUrdf = isRedesign
         ? '<?xml version="1.0"?><robot name="redesign"><link name="base_link"/></robot>'
         : fullUrdf
@@ -1167,6 +1185,33 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
         console.log(`[AI] Assembly result: urdf=${assemblyResult ? `${assemblyResult.length} chars` : 'null'}, topologyErrors=${JSON.stringify(assemblyOut.topologyErrors || [])}, engineSummary=${engineSummary ? `${engineSummary.placements.length} placements / ${engineSummary.icpGaps.length} ICP gaps` : 'null'}`)
 
         if (assemblyResult) {
+          // ── Validator-driven self-correction (deterministic, pre-VLM) ──────
+          // The topology validator already pinpointed unsound constructions
+          // (COAXIAL_LIMB_ON_SIDE_AXIS, ANCHOR_POINTS_INWARD, PORT_MISMATCH, …),
+          // each with an exact suggested_repair. Feed them back for a bounded
+          // fix pass BEFORE the expensive screenshot+VLM round, so the model
+          // converges on a sound design instead of shipping the first wacky one
+          // with the warnings as a footnote. Cheap (no capture/Gemini),
+          // deterministic, and capped (MAX_WARN_PASSES) so a deliberately-kept
+          // warning (decorative wheel, feeler past a gripper) can't loop forever:
+          // when the model re-emits without resolving it, we hit the cap and show
+          // the build as-is.
+          const soundnessWarnings = (assemblyOut.topologyWarnings ?? [])
+            .filter(w => HIGH_SEVERITY_WARNING_CODES.some(code => w.includes(`[${code}]`)))
+          if (soundnessWarnings.length > 0 && warnPass < MAX_WARN_PASSES) {
+            addVCMessage('system', `<span style="color:#e5c07b;">Tightening ${soundnessWarnings.length} soundness warning(s) before finalizing…</span>`)
+            const resolvedPrev = urdfAssemblyApi?.getLastAssemblyGraph()
+              ?? (result.assembly_graph as AssemblyGraph | undefined)
+              ?? null
+            const prevBlock = resolvedPrev
+              ? `\n\nYour previous attempt (currently on screen):\n${summarizeAssemblyGraphForAI(resolvedPrev)}`
+              : ''
+            const warnLine = formatWarningsForPrompt(soundnessWarnings)
+            const correctionPrompt = `${prompt}\n\nIMPORTANT — APPLY THE VALIDATOR FIXES: your last design compiled, but the topology validator flagged the issues below, each with a concrete Fix. Re-emit the FULL design with design_robot and apply every Fix. Keep a flagged choice ONLY when the warning itself says it can be deliberate (a decorative wheel, a feeler past a gripper); otherwise change nothing else.${warnLine}${prevBlock}`
+            unlisten?.()
+            return await sendVCMessage(correctionPrompt, retryCount, imagesForThisSend, fullUrdf, warnPass + 1)
+          }
+
           try {
             console.log('[AI] Running 2nd-pass AI validation with visual feedback...')
             await new Promise(r => setTimeout(r, 800))
@@ -1422,7 +1467,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
                 const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
                 const redesignPrompt = `${prompt}\n\nIMPORTANT — REDESIGN REQUIRED: The previous assembly was built and visually inspected. Fix ONLY these:\n${failuresBlock}${notesLine}${warnLine}${placementGuidance}${aestheticGuidance}${previousTopologyBlock}\n\nProduce a NEW full topology with design_robot (this is a fresh design call, not an incremental edit). You may reuse component choices, attach_faces, and connections from the previous attempt — only change what the "Fix ONLY these" list calls out.`
                 unlisten?.()
-                return await sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
+                return await sendVCMessage(redesignPrompt, retryCount + 1, imagesForThisSend, fullUrdf, warnPass)
               }
               // Skip-paths: we only reach here when shouldRedesign was false
               // OR retryCount already hit the cap. Log + surface remaining
@@ -1465,12 +1510,12 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
             const warnLine = formatWarningsForPrompt(assemblyOut.topologyWarnings)
             const retryPrompt = `${prompt}\n\nIMPORTANT — TOPOLOGY REJECTED: The placement engine rejected your topology because of these specific errors:\n${errorList}${warnLine}\n\nPlease fix these issues in your new design.`
             unlisten?.()
-            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf, warnPass)
           } else {
             addVCMessage('system', `<span style="color:#e5c07b;">Assembly placement failed. Retrying with simpler topology...</span>`)
             const retryPrompt = `${prompt}\n\nIMPORTANT: The previous assembly attempt failed because components couldn't be placed. Please use a SIMPLER design with fewer components.`
             unlisten?.()
-            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf)
+            return await sendVCMessage(retryPrompt, retryCount + 1, imagesForThisSend, fullUrdf, warnPass)
           }
         } else {
           addVCMessage('assistant', `<span style="color:#f85149;">Assembly placement failed after ${retryCount + 1} attempts. Try describing a simpler robot.</span>`)
@@ -1499,7 +1544,7 @@ export function initViewportChat(deps: ViewportChatDeps): ViewportChatApi {
           addVCMessage('system', `<span style="color:#e5c07b;">Rate limited. Retrying in ${waitSec}s...</span>`)
           await new Promise(r => setTimeout(r, waitSec * 1000))
           unlisten?.()
-          return await sendVCMessage(prompt, retryCount + 1, imagesForThisSend, fullUrdf)
+          return await sendVCMessage(prompt, retryCount + 1, imagesForThisSend, fullUrdf, warnPass)
         }
         addVCMessage('assistant', `<span style="color:#f85149;">Rate limited after ${retryCount + 1} attempts. Please wait a moment and try again.</span>`)
       } else {

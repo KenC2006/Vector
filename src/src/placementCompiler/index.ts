@@ -279,6 +279,16 @@ export const COMPILER_VERSION = '0.0.13-physical-world'
  * corpus and the Python AI subprocess (slice 3b.5). */
 const SERVO_HORN_ORIGIN_Z_RATIO = 0.44
 
+/** Height of the servo horn's TOP output surface above the horn origin, as a
+ * fraction of the servo body height `h`. Mirrors componentMeshes.servoHornShape:
+ * the output boss tops out at `0.08h + (0.12h·0.8)/2 = 0.128h`. A beam stacked
+ * axially on the output (the "beam on top of the servo" case) seats exactly
+ * here — replacing the old flat 8mm adapter clearance, which left a visible gap
+ * because it ignored the real horn height. Inlined (no three.js dep) like
+ * SERVO_HORN_ORIGIN_Z_RATIO; computed in the shared compiler so the browser and
+ * CLI agree, and the parity/visual suites guard it against horn-shape drift. */
+const SERVO_HORN_TOP_Z_RATIO = 0.128
+
 /** Component-id prefixes that mark a component as "passive hardware" — no
  * splay applied during multi-child distribution. Mirrors urdfAssembly.ts
  * line ~4024 verbatim so noSplay computes bit-identically. */
@@ -643,7 +653,14 @@ export function compileAssembly(
       placement = (childWheel || c.attach_face === 'coaxial')
         ? { xyz: `0.0000 0.0000 ${(0.002 + childBodyHZ).toFixed(4)}`, rpy: '0 0 0' }
         : c.component_id === 'structural_limb_link_slim'
-          ? servoDrivenStructuralLimbPlacement(parentServoAxis, c.attach_face, childBodyHY, childBodyHZ, parentWorld)
+          ? servoDrivenStructuralLimbPlacement(
+              parentServoAxis, c.attach_face, childBodyHY, childBodyHZ, parentWorld,
+              // Axial standoff = the parent servo's real horn-top height (0.128·body-Z),
+              // so a beam mounted on the output seats on the horn instead of floating
+              // 8mm above it. Only the z-axis (on-top) branch consumes this; radial
+              // limbs sit within the horn radius and keep their own clearance.
+              SERVO_HORN_TOP_Z_RATIO * (parentResolved.bounds.half[2] * 2),
+            )
           : servoDrivenChildPlacement(parentServoAxis, c.attach_face, childBodyHX, childBodyHY, childBodyHZ, invertRadialSide, cIsActuated)
       if (!placement) continue
       // Mirror inline-path behavior: servo-driven children are connector-placed

@@ -36,6 +36,9 @@ Thumbs.db
 !eval/**/*.md
 *.urdf
 
+# Export artifacts — STL is generated live from URDF, never prebaked/committed
+*.stl
+
 # Auto-synced from core/presets/ by vite.config.ts plugin
 src/public/generic_presets.json
 
