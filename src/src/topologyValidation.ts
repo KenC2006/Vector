@@ -36,6 +36,7 @@ import {
   resolveComponentHalfBoundsMm,
 } from './componentResolver.ts'
 import { capabilitiesForSpec } from './componentCapabilities.ts'
+import { isDistalBeamComponentId } from './placementCompiler/componentNaming.ts'
 import type { MateConnector } from './mateConnectors.ts'
 import {
   type Diagnostic,
@@ -592,6 +593,36 @@ export function validateTopologyStructured(
         `insert a drivetrain_hub_motor_80 (attach_face=${comp.attach_face || 'bottom'}, ` +
         `joint_type=continuous, joint_axis=y) between ${parentComp.link_name} and the tire, ` +
         `then attach the tire to it with attach_face=coaxial — unless the wheel is deliberately decorative`,
+    })
+  }
+
+  // COAXIAL_LIMB_ON_SIDE_AXIS: a bone/beam mounted `coaxial` on an x/y-axis
+  // rotary lies ALONG the rotation axis, so the joint twists the limb about its
+  // own length instead of swinging it — a degenerate hip/shoulder. (The K-9 dog
+  // authored every thigh coaxial on a y-axis hip, so the upper legs jutted
+  // straight out sideways at rest and the hip DOF was dead.) `coaxial` is the
+  // wheel / inline-coupler idiom (spin axis = shaft); a limb segment wants the
+  // perpendicular hang of attach_face=bottom. Warning, not error: a z-axis (yaw)
+  // parent gives a legitimate vertical extension (turret mast), so only the
+  // x/y (side-axis) case — always degenerate for a bone — is flagged.
+  for (const comp of components) {
+    if (comp.attach_face !== 'coaxial' || !comp.attach_to) continue
+    if (!isDistalBeamComponentId(comp.component_id)) continue
+    const parentComp = byName.get(comp.attach_to)
+    if (!parentComp || !isSplitRotary(ctx, parentComp.component_id)) continue
+    const parentAxis = (parentComp.joint_axis || 'z').toString().trim().toLowerCase()
+    if (parentAxis !== 'x' && parentAxis !== 'y') continue
+    out.push({
+      severity: 'warning', code: 'COAXIAL_LIMB_ON_SIDE_AXIS', link_name: comp.link_name,
+      message:
+        `${comp.link_name} (${comp.component_id}) mounts coaxial on ${parentComp.link_name} ` +
+        `(${parentComp.component_id}, joint_axis=${parentAxis}) — the limb lies ALONG the ` +
+        `rotation axis, so the joint twists it about its own length instead of swinging it, ` +
+        `and at rest it juts straight out along the shaft.`,
+      suggested_repair:
+        `attach ${comp.link_name} with attach_face="bottom" (or "top") so it hangs ` +
+        `perpendicular to the shaft and the joint swings it — coaxial is for wheels and ` +
+        `inline couplings, not limb segments`,
     })
   }
 

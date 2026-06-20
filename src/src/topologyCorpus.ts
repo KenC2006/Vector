@@ -324,6 +324,61 @@ const fixtures: Fixture[] = [
     },
   },
 
+  // COAXIAL_LIMB_ON_SIDE_AXIS (warning) ────────────────────────────────────
+  {
+    name: 'COAXIAL_LIMB_ON_SIDE_AXIS: thigh coaxial on a y-axis hip → degenerate-joint warning',
+    expected_pass: true,
+    expected_warnings: ['[COAXIAL_LIMB_ON_SIDE_AXIS]'],
+    expected_repair_hints: ['attach_face="bottom"'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',         attach_to: null },
+        { link_name: 'hip',   component_id: 'actuator_servo_high_torque',    attach_to: 'plate', attach_face: 'bottom', joint_type: 'revolute', joint_axis: 'y' },
+        { link_name: 'thigh', component_id: 'structural_limb_link_slim',     attach_to: 'hip',   attach_face: 'coaxial', length_mm: 100 },
+      ],
+    },
+  },
+  {
+    name: 'COAXIAL_LIMB_ON_SIDE_AXIS: fix — thigh on attach_face=bottom hangs perpendicular',
+    expected_pass: true,
+    forbidden_warnings: ['[COAXIAL_LIMB_ON_SIDE_AXIS]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',         attach_to: null },
+        { link_name: 'hip',   component_id: 'actuator_servo_high_torque',    attach_to: 'plate', attach_face: 'bottom', joint_type: 'revolute', joint_axis: 'y' },
+        { link_name: 'thigh', component_id: 'structural_limb_link_slim',     attach_to: 'hip',   attach_face: 'bottom', length_mm: 100 },
+      ],
+    },
+  },
+  {
+    name: 'COAXIAL_LIMB_ON_SIDE_AXIS: z-axis (yaw) parent gives a legit vertical extension — silent',
+    expected_pass: true,
+    forbidden_warnings: ['[COAXIAL_LIMB_ON_SIDE_AXIS]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',      attach_to: null },
+        { link_name: 'turret', component_id: 'actuator_servo_high_torque', attach_to: 'plate', attach_face: 'top', joint_type: 'revolute', joint_axis: 'z' },
+        { link_name: 'mast',  component_id: 'structural_limb_link_slim',  attach_to: 'turret', attach_face: 'coaxial', length_mm: 120 },
+      ],
+    },
+  },
+  {
+    name: 'COAXIAL_LIMB_ON_SIDE_AXIS: wheel coaxial on a y-axis drive is the correct idiom — silent',
+    expected_pass: true,
+    forbidden_warnings: ['[COAXIAL_LIMB_ON_SIDE_AXIS]'],
+    input: {
+      base_link: 'base_link',
+      components: [
+        { link_name: 'plate', component_id: 'structural_baseplate',      attach_to: null },
+        { link_name: 'drive', component_id: 'actuator_servo_high_torque', attach_to: 'plate', attach_face: 'bottom', joint_type: 'continuous', joint_axis: 'y' },
+        { link_name: 'wheel', component_id: 'mobility_wheel_driven',      attach_to: 'drive', attach_face: 'coaxial' },
+      ],
+    },
+  },
+
   // EFFECTOR_HAS_CHILDREN / FOOT_PAD_HAS_CHILDREN (warnings) ───────────────
   {
     name: 'EFFECTOR_HAS_CHILDREN: sensor past a gripper → warning, not rewrite',
