@@ -383,55 +383,6 @@ async fn stop_core(state: State<'_, AppState>) -> Result<String, String> {
     Ok("Core process stopped".to_string())
 }
 
-/// Ping the Python core process to verify it's working
-#[tauri::command]
-async fn ping_core(state: State<'_, AppState>) -> Result<String, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    let result = process.send_rpc("ping", json!({}), 1)?;
-    Ok(format!("Pong: {:?}", result))
-}
-
-/// Parse a URDF file using the Python core process
-#[tauri::command]
-async fn parse_urdf(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    process.send_rpc("parse_urdf", json!({ "path": path }), 1)
-}
-
-/// Validate a URDF file (structural, physics, actuator, mesh checks)
-#[tauri::command]
-async fn validate_urdf(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<serde_json::Value, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    process.send_rpc("validate_urdf", json!({ "path": path }), 1)
-}
-
 /// Validate URDF content from a string (for real-time editor validation)
 #[tauri::command]
 async fn validate_urdf_content(
@@ -532,25 +483,6 @@ async fn sim_get_state(state: State<'_, AppState>) -> Result<serde_json::Value, 
     process.send_rpc("sim_get_state", json!({}), 1)
 }
 
-/// Set control inputs (joint targets, gripper, etc.)
-#[tauri::command]
-async fn sim_set_control(
-    state: State<'_, AppState>,
-    controls: serde_json::Value,
-) -> Result<String, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    let result = process.send_rpc("sim_set_control", json!({ "controls": controls }), 1)?;
-    Ok(format!("Controls set: {:?}", result))
-}
-
 /// Set gravity vector ([gx, gy, gz], URDF/MuJoCo Z-up, default [0,0,-9.81])
 #[tauri::command]
 async fn sim_set_gravity(state: State<'_, AppState>, gravity: Vec<f64>) -> Result<String, String> {
@@ -608,37 +540,6 @@ async fn ai_gen_sim_script(
         params["terrain_config"] = config;
     }
     process.send_rpc("ai_gen_sim_script", params, 1)
-}
-
-/// Render the simulation viewport to PNG and return base64
-#[tauri::command]
-async fn sim_render(
-    state: State<'_, AppState>,
-    width: Option<u32>,
-    height: Option<u32>,
-) -> Result<String, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    let params = json!({
-        "width": width.unwrap_or(640),
-        "height": height.unwrap_or(480)
-    });
-
-    let result = process.send_rpc("sim_render", params, 1)?;
-
-    // Result should contain base64 PNG data
-    if let Some(base64) = result.as_str() {
-        Ok(base64.to_string())
-    } else {
-        Ok(format!("{:?}", result))
-    }
 }
 
 /// Use Claude AI to generate a robot model edit from natural language
@@ -1059,14 +960,6 @@ async fn save_file_dialog(
     Ok(path.map(|p| p.to_string()))
 }
 
-/// Get recent files from app storage
-#[tauri::command]
-async fn get_recent_files() -> Result<Vec<String>, String> {
-    // For now, return empty list. In a full implementation, this would read from
-    // a JSON file in app data directory (app.path().app_data_dir())
-    Ok(vec![])
-}
-
 // ── Git Commands ─────────────────────────────────────────────────────────────
 
 /// Get the git repo root directory
@@ -1172,19 +1065,6 @@ async fn git_status() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Get git diff for a specific file
-#[tauri::command]
-async fn git_diff(file_path: String) -> Result<String, String> {
-    let root = git_repo_root();
-    let output = Command::new("git")
-        .args(["diff", &file_path])
-        .current_dir(&root)
-        .output()
-        .map_err(|e| format!("Failed to execute git diff: {}", e))?;
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
 /// Stage a file
 #[tauri::command]
 async fn git_stage(file_path: String) -> Result<String, String> {
@@ -1262,37 +1142,6 @@ async fn git_commit(message: String) -> Result<String, String> {
     Ok(stdout.to_string())
 }
 
-/// Get git log
-#[tauri::command]
-async fn git_log(count: Option<u32>) -> Result<Vec<serde_json::Value>, String> {
-    let count = count.unwrap_or(10);
-    let root = git_repo_root();
-    let output = Command::new("git")
-        .args(["log", "--oneline", "-n", &count.to_string()])
-        .current_dir(&root)
-        .output()
-        .map_err(|e| format!("Failed to execute git log: {}", e))?;
-
-    if !output.status.success() {
-        return Err("Failed to get git log".to_string());
-    }
-
-    let log_text = String::from_utf8_lossy(&output.stdout);
-    let entries: Vec<serde_json::Value> = log_text
-        .lines()
-        .map(|line| {
-            let parts: Vec<&str> = line.splitn(2, ' ').collect();
-            if parts.len() == 2 {
-                json!({ "hash": parts[0], "message": parts[1] })
-            } else {
-                json!({ "hash": line, "message": "" })
-            }
-        })
-        .collect();
-
-    Ok(entries)
-}
-
 /// Push to remote
 #[tauri::command]
 async fn git_push() -> Result<String, String> {
@@ -1355,18 +1204,13 @@ pub fn run() {
             start_core,
             stop_core,
             cancel_core_request,
-            ping_core,
-            parse_urdf,
-            validate_urdf,
             validate_urdf_content,
             sim_load,
             sim_step,
             sim_reset,
             sim_get_state,
-            sim_set_control,
             sim_set_gravity,
             sim_set_script,
-            sim_render,
             ai_edit,
             ai_edit_turn,
             ai_set_history,
@@ -1387,15 +1231,12 @@ pub fn run() {
             delete_path,
             rename_path,
             path_exists,
-            get_recent_files,
             git_branch,
             git_status,
-            git_diff,
             git_stage,
             git_unstage,
             git_discard,
             git_commit,
-            git_log,
             git_push,
             git_pull
         ])

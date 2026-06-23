@@ -429,6 +429,14 @@ html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg-1
   margin-top: 1px;
   padding-left: 2px;
 }
+.val-item .val-repair {
+  display: block;
+  font-size: 10px;
+  color: var(--yellow);
+  margin-top: 2px;
+  padding-left: 2px;
+  opacity: 0.95;
+}
 .val-summary {
   display: flex;
   gap: 10px;
@@ -2589,27 +2597,6 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
 .ba-btn.primary:hover { background: rgba(0,122,204,0.16); }
 .ba-btn.danger        { border-color: rgba(244,67,54,0.3); color: #e57373; background: rgba(244,67,54,0.06); }
 .ba-btn.danger:hover  { background: rgba(244,67,54,0.14); }
-
-.build-hint-overlay {
-  position: absolute;
-  bottom: 52px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 200;
-  pointer-events: none;
-}
-.build-hint-overlay.hidden { display: none; }
-.bho-inner {
-  background: rgba(18,18,28,0.88);
-  border: 1px solid rgba(232,152,41,0.35);
-  border-radius: 8px;
-  padding: 8px 18px;
-  font-size: 12px;
-  color: rgba(232,152,41,0.95);
-  white-space: nowrap;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-  backdrop-filter: blur(6px);
-}
 
 .bi-header {
   padding: 12px 14px 8px;

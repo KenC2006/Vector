@@ -62,6 +62,42 @@ const FACE_NORMAL: Record<string, [number, number, number]> = {
   right: [0, 1, 0], left: [0, -1, 0],
 }
 
+/** Minimum axis alignment (cosine) for a descriptive connector to stand in for
+ *  a cardinal face. 0.7 ≈ within 45° of the face normal — close enough to be
+ *  the same surface, strict enough that a sideways connector (an L-bracket's
+ *  `wall_inner`) can never hijack a "top" mount. */
+const FACE_CONNECTOR_AXIS_MIN = 0.7
+
+/** Pick the authored connector that represents a cardinal face.
+ *
+ *  Exact id match wins (top/bottom/… — bit-identical to the legacy bbox path,
+ *  so box parts and parts that author cardinal connectors are unaffected).
+ *  Otherwise fall back to the authored connector whose OUTWARD axis is closest
+ *  to the face normal. This lets non-box parts whose real mounting surface is
+ *  named descriptively — an L-bracket's `plate_top`, a caster's `mount_top` —
+ *  snap a face mount onto that surface instead of floating on the empty-air
+ *  bbox face. Returns null when nothing is authored or no axis is close enough,
+ *  preserving the legacy behavior (the caller then uses the bbox half-extent). */
+function findFaceConnector(
+  connectors: MateConnector[] | undefined,
+  face: string,
+): MateConnector | null {
+  if (!connectors || connectors.length === 0) return null
+  const exact = connectors.find(c => c.id === face)
+  if (exact) return exact
+  const normal = FACE_NORMAL[face]
+  if (!normal) return null
+  let best: MateConnector | null = null
+  let bestDot = FACE_CONNECTOR_AXIS_MIN
+  for (const c of connectors) {
+    const [ax, ay, az] = c.axis_xyz
+    const len = Math.hypot(ax, ay, az) || 1
+    const dot = (ax * normal[0] + ay * normal[1] + az * normal[2]) / len
+    if (dot > bestDot) { bestDot = dot; best = c }
+  }
+  return best
+}
+
 /** Compose "spin about the face's outward normal" with a base rotation,
  * returning a URDF rpy string. q = Q(normal, spin) · Q(baseRpy). */
 function composeNormalSpin(
@@ -149,7 +185,7 @@ export function computeFacePlacement(
     return { xyz: `0.0000 0.0000 ${dz.toFixed(4)}`, rpy: '0 0 0' }
   }
 
-  const authoredConn = parentConnectors?.find(c => c.id === face) ?? null
+  const authoredConn = findFaceConnector(parentConnectors, face)
   const connOriginM = authoredConn
     ? [
         authoredConn.origin_xyz_mm[0] / 1000,
@@ -165,7 +201,7 @@ export function computeFacePlacement(
   }
   const childFace = oppositeFaceMap[face]
   const childAuthoredConn = childFace
-    ? (childConnectors?.find(c => c.id === childFace) ?? null)
+    ? findFaceConnector(childConnectors, childFace)
     : null
   const childConnOriginM = childAuthoredConn
     ? [

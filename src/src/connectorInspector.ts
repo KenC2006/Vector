@@ -87,10 +87,6 @@ const OVERLAY_TAG = '__connectorOverlay'
 
 let _overlayEnabled = false
 
-export function isConnectorOverlayEnabled(): boolean {
-  return _overlayEnabled
-}
-
 /** Flip overlay state. Returns the new state. Spawns the overlay for every
  *  link in `parsed` (or tears it down if toggling off). */
 export function toggleConnectorOverlay(parsed: ParsedRobotLike): boolean {

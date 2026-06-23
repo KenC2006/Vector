@@ -1,9 +1,19 @@
 """
-URDF parser using yourdfpy to build a kinematic graph.
+URDF parser to build a kinematic graph.
+
+Two entry points with deliberately different dependencies:
+  - parse_urdf(path)         — file-based, uses yourdfpy (also feeds the sim path).
+  - parse_urdf_string(xml)   — string-based, pure-stdlib (xml.etree). Used by the
+                               editor Validation tab and AI post-generation checks.
+                               Keeping it dependency-light means validation works
+                               even when yourdfpy isn't installed in the spawned
+                               interpreter, and it validates the user's raw XML
+                               directly rather than a library-normalized version.
 """
-from typing import Optional, Dict, Tuple, Any
+from typing import Optional, Dict, Tuple, Any, List
 import os
 import tempfile
+import xml.etree.ElementTree as ET
 import numpy as np
 from .kinematic_graph import KinematicGraph
 from .types import LinkData, JointData, Inertia, Limits
@@ -457,38 +467,228 @@ def parse_urdf(file_path: str) -> KinematicGraph:
     return kg
 
 
+# ── Stdlib URDF parsing (string path) ─────────────────────────────────────────
+
+def _floats(text: Optional[str], n: int, default: Tuple[float, ...]) -> Tuple[float, ...]:
+    """Parse a whitespace-separated float list (URDF's xyz/rpy/rgba/size form)."""
+    if text:
+        try:
+            parts = [float(x) for x in text.split()]
+            if len(parts) >= n:
+                return tuple(parts[:n])
+        except (ValueError, AttributeError):
+            pass
+    return default
+
+
+def _attr_float(elem: Optional[ET.Element], key: str, default: Optional[float]) -> Optional[float]:
+    if elem is None:
+        return default
+    raw = elem.get(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _geom_from_geometry(geometry: Optional[ET.Element]) -> Optional[Dict[str, Any]]:
+    """Convert a <geometry> element into the project's geometry dict, or None."""
+    if geometry is None:
+        return None
+    box = geometry.find("box")
+    if box is not None:
+        return {"type": "box", "params": {"size": list(_floats(box.get("size"), 3, (1.0, 1.0, 1.0)))}}
+    cyl = geometry.find("cylinder")
+    if cyl is not None:
+        return {"type": "cylinder", "params": {
+            "radius": _attr_float(cyl, "radius", 0.1),
+            "length": _attr_float(cyl, "length", 1.0),
+        }}
+    sph = geometry.find("sphere")
+    if sph is not None:
+        return {"type": "sphere", "params": {"radius": _attr_float(sph, "radius", 0.1)}}
+    mesh = geometry.find("mesh")
+    if mesh is not None:
+        return {"type": "mesh", "params": {"filename": mesh.get("filename", "")}}
+    return None
+
+
+def _origin_of(parent: Optional[ET.Element]) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Read the <origin xyz rpy/> child of `parent`. Returns ((x,y,z),(r,p,y))."""
+    zero = (0.0, 0.0, 0.0)
+    if parent is None:
+        return zero, zero
+    origin = parent.find("origin")
+    if origin is None:
+        return zero, zero
+    return _floats(origin.get("xyz"), 3, zero), _floats(origin.get("rpy"), 3, zero)
+
+
+def _link_from_element(link: ET.Element) -> Optional[LinkData]:
+    name = link.get("name")
+    if not name:
+        return None
+
+    mass = 0.0
+    inertia: Optional[Inertia] = None
+    inertial = link.find("inertial")
+    if inertial is not None:
+        mass = _attr_float(inertial.find("mass"), "value", 0.0) or 0.0
+        in_el = inertial.find("inertia")
+        if in_el is not None:
+            inertia = Inertia(
+                ixx=_attr_float(in_el, "ixx", 0.0) or 0.0,
+                ixy=_attr_float(in_el, "ixy", 0.0) or 0.0,
+                ixz=_attr_float(in_el, "ixz", 0.0) or 0.0,
+                iyy=_attr_float(in_el, "iyy", 0.0) or 0.0,
+                iyz=_attr_float(in_el, "iyz", 0.0) or 0.0,
+                izz=_attr_float(in_el, "izz", 0.0) or 0.0,
+            )
+
+    # First <visual> only — matches the yourdfpy-backed parse_urdf behavior.
+    visual_geom = visual_mesh = visual_ori = material = None
+    visual = link.find("visual")
+    if visual is not None:
+        visual_geom = _geom_from_geometry(visual.find("geometry"))
+        if visual_geom and visual_geom["type"] == "mesh":
+            visual_mesh = visual_geom["params"].get("filename")
+        xyz, rpy = _origin_of(visual)
+        visual_ori = {"xyz": list(xyz), "rpy": list(rpy)}
+        mat = visual.find("material")
+        if mat is not None:
+            mat_dict: Dict[str, Any] = {"name": mat.get("name", "default")}
+            color = mat.find("color")
+            if color is not None:
+                mat_dict["color"] = list(_floats(color.get("rgba"), 4, (0.8, 0.8, 0.8, 1.0)))
+            material = mat_dict
+
+    collision_geom = collision_ori = None
+    collision = link.find("collision")
+    if collision is not None:
+        collision_geom = _geom_from_geometry(collision.find("geometry"))
+        xyz, rpy = _origin_of(collision)
+        collision_ori = {"xyz": list(xyz), "rpy": list(rpy)}
+
+    return LinkData(
+        name=name,
+        mass=mass,
+        inertia=inertia,
+        visual_mesh=visual_mesh,
+        visual_geometry=visual_geom,
+        visual_origin=visual_ori,
+        material=material,
+        collision_geometry=collision_geom,
+        collision_origin=collision_ori,
+    )
+
+
+def _joint_from_element(joint: ET.Element) -> Optional[JointData]:
+    parent_el = joint.find("parent")
+    child_el = joint.find("child")
+    parent_name = parent_el.get("link") if parent_el is not None else None
+    child_name = child_el.get("link") if child_el is not None else None
+    if not parent_name or not child_name:
+        return None
+
+    axis = (0.0, 0.0, 1.0)
+    axis_el = joint.find("axis")
+    if axis_el is not None:
+        axis = _floats(axis_el.get("xyz"), 3, (0.0, 0.0, 1.0))
+
+    xyz, rpy = _origin_of(joint)
+
+    limits: Optional[Limits] = None
+    limit_el = joint.find("limit")
+    if limit_el is not None:
+        lower = _attr_float(limit_el, "lower", None)
+        upper = _attr_float(limit_el, "upper", None)
+        effort = _attr_float(limit_el, "effort", None)
+        velocity = _attr_float(limit_el, "velocity", None)
+        limits = Limits(
+            lower=lower if lower is not None else 0.0,
+            upper=upper if upper is not None else 0.0,
+            effort=effort if effort else None,
+            velocity=velocity if velocity else None,
+        )
+
+    dynamics = None
+    dyn_el = joint.find("dynamics")
+    if dyn_el is not None:
+        dynamics = {
+            "damping": _attr_float(dyn_el, "damping", 0.0) or 0.0,
+            "friction": _attr_float(dyn_el, "friction", 0.0) or 0.0,
+        }
+
+    return JointData(
+        name=joint.get("name") or "unnamed",
+        joint_type=joint.get("type", "fixed"),
+        parent_link=parent_name,
+        child_link=child_name,
+        axis=tuple(axis),
+        origin_xyz=tuple(xyz),
+        origin_rpy=tuple(rpy),
+        limits=limits,
+        dynamics=dynamics,
+    )
+
+
 def parse_urdf_string(xml_content: str) -> KinematicGraph:
     """
-    Parse a URDF from an XML string and build a kinematic graph.
+    Parse a URDF from an XML string into a KinematicGraph using only the stdlib.
 
-    Args:
-        xml_content: The URDF XML content as a string.
-
-    Returns:
-        KinematicGraph: The parsed robot model.
+    Unlike parse_urdf (file + yourdfpy), this validates the raw author/compiler
+    XML directly and carries no third-party dependency, so the editor's
+    Validation tab keeps working regardless of the spawned interpreter's
+    site-packages. Joints that reference an undefined link are dropped here so a
+    malformed graph can't crash the parser — the structural checks in
+    validation.validator (and the frontend's XML pre-pass) surface those.
 
     Raises:
-        ValueError: If the URDF is invalid.
+        ValueError: If the XML is malformed or contains no links.
     """
     try:
-        import yourdfpy
-    except ImportError:
-        raise ImportError("yourdfpy not installed. Run: pip install yourdfpy")
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as e:
+        raise ValueError(f"Malformed URDF XML: {e}")
 
-    try:
-        # Write the XML content to a temporary file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.urdf', delete=False) as f:
-            f.write(xml_content)
-            temp_path = f.name
+    if root.tag != "robot":
+        raise ValueError(f"Expected root element <robot>, got <{root.tag}>")
 
-        try:
-            # Parse using the regular parse_urdf function
-            return parse_urdf(temp_path)
-        finally:
-            # Clean up the temporary file
+    kg = KinematicGraph()
+
+    for link_el in root.findall("link"):
+        link_data = _link_from_element(link_el)
+        if link_data is not None and link_data.name not in kg.graph:
+            kg.add_link(link_data)
+
+    if not kg.get_links():
+        raise ValueError("URDF has no links")
+
+    parsed_joints: List[JointData] = []
+    child_links = set()
+    for joint_el in root.findall("joint"):
+        jd = _joint_from_element(joint_el)
+        if jd is None:
+            continue
+        parsed_joints.append(jd)
+        child_links.add(jd.child_link)
+
+    # Root = the (real, non-mount) link that is never some joint's child.
+    links = kg.get_links()
+    roots = [
+        name for name in links
+        if name not in child_links and "__mount__" not in name
+    ]
+    kg.set_root_link(roots[0] if roots else links[0])
+
+    for jd in parsed_joints:
+        if jd.parent_link in kg.graph and jd.child_link in kg.graph:
             try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-    except Exception as e:
-        raise ValueError(f"Failed to parse URDF string: {e}")
+                kg.add_joint(jd)
+            except ValueError:
+                continue
+
+    _reconstitute_servo_splits(kg)
+    return kg

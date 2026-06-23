@@ -234,43 +234,6 @@ def _build_spatial_context(kg_json: dict) -> str:
     except Exception as e:
         return f"(Spatial context unavailable: {e})"
 
-def _build_mounting_context() -> str:
-    """
-    Build a mounting rules context from the preset library's mounting_logic
-    to help Claude understand how components connect.
-    """
-    try:
-        from core.presets import get_all_categories, get_category
-        mounting_map = {}
-        for cat_name in get_all_categories():
-            cat = get_category(cat_name)
-            for c in cat.get("components", []):
-                if c["id"] not in _ALLOWED_COMPONENT_IDS:
-                    continue
-                ml = c.get("mounting_logic", {})
-                if ml:
-                    entry = f"primary={ml.get('primary','?')}, output={ml.get('output','?')}"
-                    if ml.get("shaft_diameter_mm"):
-                        entry += f", shaft={ml['shaft_diameter_mm']}mm"
-                    if ml.get("bolt_pattern_mm"):
-                        entry += f", bolts={ml['bolt_pattern_mm']}mm"
-                    mounting_map[c["id"]] = entry
-
-        lines = []
-        for cid, info in sorted(mounting_map.items()):
-            lines.append(f"  {cid}: {info}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"(Mounting context unavailable: {e})"
-
-_MOUNTING_CONTEXT = None
-
-def _get_mounting_context() -> str:
-    global _MOUNTING_CONTEXT
-    if _MOUNTING_CONTEXT is None:
-        _MOUNTING_CONTEXT = _build_mounting_context()
-    return _MOUNTING_CONTEXT
-
 SYSTEM_PROMPT = r"""You are the robot design engine for Vector IDE.
 
 You design robots by specifying TOPOLOGY and INTENT — which components connect to which, where, and in what pose. A deterministic placement compiler turns your specification into 3D positions and URDF. You never write URDF XML or world coordinates (except the explicit raw-placement escape hatch below).

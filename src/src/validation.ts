@@ -1,5 +1,6 @@
 import * as monaco from 'monaco-editor'
 import type { KinematicLink, KinematicJoint } from './urdfParser'
+import type { StructuredDiagnostic } from './topologyValidation'
 
 export interface ValResult {
   name: string
@@ -8,6 +9,33 @@ export interface ValResult {
   category: string
   line?: number
   column?: number
+  /** Concrete suggested edit (from the assembly-soundness validator). Rendered
+   *  as an amber "Fix:" line and folded into the Monaco marker text. */
+  repair?: string
+}
+
+/** Top-level XML failures that make any deeper analysis meaningless — when one
+ *  of these is present we show it alone and skip the per-link / backend passes. */
+const PARSE_BLOCKERS = new Set(['XML Parse Error', 'Invalid root element', 'No links defined'])
+
+/** Categories the Python backend owns when it's reachable. It computes richer
+ *  versions of these (inertia triangle-inequality, effort limits, approximate
+ *  overlaps), so its results replace the client-side equivalents. Structural
+ *  and Assembly always stay client-side: they're line-accurate and need no
+ *  round-trip. */
+const BACKEND_CATEGORIES = new Set(['Physics', 'Actuators', 'Mesh', 'Spatial'])
+
+/** 1-based line of the first `name="<name>"` occurrence in `content`, or
+ *  undefined. Anchors a finding to its URDF source so Monaco markers and
+ *  click-to-jump land on the right element. Falls back to the split-servo body
+ *  link, whose logical name (without the `_body` suffix) is what the assembly
+ *  graph reports. */
+function lineOfName(content: string, name: string | undefined): number | undefined {
+  if (!name) return undefined
+  let idx = content.indexOf(`name="${name}"`)
+  if (idx < 0) idx = content.indexOf(`name="${name}_body"`)
+  if (idx < 0) return undefined
+  return content.slice(0, idx).split('\n').length
 }
 
 /** Parse a URDF string and return structural validation errors. Exported for use outside initValidation. */
@@ -37,7 +65,7 @@ export function validateXMLStructure(content: string): ValResult[] {
   for (let i = 0; i < links.length; i++) {
     const name = links[i].getAttribute('name')
     if (name) {
-      if (linkNames.has(name)) errors.push({ name: 'Duplicate link name', severity: 'error', message: `Link "${name}" is defined multiple times`, category: 'Structural' })
+      if (linkNames.has(name)) errors.push({ name: 'Duplicate link name', severity: 'error', message: `Link "${name}" is defined multiple times`, category: 'Structural', line: lineOfName(content, name) })
       linkNames.add(name)
     }
   }
@@ -48,16 +76,16 @@ export function validateXMLStructure(content: string): ValResult[] {
     const joint = joints[i]
     const jointName = joint.getAttribute('name')
     if (jointName) {
-      if (jointNames.has(jointName)) errors.push({ name: 'Duplicate joint name', severity: 'error', message: `Joint "${jointName}" is defined multiple times`, category: 'Structural' })
+      if (jointNames.has(jointName)) errors.push({ name: 'Duplicate joint name', severity: 'error', message: `Joint "${jointName}" is defined multiple times`, category: 'Structural', line: lineOfName(content, jointName) })
       jointNames.add(jointName)
     }
     const parent = joint.querySelector('parent')
     const child = joint.querySelector('child')
-    if (!parent || !child) { errors.push({ name: `Joint ${jointName || 'unknown'} missing parent/child`, severity: 'error', message: 'Joint must have both <parent> and <child> elements', category: 'Structural' }); continue }
+    if (!parent || !child) { errors.push({ name: `Joint ${jointName || 'unknown'} missing parent/child`, severity: 'error', message: 'Joint must have both <parent> and <child> elements', category: 'Structural', line: lineOfName(content, jointName ?? undefined) }); continue }
     const parentLink = parent.getAttribute('link')
     const childLink = child.getAttribute('link')
-    if (!parentLink || !linkNames.has(parentLink)) errors.push({ name: `Invalid parent link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Parent link "${parentLink}" is not defined`, category: 'Structural' })
-    if (!childLink || !linkNames.has(childLink)) errors.push({ name: `Invalid child link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Child link "${childLink}" is not defined`, category: 'Structural' })
+    if (!parentLink || !linkNames.has(parentLink)) errors.push({ name: `Invalid parent link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Parent link "${parentLink}" is not defined`, category: 'Structural', line: lineOfName(content, jointName ?? undefined) })
+    if (!childLink || !linkNames.has(childLink)) errors.push({ name: `Invalid child link in joint ${jointName || 'unknown'}`, severity: 'error', message: `Child link "${childLink}" is not defined`, category: 'Structural', line: lineOfName(content, jointName ?? undefined) })
     if (childLink) childLinkNames.add(childLink)
   }
 
@@ -72,6 +100,7 @@ export function validateXMLStructure(content: string): ValResult[] {
         ? 'URDF must have exactly one root link for simulation'
         : `Simulation supports one connected robot tree; found ${rootLinks.length} root links: ${rootLinks.slice(0, 8).join(', ')}${rootLinks.length > 8 ? ', ...' : ''}`,
       category: 'Structural',
+      line: rootLinks.length > 1 ? lineOfName(content, rootLinks[0]) : undefined,
     })
   }
   if (errors.length === 0) errors.push({ name: 'XML structure valid', severity: 'pass', message: `${links.length} links, ${joints.length} joints`, category: 'Structural' })
@@ -79,10 +108,10 @@ export function validateXMLStructure(content: string): ValResult[] {
 }
 
 /**
- * Per-link completeness checks: collision geometry, inertial mass.
- * Skips mount-node links (containing __mount__).
- * Returns one result per category (not per link) to keep the list short,
- * plus individual warnings for each offending link.
+ * Per-link completeness checks: collision geometry, inertial mass, joint limits,
+ * plus a total-mass and joint-count summary. Skips mount-node links
+ * (containing __mount__). Returns one result per category (not per link) to keep
+ * the list short; the first offending link's line anchors each finding.
  */
 export function validateURDFPerLink(content: string): ValResult[] {
   const results: ValResult[] = []
@@ -109,52 +138,59 @@ export function validateURDFPerLink(content: string): ValResult[] {
     if (!link.querySelector('collision')) noCollision.push(name)
   }
   if (noCollision.length === 0) {
-    results.push({ name: 'Collision geometry', severity: 'pass', message: 'All non-root links have collision geometry', category: 'Physics' })
+    results.push({ name: 'Collision geometry', severity: 'pass', message: 'All non-root links have collision geometry', category: 'Mesh' })
   } else {
-    results.push({ name: 'Missing collision geometry', severity: 'warn', message: `${noCollision.length} link(s) lack <collision>: ${noCollision.join(', ')}`, category: 'Physics' })
+    results.push({ name: 'Missing collision geometry', severity: 'warn', message: `${noCollision.length} link(s) lack <collision>: ${noCollision.join(', ')}`, category: 'Mesh', line: lineOfName(content, noCollision[0]) })
   }
 
   // ── Inertial / mass check ──
   const noInertial: string[] = []
   const zeroMass: string[] = []
+  let totalMass = 0
   for (const link of links) {
     const name = link.getAttribute('name') ?? ''
-    if (isRoot(name)) continue
     const inertial = link.querySelector('inertial')
-    if (!inertial) { noInertial.push(name); continue }
-    const massEl = inertial.querySelector('mass')
+    const massEl = inertial?.querySelector('mass')
     const mass = parseFloat(massEl?.getAttribute('value') ?? '0')
+    if (Number.isFinite(mass) && mass > 0) totalMass += mass
+    if (isRoot(name)) continue
+    if (!inertial) { noInertial.push(name); continue }
     if (!Number.isFinite(mass) || mass <= 0) zeroMass.push(name)
   }
 
   if (noInertial.length > 0) {
-    results.push({ name: 'Missing inertial', severity: 'warn', message: `${noInertial.length} link(s) lack <inertial>: ${noInertial.join(', ')}`, category: 'Physics' })
+    results.push({ name: 'Missing inertial', severity: 'warn', message: `${noInertial.length} link(s) lack <inertial>: ${noInertial.join(', ')}`, category: 'Physics', line: lineOfName(content, noInertial[0]) })
   }
   if (zeroMass.length > 0) {
-    results.push({ name: 'Zero/missing mass', severity: 'warn', message: `Zero or missing mass on: ${zeroMass.join(', ')}`, category: 'Physics' })
+    results.push({ name: 'Zero/missing mass', severity: 'warn', message: `Zero or missing mass on: ${zeroMass.join(', ')}`, category: 'Physics', line: lineOfName(content, zeroMass[0]) })
   }
   if (noInertial.length === 0 && zeroMass.length === 0) {
     results.push({ name: 'Inertial properties', severity: 'pass', message: 'All non-root links have mass > 0', category: 'Physics' })
   }
+  results.push({ name: 'Total mass', severity: 'info', message: `Total robot mass: ${totalMass.toFixed(3)} kg`, category: 'Physics' })
 
   // ── Joint limits check ──
   const joints = Array.from(xmlDoc.getElementsByTagName('joint'))
+  const actuated = joints.filter(j => ['revolute', 'prismatic'].includes(j.getAttribute('type') ?? ''))
   const missingLimits: string[] = []
-  for (const joint of joints) {
-    const type = joint.getAttribute('type') ?? ''
-    if (type !== 'revolute' && type !== 'prismatic') continue
+  let firstBadLimitName: string | undefined
+  for (const joint of actuated) {
     const limit = joint.querySelector('limit')
     const lower = parseFloat(limit?.getAttribute('lower') ?? 'NaN')
     const upper = parseFloat(limit?.getAttribute('upper') ?? 'NaN')
     if (!limit || !Number.isFinite(lower) || !Number.isFinite(upper) || lower >= upper) {
-      missingLimits.push(joint.getAttribute('name') ?? 'unnamed')
+      const jn = joint.getAttribute('name') ?? 'unnamed'
+      missingLimits.push(jn)
+      if (!firstBadLimitName) firstBadLimitName = jn
     }
   }
   if (missingLimits.length > 0) {
-    results.push({ name: 'Joint limits', severity: 'warn', message: `Actuated joints with invalid limits: ${missingLimits.join(', ')}`, category: 'Actuators' })
-  } else if (joints.filter(j => ['revolute','prismatic'].includes(j.getAttribute('type') ?? '')).length > 0) {
+    results.push({ name: 'Joint limits', severity: 'warn', message: `Actuated joints with invalid limits: ${missingLimits.join(', ')}`, category: 'Actuators', line: lineOfName(content, firstBadLimitName) })
+  } else if (actuated.length > 0) {
     results.push({ name: 'Joint limits', severity: 'pass', message: 'All actuated joints have valid limits', category: 'Actuators' })
   }
+  const fixedCount = joints.length - actuated.length
+  results.push({ name: 'Joint summary', severity: 'info', message: `${actuated.length} actuated, ${fixedCount} fixed joints`, category: 'Actuators' })
 
   return results
 }
@@ -164,22 +200,30 @@ export function initValidation(deps: {
   monacoEditor: monaco.editor.IStandaloneCodeEditor
   getKinematicGraph: () => Record<string, KinematicLink>
   getKinematicJoints: () => Record<string, KinematicJoint>
+  /** Assembly-soundness findings (codes + suggested repairs) for the current
+   *  in-memory graph — the same diagnostics the AI self-correction loop acts on.
+   *  Empty when nothing has been assembled (e.g. a hand-loaded demo). */
+  getAssemblyDiagnostics: () => StructuredDiagnostic[]
   showToast: (msg: string, type?: 'success' | 'warning' | 'error' | 'info') => void
 }): {
   runLocalValidation: () => void
   runValidation: () => Promise<void>
   setValidationMarkers: (results: ValResult[]) => void
 } {
-  const { invoke, monacoEditor, getKinematicGraph, getKinematicJoints } = deps
+  const { invoke, monacoEditor, getKinematicGraph, getKinematicJoints, getAssemblyDiagnostics } = deps
 
   // ── DOM elements ──
   const validationResults = document.getElementById('validation-results') as HTMLDivElement
   const validationSummary = document.getElementById('validation-summary') as HTMLDivElement
   const btnRevalidate = document.getElementById('btn-revalidate') as HTMLButtonElement
 
+  function getContent(): string {
+    return monacoEditor.getModel()?.getValue() ?? ''
+  }
+
   // ── Validation Markers for Monaco ──
 
-  function setValidationMarkers(results: Array<{ name: string; severity: string; message: string; category: string; line?: number; column?: number }>) {
+  function setValidationMarkers(results: ValResult[]) {
     const model = monacoEditor.getModel()
     if (!model) return
 
@@ -196,10 +240,11 @@ export function initValidation(deps: {
       // Use provided line/column or default to line 1
       const lineNumber = r.line || 1
       const column = r.column || 1
+      const repair = r.repair ? ` — Fix: ${r.repair}` : ''
 
       markers.push({
         severity: markerSeverity,
-        message: `[${r.category}] ${r.name}: ${r.message}`,
+        message: `[${r.category}] ${r.name}: ${r.message}${repair}`,
         startLineNumber: lineNumber,
         startColumn: column,
         endLineNumber: lineNumber,
@@ -227,16 +272,27 @@ export function initValidation(deps: {
     if (errorCountEl) errorCountEl.textContent = String(summary.error)
     if (warningCountEl) warningCountEl.textContent = String(summary.warn)
 
-    // Group results by category
+    // Group results by category. Assembly first — it's the soundness signal the
+    // tab now exists to surface — then the rest in a stable order.
     const groups: Record<string, ValResult[]> = {}
     for (const r of results) {
       if (!groups[r.category]) groups[r.category] = []
       groups[r.category].push(r)
     }
+    const ORDER = ['Assembly', 'Structural', 'Physics', 'Actuators', 'Mesh', 'Spatial']
+    const categories = Object.keys(groups).sort((a, b) => {
+      const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b)
+      return (ia < 0 ? ORDER.length : ia) - (ib < 0 ? ORDER.length : ib)
+    })
 
     // Render groups
     validationResults.innerHTML = ''
-    for (const [category, items] of Object.entries(groups)) {
+    if (results.length === 0) {
+      validationResults.innerHTML = '<div class="val-placeholder">No URDF to validate</div>'
+      return
+    }
+    for (const category of categories) {
+      const items = groups[category]
       const group = document.createElement('div')
       group.className = 'val-group'
 
@@ -248,7 +304,6 @@ export function initValidation(deps: {
       for (const item of items) {
         const el = document.createElement('div')
         el.className = `val-item ${item.severity}`
-        el.style.cursor = 'pointer'
 
         const contentEl = document.createElement('div')
         contentEl.style.display = 'flex'
@@ -258,7 +313,9 @@ export function initValidation(deps: {
 
         const textEl = document.createElement('div')
         textEl.style.flex = '1'
-        textEl.innerHTML = `<div>${item.name}</div><span class="val-detail">${item.message}</span>`
+        let inner = `<div>${item.name}</div><span class="val-detail">${escapeHtml(item.message)}</span>`
+        if (item.repair) inner += `<div class="val-repair">Fix: ${escapeHtml(item.repair)}</div>`
+        textEl.innerHTML = inner
 
         const lineEl = document.createElement('div')
         lineEl.style.fontSize = '11px'
@@ -273,13 +330,11 @@ export function initValidation(deps: {
 
         // Make clickable to jump to line
         if (item.line) {
+          el.style.cursor = 'pointer'
           el.addEventListener('click', () => {
-            const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-            if (editor) {
-              editor.revealLineInCenter(item.line!)
-              editor.setPosition({ lineNumber: item.line!, column: item.column || 1 })
-              editor.focus()
-            }
+            monacoEditor.revealLineInCenter(item.line!)
+            monacoEditor.setPosition({ lineNumber: item.line!, column: item.column || 1 })
+            monacoEditor.focus()
           })
         }
 
@@ -290,56 +345,87 @@ export function initValidation(deps: {
     }
   }
 
-  // ── Run full validation (client-side XML + Python backend) ──
+  // ── Assembly soundness (topology validator) ──
+  // The structured findings — stable code + message + suggested_repair — that
+  // drive the AI self-correction loop, rendered so a human sees the same signal.
+  function assemblyResults(content: string): ValResult[] {
+    let diags: StructuredDiagnostic[] = []
+    try { diags = getAssemblyDiagnostics() } catch { diags = [] }
+    return diags.map(d => ({
+      name: d.code,
+      severity: d.severity === 'error' ? 'error' : 'warn',
+      message: d.message,
+      category: 'Assembly',
+      line: lineOfName(content, d.link_name),
+      repair: d.suggested_repair,
+    }))
+  }
+
+  // ── Client-side validation (no backend round-trip) ──
+  // Structural (line-accurate XML) + Assembly soundness + per-link completeness.
+  // This is what auto-run uses, so it never blocks the AI completion mutex.
+  function clientResults(content: string): ValResult[] {
+    const structural = validateXMLStructure(content)
+    if (structural.some(r => r.severity === 'error' && PARSE_BLOCKERS.has(r.name))) {
+      return structural
+    }
+    return [...structural, ...assemblyResults(content), ...validateURDFPerLink(content)]
+  }
+
+  function finish(results: ValResult[]) {
+    const summary = buildSummary(results)
+    renderValidationResults(results, summary)
+    setValidationMarkers(results)
+  }
+
+  // ── Run full validation (client-side + Python backend augmentation) ──
 
   async function runValidation() {
     btnRevalidate.disabled = true
-    btnRevalidate.textContent = 'Validating...'
+    btnRevalidate.textContent = 'Validating…'
 
     try {
-      const editor = (window as any).__vectorEditor as monaco.editor.IStandaloneCodeEditor | undefined
-      const urdfContent = editor?.getValue() || ''
+      const content = getContent()
+      const client = clientResults(content)
 
-      // First: client-side XML validation
-      const xmlErrors = validateXMLStructure(urdfContent)
-
-      if (xmlErrors.length > 0) {
-        // If XML is malformed, show only XML errors
-        const summary = { pass: 0, warn: 0, error: xmlErrors.length, info: 0 }
-        renderValidationResults(xmlErrors, summary)
-        setValidationMarkers(xmlErrors)
-      } else {
-        // XML is valid — run per-link client-side checks immediately,
-        // then try to augment with the Python backend.
-        const perLinkResults = validateURDFPerLink(urdfContent)
-
+      // Can't go deeper than the structural error if the XML won't parse.
+      const blocked = client.some(r => r.severity === 'error' && PARSE_BLOCKERS.has(r.name))
+      if (!blocked) {
         try {
-          const result = await invoke('validate_urdf_content', {
-            urdf_content: urdfContent
-          })
-
-          if (result && (result as any).results) {
-            // Merge: use Python results as primary, add any per-link results not already covered.
-            const backendResults: ValResult[] = (result as any).results
-            const backendCategories = new Set(backendResults.map(r => r.category))
-            const extra = perLinkResults.filter(r => !backendCategories.has(r.category))
-            const merged = [...backendResults, ...extra]
-            const summary = buildSummary(merged)
-            renderValidationResults(merged, summary)
-            setValidationMarkers(merged)
+          const result = await invoke('validate_urdf_content', { urdf_content: content })
+          const backend = (result as any)?.results as ValResult[] | undefined
+          const backendOwned = (backend ?? []).filter(r => BACKEND_CATEGORIES.has(r.category))
+          if (backendOwned.length > 0) {
+            // Backend ran and produced its richer Physics/Actuators/Mesh/Spatial
+            // (inertia triangle-inequality, effort limits, overlaps). Swap those
+            // in; keep the client's line-accurate Structural + Assembly, and
+            // take ONLY the backend-owned categories so its own (redundant)
+            // Structural pass doesn't double up with the client's.
+            const kept = client.filter(r => !BACKEND_CATEGORIES.has(r.category))
+            finish([...kept, ...backendOwned])
+            return
+          }
+          // Backend reachable but produced nothing it owns (e.g. a "Dependencies
+          // Missing" / Setup notice) — keep the full client set and surface any
+          // actionable notice alongside it rather than dropping checks.
+          const notices = (backend ?? []).filter(r => r.severity === 'error' || r.severity === 'warn')
+          if (notices.length > 0) {
+            finish([...client, ...notices])
+            return
           }
         } catch (_e) {
-          // Python backend not available — combine local graph checks with per-link XML checks.
-          runLocalValidationWith(perLinkResults)
+          // Backend unavailable (interpreter without deps, core not running) —
+          // the client set already stands on its own.
         }
       }
+      finish(client)
     } catch (_e) {
-      // Fallback: run local validation against the hardcoded kinematic graph
-      runLocalValidation()
+      // Last resort: validate against the in-memory kinematic graph.
+      finish(buildLocalResults())
+    } finally {
+      btnRevalidate.disabled = false
+      btnRevalidate.textContent = 'Run Checks'
     }
-
-    btnRevalidate.disabled = false
-    btnRevalidate.textContent = 'Run Checks'
   }
 
   // ── Shared summary builder ──
@@ -352,7 +438,7 @@ export function initValidation(deps: {
     return summary
   }
 
-  // ── Local validation fallback (runs in browser against the in-memory graph) ──
+  // ── In-memory graph fallback (only when the editor text can't be read) ──
 
   function buildLocalResults(): ValResult[] {
     const kinematicGraph = getKinematicGraph()
@@ -402,13 +488,6 @@ export function initValidation(deps: {
       category: 'Structural',
     })
 
-    results.push({
-      name: 'Unique link names',
-      severity: 'pass',
-      message: `${linkNames.length} links, all uniquely named`,
-      category: 'Structural',
-    })
-
     // ── Physics checks ──
     const zeroMassLinks = linkNames.filter(n => n !== rootLink && kinematicGraph[n].mass === 0)
     results.push({
@@ -440,26 +519,18 @@ export function initValidation(deps: {
       category: 'Actuators',
     })
 
-    results.push({
-      name: 'Mesh watertight check',
-      severity: 'info',
-      message: 'Mesh watertight check skipped (requires mesh files)',
-      category: 'Mesh',
-    })
-
     return results
   }
 
-  /** Run local validation, optionally merging in pre-computed per-link XML results. */
-  function runLocalValidationWith(extraResults: ValResult[] = []) {
-    const results = [...buildLocalResults(), ...extraResults]
-    const summary = buildSummary(results)
-    renderValidationResults(results, summary)
-    setValidationMarkers(results)
-  }
-
+  /** Client-side validation against the current editor text. Falls back to the
+   *  in-memory graph only when the editor has no readable content yet. */
   function runLocalValidation() {
-    runLocalValidationWith([])
+    const content = getContent()
+    if (!content.trim()) {
+      finish(buildLocalResults())
+      return
+    }
+    finish(clientResults(content))
   }
 
   // ── Revalidate button click handler ──
@@ -475,4 +546,13 @@ export function initValidation(deps: {
     runValidation,
     setValidationMarkers,
   }
+}
+
+/** Minimal HTML escaping for validator-supplied strings rendered via innerHTML. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }

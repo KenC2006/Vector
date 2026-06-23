@@ -2528,6 +2528,7 @@ const { runLocalValidation } = initValidation({
   monacoEditor,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
+  getAssemblyDiagnostics: () => urdfAssemblyApi?.getLastAssemblyDiagnostics() ?? [],
   showToast,
 })
 

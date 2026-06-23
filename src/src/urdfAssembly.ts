@@ -28,7 +28,11 @@ import { capabilitiesForSpec } from './componentCapabilities.ts'
 import { hasLinkGeometry } from './linkGeometry.ts'
 import { composeGhostWorldForConnectorSnap } from './carrySnapMath.ts'
 import { urdfVecToSceneVec, URDF_TO_SCENE_Q } from './coordinates.ts'
-import { validateTopology as runValidateTopology } from './topologyValidation.ts'
+import {
+  validateTopology as runValidateTopology,
+  validateTopologyStructured,
+  type StructuredDiagnostic,
+} from './topologyValidation.ts'
 import type { ValidationPreset, ValidationContext } from './topologyValidation.ts'
 import { cloneAssemblyGraph, graphsEquivalent } from './urdfGraphEquivalence.ts'
 import type { AssemblyComponent, AssemblyGraph, GraphEquivalenceResult } from './urdfGraphEquivalence.ts'
@@ -259,6 +263,13 @@ export interface UrdfAssemblyApi {
    * their URDF primitives ARE the authored design, and swapping in the donor
    * preset's stock visual silently hides the sculpted body. */
   getCustomGeometryLinkNames(): Set<string>
+  /** Assembly-soundness diagnostics for the CURRENT in-memory graph, recomputed
+   *  on demand (the topology validator is a pure, cheap graph walk, so there's
+   *  no cache to invalidate on file switch). These are the same structured
+   *  findings — stable code + message + suggested_repair — that drive the AI
+   *  self-correction loop; the Validation tab renders them so a human sees the
+   *  same soundness signal the model acts on. Empty when nothing is assembled. */
+  getLastAssemblyDiagnostics(): StructuredDiagnostic[]
 }
 
 function parseNums(s: string, len = 3): number[] {
@@ -956,7 +967,8 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   const toolboxSearch = document.getElementById('toolbox-search') as HTMLInputElement | null
   const btnFocusBase = document.getElementById('btn-load-example') as HTMLButtonElement | null
   const btnResetRobot = document.getElementById('btn-clear-assembly') as HTMLButtonElement | null
-  const toggleMountRingsBtn = document.getElementById('toggle-mount-rings') as HTMLButtonElement | null
+  // The mount-ring visibility toggle button was removed (it was hidden with no
+  // way to reach it). The node-ring overlay stays wired but defaults off.
   let showNodeRings = false
 
   function makeNodeAxisRings(): THREE.Group {
@@ -3205,12 +3217,6 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
   btnExportPkg?.addEventListener('click', () => { void exportUrdfPackage() })
   toolboxSearch?.addEventListener('input', () => renderComponents(toolboxSearch.value))
 
-  toggleMountRingsBtn?.addEventListener('click', () => {
-    showNodeRings = !showNodeRings
-    toggleMountRingsBtn.classList.toggle('active', showNodeRings)
-    applyNodeRingVisibility()
-  })
-
   gizmo.addEventListener('dragging-changed', ev => {
     const on = Boolean((ev as unknown as { value: boolean }).value)
     // Carry mode owns the interaction; ignore gizmo drag events while it is active.
@@ -4849,6 +4855,18 @@ export function initUrdfAssembly(ctx: UrdfAssemblyContext): UrdfAssemblyApi {
         if (hasLinkGeometry(c)) out.add(c.link_name)
       }
       return out
+    },
+    getLastAssemblyDiagnostics: (): StructuredDiagnostic[] => {
+      const g = _lastAssemblyGraph
+      if (!g || !presetData) return []
+      try {
+        return validateTopologyStructured(g.components, {
+          findPreset: (id: string): ValidationPreset | null =>
+            findPresetById(id) as ValidationPreset | null,
+        })
+      } catch {
+        return []
+      }
     },
   }
 }

@@ -690,17 +690,13 @@ class JSONRPCServer:
         # constants/helpers leaking across script sessions.
         self._script_globals: Dict[str, Any] = _fresh_script_globals()
         self.methods = {
-            "parse_urdf": self.handle_parse_urdf,
             "ping": self.handle_ping,
             "sim_load": self.handle_sim_load,
             "sim_step": self.handle_sim_step,
             "sim_reset": self.handle_sim_reset,
-            "sim_set_control": self.handle_sim_set_control,
             "sim_get_state": self.handle_sim_get_state,
-            "sim_render": self.handle_sim_render,
             "sim_set_gravity": self.handle_sim_set_gravity,
             "sim_set_script": self.handle_sim_set_script,
-            "validate_urdf": self.handle_validate_urdf,
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
             "ai_edit_turn": self.handle_ai_edit_turn,
@@ -709,71 +705,6 @@ class JSONRPCServer:
             "ai_set_history": self.handle_ai_set_history,
             "ai_gen_sim_script": self.handle_ai_gen_sim_script,
         }
-
-    def handle_parse_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse a URDF file and return the kinematic graph as JSON.
-
-        Params:
-            path (str): Path to the URDF file.
-
-        Returns:
-            Kinematic graph JSON.
-        """
-        if "path" not in params:
-            raise ValueError("Missing required parameter: path")
-
-        path = params["path"]
-        if not isinstance(path, str):
-            raise ValueError("Parameter 'path' must be a string")
-
-        if _parse_urdf is None:
-            raise ValueError(f"Model modules not available: {_model_import_error}")
-
-        try:
-            kg = _parse_urdf(path)
-            return kg.to_json()
-        except FileNotFoundError as e:
-            raise ValueError(f"File not found: {e}")
-        except Exception as e:
-            raise ValueError(f"Failed to parse URDF: {e}")
-
-    def handle_validate_urdf(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse a URDF file and run validation checks.
-
-        Params:
-            path (str): Path to the URDF file.
-
-        Returns:
-            Dict with 'results' list and 'summary' counts.
-        """
-        if "path" not in params:
-            raise ValueError("Missing required parameter: path")
-
-        path = params["path"]
-        if not isinstance(path, str):
-            raise ValueError("Parameter 'path' must be a string")
-
-        if _parse_urdf is None or _validate_kinematic_graph is None:
-            raise ValueError(f"Model modules not available: {_model_import_error}")
-
-        try:
-            kg = _parse_urdf(path)
-            results = _validate_kinematic_graph(kg)
-
-            # Build summary counts
-            summary = {"pass": 0, "warn": 0, "error": 0, "info": 0}
-            for r in results:
-                sev = r.get("severity", "info")
-                if sev in summary:
-                    summary[sev] += 1
-
-            return {"results": results, "summary": summary}
-        except FileNotFoundError as e:
-            raise ValueError(f"File not found: {e}")
-        except Exception as e:
-            raise ValueError(f"Validation failed: {e}")
 
     def handle_validate_urdf_content(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -955,29 +886,6 @@ class JSONRPCServer:
         except Exception as e:
             raise ValueError(f"Failed to reset simulation: {e}")
 
-    def handle_sim_set_control(self, params: Dict[str, Any]) -> None:
-        """
-        Set actuator control values.
-
-        Params:
-            controls (dict): Mapping of joint name to control value.
-
-        Returns:
-            null
-        """
-        self._require_simulator()
-        if "controls" not in params:
-            raise ValueError("Missing required parameter: controls")
-
-        controls = params["controls"]
-        if not isinstance(controls, dict):
-            raise ValueError("Parameter 'controls' must be a dict")
-
-        try:
-            self.simulator.set_control(controls)
-        except Exception as e:
-            raise ValueError(f"Failed to set controls: {e}")
-
     def handle_sim_set_gravity(self, params: Dict[str, Any]) -> None:
         """
         Set gravity vector.
@@ -1056,31 +964,6 @@ class JSONRPCServer:
                 raise ValueError(f"Dunder attribute access not allowed: {node.attr}")
             if isinstance(node, ast.Name) and node.id in _SCRIPT_NAME_DENY:
                 raise ValueError(f"Use of '{node.id}' is not allowed in sim scripts")
-
-    def handle_sim_render(self, params: Dict[str, Any]) -> str:
-        """
-        Render a frame and return as base64-encoded PNG.
-
-        Params:
-            width (int, optional): Image width. Default: 640.
-            height (int, optional): Image height. Default: 480.
-
-        Returns:
-            Base64-encoded PNG string.
-        """
-        self._require_simulator()
-        width = params.get("width", 640)
-        height = params.get("height", 480)
-
-        if not isinstance(width, int) or width < 1:
-            width = 640
-        if not isinstance(height, int) or height < 1:
-            height = 480
-
-        try:
-            return self.simulator.render_frame(width, height)
-        except Exception as e:
-            raise ValueError(f"Failed to render frame: {e}")
 
     def _emit_progress(self, stage: str, text: str) -> None:
         """Emit a JSON-RPC notification for AI progress (no id = notification)."""
