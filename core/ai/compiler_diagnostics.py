@@ -11,8 +11,8 @@ Phase 3 (Structured repair loop):
     > The AI should not be asked to guess new RPY values for a compiler bug.
 
 This module defines the owner taxonomy and a single `route` entry point so any
-producer (archetype normalizer, semantic-graph validator, resolver, placement
-compiler, exporter) can emit diagnostics in a uniform shape and the dispatcher
+producer (semantic-graph validator, resolver, placement compiler, exporter) can
+emit diagnostics in a uniform shape and the dispatcher
 sends each one to the right consumer:
 
   Owner                        Consumer
@@ -22,7 +22,7 @@ sends each one to the right consumer:
   PLACEMENT_COMPILER           printed as a developer log; never shown to AI
   EXPORTER                     printed as a developer log; never shown to AI
 
-Diagnostics produced today (e.g. by archetype_normalizer) are dicts shaped like
+Diagnostics produced today (e.g. by the semantic-graph validator) are dicts shaped like
 `{code, severity, component, message, repair?}`. This module preserves that
 shape and adds an `owner` field, plus a small registry mapping codes -> owners
 so existing producers don't need to know the routing rules.
@@ -42,13 +42,6 @@ class Owner(str, Enum):
 # Code -> owning layer. Anything not listed defaults to PLACEMENT_COMPILER (the
 # safest default — surfaces a developer log without polluting the AI prompt).
 _OWNER_BY_CODE: Dict[str, Owner] = {
-    # archetype_normalizer.py
-    "quadruped_tail_forbidden": Owner.AI_TOPOLOGY,
-    "quadruped_tail_present": Owner.AI_TOPOLOGY,
-    "foot_pad_has_children": Owner.AI_TOPOLOGY,
-    "multiple_roots": Owner.AI_TOPOLOGY,
-    "archetype_unknown": Owner.PLACEMENT_COMPILER,
-
     # semantic_graph.py
     "semantic_graph_forbidden_field": Owner.AI_TOPOLOGY,
     "semantic_graph_foot_pad_attach_rpy": Owner.AI_TOPOLOGY,

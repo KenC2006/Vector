@@ -131,7 +131,6 @@ def test_removed_legacy_fields_stripped_silently():
 
 def test_owner_for_known_codes():
     assert owner_for("semantic_graph_forbidden_field") is Owner.AI_TOPOLOGY
-    assert owner_for("quadruped_tail_forbidden") is Owner.AI_TOPOLOGY
     assert owner_for("mesh_vs_bbox_divergence") is Owner.COMPONENT_SPEC
     assert owner_for("urdf_mjcf_transform_mismatch") is Owner.EXPORTER
     # Unknown codes default to placement compiler (developer-only).

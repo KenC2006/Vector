@@ -5,15 +5,9 @@ Provides a high-level interface to MuJoCo physics simulation.
 Handles loading URDF/MJCF, stepping simulation, rendering, and state management.
 """
 from typing import Dict, List, Optional, Any, Tuple
-from collections import deque
-import base64
-import io
 import re
 import numpy as np
 from .urdf_to_mjcf import urdf_to_mjcf, normalize_terrain_config
-
-# Ring buffer capacity: ~60 s at 60 fps ≈ 3 600 frames.
-_RING_MAX = 3600
 
 # Keywords that identify end-effector bodies (matches urdf_to_mjcf sensor logic).
 _EE_KEYWORDS = ("ee", "end_effector", "end-effector", "tool", "tcp")
@@ -44,15 +38,10 @@ class MuJoCoSimulator:
         self.mujoco = mujoco
         self.model = None
         self.data = None
-        self.renderer = None
-        self._renderer_size: Tuple[int, int] = (0, 0)
-        self._renderer_unavailable: Optional[str] = None  # one-shot reason if GL fails
         # Snapshots set after _auto_lift_* so reset() restores the lifted pose exactly.
         self._initial_qpos: Optional[Any] = None
         self._initial_qvel: Optional[Any] = None
         self._initial_ctrl: Optional[Any] = None
-        # Ring buffer for timeline scrubbing: bounded deque of (sim_time, qpos_snapshot).
-        self._ring: deque = deque(maxlen=_RING_MAX)
         # joint name → actuator id (built at load); avoids O(nu) name lookup per control.
         self._actuator_by_joint: Dict[str, int] = {}
         self._terrain_config_active: Dict[str, Any] = normalize_terrain_config(None)
@@ -121,10 +110,6 @@ class MuJoCoSimulator:
                     if act_name.endswith(suffix):
                         self._actuator_by_joint[act_name[:-len(suffix)]] = i
                         break
-
-            # Drop any prior renderer — model topology changed.
-            self._close_renderer()
-            self._ring.clear()
 
             return self.get_model_info()
 
@@ -298,7 +283,15 @@ class MuJoCoSimulator:
 
         for _ in range(n_steps):
             self.mujoco.mj_step(self.model, self.data)
-            self._ring.append((float(self.data.time), self.data.qpos.copy()))
+
+        # Surface divergence as a clean error instead of letting NaN/inf leak into
+        # get_state() (where it becomes invalid JSON). Usually a degenerate inertia/
+        # mass or too large a timestep for the model.
+        if not np.isfinite(self.data.qpos).all():
+            raise RuntimeError(
+                "Simulation diverged (non-finite state) — check link inertias/masses "
+                "or reduce the model timestep."
+            )
 
     def reset(self) -> None:
         """
@@ -311,7 +304,6 @@ class MuJoCoSimulator:
             raise RuntimeError("No model loaded. Call load_urdf() first.")
 
         self.mujoco.mj_resetData(self.model, self.data)
-        self._ring.clear()
 
         if self._initial_qpos is not None:
             # Restore the exact lifted pose captured after load — avoids re-probing
@@ -356,10 +348,10 @@ class MuJoCoSimulator:
         for i in range(self.model.njnt):
             joint_name = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_JOINT, i)
             if joint_name and joint_name != "":
-                # Get position and velocity address for this joint
+                # Position address (into qpos) and DOF address (into qvel) for this
+                # joint. They differ for multi-DOF joints; the single-DOF revolute/
+                # prismatic joints we report below are scalar at both.
                 qpos_adr = self.model.jnt_qposadr[i]
-                # Get the velocity address (usually same as qpos for single-DOF joints)
-                # For multi-DOF joints, velocity address is qpos_adr
                 dof_adr = self.model.jnt_dofadr[i]
 
                 # Extract position (single value for revolute/prismatic)
@@ -464,63 +456,7 @@ class MuJoCoSimulator:
             pass
         state["ee_poses"] = ee_poses
 
-        # ── Ring buffer metadata (let UI know how many frames are available) ──
-        state["ring_frames"] = len(self._ring)
-
         return state
-
-    def set_floor_friction(self, friction: float) -> None:
-        """
-        Update the floor geom's lateral friction coefficient in-place.
-
-        Args:
-            friction: Lateral (sliding) friction coefficient for the floor plane.
-                      Torsional and rolling components are scaled proportionally.
-        """
-        if self.model is None:
-            raise RuntimeError("No model loaded.")
-        floor_id = self.mujoco.mj_name2id(
-            self.model, self.mujoco.mjtObj.mjOBJ_GEOM, "floor"
-        )
-        if floor_id < 0:
-            return
-        # MuJoCo friction[0] = sliding, [1] = torsional, [2] = rolling.
-        # Keep the torsional/rolling ratios from the original MJCF (1/15 and 1/150).
-        self.model.geom_friction[floor_id, 0] = float(friction)
-        self.model.geom_friction[floor_id, 1] = float(friction) / 15.0
-        self.model.geom_friction[floor_id, 2] = float(friction) / 150.0
-
-    def scrub(self, frame_idx: int) -> Dict[str, Any]:
-        """
-        Restore simulation to a ring-buffer frame and return state.
-
-        Replays qpos without re-stepping — purely kinematic, no energy.
-
-        Args:
-            frame_idx: Index into the ring buffer (0 = oldest, -1 = newest).
-
-        Returns:
-            Simulation state at that frame.
-        """
-        if self.model is None or self.data is None:
-            raise RuntimeError("No model loaded.")
-        if not self._ring:
-            return self.get_state()
-        n = len(self._ring)
-        if frame_idx < 0:
-            frame_idx = n + frame_idx
-        frame_idx = max(0, min(frame_idx, n - 1))
-        t, qpos = self._ring[frame_idx]
-        self.data.qpos[:] = qpos
-        self.data.qvel[:] = 0.0  # snapshot is kinematic; velocities not retained
-        self.data.time = t
-        # Truncate ring so subsequent steps continue from this frame, not after the
-        # original tail (which would produce a non-monotonic timeline).
-        kept = list(self._ring)[: frame_idx + 1]
-        self._ring.clear()
-        self._ring.extend(kept)
-        self.mujoco.mj_forward(self.model, self.data)
-        return self.get_state()
 
     def set_gravity(self, gravity: List[float]) -> None:
         """
@@ -556,69 +492,6 @@ class MuJoCoSimulator:
             actuator_id = self._actuator_by_joint.get(ctrl_name, -1)
             if actuator_id >= 0:
                 self.data.ctrl[actuator_id] = float(ctrl_value)
-
-    def render_frame(self, width: int = 640, height: int = 480) -> str:
-        """
-        Render an offscreen frame and return as base64-encoded PNG.
-
-        Uses headless rendering via passive viewer.
-
-        Args:
-            width: Image width in pixels.
-            height: Image height in pixels.
-
-        Returns:
-            Base64-encoded PNG string.
-
-        Raises:
-            RuntimeError: If no model is loaded.
-        """
-        if self.model is None or self.data is None:
-            raise RuntimeError("No model loaded. Call load_urdf() first.")
-
-        try:
-            from PIL import Image
-        except ImportError:
-            raise ImportError("pillow not installed. Run: pip install pillow")
-
-        # Lazily build/recreate a mujoco.Renderer for the requested resolution.
-        if (
-            self.renderer is None
-            or self._renderer_size != (width, height)
-        ) and self._renderer_unavailable is None:
-            try:
-                self._close_renderer()
-                self.renderer = self.mujoco.Renderer(self.model, height=height, width=width)
-                self._renderer_size = (width, height)
-            except Exception as e:
-                # No GL context (headless without EGL/OSMesa) — record once and fall through.
-                self._renderer_unavailable = str(e)
-
-        if self.renderer is not None:
-            self.mujoco.mj_forward(self.model, self.data)
-            self.renderer.update_scene(self.data)
-            pixels = self.renderer.render()  # (H, W, 3) uint8
-            img = Image.fromarray(pixels, mode="RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-        # GL unavailable — return a 1×1 PNG with a header explaining why, rather
-        # than a fake gradient that pretends to be a render.
-        img = Image.new("RGB", (1, 1), (0, 0, 0))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", pnginfo=None)
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-    def _close_renderer(self) -> None:
-        """Release the mujoco.Renderer (and its GL context) if held."""
-        if self.renderer is not None:
-            try:
-                self.renderer.close()
-            except Exception:
-                pass
-            self.renderer = None
-            self._renderer_size = (0, 0)
 
     def get_model_info(self) -> Dict[str, Any]:
         """

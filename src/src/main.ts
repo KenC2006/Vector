@@ -233,6 +233,23 @@ function waitForTauri(timeoutMs = 5000): Promise<void> {
   })
 }
 
+// Safe invoke that ensures Tauri IPC is ready before calling. The core
+// auto-start (and other early IPC) can fire before __TAURI_INTERNALS__ is injected.
+async function safeInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  await waitForTauri()
+  return invoke(cmd, args) as Promise<T>
+}
+
+// Invoke with a timeout — rejects if the call takes too long.
+function invokeWithTimeout<T>(cmd: string, args: Record<string, unknown>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    safeInvoke<T>(cmd, args),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${cmd} timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ])
+}
+
 
 // ── Monaco Editor ────────────────────────────────────────────────────────────
 
@@ -288,205 +305,11 @@ const monacoEditor = monaco.editor.create(monacoContainer, {
   inlineSuggest: { enabled: true },
 })
 
-// ── Inline AI Completions (Cursor-style Ghost Text) ──────────────────────────
-
 // ── Chat History (delegated to chatHistory.ts) ──────────────────────────────
 
 chatApi = initChatHistory({
   getEditorValue: () => monacoEditor.getModel()?.getValue() || '',
   setEditorValue: (v) => monacoEditor.setValue(v),
-})
-
-// State for managing completion requests
-let inlineCompletionSettings = {
-  enabled: false,  // Temporarily disabled to save API credits
-  debounceMs: 350,  // Reduced from 500ms — cache handles repeated requests
-}
-
-// Dedup and staleness tracking
-let completionInFlight = false
-let lastCompletionTimestamp = 0
-let lastCompletionVersion = 0  // editor model version when request was made
-
-// Simple delay — NOT tied to Monaco's cancellation token
-function delayMs(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-// Safe invoke that ensures Tauri IPC is ready before calling.
-// Monaco's async pipeline can fire before __TAURI_INTERNALS__ is injected.
-async function safeInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
-  await waitForTauri()
-  return invoke(cmd, args) as Promise<T>
-}
-
-// Invoke with a timeout — rejects if the call takes too long
-function invokeWithTimeout<T>(cmd: string, args: Record<string, unknown>, timeoutMs: number): Promise<T> {
-  return Promise.race([
-    safeInvoke<T>(cmd, args),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${cmd} timed out after ${timeoutMs}ms`)), timeoutMs)
-    )
-  ])
-}
-
-// Register inline completions provider for XML (URDF files)
-monaco.languages.registerInlineCompletionsProvider('xml', {
-  async provideInlineCompletions(
-    model: monaco.editor.ITextModel,
-    position: monaco.Position,
-    _context: monaco.languages.InlineCompletionContext,
-    _token: monaco.CancellationToken
-  ): Promise<monaco.languages.InlineCompletions> {
-    if (!inlineCompletionSettings.enabled || !coreAvailable) {
-      return { items: [] }
-    }
-
-    // Skip if a completion request is already in-flight
-    if (completionInFlight) {
-      return { items: [] }
-    }
-
-    // Record when this request started — used for debounce deduplication
-    const requestTime = Date.now()
-    lastCompletionTimestamp = requestTime
-
-    // Debounce — wait for user to stop typing.
-    // NOT tied to Monaco's cancellation token, which fires too aggressively.
-    await delayMs(inlineCompletionSettings.debounceMs)
-
-    // If a newer request came in during the debounce, bail out
-    if (lastCompletionTimestamp !== requestTime) {
-      return { items: [] }
-    }
-
-    // Snapshot the editor state at request time
-    const urdfContent = model.getValue()
-    const cursorLine = position.lineNumber
-    const cursorColumn = position.column
-    const lines = urdfContent.split('\n')
-    const currentLine = lines[cursorLine - 1] || ''
-    const textBeforeCursor = currentLine.slice(0, cursorColumn - 1)
-    const modelVersion = model.getVersionId()
-
-    // Don't request completions on empty/whitespace-only lines
-    if (!textBeforeCursor.trim() && cursorColumn <= 1) {
-      return { items: [] }
-    }
-
-    // Skip positions where completions aren't useful:
-    // - Right after a closing tag (user just finished an element)
-    // - On comment lines
-    const trimmedBefore = textBeforeCursor.trim()
-    if (trimmedBefore.endsWith('-->') || trimmedBefore.startsWith('<!--')) {
-      return { items: [] }
-    }
-
-    try {
-      completionInFlight = true
-      lastCompletionVersion = modelVersion
-
-      const completion = await invokeWithTimeout<string>('ai_complete', {
-        urdfContent,
-        cursorLine,
-        cursorColumn,
-        prefix: textBeforeCursor,
-        kinematicContext: buildKinematicContext(),
-      }, 12000)
-
-      completionInFlight = false
-
-      // Reject stale results — if the editor changed while we were waiting,
-      // this completion is for an old state and will likely be wrong
-      if (model.getVersionId() !== lastCompletionVersion) {
-        return { items: [] }
-      }
-
-      if (!completion || !completion.trim()) {
-        return { items: [] }
-      }
-
-      let result = completion
-
-      // Client-side overlap guard: strip any tail of the completion that
-      // duplicates text already present after the cursor in the editor.
-      const textAfterCursor = model.getValue().slice(
-        model.getOffsetAt(position)
-      )
-      if (textAfterCursor) {
-        const compLines = result.split('\n')
-        const sufLines = textAfterCursor.split('\n')
-        let overlapLines = 0
-        for (let n = 1; n <= Math.min(compLines.length, sufLines.length); n++) {
-          const tail = compLines.slice(-n).map(l => l.trim())
-          const head = sufLines.slice(0, n).map(l => l.trim())
-          if (tail.every((l, i) => l === head[i])) {
-            overlapLines = n
-          }
-        }
-        if (overlapLines > 0) {
-          result = compLines.slice(0, -overlapLines).join('\n')
-        }
-      }
-
-      // Safety cap at 20 lines — keeps ghost text readable
-      const resultLines = result.split('\n')
-      if (resultLines.length > 20) {
-        result = resultLines.slice(0, 20).join('\n')
-      }
-
-      if (!result.trim()) {
-        return { items: [] }
-      }
-
-      return {
-        items: [{
-          insertText: result,
-          range: new monaco.Range(cursorLine, cursorColumn, cursorLine, cursorColumn),
-        }]
-      }
-    } catch (error) {
-      completionInFlight = false
-      if (!String(error).includes('timed out')) {
-        console.warn('[Completions] Error:', error)
-      }
-      return { items: [] }
-    }
-  },
-  disposeInlineCompletions() {
-    // no-op
-  },
-} as monaco.languages.InlineCompletionsProvider)
-
-// Setup toggle button for inline completions
-const inlineCompletionToggle = document.getElementById('inline-completion-toggle') as HTMLSpanElement
-if (inlineCompletionToggle) {
-  inlineCompletionToggle.addEventListener('click', () => {
-    inlineCompletionSettings.enabled = !inlineCompletionSettings.enabled
-
-    // Update visual state
-    if (inlineCompletionSettings.enabled) {
-      inlineCompletionToggle.style.opacity = '1'
-      inlineCompletionToggle.style.color = '#4ec9b0'
-      inlineCompletionToggle.title = 'Inline AI completions: enabled (Ctrl+Shift+I)'
-      showToast('Inline completions enabled', 'success')
-    } else {
-      inlineCompletionToggle.style.opacity = '0.5'
-      inlineCompletionToggle.style.color = '#858585'
-      inlineCompletionToggle.title = 'Inline AI completions: disabled (Ctrl+Shift+I)'
-      showToast('Inline completions disabled', 'info')
-    }
-  })
-}
-
-// Keyboard shortcut: Ctrl+Shift+I to toggle inline completions
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.shiftKey && e.key === 'I') {
-    e.preventDefault()
-    if (inlineCompletionToggle) {
-      inlineCompletionToggle.click()
-    }
-  }
 })
 
 // Update cursor position in status bar
@@ -1512,13 +1335,6 @@ requestAnimationFrame(() => {
 const renderPass = new RenderPass(scene, camera)
 composer.addPass(renderPass)
 
-// GTAO disabled — causes visible halo around objects against background.
-// The directional light shadow map provides ground shadows.
-// Re-enable when scene has a floor/ground plane that masks the halo.
-// const gtaoPass = new GTAOPass(scene, camera)
-// gtaoPass.blendIntensity = 0.15
-// composer.addPass(gtaoPass)
-
 // SMAA: sub-pixel silhouette cleanup. Handles edges that slip past MSAA —
 // especially thin rounded parts at far zoom. Sized automatically via composer.setSize.
 const smaaPass = new SMAAPass()
@@ -1609,11 +1425,6 @@ preloadMeshCache()
 // closure's stale reference won't match the live `parsedRobot` and the rebuild is skipped.
 // The sim guard prevents node positions from being updated mid-simulation.
 let _rebuildNodesTimer: ReturnType<typeof setTimeout> | null = null
-// Forward-declared auto-bake trigger. Reassigned by the bake setup block
-// (~L2700) once the lazy-loaded bake module resolves. No-op until then —
-// safe to call from anywhere that fires before bake module is ready (e.g.
-// the very first makeOnMeshLoaded debounce on page load).
-let _scheduleAutoBake: () => void = () => {}
 
 function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
   return (_linkName: string) => {
@@ -1637,12 +1448,6 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
       addEdgeLines(parsedRobot)
       applyCollisionOnlyView(showCollision)
-      // Async loads + reconcile + ground are now settled — kick off the
-      // assembly bake. Quiet mode: silent during, single summary toast on
-      // failure, console-only on success. Concurrency-safe: in-flight bakes
-      // queue rather than overlap, and stale results (mid-bake reparse) are
-      // discarded.
-      _scheduleAutoBake()
     }, 150)
   }
 }
@@ -3458,175 +3263,9 @@ urdfAssemblyApi = initUrdfAssembly({
   groundAssembly: () => groundRobot(robot),
 })
 
-// ── B-Rep bake smoke test (Phase 1, dev-only) ──
-// `__bake('actuator_servo_standard')` drops a Replicad-baked mesh next to the
-// existing per-preset GLB for visual comparison. `__bakeClear()` removes them.
-// Not part of the render path — remove once Phase 2 wires fuse+fillet into
-// the viewportChat accept flow.
-void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndShow, clearBakeSmoke }) => {
-  ;(window as unknown as { __bake: (id: string, offsetX?: number) => Promise<void> }).__bake =
-    (id, offsetX) => bakeAndShow({ scene }, id, offsetX)
-  ;(window as unknown as { __fuse: (args: Parameters<typeof fuseAndShow>[1]) => Promise<void> }).__fuse =
-    args => fuseAndShow({ scene }, args)
-  ;(window as unknown as { __fuseParam: (args: Parameters<typeof fuseParamAndShow>[1]) => Promise<void> }).__fuseParam =
-    args => fuseParamAndShow({ scene }, args)
-  ;(window as unknown as { __bakeClear: () => void }).__bakeClear = () => clearBakeSmoke({ scene })
-})
-
-// ── Phase 3: full-scene bake ──
-// `__bakeScene()` reads the current AssemblyGraph + scene link groups, plans
-// fixed-joint clusters, bakes each via the worker, and swaps baked meshes
-// in place of per-preset GLBs. Auto-fires after every URDF reparse via the
-// makeOnMeshLoaded debounce (`_scheduleAutoBake`). `__setAutoBake(false)`
-// disables auto-fire; `__bakeScene()` always runs on demand. `__unbakeScene()`
-// reverses the swap.
+// ── Debug overlay inspectors (dev-only) ──
+// Console-only diagnostics: `__inspectOverlays()` and `__inspectLink(name)`.
 {
-  let lastBakeResult: import('./bake/assemblyBake').BakeSceneResult | null = null
-  let bakeInProgress = false
-  // When auto-bake fires while another bake is in flight, set the queue flag
-  // and re-fire after the current bake finishes — avoids both overlapping
-  // worker requests and missed updates when a URDF reparse arrives mid-bake.
-  let autoBakeQueued = false
-  let autoBakeEnabled = true
-  void import('./bake/assemblyBake').then(({ bakeScene, clearBakedScene }) => {
-    async function runBake(opts: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean; quiet?: boolean } = {}): Promise<import('./bake/assemblyBake').BakeSceneResult | null> {
-      const quiet = opts.quiet === true
-      if (bakeInProgress) {
-        if (quiet) {
-          // Reparse fired during an in-flight bake — re-trigger after this
-          // one completes. Squashes multiple auto requests into one queued
-          // re-bake regardless of how many fire mid-bake.
-          autoBakeQueued = true
-        } else {
-          console.warn('[bake/scene] another bake is in progress')
-        }
-        return null
-      }
-      if (!urdfAssemblyApi) {
-        if (!quiet) console.warn('[bake/scene] urdfAssemblyApi not ready')
-        return null
-      }
-      let graph = urdfAssemblyApi.getLastAssemblyGraph()
-      if (!graph) {
-        if (!quiet) console.warn('[bake/scene] no assembly graph — load a robot first')
-        return null
-      }
-      const linkGroups = parsedRobot.linkGroups
-      // Snapshot the current parsedRobot so we can detect mid-bake URDF
-      // reparses and discard stale results before they swap into the wrong
-      // scene.
-      const robotEpoch = parsedRobot
-      // Validate graph belongs to currently-rendered URDF. Stored graphs
-      // are keyed per-filename in localStorage; if the user restored a
-      // pre-fix checkpoint (no embedded graph) the localStorage entry
-      // for the current filename can be stale and point at a different
-      // robot. The two robots typically share the baseplate name, so a
-      // "≥1 overlap" guard would still let us through — require majority
-      // overlap of GRAPH components (not scene), then fall back to
-      // reverse-parsing the live URDF if the stored graph fails the bar.
-      const sceneNames = new Set(linkGroups.keys())
-      const overlap = graph.components.filter(c => sceneNames.has(c.link_name)).length
-      const overlapRatio = graph.components.length > 0 ? overlap / graph.components.length : 0
-      if (overlapRatio < 0.5) {
-        console.warn(`[bake/scene] stored AssemblyGraph (${graph.components.length} components) overlaps only ${overlap} link names with the rendered URDF (${sceneNames.size} links) — likely a different robot. Falling back to reverse-parsing the current URDF.`)
-        const urdfText = monacoEditor.getModel()?.getValue() || ''
-        const reparsed = urdfText.trim().length > 0 ? urdfAssemblyApi.urdfToAssemblyGraph(urdfText) : null
-        if (!reparsed || reparsed.components.length === 0) {
-          console.warn('[bake/scene] reverse-parse failed — cannot bake without a graph that matches the scene')
-          return null
-        }
-        // Install so subsequent bakes don't re-fall-through. Marks graph
-        // source as 'restored' (user-owned), preventing reconcile from
-        // mutating the URDF on the next meshLoaded debounce.
-        urdfAssemblyApi.setLastAssemblyGraph(reparsed)
-        graph = reparsed
-      }
-      bakeInProgress = true
-      try {
-        const t0 = performance.now()
-        if (!quiet) showToast('Baking assembly…', 'info')
-        const res = await bakeScene({
-          graph, linkGroups,
-          dryRun: opts.dryRun,
-          bypassCache: opts.bypassCache,
-          preserveColors: opts.preserveColors,
-          onProgress: (phase, data) => {
-            // Auto mode is silent during — only the final summary surfaces
-            // (and only on failure). Manual mode keeps verbose progress.
-            if (quiet) return
-            if (phase === 'cluster-start' && data) {
-              console.log(`[bake/scene] [${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}] baking ${data.clusterLabel}...`)
-              showToast(`Baking cluster ${(data.clusterIdx ?? 0) + 1}/${data.totalClusters}…`, 'info')
-            } else if (phase === 'done' && data) {
-              console.log(`[bake/scene] finished ${data.totalClusters} cluster(s) in ${(performance.now()-t0).toFixed(0)}ms`)
-            }
-          },
-        })
-        // If the URDF was reparsed under us, the new bakedGroup got attached
-        // to the old (now-detached) linkGroups — discard. The auto-bake
-        // queue (set by the new reparse's onMeshLoaded debounce) will
-        // re-fire after this finally block.
-        if (parsedRobot !== robotEpoch) {
-          console.warn('[bake/scene] robot changed during bake — discarding stale result; queued re-bake will pick up new state')
-          autoBakeQueued = true
-          return null
-        }
-        lastBakeResult = res
-        const ok = res.clusters.filter(c => c.outcome.ok).length
-        // `skip-*` phases are deliberate "nothing to do here" outcomes (e.g.
-        // baseplate-rooted clusters where electronics don't physically fuse).
-        // They are not failures — counting them as such was the source of the
-        // misleading "0 ok, N failed" toast on every AI generation.
-        const skipped = res.clusters.filter(c => !c.outcome.ok && c.outcome.phase?.startsWith('skip-')).length
-        const fail = res.clusters.length - ok - skipped
-        const skipPart = skipped > 0 ? `, ${skipped} skipped` : ''
-        const summary = `Bake: ${ok} ok, ${fail} failed${skipPart}, ${res.hiddenLinks.size} links swapped (${(performance.now()-t0).toFixed(0)}ms)`
-        console.log(`[bake/scene] ${summary}`)
-        // Toast only when the user asked (manual mode) or when something
-        // actually failed (worth surfacing in auto mode). All-skipped runs in
-        // auto mode are silent — they happen on every reparse for any robot
-        // whose only bakeable cluster is the baseplate one, which is the norm.
-        if (!quiet) {
-          const tone = fail > 0 ? 'warning' : (ok > 0 ? 'success' : 'info')
-          showToast(summary, tone)
-        } else if (fail > 0) {
-          showToast(summary, 'warning')
-        }
-        return res
-      } catch (e) {
-        console.warn('[bake/scene] bake threw:', e)
-        if (!quiet) showToast('Bake failed — see console', 'error')
-        return null
-      } finally {
-        bakeInProgress = false
-        if (autoBakeQueued) {
-          autoBakeQueued = false
-          // queueMicrotask defers to after this finally block returns so the
-          // recursive runBake doesn't reset bakeInProgress before the
-          // outer await sees it cleared.
-          queueMicrotask(() => { if (autoBakeEnabled) void runBake({ quiet: true }) })
-        }
-      }
-    }
-    // Wire the forward-declared trigger (called from makeOnMeshLoaded
-    // debounce). Auto-mode runs are quiet by default and gated by
-    // `autoBakeEnabled` so the user can opt out via `__setAutoBake(false)`.
-    _scheduleAutoBake = () => {
-      if (!autoBakeEnabled) return
-      void runBake({ quiet: true })
-    }
-    ;(window as unknown as { __bakeScene: (opts?: { dryRun?: boolean; bypassCache?: boolean; preserveColors?: boolean }) => Promise<unknown> }).__bakeScene =
-      opts => runBake(opts ?? {})
-    ;(window as unknown as { __setAutoBake: (on: boolean) => void }).__setAutoBake = (on: boolean) => {
-      autoBakeEnabled = on
-      console.log(`[bake/scene] auto-bake ${on ? 'ENABLED' : 'DISABLED'}`)
-    }
-    ;(window as unknown as { __unbakeScene: () => void }).__unbakeScene = () => {
-      if (!lastBakeResult) { console.warn('[bake/scene] no prior bake to undo'); return }
-      clearBakedScene({ linkGroups: parsedRobot.linkGroups, hiddenLinks: lastBakeResult.hiddenLinks })
-      lastBakeResult = null
-      console.log('[bake/scene] unbaked — per-preset meshes restored')
-    }
     // Diagnostic: report global debug-overlay state. Confirms whether
     // wireframeGroup, comGroup, etc. are actually visible (independent of
     // their button state) and whether they hold any clones.
@@ -3697,6 +3336,5 @@ void import('./bake/smokeTest').then(({ bakeAndShow, fuseAndShow, fuseParamAndSh
       })
       console.table(rows)
     }
-  })
 }
 

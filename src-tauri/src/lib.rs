@@ -688,45 +688,6 @@ async fn ai_validate_assembly(
     )
 }
 
-/// Use Claude AI to generate inline completions (ghost text) for URDF/XML editing
-#[tauri::command]
-async fn ai_complete(
-    state: State<'_, AppState>,
-    urdf_content: String,
-    cursor_line: u32,
-    cursor_column: u32,
-    prefix: String,
-    kinematic_context: Option<String>,
-) -> Result<String, String> {
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|e| format!("Failed to lock state: {}", e))?;
-
-    let process = core
-        .as_mut()
-        .ok_or("Core process not running. Call start_core first.")?;
-
-    let result = process.send_rpc(
-        "ai_complete",
-        json!({
-            "urdf_content": urdf_content,
-            "cursor_line": cursor_line,
-            "cursor_column": cursor_column,
-            "prefix": prefix,
-            "kinematic_context": kinematic_context.unwrap_or_default()
-        }),
-        1,
-    )?;
-
-    // Extract the completion text from the result
-    if let Some(completion) = result.as_str() {
-        Ok(completion.to_string())
-    } else {
-        Ok(format!("{:?}", result))
-    }
-}
-
 /// Write editor URDF to a staging file for `sim_load`. If `neighbor_urdf_path` is set (path to an
 /// on-disk URDF), the staging file is written in the same directory so mesh `filename="meshes/..."`
 /// resolves like the neighbor file. Otherwise uses the system temp directory.
@@ -1215,7 +1176,6 @@ pub fn run() {
             ai_edit_turn,
             ai_set_history,
             ai_validate_assembly,
-            ai_complete,
             ai_gen_sim_script,
             save_file,
             open_file,

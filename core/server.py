@@ -69,7 +69,6 @@ except ImportError as e:
 # Lazy import AI client — anthropic may not be installed
 _generate_edit = None
 _generate_edit_streaming = None
-_generate_completion = None
 _ai_import_error = None
 
 _generate_assembly_with_tools = None
@@ -78,14 +77,10 @@ _set_conversation_history = None
 _generate_sim_script = None
 _generate_edit_turn = None
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_completion as _generate_completion, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script, generate_edit_turn as _generate_edit_turn
+    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script, generate_edit_turn as _generate_edit_turn
 except ImportError as e:
     _ai_import_error = str(e)
     print(f"Warning: AI client not available: {e}", file=sys.stderr)
-
-# Always-available local completion engine (no external dependencies)
-from ai.local_completions import generate_local_completion as _generate_local_completion
-
 
 # ── sim_set_script sandbox ────────────────────────────────────────────────────
 # Whitelisted builtins available to user-authored sim scripts. Anything not in
@@ -700,7 +695,6 @@ class JSONRPCServer:
             "validate_urdf_content": self.handle_validate_urdf_content,
             "ai_edit": self.handle_ai_edit,
             "ai_edit_turn": self.handle_ai_edit_turn,
-            "ai_complete": self.handle_ai_complete,
             "ai_validate_assembly": self.handle_ai_validate_assembly,
             "ai_set_history": self.handle_ai_set_history,
             "ai_gen_sim_script": self.handle_ai_gen_sim_script,
@@ -1172,56 +1166,6 @@ class JSONRPCServer:
             )
         except Exception as e:
             raise ValueError(f"AI edit turn failed: {e}")
-
-    def handle_ai_complete(self, params: Dict[str, Any]) -> str:
-        """
-        Generate inline completions for URDF/XML editing.
-        Uses Claude API if available, falls back to local pattern-based completions.
-
-        Params:
-            urdf_content (str): Current URDF XML as string.
-            cursor_line (int): Current cursor line (1-indexed).
-            cursor_column (int): Current cursor column (1-indexed).
-            prefix (str): Optional prefix context (e.g., recent characters typed).
-
-        Returns:
-            Completion text string (the text to insert at cursor).
-        """
-        if "urdf_content" not in params:
-            raise ValueError("Missing required parameter: urdf_content")
-
-        urdf_content = params["urdf_content"]
-        cursor_line = params.get("cursor_line", 1)
-        cursor_column = params.get("cursor_column", 1)
-        prefix = params.get("prefix", "")
-        kinematic_context = params.get("kinematic_context", "")
-
-        if not isinstance(urdf_content, str):
-            raise ValueError("Parameter 'urdf_content' must be a string")
-        if not isinstance(cursor_line, int) or not isinstance(cursor_column, int):
-            raise ValueError("Parameters 'cursor_line' and 'cursor_column' must be integers")
-
-        print(f"[server] ai_complete: line={cursor_line}, col={cursor_column}", file=sys.stderr)
-
-        # Try Claude API first, fall back to local completions
-        if _generate_completion is not None:
-            try:
-                completion = _generate_completion(
-                    urdf_content,
-                    cursor_line,
-                    cursor_column,
-                    prefix,
-                    kinematic_context
-                )
-                print(f"[server] ai_complete (claude): got {len(completion)} chars", file=sys.stderr)
-                return completion
-            except Exception as e:
-                print(f"[server] Claude completion failed: {e}", file=sys.stderr)
-                return ""
-
-        # No Claude API available — return empty rather than low-quality local suggestions
-        print(f"[server] ai_complete: Claude not available, returning empty", file=sys.stderr)
-        return ""
 
     def handle_ai_validate_assembly(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """

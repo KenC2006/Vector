@@ -852,21 +852,10 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
 }
 .sb-item svg { flex-shrink: 0; }
 
-.sb-clickable { cursor: pointer; }
-.sb-clickable:hover { background: rgba(255,255,255,0.12); }
-
 #sb-branch svg { margin-right: 2px; }
 
 #sb-errors svg:first-child { color: #fff; }
 #sb-errors svg:nth-child(3) { color: #fff; margin-left: 6px; }
-
-#engine-badge {
-  color: #fff; font-size: 11px;
-  background: rgba(255,255,255,0.1);
-  padding: 0 8px;
-  gap: 4px;
-}
-#engine-badge:hover { background: rgba(255,255,255,0.18); }
 
 /* ── Toast ───────────────────────────────────────────── */
 

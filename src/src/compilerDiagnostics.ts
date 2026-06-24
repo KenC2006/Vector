@@ -33,13 +33,6 @@ export interface Diagnostic {
 
 // Codes are kept in lockstep with core/ai/compiler_diagnostics.py.
 const OWNER_BY_CODE: Record<string, DiagnosticOwner> = {
-  // archetype
-  quadruped_tail_forbidden: DiagnosticOwner.AiTopology,
-  quadruped_tail_present: DiagnosticOwner.AiTopology,
-  foot_pad_has_children: DiagnosticOwner.AiTopology,
-  multiple_roots: DiagnosticOwner.AiTopology,
-  archetype_unknown: DiagnosticOwner.PlacementCompiler,
-
   // semantic graph
   semantic_graph_forbidden_field: DiagnosticOwner.AiTopology,
   semantic_graph_foot_pad_attach_rpy: DiagnosticOwner.AiTopology,

@@ -381,9 +381,9 @@ export function compileAssembly(
     // servo branch — Y-axis servos on a parent at world -Y get axisSign=-1, so
     // the body-mount rpy mirrors automatically. No extra dispatch needed.
     'mirrored_hardware',
-    // archetype_axis_normalize: handled upstream by `normalizeAssembly`
-    // (archetypeNormalizer) before resolveAssemblyGraph calls the compiler.
-    // The compiler always receives pre-normalized joint axes.
+    // archetype_axis_normalize: no-op. Archetype modes were removed — joint
+    // axes are authored directly, so the compiler needs no upstream rewrite
+    // and this class is satisfied without extra dispatch.
     'archetype_axis_normalize',
     // drivetrain_remap: face placement gets rolling-hardware hints +
     // effectiveCym swap (slice 4.I). Joint-axis "y → 0 0 1" remap for
