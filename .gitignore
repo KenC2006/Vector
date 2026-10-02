@@ -37,7 +37,6 @@ Thumbs.db
 # Markdown
 *.md
 !src/public/COMPONENT_PRESETS.md
-!eval/**/*.md
 *.urdf
 
 # Export artifacts — STL is generated live from URDF, never prebaked/committed
@@ -46,5 +45,8 @@ Thumbs.db
 # Auto-synced from core/presets/ by vite.config.ts plugin
 src/public/generic_presets.json
 
-# Eval harness run outputs (baselines ARE committed)
-eval/runs/
+
+# Demo footage - raw clips stay local; the edited demo is a GitHub release asset
+video/
+*.mp4
+*.zip
