@@ -35,13 +35,19 @@ def get_category(name: str) -> Dict:
     return _load()["categories"][name]
 
 
+_by_id: Optional[Dict[str, Dict]] = None
+
+
 def get_component(component_id: str) -> Optional[Dict]:
     """Look up a single component by its unique id across all categories."""
-    for cat in _load()["categories"].values():
-        for comp in cat["components"]:
-            if comp["id"] == component_id:
-                return comp
-    return None
+    global _by_id
+    if _by_id is None:
+        _by_id = {comp["id"]: comp
+                  for cat in _load()["categories"].values()
+                  for comp in cat["components"]}
+    if not isinstance(component_id, str):
+        return None
+    return _by_id.get(component_id)
 
 
 def list_components(category: Optional[str] = None) -> List[Dict]:
@@ -331,3 +337,7 @@ def check_static_stability(
         "margin_m": round(min_dist, 6),
         "warnings": warnings,
     }
+
+
+# Catalog-derived actuator ratings (see actuation.py).
+from core.presets.actuation import actuator_rating, derive_actuation  # noqa: E402

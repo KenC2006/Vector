@@ -7,8 +7,8 @@ Returns categorized results with severity levels: pass, warn, error, info.
 from typing import Any, Dict, List, Optional
 import math
 
-from model.kinematic_graph import KinematicGraph
-from model.types import LinkData, JointData
+from core.model.kinematic_graph import KinematicGraph
+from core.model.types import LinkData, JointData
 
 
 class ValidationResult:

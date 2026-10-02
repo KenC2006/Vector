@@ -11,9 +11,27 @@ import sys
 from typing import Any, Dict, Optional
 import traceback
 import os
+import io
 
-# Add current directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# stdout is the JSON-RPC channel. Keep a private handle on it and point file
+# descriptor 1 at stderr, so nothing else in the process — a print() in a
+# library, a sim script, C code writing to fd 1 — can inject a line into the
+# response stream.
+_RPC_OUT = sys.stdout
+if __name__ == "__main__":
+    _RPC_OUT = io.TextIOWrapper(io.FileIO(os.dup(sys.stdout.fileno()), "w"), encoding="utf-8",
+                                newline="\n", write_through=True)
+    sys.stdout.flush()
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    sys.stdout = sys.stderr
+
+
+def _send(message: Dict[str, Any]) -> None:
+    _RPC_OUT.write(json.dumps(message, ensure_ascii=False) + "\n")
+    _RPC_OUT.flush()
+
+# Run as `python -m core.server` from the project root: every project import is
+# a `core.*` package import (a bare `sim`/`model` path would load modules twice).
 
 # Auto-load .env file from project root (if python-dotenv is installed)
 try:
@@ -42,10 +60,10 @@ _validate_kinematic_graph = None
 _model_import_error = None
 
 try:
-    from model.urdf_parser import parse_urdf, parse_urdf_string
-    from model.kinematic_graph import KinematicGraph
-    from model.urdf_serializer import serialize_to_urdf
-    from validation.validator import validate_kinematic_graph
+    from core.model.urdf_parser import parse_urdf, parse_urdf_string
+    from core.model.kinematic_graph import KinematicGraph
+    from core.model.urdf_serializer import serialize_to_urdf
+    from core.validation.validator import validate_kinematic_graph
     _parse_urdf = parse_urdf
     _parse_urdf_string = parse_urdf_string
     _KinematicGraph = KinematicGraph
@@ -61,615 +79,58 @@ _MuJoCoSimulator = None
 _mujoco_import_error = None
 
 try:
-    from sim.mujoco_adapter import MuJoCoSimulator as _MuJoCoSimulator
+    from core.sim.mujoco_adapter import MuJoCoSimulator as _MuJoCoSimulator
 except ImportError as e:
     _mujoco_import_error = str(e)
     print(f"Warning: MuJoCo not available: {e}", file=sys.stderr)
 
-# Lazy import AI client — anthropic may not be installed
-_generate_edit = None
-_generate_edit_streaming = None
-_ai_import_error = None
-
-_generate_assembly_with_tools = None
-_validate_assembly = None
-_set_conversation_history = None
-_generate_sim_script = None
-_generate_edit_turn = None
+# ── sim scripts ───────────────────────────────────────────────────────────────
+# The sandbox, the fixed-rate controller runtime and the state handed to
+# step(t, state) live in sim/control.py (shared with the headless evaluator the
+# controller agent tests against, so the app and the tests run identical loops).
+from core.sim.control import compile_script as _compile_sim_script
 try:
-    from ai.claude_client import generate_edit as _generate_edit, generate_edit_streaming as _generate_edit_streaming, generate_assembly_with_tools as _generate_assembly_with_tools, validate_assembly as _validate_assembly, set_conversation_history as _set_conversation_history, generate_sim_script as _generate_sim_script, generate_edit_turn as _generate_edit_turn
-except ImportError as e:
-    _ai_import_error = str(e)
-    print(f"Warning: AI client not available: {e}", file=sys.stderr)
-
-# ── sim_set_script sandbox ────────────────────────────────────────────────────
-# Whitelisted builtins available to user-authored sim scripts. Anything not in
-# this set (open, exec, eval, __import__, compile, getattr, setattr, ...) is
-# unavailable, so a malicious script cannot reach the filesystem, the network,
-# or arbitrary Python attributes.
-import math as _math
-import builtins as _builtins
-_SAFE_BUILTINS = {
-    name: getattr(_builtins, name)
-    for name in (
-        "abs", "min", "max", "round", "sum", "len", "range", "enumerate", "zip",
-        "map", "filter", "sorted", "reversed", "all", "any",
-        "int", "float", "bool", "str", "list", "tuple", "dict", "set",
-        "print", "isinstance",
-    )
-}
-_SCRIPT_BASE_GLOBALS: Dict[str, Any] = {
-    "__builtins__": _SAFE_BUILTINS,
-    "math": _math,
-}
+    from core.sim.control import ControllerRuntime as _ControllerRuntime
+except Exception:  # pragma: no cover — only when numpy/mujoco are unavailable
+    _ControllerRuntime = None
 
 
-def _fresh_script_globals() -> Dict[str, Any]:
-    """Return a clean globals sandbox for one script install/validation run."""
-    return dict(_SCRIPT_BASE_GLOBALS)
-# Names a script may not use, even though they aren't reachable through
-# builtins — defense in depth against future _SAFE_BUILTINS additions.
-_SCRIPT_NAME_DENY = frozenset({
-    "eval", "exec", "compile", "open", "__import__", "getattr", "setattr",
-    "delattr", "globals", "locals", "vars", "input", "help",
-})
-
-
-def _sim_xml_child(elem: Any, name: str) -> Optional[Any]:
-    for child in list(elem):
-        tag = str(getattr(child, "tag", "")).rsplit("}", 1)[-1]
-        if tag == name:
-            return child
-    return None
-
-
-def _sim_parse_vec(text: Optional[str], default: list) -> list:
-    if not text:
-        return list(default)
+def _design_critic_results(urdf_content: str) -> list:
+    """Geometry-critic findings (floating/clipping parts, ground contact,
+    tipping, overloaded joints), measured on the URDF's design."""
     try:
-        vals = [float(x) for x in text.split()]
-    except (TypeError, ValueError):
-        return list(default)
-    if len(vals) < 3:
-        return list(default)
-    return vals[:3]
-
-
-def _sim_mat_mul(a: list, b: list) -> list:
-    return [
-        [
-            a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j]
-            for j in range(3)
-        ]
-        for i in range(3)
-    ]
-
-
-def _sim_mat_vec(m: list, v: list) -> list:
-    return [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-
-
-def _sim_rpy_matrix(rpy: list) -> list:
-    roll, pitch, yaw = rpy
-    cr, sr = _math.cos(roll), _math.sin(roll)
-    cp, sp = _math.cos(pitch), _math.sin(pitch)
-    cy, sy = _math.cos(yaw), _math.sin(yaw)
-    rx = [[1, 0, 0], [0, cr, -sr], [0, sr, cr]]
-    ry = [[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]
-    rz = [[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]
-    # Match the frontend assembler's Three.js Euler XYZ convention used for
-    # generated URDF RPY values.
-    return _sim_mat_mul(_sim_mat_mul(rx, ry), rz)
-
-
-def _sim_vec_add(a: list, b: list) -> list:
-    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-
-
-def _sim_dot(a: list, b: list) -> float:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _sim_cross(a: list, b: list) -> list:
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-
-
-def _sim_normalize(v: list) -> list:
-    mag = _math.sqrt(max(_sim_dot(v, v), 0.0))
-    if mag < 1e-9:
-        return [0.0, 0.0, 0.0]
-    return [v[0] / mag, v[1] / mag, v[2] / mag]
-
-
-def _sim_round_vec(v: list) -> list:
-    return [round(float(x), 6) for x in v]
-
-
-def _sim_name_has_any(name: str, tokens: tuple) -> bool:
-    lowered = (name or "").lower()
-    return any(token in lowered for token in tokens)
-
-
-def _extract_sim_joint_context(urdf_content: str) -> tuple:
-    import xml.etree.ElementTree as _ET
-
-    root = _ET.fromstring(urdf_content)
-    links = set()
-    child_link_set = set()
-    joints = []
-    joint_names = []
-    joint_limits: Dict[str, tuple] = {}
-    children_by_link: Dict[str, list] = {}
-
-    for elem in root.iter():
-        tag = str(elem.tag).rsplit("}", 1)[-1]
-        if tag == "link":
-            name = elem.get("name")
-            if name:
-                links.add(name)
-
-    for elem in root.iter():
-        tag = str(elem.tag).rsplit("}", 1)[-1]
-        if tag != "joint":
-            continue
-
-        name = elem.get("name")
-        jtype = elem.get("type")
-        parent_el = _sim_xml_child(elem, "parent")
-        child_el = _sim_xml_child(elem, "child")
-        parent = parent_el.get("link") if parent_el is not None else ""
-        child = child_el.get("link") if child_el is not None else ""
-        if not name or not parent or not child:
-            continue
-
-        origin_el = _sim_xml_child(elem, "origin")
-        axis_el = _sim_xml_child(elem, "axis")
-        limit_el = _sim_xml_child(elem, "limit")
-        xyz = _sim_parse_vec(origin_el.get("xyz") if origin_el is not None else None, [0, 0, 0])
-        rpy = _sim_parse_vec(origin_el.get("rpy") if origin_el is not None else None, [0, 0, 0])
-        axis = _sim_normalize(_sim_parse_vec(axis_el.get("xyz") if axis_el is not None else None, [0, 0, 1]))
-
-        limits = {}
-        if limit_el is not None:
-            for key in ("lower", "upper", "effort", "velocity"):
-                raw = limit_el.get(key)
-                if raw is None:
-                    continue
-                try:
-                    limits[key] = float(raw)
-                except ValueError:
-                    pass
-
-        info = {
-            "name": name,
-            "type": jtype or "",
-            "parent": parent,
-            "child": child,
-            "xyz": xyz,
-            "rpy": rpy,
-            "axis": axis,
-            "limits": limits,
-        }
-        joints.append(info)
-        children_by_link.setdefault(parent, []).append(info)
-        links.add(parent)
-        links.add(child)
-        child_link_set.add(child)
-
-        if jtype not in ("fixed", None):
-            joint_names.append(name)
-            if "lower" in limits and "upper" in limits:
-                joint_limits[name] = (limits["lower"], limits["upper"])
-
-    ident = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    link_pose: Dict[str, tuple] = {}
-    joint_pose: Dict[str, dict] = {}
-    roots = sorted(links - child_link_set)
-    primary_root = "base_link" if "base_link" in links else (roots[0] if roots else None)
-
-    def visit(link: str, seen: set) -> None:
-        if link in seen:
-            return
-        seen.add(link)
-        parent_pos, parent_rot = link_pose.get(link, ([0.0, 0.0, 0.0], ident))
-        for joint in children_by_link.get(link, []):
-            origin_rot = _sim_rpy_matrix(joint["rpy"])
-            child_pos = _sim_vec_add(parent_pos, _sim_mat_vec(parent_rot, joint["xyz"]))
-            child_rot = _sim_mat_mul(parent_rot, origin_rot)
-            link_pose[joint["child"]] = (child_pos, child_rot)
-            joint_pose[joint["name"]] = {
-                "center": child_pos,
-                "axis_world": _sim_normalize(_sim_mat_vec(child_rot, joint["axis"])),
-            }
-            visit(joint["child"], seen)
-
-    ordered_roots = []
-    if primary_root:
-        ordered_roots.append(primary_root)
-    ordered_roots.extend(root for root in roots if root != primary_root)
-    for root_link in ordered_roots:
-        link_pose.setdefault(root_link, ([0.0, 0.0, 0.0], ident))
-        visit(root_link, set())
-
-    descendant_cache: Dict[str, set] = {}
-
-    def descendants(link: str, seen: Optional[set] = None) -> set:
-        if link in descendant_cache:
-            return set(descendant_cache[link])
-        if seen is None:
-            seen = set()
-        if link in seen:
-            return set()
-        seen.add(link)
-        found = {link}
-        for child_joint in children_by_link.get(link, []):
-            found.update(descendants(child_joint["child"], seen))
-        descendant_cache[link] = set(found)
-        return found
-
-    wheel_tokens = ("wheel", "tire", "mecanum")
-    drivetrain_tokens = ("drivetrain", "hub_motor", "drive_motor")
-    forward = [1.0, 0.0, 0.0]
-    up = [0.0, 0.0, 1.0]
-    joint_metadata = []
-
-    for joint in joints:
-        if joint["type"] in ("fixed", None):
-            continue
-
-        pose = joint_pose.get(joint["name"], {})
-        center = pose.get("center", [0.0, 0.0, 0.0])
-        axis_world = pose.get("axis_world", joint["axis"])
-        desc = descendants(joint["child"])
-        has_wheel_descendant = any(_sim_name_has_any(link, wheel_tokens) for link in desc)
-        has_drivetrain_name = (
-            _sim_name_has_any(joint["name"], drivetrain_tokens)
-            or _sim_name_has_any(joint["parent"], drivetrain_tokens)
-            or _sim_name_has_any(joint["child"], drivetrain_tokens)
-        )
-        is_wheel_drive = bool(has_wheel_descendant and (joint["type"] == "continuous" or has_drivetrain_name))
-
-        rolling_dir = _sim_cross(axis_world, up)
-        forward_alignment = _sim_dot(rolling_dir, forward)
-        forward_sign = 1 if forward_alignment >= 0 else -1
-        if abs(forward_alignment) < 1e-6:
-            forward_sign = 1
-
-        x, y, _z = center
-        side = "center"
-        side_sign = 0
-        if y > 0.01:
-            side = "left"
-            side_sign = 1
-        elif y < -0.01:
-            side = "right"
-            side_sign = -1
-
-        end = "center"
-        if x > 0.01:
-            end = "front"
-        elif x < -0.01:
-            end = "rear"
-
-        effort = joint["limits"].get("effort", 10.0)
-        joint_metadata.append({
-            "name": joint["name"],
-            "type": joint["type"],
-            "control": "torque_Nm" if joint["type"] == "continuous" else "position",
-            "parent": joint["parent"],
-            "child": joint["child"],
-            "axis_world": _sim_round_vec(axis_world),
-            "center": _sim_round_vec(center),
-            "effort": round(float(effort), 6),
-            "is_wheel_drive": is_wheel_drive,
-            "side": side,
-            "side_sign": side_sign,
-            "end": end,
-            "forward_sign": forward_sign,
-            "forward_alignment": round(float(forward_alignment), 6),
-        })
-
-    # ── Leg kinematic analysis ──────────────────────────────────────────────
-    # Annotate non-wheel revolute joints that form leg groups with:
-    # is_leg, leg_id (FR/FL/RR/RL/...), leg_depth (0=rootward, increasing outward),
-    # leg_role ("swing", "bend", "swing_bend", or "aux"),
-    # swing_sign (+1 = positive angle swings foot forward, assigned to joint with largest fwd Jacobian),
-    # bend_sign (+1 = positive angle bends knee into stance, foot moves -Z).
-    # Signs are computed via the Jacobian: delta_tip = cross(axis_world, tip - center)
-
-    # Compute revolute depth for each joint (# revolute ancestors from root).
-    rev_depth_map: Dict[str, int] = {}
-    _rd_seen: set = set()
-
-    def _assign_rev_depths(link: str, rev_count: int) -> None:
-        if link in _rd_seen:
-            return
-        _rd_seen.add(link)
-        for cj in children_by_link.get(link, []):
-            if cj["type"] not in ("fixed", None):
-                rev_depth_map[cj["name"]] = rev_count
-                _assign_rev_depths(cj["child"], rev_count + 1)
-            else:
-                _assign_rev_depths(cj["child"], rev_count)
-
-    if primary_root:
-        _assign_rev_depths(primary_root, 0)
-
-    # Group non-wheel movable joints by body-relative position → leg_id.
-    leg_groups: Dict[str, list] = {}
-    for m in joint_metadata:
-        if m["is_wheel_drive"]:
-            continue
-        if m["side"] == "center" and m["end"] == "center":
-            continue  # body/neck/tail joints — skip
-        leg_key = f"{m['end'][0].upper()}{m['side'][0].upper()}"  # FR, FL, RR, RL, CR, CL …
-        leg_groups.setdefault(leg_key, []).append(m)
-
-    # Walk a kinematic subtree to its leaf and return that leaf's world pose.
-    # Used by both leg-Jacobian and arm-reach computation; defined at outer
-    # scope so it's available even when no legs are present.
-    def _tip_pos(child_link: str) -> list:
-        lnk = child_link
-        _seen_t: set = set()
-        while True:
-            if lnk in _seen_t:
-                break
-            _seen_t.add(lnk)
-            cjs = children_by_link.get(lnk, [])
-            if not cjs:
-                break
-            lnk = cjs[0]["child"]
-        pos, _ = link_pose.get(lnk, ([0.0, 0.0, 0.0], ident))
-        return list(pos)
-
-    # Only treat groups as legs if ≥2 joints/group and ≥2 distinct groups.
-    valid_leg_groups = {k: v for k, v in leg_groups.items() if len(v) >= 2}
-    if len(valid_leg_groups) >= 2:
-        joint_info_by_name = {j["name"]: j for j in joints}
-        # Robots are always assembled facing +X (orange axis).
-        fwd_axis = 0
-
-        for leg_id, members in valid_leg_groups.items():
-            members.sort(key=lambda m: rev_depth_map.get(m["name"], 99))
-            min_depth = rev_depth_map.get(members[0]["name"], 0)
-
-            # First pass: annotate all members and compute Jacobian deltas.
-            deltas: list = []
-            for m in members:
-                m["is_leg"] = True
-                m["leg_id"] = leg_id
-                m["leg_depth"] = rev_depth_map.get(m["name"], 0) - min_depth
-                m["leg_role"] = "aux"
-                ji = joint_info_by_name.get(m["name"])
-                if ji is None:
-                    deltas.append(None)
-                    continue
-                tip = _tip_pos(ji["child"])
-                r = [tip[i] - m["center"][i] for i in range(3)]
-                deltas.append(_sim_cross(m["axis_world"], r))
-
-            # Second pass: assign swing_sign to the joint whose Jacobian has the
-            # largest forward component (fwd_axis), and bend_sign to the joint
-            # whose Jacobian has the largest downward component (-Z).
-            # This correctly handles 3-DOF legs where leg_depth=0 may be an
-            # abduction joint (side-to-side) rather than the forward-swing joint.
-            valid_idx = [i for i, d in enumerate(deltas) if d is not None]
-            if valid_idx:
-                swing_idx = max(valid_idx, key=lambda i: abs(deltas[i][fwd_axis]))
-                bend_idx  = max(valid_idx, key=lambda i: abs(deltas[i][2]))
-                d = deltas[swing_idx]
-                members[swing_idx]["swing_sign"] = 1 if d[fwd_axis] >= 0 else -1
-                members[swing_idx]["leg_role"] = "swing"
-                d = deltas[bend_idx]
-                members[bend_idx]["bend_sign"]   = 1 if d[2] < 0 else -1
-                members[bend_idx]["leg_role"] = (
-                    "swing_bend" if bend_idx == swing_idx else "bend"
-                )
-
-    # ── Leg geometry summary ────────────────────────────────────────────────
-    # Aggregates per-leg hip-to-foot length and standing height from the URDF
-    # neutral pose. Used downstream to derive physics-grounded gait constants
-    # (FREQ_HZ from sqrt(g/L), settle time from sqrt(L), etc.) instead of
-    # hardcoded literature values that only suit one robot size.
-    leg_geometry: Optional[Dict[str, Any]] = None
-    if len(valid_leg_groups) >= 2:
-        leg_lengths: list = []
-        body_heights: list = []
-        per_leg: list = []
-        joint_info_by_name = {j["name"]: j for j in joints}
-        for leg_id, members in valid_leg_groups.items():
-            if not members:
-                continue
-            members_sorted = sorted(members, key=lambda m: rev_depth_map.get(m["name"], 0))
-            hip = members_sorted[0]
-            ji = joint_info_by_name.get(hip["name"])
-            if ji is None:
-                continue
-            hip_pos = hip.get("center", [0.0, 0.0, 0.0])
-            tip_pos = _tip_pos(ji["child"])
-            L = math.sqrt(sum((tip_pos[i] - hip_pos[i]) ** 2 for i in range(3)))
-            if L < 0.02:
-                continue
-            leg_lengths.append(L)
-            body_heights.append(max(0.0, hip_pos[2] - tip_pos[2]))
-            per_leg.append({
-                "leg_id": leg_id,
-                "hip_pos": [round(v, 4) for v in hip_pos],
-                "foot_pos": [round(v, 4) for v in tip_pos],
-                "length_m": round(L, 4),
-                "joint_count": len(members_sorted),
-            })
-        if leg_lengths:
-            leg_geometry = {
-                "mean_leg_length_m": round(sum(leg_lengths) / len(leg_lengths), 4),
-                "mean_body_height_m": (
-                    round(sum(body_heights) / len(body_heights), 4) if body_heights else 0.0
-                ),
-                "min_leg_length_m": round(min(leg_lengths), 4),
-                "max_leg_length_m": round(max(leg_lengths), 4),
-                "leg_count": len(leg_lengths),
-                "per_leg": per_leg,
-            }
-
-    # ── Gripper detection ──────────────────────────────────────────────────
-    # A joint is a gripper finger if its parent or child link, or its own name,
-    # contains a finger/jaw/claw token. We require the immediate name to match
-    # so that arm joints leading down to a gripper are not all tagged.
-    gripper_tokens = ("gripper", "finger", "claw", "jaw", "thumb")
-    gripper_groups: Dict[str, list] = {}
-    for m in joint_metadata:
-        if m.get("is_wheel_drive") or m.get("is_leg"):
-            continue
-        if not (
-            _sim_name_has_any(m["name"], gripper_tokens)
-            or _sim_name_has_any(m["parent"], gripper_tokens)
-            or _sim_name_has_any(m["child"], gripper_tokens)
-        ):
-            continue
-        m["is_gripper"] = True
-        gripper_groups.setdefault(m["parent"], []).append(m)
-
-    for root_link, fingers in gripper_groups.items():
-        # Order fingers left→right by Y, then front→back by X for stable IDs.
-        fingers_sorted = sorted(fingers, key=lambda f: (f["center"][1], f["center"][0]))
-        for idx, f in enumerate(fingers_sorted):
-            f["gripper_root"] = root_link
-            f["finger_id"] = idx
-            f["finger_count"] = len(fingers_sorted)
-
-    # ── Arm-chain detection ────────────────────────────────────────────────
-    # Walk the kinematic tree from the root. Any movable joint that is not a
-    # leg, wheel, or gripper joins or starts an "arm chain". A chain extends
-    # down a serial path of single-child links; branches start new chains.
-    # Tag with arm_chain_id (A0, A1, ...), arm_depth (0 at the chain base),
-    # and a role string by depth.
-    joint_meta_by_name: Dict[str, dict] = {m["name"]: m for m in joint_metadata}
-
-    def _is_arm_eligible(m: Optional[dict]) -> bool:
-        if m is None:
-            return False
-        if m.get("is_wheel_drive") or m.get("is_leg") or m.get("is_gripper"):
-            return False
-        return m.get("type") in ("revolute", "prismatic", "continuous")
-
-    arm_chains: Dict[str, list] = {}
-    _arm_seen: set = set()
-    _chain_counter = [0]
-
-    def _walk_arm(link: str, current_chain: Optional[str], depth_in_chain: int) -> None:
-        if link in _arm_seen:
-            return
-        _arm_seen.add(link)
-        children = children_by_link.get(link, [])
-        eligible_count = sum(
-            1 for cj in children
-            if cj["type"] not in ("fixed", None)
-            and _is_arm_eligible(joint_meta_by_name.get(cj["name"]))
-        )
-        branch = eligible_count > 1
-
-        for cj in children:
-            cj_meta = joint_meta_by_name.get(cj["name"])
-            if cj["type"] in ("fixed", None):
-                # Pass through fixed joints without changing chain or depth.
-                _walk_arm(cj["child"], current_chain, depth_in_chain)
-                continue
-            if not _is_arm_eligible(cj_meta):
-                # Reset chain across leg/wheel/gripper boundaries.
-                _walk_arm(cj["child"], None, 0)
-                continue
-
-            if current_chain is None or branch:
-                chain_id = f"A{_chain_counter[0]}"
-                _chain_counter[0] += 1
-                arm_chains.setdefault(chain_id, [])
-                next_depth = 0
-            else:
-                chain_id = current_chain
-                next_depth = depth_in_chain
-
-            cj_meta["is_arm_chain"] = True
-            cj_meta["arm_chain_id"] = chain_id
-            cj_meta["arm_depth"] = next_depth
-            if next_depth == 0:
-                cj_meta["arm_role"] = "base"
-            elif next_depth == 1:
-                cj_meta["arm_role"] = "shoulder"
-            elif next_depth == 2:
-                cj_meta["arm_role"] = "elbow"
-            elif next_depth == 3:
-                cj_meta["arm_role"] = "wrist"
-            else:
-                cj_meta["arm_role"] = "distal"
-            arm_chains[chain_id].append(cj_meta)
-
-            _walk_arm(cj["child"], chain_id, next_depth + 1)
-
-    if primary_root:
-        _walk_arm(primary_root, None, 0)
-
-    # Singleton chains (one revolute joint with no further movable descendants)
-    # don't qualify as arms — strip the tags.
-    for chain_id in list(arm_chains.keys()):
-        members = arm_chains[chain_id]
-        if len(members) < 2:
-            for m in members:
-                for k in ("is_arm_chain", "arm_chain_id", "arm_depth", "arm_role"):
-                    m.pop(k, None)
-            arm_chains.pop(chain_id)
-
-    # Stamp arm_chain_size onto remaining members so the LLM/default generator
-    # can pick phase offsets without recounting.
-    for chain_id, members in arm_chains.items():
-        members.sort(key=lambda m: m["arm_depth"])
-        for m in members:
-            m["arm_chain_size"] = len(members)
-
-    # ── Arm geometry summary ───────────────────────────────────────────────
-    # Per-chain reach (sum of segment lengths from base to tip in URDF neutral
-    # pose). Used to derive arm-physics-grounded constants (settle time scales
-    # with sqrt(reach), sweep frequency drops as reach grows due to inertia).
-    arm_geometry: Optional[Dict[str, Any]] = None
-    if arm_chains:
-        per_chain: list = []
-        reaches: list = []
-        joint_info_by_name = {j["name"]: j for j in joints}
-        for chain_id, members in arm_chains.items():
-            base_member = members[0]
-            ji_base = joint_info_by_name.get(base_member["name"])
-            if ji_base is None:
-                continue
-            base_pos = base_member.get("center", [0.0, 0.0, 0.0])
-            tip_pos = _tip_pos(ji_base["child"])
-            reach = math.sqrt(sum((tip_pos[i] - base_pos[i]) ** 2 for i in range(3)))
-            if reach < 0.02:
-                continue
-            reaches.append(reach)
-            per_chain.append({
-                "chain_id": chain_id,
-                "joint_count": len(members),
-                "base_pos": [round(v, 4) for v in base_pos],
-                "tip_pos": [round(v, 4) for v in tip_pos],
-                "reach_m": round(reach, 4),
-            })
-        if reaches:
-            arm_geometry = {
-                "chain_count": len(reaches),
-                "mean_reach_m": round(sum(reaches) / len(reaches), 4),
-                "max_reach_m": round(max(reaches), 4),
-                "min_reach_m": round(min(reaches), 4),
-                "per_chain": per_chain,
-            }
-
-    return joint_names, joint_limits, joint_metadata, leg_geometry, arm_geometry
+        from core.designer.compile import compile_design
+        from core.designer.critic import critique
+        from core.designer.importer import import_urdf
+    except Exception:
+        return []
+    try:
+        design = import_urdf(urdf_content)["design"]
+    except Exception:
+        return []
+    try:
+        issues = critique(compile_design(design))["issues"]
+    except Exception as e:
+        return [{"name": "Design", "severity": "warn", "message": f"Design could not be re-checked: {e}", "category": "Design"}]
+    if not issues:
+        return [{"name": "Design", "severity": "pass", "message": "Parts attached, grounded and within actuator ratings", "category": "Design"}]
+    return [{"name": i.split(":", 1)[0], "severity": "warn", "message": i.split(":", 1)[-1].strip(), "category": "Design"}
+            for i in issues]
+
+
+def _quick_summary(ev: Dict[str, Any]) -> str:
+    """One measured line about a baseline controller's 6 s test run."""
+    if not ev.get("ok"):
+        return f"Test run failed: {ev.get('error')}"
+    if not ev.get("free_base"):
+        return "Holds the as-designed pose (fixed base). Use Generate for a motion routine."
+    if ev.get("fell_at_s") is not None:
+        return f"Falls over after {ev['fell_at_s']:.1f} s — use Generate for a balancing controller."
+    speed = ev.get("avg_forward_speed_mps", 0.0) * 100
+    if abs(speed) < 0.5:
+        return f"Stands steady (max tilt {ev['max_tilt_deg']:.0f}°). Drive it with WASD, or Generate for a gait."
+    return (f"Measured: {speed:+.1f} cm/s forward, heading drift {ev['yaw_change_deg']:+.0f}°, "
+            f"max tilt {ev['max_tilt_deg']:.0f}°. Drive with WASD.")
 
 
 class JSONRPCServer:
@@ -678,12 +139,8 @@ class JSONRPCServer:
     def __init__(self):
         """Initialize the server."""
         self.simulator = _MuJoCoSimulator() if _MuJoCoSimulator else None
-        # Script runner state (Phase C)
-        self.sim_script_fn = None   # compiled step(t, state) callable or None
-        self.sim_script_error: Optional[str] = None
-        # Per-server script globals sandbox; reset on clear/install to avoid stale
-        # constants/helpers leaking across script sessions.
-        self._script_globals: Dict[str, Any] = _fresh_script_globals()
+        # Controller runtime for the loaded model (runs step(t, state) at a fixed rate).
+        self.sim_runtime = None
         self.methods = {
             "ping": self.handle_ping,
             "sim_load": self.handle_sim_load,
@@ -692,11 +149,11 @@ class JSONRPCServer:
             "sim_get_state": self.handle_sim_get_state,
             "sim_set_gravity": self.handle_sim_set_gravity,
             "sim_set_script": self.handle_sim_set_script,
+            "sim_set_command": self.handle_sim_set_command,
             "validate_urdf_content": self.handle_validate_urdf_content,
-            "ai_edit": self.handle_ai_edit,
-            "ai_edit_turn": self.handle_ai_edit_turn,
-            "ai_validate_assembly": self.handle_ai_validate_assembly,
-            "ai_set_history": self.handle_ai_set_history,
+            "design_compile": self.handle_design_compile,
+            "design_import": self.handle_design_import,
+            "ai_design": self.handle_ai_design,
             "ai_gen_sim_script": self.handle_ai_gen_sim_script,
         }
 
@@ -731,7 +188,7 @@ class JSONRPCServer:
 
         try:
             kg = _parse_urdf_string(urdf_content)
-            results = _validate_kinematic_graph(kg)
+            results = _validate_kinematic_graph(kg) + _design_critic_results(urdf_content)
 
             # Build summary counts
             summary = {"pass": 0, "warn": 0, "error": 0, "info": 0}
@@ -793,10 +250,8 @@ class JSONRPCServer:
         if terrain_config is not None and not isinstance(terrain_config, dict):
             terrain_config = None
         seed = params.get("seed", None)
-        # Clear any active script when loading a new model
-        self.sim_script_fn = None
-        self.sim_script_error = None
-        self._script_globals = _fresh_script_globals()
+        # Loading a model clears any active script.
+        self.sim_runtime = None
         try:
             if seed is not None:
                 try:
@@ -809,11 +264,14 @@ class JSONRPCServer:
                     _mj.mj_setSeed(int(seed))
                 except Exception:
                     pass
-            return self.simulator.load_urdf(
+            info = self.simulator.load_urdf(
                 path,
                 free_base=free_base,
                 terrain_config=terrain_config,
             )
+            if _ControllerRuntime is not None:
+                self.sim_runtime = _ControllerRuntime(self.simulator)
+            return info
         except FileNotFoundError as e:
             raise ValueError(f"File not found: {e}")
         except Exception as e:
@@ -824,7 +282,10 @@ class JSONRPCServer:
         Step the simulation forward.
 
         Params:
-            n_steps (int, optional): Number of steps to advance. Default: 1.
+            n_steps (int, optional): Number of physics steps to advance. Default: 1.
+
+        The active script (if any) runs every 5 ms of sim time inside this call,
+        so control is independent of how many steps the UI asks for per frame.
 
         Returns:
             Current simulation state.
@@ -835,27 +296,24 @@ class JSONRPCServer:
             n_steps = 1
 
         try:
-            # Script runner: observe state → compute controls → apply before advancing
             script_error: Optional[str] = None
-            if self.sim_script_fn is not None:
+            rt = self.sim_runtime
+            if rt is not None and rt.fn is not None:
                 try:
-                    current_state = self.simulator.get_state()
-                    controls = self.sim_script_fn(current_state["time"], current_state)
-                    if isinstance(controls, dict):
-                        self.simulator.set_control(controls)
+                    rt.advance(n_steps)
                 except Exception as se:
+                    if "diverged" in str(se):
+                        raise
                     script_error = str(se)
-                    self.sim_script_error = script_error
-                    # Fail-safe: clear controls immediately so stale commands do not
-                    # keep driving the robot after a script runtime error.
+                    # Fail safe: stop the script and zero the commands so stale
+                    # targets don't keep driving the robot.
+                    rt.set_script(None)
                     try:
                         self.simulator.set_control({})
                     except Exception:
                         pass
-                    # Disable script until explicitly re-applied/reset by user.
-                    self.sim_script_fn = None
-
-            self.simulator.step(n_steps)
+            else:
+                self.simulator.step(n_steps)
             state = self.simulator.get_state()
             if script_error:
                 state["script_error"] = script_error
@@ -876,6 +334,8 @@ class JSONRPCServer:
         self._require_simulator()
         try:
             self.simulator.reset()
+            if self.sim_runtime is not None:
+                self.sim_runtime.reset()
             return self.simulator.get_state()
         except Exception as e:
             raise ValueError(f"Failed to reset simulation: {e}")
@@ -917,47 +377,46 @@ class JSONRPCServer:
         Compile and install a Python step-callback script.
 
         Params:
-            code (str): Python source defining ``def step(t, state) -> dict``.
+            code (str): Python source defining step(t, state) -> dict.
                         Pass empty string to clear.
 
         Returns:
             {"status": "ok" | "cleared" | "error", "message": str (on error)}
         """
         code = params.get("code", "").strip()
+        rt = self.sim_runtime
         if not code:
-            self.sim_script_fn = None
-            self.sim_script_error = None
-            self._script_globals = _fresh_script_globals()
+            if rt is not None:
+                rt.set_script(None)
             return {"status": "cleared"}
         try:
-            self._reject_unsafe_script(code)
-            script_globals = _fresh_script_globals()
-            exec(compile(code, "<sim_script>", "exec"), script_globals)
-            fn = script_globals.pop("step", None)
-            if fn is None or not callable(fn):
-                raise ValueError("Script must define a callable 'step(t, state)' function")
-            self.sim_script_fn = fn
-            self.sim_script_error = None
-            self._script_globals = script_globals
+            fn = _compile_sim_script(code)
+            if rt is None:
+                raise ValueError("Load a model into the simulator first")
+            rt.set_script(fn)
             return {"status": "ok"}
         except Exception as e:
-            self.sim_script_fn = None
-            self.sim_script_error = str(e)
-            self._script_globals = _fresh_script_globals()
+            if rt is not None:
+                rt.set_script(None)
             return {"status": "error", "message": str(e)}
 
-    @staticmethod
-    def _reject_unsafe_script(code: str) -> None:
-        """Static AST scan: reject imports, attribute access into dunders, exec/eval."""
-        import ast
-        tree = ast.parse(code, mode="exec")
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                raise ValueError("Imports are not allowed in sim scripts")
-            if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-                raise ValueError(f"Dunder attribute access not allowed: {node.attr}")
-            if isinstance(node, ast.Name) and node.id in _SCRIPT_NAME_DENY:
-                raise ValueError(f"Use of '{node.id}' is not allowed in sim scripts")
+    def handle_sim_set_command(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Set the operator command controllers see as state["cmd"] (keyboard teleop).
+
+        Params: active (bool), vx (m/s), vy (m/s), yaw_rate (rad/s).
+        """
+        rt = self.sim_runtime
+        if rt is None:
+            return {"status": "no_model"}
+        cmd: Dict[str, Any] = {"active": bool(params.get("active", False))}
+        for k in ("vx", "vy", "yaw_rate"):
+            try:
+                cmd[k] = float(params.get(k, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                cmd[k] = 0.0
+        rt.cmd = cmd
+        return {"status": "ok"}
 
     def _emit_progress(self, stage: str, text: str) -> None:
         """Emit a JSON-RPC notification for AI progress (no id = notification)."""
@@ -966,307 +425,103 @@ class JSONRPCServer:
             "method": "ai_progress",
             "params": {"stage": stage, "text": text}
         }
-        sys.stdout.write(json.dumps(notification, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        _send(notification)
 
-    def handle_ai_edit(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_design_compile(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Use Claude AI to generate a robot model edit from natural language.
-        Uses streaming API with progress notifications when available.
+        Compile a design (the explicit-pose part list) to URDF. Deterministic —
+        this is what every manual edit (placing, moving, rotating, joint
+        settings) goes through.
+
+        Params: design (dict), check (bool, optional — also run the geometry
+        critic). Returns: {urdf, root, parts: {part: {link, component, parent,
+        mirror_of, p, R, frame_p, size, center_local, joint}}, issues: [str]}.
+        Poses are in the design world frame (mm, X forward, Z up, grounded);
+        `R` rows, columns = the part's local axes; the URDF link frame of a
+        part is (R, frame_p).
         """
-        if _generate_edit is None:
-            raise ValueError(
-                f"Claude AI not installed. Run: pip install anthropic\n"
-                f"Error: {_ai_import_error}"
-            )
-
-        if "prompt" not in params or "urdf_content" not in params:
-            raise ValueError("Missing required parameters: prompt, urdf_content")
-
-        prompt = params["prompt"]
-        urdf_content = params["urdf_content"]
-        kinematic_context = params.get("kinematic_context", None)
-        session_id = params.get("session_id", "default")
-        # Workstream #1: canonical AssemblyGraph from the frontend. When provided,
-        # claude_client prefers it over URDF as the edit-retry source of truth.
-        # Kept as a dict (not stringified) so generate_edit can json.dumps with its
-        # own formatting and the roundtrip shape stays inspectable in logs.
-        assembly_graph = params.get("assembly_graph", None)
-        if assembly_graph is not None and not isinstance(assembly_graph, dict):
-            print(f"[ai_edit] Ignoring non-dict assembly_graph: {type(assembly_graph).__name__}", file=sys.stderr)
-            assembly_graph = None
-
-        if not isinstance(prompt, str):
-            raise ValueError("Parameter 'prompt' must be a string")
-        if not isinstance(urdf_content, str):
-            raise ValueError("Parameter 'urdf_content' must be a string")
-
-        # Model whitelist — reject unknown IDs by falling back to Sonnet
-        # VECTOR_AI_MODEL overrides the default; env-supplied defaults are
-        # trusted (joins the allowed set) while client-supplied values stay
-        # whitelisted.
-        _env_model = os.environ.get("VECTOR_AI_MODEL")
-        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"} | ({_env_model} if _env_model else set())
-        model = params.get("model") or _env_model or "claude-sonnet-4-6"
-        if model not in _ALLOWED_MODELS:
-            print(f"[ai_edit] Unknown model '{model}', falling back to claude-sonnet-4-6", file=sys.stderr)
-            model = "claude-sonnet-4-6"
-
-        # Normalize images: strip any data:image/...;base64, prefix the frontend
-        # may have included (Anthropic SDK rejects it).
-        raw_images = params.get("images") or []
-        images: list = []
-        if isinstance(raw_images, list):
-            for img in raw_images:
-                if not isinstance(img, dict):
-                    continue
-                media_type = img.get("media_type")
-                data = img.get("data", "")
-                if not isinstance(data, str) or not isinstance(media_type, str):
-                    continue
-                if data.startswith("data:"):
-                    comma = data.find(",")
-                    if comma != -1:
-                        data = data[comma + 1:]
-                images.append({"media_type": media_type, "data": data})
-
+        from core.designer.compile import DesignError, compile_design
+        design = params.get("design")
+        if not isinstance(design, dict):
+            raise ValueError("Missing required parameter: design")
         try:
-            # Tool-use assembly agent (disabled by default — too many API calls / expensive)
-            # To enable: pass "use_tools": true in params
-            if params.get("use_tools") and _generate_assembly_with_tools is not None:
-                print(f"[ai_edit] Using tool-use assembly agent for: {prompt[:80]}", file=sys.stderr)
-                result = _generate_assembly_with_tools(
-                    prompt, session_id,
-                    on_progress=self._emit_progress,
-                    model=model,
-                    images=images,
-                )
-                self._emit_progress("done", "Complete")
-                response = {
-                    "explanation": result.get("explanation", "Assembly complete"),
-                    "new_urdf": result.get("new_urdf") or urdf_content,
-                    "stats": result.get("stats", "Assembly complete"),
-                }
-                if "assembly_graph" in result:
-                    response["assembly_graph"] = result["assembly_graph"]
-                if "topology_ops" in result:
-                    response["topology_ops"] = result["topology_ops"]
-                return response
+            asm = compile_design(design)
+        except DesignError as e:
+            return {"error": str(e)}
+        def r(v):
+            return [round(float(x), 6) for x in v]
+        parts = {n: {"link": q.link, "component": q.component["id"] if q.component else None,
+                     "parent": q.parent, "mirror_of": q.mirror_of,
+                     "p": r(q.p), "R": [r(row) for row in q.R], "frame_p": r(q.frame_p),
+                     "size": r(q.size), "center_local": r(q.center_local),
+                     "joint": ({"type": q.joint["type"], "passive": bool(q.joint.get("passive")),
+                                **({"pivot": r(q.joint["pivot"]), "axis": r(q.joint["axis"])}
+                                   if "pivot" in q.joint else {})} if q.joint else None)}
+                 for n, q in asm.parts.items()}
+        issues = []
+        if params.get("check"):
+            from core.designer.critic import critique
+            issues = critique(asm)["issues"]
+        return {"urdf": asm.to_urdf(design.get("name") or "robot"), "root": asm.root, "parts": parts, "issues": issues}
 
-            # Standard edit path
-            kg_json = {}
-            try:
-                if _parse_urdf_string is not None:
-                    kg = _parse_urdf_string(urdf_content)
-                    kg_json = kg.to_json()
-            except Exception as parse_err:
-                print(f"[ai_edit] URDF pre-parse skipped: {parse_err}", file=sys.stderr)
-
-            if _generate_edit_streaming is not None:
-                result = _generate_edit_streaming(
-                    prompt, urdf_content, kg_json, kinematic_context, session_id,
-                    on_progress=self._emit_progress,
-                    model=model,
-                    images=images,
-                    assembly_graph=assembly_graph,
-                )
-            else:
-                self._emit_progress("thinking", "Processing request...")
-                result = _generate_edit(
-                    prompt, urdf_content, kg_json, kinematic_context, session_id,
-                    model=model,
-                    images=images,
-                    assembly_graph=assembly_graph,
-                )
-
-            self._emit_progress("done", "Complete")
-
-            response = {
-                "explanation": result.get("explanation", "Edit applied"),
-                "new_urdf": result.get("new_urdf", urdf_content),
-                "stats": result.get("stats", "Edit complete"),
-            }
-            if "assembly_graph" in result:
-                response["assembly_graph"] = result["assembly_graph"]
-            if "topology_ops" in result:
-                response["topology_ops"] = result["topology_ops"]
-            # Phase 3: surface owner-routed diagnostics to the frontend so the
-            # chat panel can display AI-fixable issues (and developer logs can
-            # show compiler/exporter ones) instead of swallowing them silently.
-            if result.get("diagnostics"):
-                response["diagnostics"] = result["diagnostics"]
-            return response
-        except Exception as e:
-            raise ValueError(f"AI edit failed: {e}")
-
-    def handle_ai_edit_turn(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_design_import(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Workstream #2 tool-call edit surface: one turn of the multi-round
-        tool-use loop. The frontend drives the loop — it calls this once with
-        `prompt` (first turn), then again for each round with `tool_results`
-        from local dispatch until `done` comes back true.
-
-        Params:
-            session_id (str)
-            prompt (str, optional)          — first-turn user message
-            assembly_graph (dict, optional) — first-turn graph snapshot
-            kinematic_context (str, optional)
-            tool_results (list, optional)   — subsequent turns, one per tool_use_id
-            model (str, optional)           — 'claude-sonnet-4-6' | 'claude-opus-4-7'
-            images (list, optional)
-
-        Returns: dict — see generate_edit_turn docstring for the shape.
+        URDF -> design. Returns the embedded design when the URDF is untouched
+        designer output; otherwise rebuilds one from the URDF's geometry (hand
+        edits, hand-written robots). Returns: {design, notes, imported: bool}.
         """
-        if _generate_edit_turn is None:
-            raise ValueError(
-                f"Claude AI not installed. Run: pip install anthropic\n"
-                f"Error: {_ai_import_error}"
-            )
+        from core.designer.importer import ImportError_, import_urdf
+        urdf = params.get("urdf_content")
+        if not isinstance(urdf, str) or not urdf.strip():
+            raise ValueError("Missing required parameter: urdf_content")
+        try:
+            out = import_urdf(urdf)
+        except ImportError_ as e:
+            return {"error": str(e)}
+        return out
 
-        session_id = params.get("session_id", "default")
+    def handle_ai_design(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Design (or redesign) a robot with the explicit-pose designer.
+
+        Params: prompt (str), urdf_content (str, optional — when it carries an
+        embedded design, the request is treated as an edit of it), images.
+        Returns: {urdf, summary, report, issues, rounds}.
+        """
+        from core.designer.agent import design_robot
         prompt = params.get("prompt")
-        assembly_graph = params.get("assembly_graph")
-        if assembly_graph is not None and not isinstance(assembly_graph, dict):
-            assembly_graph = None
-        kinematic_context = params.get("kinematic_context")
-        tool_results = params.get("tool_results")
-
-        _env_model = os.environ.get("VECTOR_AI_MODEL")
-        _ALLOWED_MODELS = {"claude-sonnet-4-6", "claude-opus-4-7"} | ({_env_model} if _env_model else set())
-        model = params.get("model") or _env_model or "claude-sonnet-4-6"
-        if model not in _ALLOWED_MODELS:
-            model = "claude-sonnet-4-6"
-
-        # Normalize images (same treatment as ai_edit — strip data: URL prefix).
-        raw_images = params.get("images") or []
-        images: list = []
-        if isinstance(raw_images, list):
-            for img in raw_images:
-                if not isinstance(img, dict):
-                    continue
-                media_type = img.get("media_type")
-                data = img.get("data", "")
-                if not isinstance(data, str) or not isinstance(media_type, str):
-                    continue
-                if data.startswith("data:"):
-                    comma = data.find(",")
-                    if comma != -1:
-                        data = data[comma + 1:]
-                images.append({"media_type": media_type, "data": data})
-
-        try:
-            return _generate_edit_turn(
-                session_id=session_id,
-                prompt=prompt,
-                assembly_graph=assembly_graph,
-                kinematic_context=kinematic_context,
-                tool_results=tool_results,
-                model=model,
-                images=images,
-            )
-        except Exception as e:
-            raise ValueError(f"AI edit turn failed: {e}")
-
-    def handle_ai_validate_assembly(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Second-pass AI validation of an assembled URDF.
-        Sends the URDF back to Claude (Haiku) for spatial correctness checks.
-        Returns corrections if needed (~$0.01-0.02 per call).
-
-        Params:
-            urdf_content (str): The assembled URDF XML.
-            original_prompt (str): The user's original build request.
-            session_id (str, optional): Session identifier.
-
-        Returns:
-            Dict with 'ok' bool, 'notes' str, and optional 'corrected_urdf' str.
-        """
-        if _validate_assembly is None:
-            raise ValueError(
-                f"Claude AI not installed. Run: pip install anthropic\n"
-                f"Error: {_ai_import_error}"
-            )
-
-        if "urdf_content" not in params or "original_prompt" not in params:
-            raise ValueError("Missing required parameters: urdf_content, original_prompt")
-
-        urdf_content = params["urdf_content"]
-        original_prompt = params["original_prompt"]
-        session_id = params.get("session_id", "default")
-        screenshot_base64 = params.get("screenshot_base64")
-        screenshots = params.get("screenshots")  # array of 3 base64 PNGs
-        # User-uploaded reference images — [{media_type, data}, ...]. Threaded
-        # through so Gemini compares the rendered output against the reference
-        # the user originally gave Claude (G3 fix).
-        reference_images = params.get("reference_images") or []
-        # Engine-computed ground truth (
-        # Layer 1). Shape: {placements: [...], icpGaps: [...]}. Forwarded to
-        # the Gemini prompt so screenshot misreads can be refuted with the
-        # actual xyz/rpy the placement engine wrote and the ICP gap it measured.
-        engine_summary = params.get("engine_summary")
-
-        try:
-            self._emit_progress("validating", "Checking assembly with visual feedback...")
-            result = _validate_assembly(urdf_content, original_prompt, session_id, screenshot_base64, screenshots, reference_images, engine_summary)
-            self._emit_progress("done", "Validation complete")
-            return result
-        except Exception as e:
-            raise ValueError(f"Assembly validation failed: {e}")
-
-    def handle_ai_set_history(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Restore conversation history for a session from frontend localStorage.
-        Called on reconnect to maintain context across backend restarts.
-
-        Params:
-            session_id (str): Session identifier.
-            history (list): List of {role, content} message dicts.
-
-        Returns:
-            Dict with 'status' and 'count'.
-        """
-        if _set_conversation_history is None:
-            raise ValueError(
-                f"Claude AI not installed. Run: pip install anthropic\n"
-                f"Error: {_ai_import_error}"
-            )
-
-        if "session_id" not in params or "history" not in params:
-            raise ValueError("Missing required parameters: session_id, history")
-
-        session_id = params["session_id"]
-        history = params["history"]
-
-        if not isinstance(session_id, str):
-            raise ValueError("Parameter 'session_id' must be a string")
-        if not isinstance(history, list):
-            raise ValueError("Parameter 'history' must be a list")
-
-        try:
-            return _set_conversation_history(session_id, history)
-        except Exception as e:
-            raise ValueError(f"Failed to set history: {e}")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Missing required parameter: prompt")
+        current = params.get("urdf_content") or ""
+        images = []
+        for img in params.get("images") or []:
+            if not isinstance(img, dict):
+                continue
+            media_type, data = img.get("media_type"), img.get("data", "")
+            if not isinstance(media_type, str) or not isinstance(data, str) or not data:
+                continue
+            if data.startswith("data:") and "," in data:
+                data = data.split(",", 1)[1]
+            images.append({"media_type": media_type, "data": data})
+        out = design_robot(prompt, current_urdf=current if isinstance(current, str) else "",
+                           progress=self._emit_progress, images=images or None)
+        return {k: out[k] for k in ("urdf", "summary", "report", "issues", "rounds")}
 
     def handle_ai_gen_sim_script(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate a sandbox-compliant sim control script via Claude.
+        Generate a controller with the controller agent: it measures the robot,
+        writes a controller, tests it headless in MuJoCo, and revises until it
+        works, then returns the tested code.
 
         Params:
-            prompt (str): Natural-language request.
-            urdf_content (str): Current URDF; used to extract joint names/limits.
-            current_script (str, optional): If provided, treat prompt as a
-                modification of this script instead of generating fresh.
+            prompt (str): Natural-language request (may be empty: default behaviour).
+            urdf_content (str): Current URDF.
+            current_script (str, optional): Treat the prompt as a change to this script.
+            terrain_config (dict, optional): Active sim terrain.
 
         Returns:
-            {"status": "ok", "code": str, "joint_names": [...]} on success,
-            {"status": "error", "message": str} on rejection or API failure.
+            {"status": "ok", "code", "summary", "report", "tests"} or {"status": "error", "message"}.
         """
-        if _generate_sim_script is None:
-            raise ValueError(
-                f"Claude AI not installed. Run: pip install anthropic\n"
-                f"Error: {_ai_import_error}"
-            )
-
         prompt = params.get("prompt", "") or ""
         urdf_content = params.get("urdf_content", "")
         current_script = params.get("current_script", "") or ""
@@ -1277,48 +532,24 @@ class JSONRPCServer:
             raise ValueError("Parameter 'prompt' must be a string")
         if not isinstance(urdf_content, str) or not urdf_content.strip():
             raise ValueError("Parameter 'urdf_content' must be a non-empty string")
-
-        # Extract joint names, limits, and wheel direction metadata from the URDF.
+        if params.get("quick"):
+            try:
+                from core.sim.control import evaluate_controller, format_evaluation, robot_brief_data
+                from core.sim.controllers import baseline_controller
+                code = baseline_controller(robot_brief_data(urdf_content))
+                ev = evaluate_controller(urdf_content, code, terrain_config=terrain_config)
+            except Exception as e:
+                return {"status": "error", "message": f"Could not build a controller: {e}"}
+            return {"status": "ok", "code": code, "summary": _quick_summary(ev),
+                    "report": format_evaluation(ev), "tests": 1}
         try:
-            joint_names, joint_limits, joint_metadata, leg_geometry, arm_geometry = _extract_sim_joint_context(urdf_content)
+            from core.ai.controller_agent import generate_controller
+            out = generate_controller(prompt, urdf_content, current_script=current_script,
+                                      terrain_config=terrain_config, progress=self._emit_progress)
         except Exception as e:
-            return {"status": "error",
-                    "message": f"Could not parse URDF joints: {e}"}
-
-        if not joint_names:
-            return {"status": "error",
-                    "message": "No controllable joints found in URDF"}
-
-        try:
-            code = _generate_sim_script(
-                prompt, joint_names, current_script, joint_limits, joint_metadata, terrain_config,
-                leg_geometry, arm_geometry,
-            )
-        except Exception as e:
-            return {"status": "error", "message": f"AI call failed: {e}"}
-
-        if not code.strip():
-            return {"status": "error", "message": "AI returned empty code"}
-
-        # Validate: must compile and pass sandbox scan.
-        try:
-            self._reject_unsafe_script(code)
-            compiled = compile(code, "<ai_sim_script>", "exec")
-            validation_globals = _fresh_script_globals()
-            exec(compiled, validation_globals)
-            fn = validation_globals.get("step")
-            if fn is None or not callable(fn):
-                raise ValueError("Generated script must define a callable 'step(t, state)' function")
-        except SyntaxError as e:
-            return {"status": "error",
-                    "message": f"Generated script has syntax error: {e}",
-                    "code": code}
-        except ValueError as e:
-            return {"status": "error",
-                    "message": f"Generated script rejected by sandbox: {e}",
-                    "code": code}
-
-        return {"status": "ok", "code": code, "joint_names": joint_names}
+            return {"status": "error", "message": f"Controller generation failed: {e}"}
+        return {"status": "ok", "code": out["code"], "summary": out["summary"],
+                "report": out["report"], "tests": out["tests"]}
 
     def process_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -1398,10 +629,7 @@ class JSONRPCServer:
         """
         # Force UTF-8 on Windows (default is often cp1252)
         if sys.platform == 'win32':
-            import io
             sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
         while True:
             try:
@@ -1426,8 +654,7 @@ class JSONRPCServer:
                         },
                         "id": None,
                     }
-                    sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                    sys.stdout.flush()
+                    _send(response)
                     continue
 
                 # Process the request
@@ -1435,8 +662,7 @@ class JSONRPCServer:
 
                 # Write response (skip for notifications)
                 if response is not None:
-                    sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                    sys.stdout.flush()
+                    _send(response)
 
             except KeyboardInterrupt:
                 break
