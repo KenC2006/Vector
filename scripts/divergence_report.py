@@ -3,7 +3,7 @@ divergence_report.py — Audit GLB-vs-bbox alignment across the preset library.
 
 For each component with both a declared bounding_box_mm and a backing GLB,
 compares preset bbox against post-rotation GLB extent (factoring in runtime
-rotation overrides from src/src/richVisuals/meshOverrides.ts).
+rotation overrides from src/src/richVisuals/visualOverrides.json).
 
 Reports two distinct failure modes:
   1. axis_mismatch  — the GLB's long axis lands on a different preset axis than
@@ -23,67 +23,14 @@ Usage:
 import argparse
 import json
 import math
-import re
 import sys
 from itertools import permutations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXTENTS_PATH = ROOT / "src" / "public" / "meshExtents.generated.json"
-OVERRIDES_PATH = ROOT / "src" / "src" / "richVisuals" / "meshOverrides.ts"
+EXTENTS_PATH = ROOT / "scripts" / "mesh-extents.generated.json"
+OVERRIDES_PATH = ROOT / "src" / "src" / "richVisuals" / "visualOverrides.json"
 PRESETS_PATH = ROOT / "core" / "presets" / "generic_presets.json"
-
-
-def parse_rotation_overrides(ts_source: str) -> dict[str, list[float]]:
-    """Extract the ROTATION_OVERRIDES dict from meshOverrides.ts.
-
-    The TS source uses literal `Math.PI` expressions; we evaluate the simple
-    arithmetic forms that appear in the file (Math.PI, Math.PI / 2, -Math.PI,
-    etc.) without invoking a JS engine.
-    """
-    block_match = re.search(
-        r"export const ROTATION_OVERRIDES[^{]*\{(.*?)^\}", ts_source, re.DOTALL | re.MULTILINE
-    )
-    if not block_match:
-        return {}
-    body = block_match.group(1)
-
-    out: dict[str, list[float]] = {}
-    entry_re = re.compile(
-        r"['\"]([\w_]+)['\"]\s*:\s*\[([^\]]+)\]",
-    )
-    for m in entry_re.finditer(body):
-        cid = m.group(1)
-        vals_raw = [v.strip() for v in m.group(2).split(",")]
-        vals = []
-        for v in vals_raw:
-            vals.append(_eval_pi_expr(v))
-        out[cid] = vals
-    return out
-
-
-def _eval_pi_expr(expr: str) -> float:
-    expr = expr.replace("Math.PI", str(math.pi))
-    # Allow only digits, operators, dots, parens, spaces, and unary minus.
-    if not re.fullmatch(r"[\d\.\s+\-*/()]+", expr):
-        raise ValueError(f"unsafe expression: {expr}")
-    return float(eval(expr))  # noqa: S307 — restricted alphabet above
-
-
-def parse_set(ts_source: str, name: str) -> set[str]:
-    m = re.search(rf"export const {name}[^=]*=\s*new Set\(\[(.*?)\]\)", ts_source, re.DOTALL)
-    if not m:
-        return set()
-    return set(re.findall(r"['\"]([\w_]+)['\"]", m.group(1)))
-
-
-def parse_explicit_scale_policy(ts_source: str) -> dict[str, str]:
-    block_match = re.search(
-        r"export const EXPLICIT_SCALE_POLICY[^{]*\{(.*?)^\}", ts_source, re.DOTALL | re.MULTILINE
-    )
-    if not block_match:
-        return {}
-    return dict(re.findall(r"['\"]([\w_]+)['\"]\s*:\s*['\"](\w+)['\"]", block_match.group(1)))
 
 
 def apply_rotation(extent: list[float], rpy: list[float]) -> list[float]:
@@ -103,11 +50,11 @@ def apply_rotation(extent: list[float], rpy: list[float]) -> list[float]:
     cy, sy = math.cos(ry), math.sin(ry)
     cz, sz = math.cos(rz), math.sin(rz)
 
-    # XYZ Euler: R = Rz * Ry * Rx (intrinsic XYZ in URDF convention).
+    # three.js Euler 'XYZ' (what meshVisual.ts applies): R = Rx * Ry * Rz.
     R = [
-        [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
-        [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
-        [-sy, sx * cy, cx * cy],
+        [cy * cz, -cy * sz, sy],
+        [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
     ]
     Rabs = [[abs(v) for v in row] for row in R]
     out = [
@@ -152,14 +99,13 @@ def axis_ratio_score(bbox: list[float], extent: list[float]) -> float:
 
 def collect_components() -> list[dict]:
     extents = json.loads(EXTENTS_PATH.read_text())
-    ts_source = OVERRIDES_PATH.read_text(encoding="utf-8")
+    overrides = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
 
-    rotations = parse_rotation_overrides(ts_source)
-    procedural_only = parse_set(ts_source, "PROCEDURAL_VISUAL_ONLY")
-    blacklisted = parse_set(ts_source, "SLOW_MESH_BLACKLIST")
-    scale_policy = parse_explicit_scale_policy(ts_source)
+    rotations = {cid: e["rpy"] for cid, e in overrides["rotationOverrides"].items()}
+    procedural_only = set(overrides["proceduralVisualOnly"])
+    scale_policy = {cid: e["policy"] for cid, e in overrides["scalePolicy"].items()}
 
-    # Read live bboxes from generic_presets.json — meshExtents.generated.json's
+    # Read live bboxes from generic_presets.json — mesh-extents.generated.json's
     # declared_bbox_mm is a build-time snapshot and drifts whenever the preset
     # JSON changes. The mesh extents (raw_extent_mm) in that file remain valid
     # because GLB files don't change.
@@ -179,13 +125,13 @@ def collect_components() -> list[dict]:
         live_bb = live_bboxes.get(cid)
         if live_bb is not None:
             data = {**data, "declared_bbox_mm": live_bb}
-        row = _row(cid, data, rotations, procedural_only, blacklisted, scale_policy)
+        row = _row(cid, data, rotations, procedural_only, scale_policy)
         if row:
             rows.append(row)
     return rows
 
 
-def _row(cid, data, rotations, procedural_only, blacklisted, scale_policy):
+def _row(cid, data, rotations, procedural_only, scale_policy):
     visual = data.get("visual") or {}
     bbox = data.get("declared_bbox_mm")
     raw = visual.get("raw_extent_mm")
@@ -195,10 +141,9 @@ def _row(cid, data, rotations, procedural_only, blacklisted, scale_policy):
     rot_override = rotations.get(cid, [0, 0, 0])
     glb_internal_rot = visual.get("rotation_rpy") or [0, 0, 0]
 
-    # Source of truth: raw extent + TS-side rotation override.
-    # The JSON's post_rotation_extent_mm field is generated by a build tool
-    # that captures only some overrides — drift between TS and JSON makes it
-    # unreliable. Always re-apply the TS override to the raw extent.
+    # Source of truth: raw extent + the rotation override from
+    # visualOverrides.json (re-applied so a stale mesh-extents file can't hide
+    # an override edit).
     runtime_extent = apply_rotation(raw, rot_override)
 
     identity_score = axis_ratio_score(bbox, runtime_extent)
@@ -216,7 +161,6 @@ def _row(cid, data, rotations, procedural_only, blacklisted, scale_policy):
         "rotation_override": rot_override if has_rotation else None,
         "scale_policy": scale_policy.get(cid),
         "procedural_only": cid in procedural_only,
-        "blacklisted": cid in blacklisted,
         "identity_axis_score": round(identity_score, 2),
         "best_perm_score": round(perm_score, 2),
         "axis_mismatch": bool(axis_mismatch),
@@ -235,7 +179,7 @@ def main():
 
     flagged = []
     for r in rows:
-        if r["procedural_only"] or r["blacklisted"]:
+        if r["procedural_only"]:
             continue
         if args.only in ("axis", "both") and r["axis_mismatch"]:
             flagged.append(r)

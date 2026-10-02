@@ -18,10 +18,9 @@
 // vertices to three's ConvexHull (Quickhull3D port). Write the resulting
 // hull as an OBJ (v + f lines, 1-indexed, no normals).
 //
-// Output is mesh-local coords matching the GLB's authoring frame — we do
-// NOT apply the runtime ROTATION_OVERRIDES from meshOverrides.ts. Per
-// docs/ENGINE_NEXT_STEPS.md Step 4 scope, downstream sim consumers either
-// receive the same rotation in the joint origin or accept the raw frame.
+// Output is normalized into the component (catalog) frame: the runtime
+// rotation override from src/src/richVisuals/visualOverrides.json is applied,
+// then the hull is scaled to the preset bbox and centered.
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -39,7 +38,7 @@ const GLB_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'glb')
 const OUT_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'collision')
 const CORE_PRESETS = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
 const PUBLIC_PRESETS = path.join(repoRoot, 'src', 'public', 'generic_presets.json')
-const MESH_OVERRIDES_TS = path.join(repoRoot, 'src', 'src', 'richVisuals', 'meshOverrides.ts')
+const VISUAL_OVERRIDES_JSON = path.join(repoRoot, 'src', 'src', 'richVisuals', 'visualOverrides.json')
 
 // ─────────────────────────── GLB binary helpers ──────────────────────────────
 
@@ -216,57 +215,15 @@ function collectVertices(json, bin) {
   return { vertices, primitiveCount }
 }
 
-function stripLineComments(s) {
-  return s.replace(/\/\/[^\n]*/g, '')
-}
-
-function extractRecordBody(src, name) {
-  const header = new RegExp(`export\\s+const\\s+${name}\\s*:[^=]+?=\\s*\\{`)
-  const match = src.match(header)
-  if (!match) throw new Error(`could not locate ${name}`)
-  let i = match.index + match[0].length
-  let depth = 1
-  while (i < src.length && depth > 0) {
-    const ch = src[i]
-    if (ch === '{') depth++
-    else if (ch === '}') depth--
-    i++
+// Per-component visual overrides (mesh file, rotation, shaft overlay) —
+// the same JSON meshOverrides.ts imports at runtime.
+async function loadVisualOverrides() {
+  const data = JSON.parse(await fs.readFile(VISUAL_OVERRIDES_JSON, 'utf8'))
+  return {
+    meshOverrides: new Map(Object.entries(data.meshOverrides)),
+    rotationOverrides: new Map(Object.entries(data.rotationOverrides).map(([id, e]) => [id, e.rpy])),
+    shaftOverlays: new Map(Object.entries(data.shaftOverlays).map(([id, e]) => [id, { shaft_length_mm: e.shaft_length_mm, shaft_radius_mm: e.shaft_radius_mm }])),
   }
-  if (depth !== 0) throw new Error(`unbalanced braces parsing ${name}`)
-  return src.slice(match.index + match[0].length, i - 1)
-}
-
-function parseStringRecord(src, name) {
-  const body = stripLineComments(extractRecordBody(src, name))
-  const out = new Map()
-  const entry = /'([^']+)'\s*:\s*'([^']+)'/g
-  let m
-  while ((m = entry.exec(body)) !== null) out.set(m[1], m[2])
-  return out
-}
-
-function parseRotationRecord(src, name) {
-  const body = stripLineComments(extractRecordBody(src, name))
-  const out = new Map()
-  const entry = /'([^']+)'\s*:\s*\[\s*([^,\]]+)\s*,\s*([^,\]]+)\s*,\s*([^,\]]+)\s*\]/g
-  let m
-  while ((m = entry.exec(body)) !== null) out.set(m[1], [evalAngle(m[2]), evalAngle(m[3]), evalAngle(m[4])])
-  return out
-}
-
-function parseShaftOverlays(src) {
-  const body = stripLineComments(extractRecordBody(src, 'SHAFT_OVERLAYS'))
-  const out = new Map()
-  const entry = /'([^']+)'\s*:\s*\{\s*shaft_length_mm:\s*([0-9.]+)\s*,\s*shaft_radius_mm:\s*([0-9.]+)\s*\}/g
-  let m
-  while ((m = entry.exec(body)) !== null) out.set(m[1], { shaft_length_mm: Number(m[2]), shaft_radius_mm: Number(m[3]) })
-  return out
-}
-
-function evalAngle(expr) {
-  const trimmed = String(expr).trim()
-  if (!/^[0-9.\s+\-*/()MathPI]+$/.test(trimmed)) throw new Error(`unexpected angle expression: ${trimmed}`)
-  return Function(`"use strict"; return (${trimmed});`)()
 }
 
 function flattenPresets(data) {
@@ -411,10 +368,7 @@ async function processComponent(component, meshFile, rotationOverrides, shaftOve
 
 async function main() {
   await fs.mkdir(OUT_DIR, { recursive: true })
-  const meshOverridesText = await fs.readFile(MESH_OVERRIDES_TS, 'utf8')
-  const meshOverrides = parseStringRecord(meshOverridesText, 'MESH_OVERRIDES')
-  const rotationOverrides = parseRotationRecord(meshOverridesText, 'ROTATION_OVERRIDES')
-  const shaftOverlays = parseShaftOverlays(meshOverridesText)
+  const { meshOverrides, rotationOverrides, shaftOverlays } = await loadVisualOverrides()
   const presetData = JSON.parse(await fs.readFile(CORE_PRESETS, 'utf8'))
   const processable = []
 
@@ -426,8 +380,7 @@ async function main() {
       await fs.access(glbPath)
       processable.push({ component, meshFile })
     } catch {
-      // Leave existing collision_mesh alone when a component only has a STEP
-      // fallback or is intentionally blacklisted from GLB conversion.
+      // Leave existing collision_mesh alone when the GLB is not shipped.
     }
   }
 

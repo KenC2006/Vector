@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# One-shot: convert every .step / .stp under src/public/meshes/components/ to
-# a co-located .binbrep (OCCT native binary B-Rep). Originals are untouched —
-# .binbrep files sit alongside as siblings.
+# One-shot: convert every .step / .stp under assets/step/ to a co-located
+# .binbrep (OCCT native binary B-Rep). Originals are untouched — .binbrep files
+# sit alongside as siblings.
 #
-# The bake worker prefers .binbrep over .step (parses ~50x faster and the
-# files are typically 50-80% smaller), falling back to .step when no .binbrep
-# is present, so this script is safe to re-run mid-deploy.
+# Nothing in the app reads .binbrep today (the bake worker that preferred them
+# is gone; the runtime loads pre-converted GLBs). Kept for offline CAD work:
+# .binbrep parses ~50x faster than STEP and is typically 50-80% smaller.
 #
 # Re-runs are idempotent: files are skipped when the .binbrep is newer than
 # its source. Pass --force to reconvert everything.
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 TOOL="${HOME}/stepreduce-work/step_to_brep/build/step_to_brep.exe"
-DIR="src/public/meshes/components"
+DIR="assets/step"
 FORCE=0
 
 for arg in "$@"; do

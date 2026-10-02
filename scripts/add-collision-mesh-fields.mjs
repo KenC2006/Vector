@@ -5,15 +5,14 @@
 //
 // Re-running is idempotent: skips presets that already have a
 // collision_mesh entry, and skips the OBJ-existence check per preset
-// based on the {base}_collision.obj derived from MESH_OVERRIDES.
+// based on the {base}_collision.obj derived from meshOverrides.
 //
 // Usage:
 //   node scripts/add-collision-mesh-fields.mjs
 //
-// Source of truth for the preset_id → STEP mapping is
-// src/src/richVisuals/meshOverrides.ts (parsed by the same regex the
-// audit script uses). The collision OBJ filename is derived as
-// {strip-step-extension}_collision.obj.
+// Source of truth for the preset_id → STEP mapping is meshOverrides in
+// src/src/richVisuals/visualOverrides.json. The collision OBJ filename is
+// derived as {strip-step-extension}_collision.obj.
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -22,29 +21,8 @@ import { fileURLToPath } from 'node:url'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..')
 const PRESET_JSON = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
-const MESH_OVERRIDES_TS = path.join(repoRoot, 'src', 'src', 'richVisuals', 'meshOverrides.ts')
+const VISUAL_OVERRIDES_JSON = path.join(repoRoot, 'src', 'src', 'richVisuals', 'visualOverrides.json')
 const COLLISION_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'collision')
-
-function parseMeshOverrides(src) {
-  const headerRe = /export\s+const\s+MESH_OVERRIDES\s*:\s*Record<[^>]+>\s*=\s*\{/
-  const m = src.match(headerRe)
-  if (!m) throw new Error('MESH_OVERRIDES not found')
-  let i = m.index + m[0].length
-  let depth = 1
-  const start = i
-  while (i < src.length && depth > 0) {
-    const c = src[i]
-    if (c === '{') depth++
-    else if (c === '}') depth--
-    i++
-  }
-  const body = src.slice(start, i - 1).replace(/\/\/[^\n]*/g, '')
-  const out = {}
-  const entry = /'([^']+)'\s*:\s*'([^']+)'/g
-  let e
-  while ((e = entry.exec(body)) !== null) out[e[1]] = e[2]
-  return out
-}
 
 function collisionFromStep(stepName) {
   return stepName.replace(/\.(step|stp)$/i, '') + '_collision.obj'
@@ -52,11 +30,10 @@ function collisionFromStep(stepName) {
 
 async function main() {
   const presetText = await fs.readFile(PRESET_JSON, 'utf8')
-  const overridesText = await fs.readFile(MESH_OVERRIDES_TS, 'utf8')
-  const overrides = parseMeshOverrides(overridesText)
+  const overrides = JSON.parse(await fs.readFile(VISUAL_OVERRIDES_JSON, 'utf8')).meshOverrides
 
   const presetIds = Object.keys(overrides).sort()
-  console.log(`MESH_OVERRIDES has ${presetIds.length} entries`)
+  console.log(`meshOverrides has ${presetIds.length} entries`)
 
   const inserts = []
   const skipped = []

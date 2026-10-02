@@ -1,8 +1,10 @@
 /**
  * STEP → GLB Build Script
  *
- * Converts all STEP/STP files in src/public/meshes/components/ to GLB format
- * for fast runtime loading (~100ms vs 5-15s for STEP parsing in-browser).
+ * Converts the source STEP/STP files in assets/step/ that a catalog part
+ * renders with (meshOverrides in src/src/richVisuals/visualOverrides.json) to
+ * GLB in src/public/meshes/glb/. The runtime only ever loads the GLBs; the
+ * STEP sources stay out of public/ so Vite does not ship them.
  *
  * Uses occt-import-js (OpenCascade WASM) for STEP parsing, then writes
  * GLB (Binary glTF 2.0) directly — no Three.js renderer or browser APIs needed.
@@ -10,7 +12,7 @@
  * Usage:
  *   cd src && node ../scripts/convert-step-to-glb.js
  *   node ../scripts/convert-step-to-glb.js --force   # re-convert all
- *   node ../scripts/convert-step-to-glb.js servo_small.step  # convert one file
+ *   node ../scripts/convert-step-to-glb.js servo_small.step  # convert one file (any file in assets/step)
  */
 
 const fs = require('fs')
@@ -20,14 +22,9 @@ const path = require('path')
 const SRC_DIR = path.join(__dirname, '..', 'src')
 const occtInit = require(path.join(SRC_DIR, 'node_modules', 'occt-import-js'))
 
-const COMPONENTS_DIR = path.join(SRC_DIR, 'public', 'meshes', 'components')
-const GLB_DIR = path.join(__dirname, '..', 'src', 'public', 'meshes', 'glb')
-
-// Files too large / complex — skip entirely (use parametric at runtime)
-const SKIP_FILES = new Set([
-  'sbc_gpu.stp',           // 71MB — would produce huge GLB
-  'mobility_track.step',   // 50MB
-])
+const STEP_DIR = path.join(__dirname, '..', 'assets', 'step')
+const GLB_DIR = path.join(SRC_DIR, 'public', 'meshes', 'glb')
+const VISUAL_OVERRIDES = path.join(SRC_DIR, 'src', 'richVisuals', 'visualOverrides.json')
 
 // Size threshold: skip STEP files larger than this (bytes)
 const MAX_STEP_SIZE = 25 * 1024 * 1024 // 25 MB
@@ -45,15 +42,22 @@ async function main() {
   const occt = await occtInit()
   console.log('[convert] Ready.\n')
 
-  // Gather files to convert
-  let files = fs.readdirSync(COMPONENTS_DIR)
-    .filter(f => f.endsWith('.step') || f.endsWith('.stp'))
-    .sort()
-
+  // Gather files to convert: every STEP a mesh-rendered part maps to, or the
+  // one file named on the command line.
+  const available = new Set(fs.readdirSync(STEP_DIR).filter(f => f.endsWith('.step') || f.endsWith('.stp')))
+  let files
   if (singleFile) {
-    files = files.filter(f => f === singleFile)
-    if (files.length === 0) {
-      console.error(`File not found: ${singleFile}`)
+    if (!available.has(singleFile)) {
+      console.error(`File not found: ${path.join(STEP_DIR, singleFile)}`)
+      process.exit(1)
+    }
+    files = [singleFile]
+  } else {
+    const { meshOverrides } = JSON.parse(fs.readFileSync(VISUAL_OVERRIDES, 'utf8'))
+    files = [...new Set(Object.values(meshOverrides))].sort()
+    const missing = files.filter(f => !available.has(f))
+    if (missing.length) {
+      console.error(`Missing source STEP in ${STEP_DIR}: ${missing.join(', ')}`)
       process.exit(1)
     }
   }
@@ -63,16 +67,9 @@ async function main() {
   let converted = 0, skipped = 0, failed = 0
 
   for (const file of files) {
-    const stepPath = path.join(COMPONENTS_DIR, file)
+    const stepPath = path.join(STEP_DIR, file)
     const baseName = file.replace(/\.(step|stp)$/i, '')
     const glbPath = path.join(GLB_DIR, baseName + '.glb')
-
-    // Skip blacklisted
-    if (SKIP_FILES.has(file)) {
-      console.log(`  SKIP  ${file} (blacklisted)`)
-      skipped++
-      continue
-    }
 
     // Check file size
     const stat = fs.statSync(stepPath)

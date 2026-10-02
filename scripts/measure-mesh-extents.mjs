@@ -1,11 +1,8 @@
 // Measure post-rotation AABB for every authored visual GLB and collision OBJ.
 //
-// Phase 1: every consumer that asks
-// "how big is this collision shape, really?" must read a number computed
-// once at build time, not infer it from the preset bbox or from the live
-// rendered scene. This script writes that number into
-// src/public/meshExtents.generated.json, which the resolver loads at runtime
-// for collision.bounds and bbox-vs-mesh divergence warnings.
+// Writes scripts/mesh-extents.generated.json: build-time measurements that
+// the audit scripts (preset-check, reshape_bboxes.py, divergence_report.py)
+// and the --strict bbox-vs-mesh drift gate read. Nothing at runtime loads it.
 //
 // Usage:
 // cd src && node ../scripts/measure-mesh-extents.mjs
@@ -22,8 +19,8 @@ const repoRoot = path.resolve(here, '..')
 const GLB_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'glb')
 const COLLISION_DIR = path.join(repoRoot, 'src', 'public', 'meshes', 'collision')
 const PUBLIC_PRESETS = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
-const MESH_OVERRIDES_TS = path.join(repoRoot, 'src', 'src', 'richVisuals', 'meshOverrides.ts')
-const OUT_FILE = path.join(repoRoot, 'src', 'public', 'meshExtents.generated.json')
+const VISUAL_OVERRIDES_JSON = path.join(repoRoot, 'src', 'src', 'richVisuals', 'visualOverrides.json')
+const OUT_FILE = path.join(repoRoot, 'scripts', 'mesh-extents.generated.json')
 
 // ─────────────────────────── GLB binary helpers ──────────────────────────────
 
@@ -32,7 +29,7 @@ const COMPONENT_BYTE_SIZE = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126:
 const TYPE_NUM_COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 }
 
 // Phase 7b: short content-addressable hash so a mesh swap that preserves the
-// AABB still shows up as a diff in meshExtents.generated.json (and therefore
+// AABB still shows up as a diff in mesh-extents.generated.json (and therefore
 // in `git status`). Not gated — it's a visibility signal, not enforcement.
 function shortContentHash(buf) {
   return createHash('sha256').update(buf).digest('hex').slice(0, 16)
@@ -171,50 +168,17 @@ async function loadObjVertices(filePath) {
   return verts
 }
 
-// ─────────────────────────── meshOverrides parsing ───────────────────────────
+// ─────────────────────────── visual overrides ────────────────────────────────
 
-function stripLineComments(s) { return s.replace(/\/\/[^\n]*/g, '') }
-
-function extractRecordBody(src, name) {
-  const header = new RegExp(`export\\s+const\\s+${name}\\s*:[^=]+?=\\s*\\{`)
-  const match = src.match(header)
-  if (!match) throw new Error(`could not locate ${name}`)
-  let i = match.index + match[0].length
-  let depth = 1
-  while (i < src.length && depth > 0) {
-    const ch = src[i]
-    if (ch === '{') depth++
-    else if (ch === '}') depth--
-    i++
+// Per-component visual overrides (mesh file, rotation, shaft overlay) —
+// the same JSON meshOverrides.ts imports at runtime.
+async function loadVisualOverrides() {
+  const data = JSON.parse(await fs.readFile(VISUAL_OVERRIDES_JSON, 'utf8'))
+  return {
+    meshOverrides: new Map(Object.entries(data.meshOverrides)),
+    rotationOverrides: new Map(Object.entries(data.rotationOverrides).map(([id, e]) => [id, e.rpy])),
+    shaftOverlays: new Map(Object.entries(data.shaftOverlays).map(([id, e]) => [id, { shaft_length_mm: e.shaft_length_mm, shaft_radius_mm: e.shaft_radius_mm }])),
   }
-  if (depth !== 0) throw new Error(`unbalanced braces parsing ${name}`)
-  return src.slice(match.index + match[0].length, i - 1)
-}
-
-function parseStringRecord(src, name) {
-  const body = stripLineComments(extractRecordBody(src, name))
-  const out = new Map()
-  const re = /'([^']+)'\s*:\s*'([^']+)'/g
-  let m
-  while ((m = re.exec(body)) !== null) out.set(m[1], m[2])
-  return out
-}
-
-function evalAngle(expr) {
-  const trimmed = String(expr).trim()
-  if (!/^[0-9.\s+\-*/()MathPI]+$/.test(trimmed)) throw new Error(`unexpected angle expression: ${trimmed}`)
-  return Function(`"use strict"; return (${trimmed});`)()
-}
-
-function parseRotationRecord(src, name) {
-  const body = stripLineComments(extractRecordBody(src, name))
-  const out = new Map()
-  const re = /'([^']+)'\s*:\s*\[\s*([^,\]]+)\s*,\s*([^,\]]+)\s*,\s*([^,\]]+)\s*\]/g
-  let m
-  while ((m = re.exec(body)) !== null) {
-    out.set(m[1], [evalAngle(m[2]), evalAngle(m[3]), evalAngle(m[4])])
-  }
-  return out
 }
 
 // ──────────────────────────────── Main ───────────────────────────────────────
@@ -250,7 +214,7 @@ async function safeAccess(p) {
 
 // ─────────────────────────── CI gate (Phase 5) ───────────────────────────────
 //
-// The script always *measures* and writes meshExtents.generated.json. Whether
+// The script always *measures* and writes mesh-extents.generated.json. Whether
 // it *fails* on divergence is controlled by flags so the gate can be wired
 // into CI now without bricking the build on the 61 pre-existing drifts.
 //
@@ -301,9 +265,7 @@ function compareAgainstBaseline(result, baseline, threshold) {
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2))
-  const meshOverridesText = await fs.readFile(MESH_OVERRIDES_TS, 'utf8')
-  const meshOverrides = parseStringRecord(meshOverridesText, 'MESH_OVERRIDES')
-  const rotationOverrides = parseRotationRecord(meshOverridesText, 'ROTATION_OVERRIDES')
+  const { meshOverrides, rotationOverrides } = await loadVisualOverrides()
   const presetData = JSON.parse(await fs.readFile(PUBLIC_PRESETS, 'utf8'))
 
   const result = {}
@@ -372,13 +334,12 @@ async function main() {
           const collisionHash = shortContentHash(collisionBytes)
           const verts = await loadObjVertices(objPath)
           if (verts.length > 0) {
-            // Apply the same runtime rotation override as the visual side, so
-            // the collision AABB lives in the same frame as declared_bbox_mm
-            // (which is authored in the post-rotation, runtime-presented
-            // frame). Without this, components with a rotation override show
-            // bbox-vs-collision divergence == bbox-vs-mesh axis swap, which
-            // forces the strict gate to reject any aligned-with-GLB bbox.
-            const rot = rotationOverrides.get(id) || [0, 0, 0]
+            // generate-collision-meshes.mjs writes "Normalized" hulls already
+            // rotated into the component (catalog) frame; rotating them again
+            // swapped their axes. Only legacy raw hulls, still in the GLB
+            // frame, get the runtime rotation override.
+            const normalized = collisionBytes.subarray(0, 64).toString('utf8').startsWith('# Normalized')
+            const rot = normalized ? [0, 0, 0] : (rotationOverrides.get(id) || [0, 0, 0])
             const rotMat = rotationMatrixXyz(rot)
             const b = emptyBounds()
             for (const v of verts) expandBounds(b, transformPoint(rotMat, v))
@@ -466,7 +427,7 @@ async function main() {
 
     if (newDrifts.length === 0 && grewDrifts.length === 0) {
       if (collisionNotices.length > 0) {
-        console.log(`Strict check passed; ${collisionNotices.length} component(s) have collision-vs-bbox divergence > ${(COLLISION_NOTICE * 100).toFixed(0)}% (informational, see meshExtents.generated.json).`)
+        console.log(`Strict check passed; ${collisionNotices.length} component(s) have collision-vs-bbox divergence > ${(COLLISION_NOTICE * 100).toFixed(0)}% (informational, see scripts/mesh-extents.generated.json).`)
       } else {
         console.log(`Strict check passed (baseline: ${Object.keys(baseline.components || {}).length} known visual drifts, tolerance ${baseline.tolerance ?? 0.005}).`)
       }
