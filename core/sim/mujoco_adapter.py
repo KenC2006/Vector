@@ -4,21 +4,12 @@ MuJoCo simulation adapter.
 Provides a high-level interface to MuJoCo physics simulation.
 Handles loading URDF/MJCF, stepping simulation, rendering, and state management.
 """
-from typing import Dict, List, Optional, Any, Tuple
-import re
+from typing import Dict, List, Optional, Any
 import numpy as np
-from .urdf_to_mjcf import urdf_to_mjcf, normalize_terrain_config
+from core.sim.urdf_to_mjcf import urdf_to_mjcf, normalize_terrain_config
 
-# Keywords that identify end-effector bodies (matches urdf_to_mjcf sensor logic).
-_EE_KEYWORDS = ("ee", "end_effector", "end-effector", "tool", "tcp")
-
-_TOKEN_SPLIT = re.compile(r"[_\-\s]+")
-
-
-def _name_has_keyword(name: str, keywords: Tuple[str, ...]) -> bool:
-    """Token-aware keyword match: 'knee' won't match 'ee', 'tcp_link' will match 'tcp'."""
-    tokens = set(t for t in _TOKEN_SPLIT.split(name.lower()) if t)
-    return any(kw in tokens for kw in keywords)
+# Spawn gap between the robot's lowest collision point and the floor (m).
+SPAWN_CLEARANCE = 0.001
 
 
 class MuJoCoSimulator:
@@ -38,7 +29,7 @@ class MuJoCoSimulator:
         self.mujoco = mujoco
         self.model = None
         self.data = None
-        # Snapshots set after _auto_lift_* so reset() restores the lifted pose exactly.
+        # Snapshots set after _spawn_on_floor so reset() restores the spawn pose exactly.
         self._initial_qpos: Optional[Any] = None
         self._initial_qvel: Optional[Any] = None
         self._initial_ctrl: Optional[Any] = None
@@ -83,30 +74,28 @@ class MuJoCoSimulator:
             # Reset to initial state
             self.mujoco.mj_resetData(self.model, self.data)
 
-            # Ensure no robot geometry starts inside the floor (z=0 in MuJoCo's
-            # Z-up frame).  For free-floating robots we shift the freejoint qpos;
-            # for fixed-base robots we shift the root body's model position
-            # (which persists through resets unlike qpos).
-            if free_base:
-                self._auto_lift_above_floor()
-            else:
-                self._auto_lift_fixed_base()
+            # Spawn on the floor (z=0 in MuJoCo's Z-up frame): free-floating
+            # robots are placed with their lowest collision point
+            # SPAWN_CLEARANCE above it (no drop, no penetration); fixed-base
+            # robots stay where they were authored unless they would start
+            # inside the floor.
+            self._spawn_on_floor(free_base)
 
-            # Snapshot the lifted initial state so reset() can restore it exactly
-            # without re-running _auto_lift_* (which would re-probe geometry).
+            # Snapshot the spawned initial state so reset() can restore it exactly
+            # without re-running _spawn_on_floor (which would re-probe geometry).
             self._initial_qpos = self.data.qpos.copy()
             self._initial_qvel = self.data.qvel.copy()
             self._initial_ctrl = self.data.ctrl.copy()
 
             # Build joint→actuator id cache. Actuator names follow the convention
-            # "{joint}_pos" (position) or "{joint}_motor" (torque) emitted by
-            # urdf_to_mjcf; both forms map back to a joint name.
+            # "{joint}_pos" (position), "{joint}_vel" (velocity, continuous
+            # joints) or "{joint}_motor" (torque, legacy) emitted by urdf_to_mjcf.
             self._actuator_by_joint.clear()
             for i in range(self.model.nu):
                 act_name = self.mujoco.mj_id2name(
                     self.model, self.mujoco.mjtObj.mjOBJ_ACTUATOR, i
                 ) or ""
-                for suffix in ("_pos", "_motor"):
+                for suffix in ("_pos", "_vel", "_motor"):
                     if act_name.endswith(suffix):
                         self._actuator_by_joint[act_name[:-len(suffix)]] = i
                         break
@@ -121,14 +110,12 @@ class MuJoCoSimulator:
 
     def _geom_min_z(self, i: int) -> float:
         """
-        Return the minimum world-Z coordinate of geom i using rotation-aware bounds.
+        Minimum world-Z of geom i at the current kinematics (exact).
 
-        Uses the geom's world rotation (geom_xmat) to project the correct half-extent
-        along world-Z for each primitive type.  Falls back to geom_rbound for meshes,
-        which is the precomputed bounding-sphere radius — far more accurate than
-        max(size) for arbitrary mesh geometry.
-
-        Requires mj_kinematics to have been called so geom_xpos/geom_xmat are valid.
+        Primitives use the support function of the oriented shape along world
+        -Z; meshes use their actual vertices (the bounding-sphere radius put
+        mesh robots centimetres above the floor, so they spawned high and
+        dropped). Requires mj_kinematics so geom_xpos/geom_xmat are valid.
         """
         mujoco = self.mujoco
         model = self.model
@@ -137,134 +124,81 @@ class MuJoCoSimulator:
         z_cen = float(data.geom_xpos[i, 2])
         geom_type = int(model.geom_type[i])
         size = model.geom_size[i]
-
-        # xmat is a 9-element row-major rotation matrix.  Reshaped to (3,3),
-        # column j is the local j-axis expressed in world coordinates.
-        # R[2, j] is the world-Z component of local axis j.
+        # xmat is row-major; R[2, j] is the world-Z component of local axis j.
         R = data.geom_xmat[i].reshape(3, 3)
+        rz = np.abs(R[2, :])
 
         if geom_type == int(mujoco.mjtGeom.mjGEOM_SPHERE):
             return z_cen - float(size[0])
-
-        elif geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
-            hx, hy, hz = float(size[0]), float(size[1]), float(size[2])
-            # Support function of an oriented box projected onto world-Z.
-            z_ext = abs(float(R[2, 0])) * hx + abs(float(R[2, 1])) * hy + abs(float(R[2, 2])) * hz
-            return z_cen - z_ext
-
-        elif geom_type in (int(mujoco.mjtGeom.mjGEOM_CYLINDER),
-                           int(mujoco.mjtGeom.mjGEOM_CAPSULE)):
+        if geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
+            return z_cen - float(rz @ size[:3])
+        if geom_type == int(mujoco.mjtGeom.mjGEOM_ELLIPSOID):
+            return z_cen - float(np.sqrt(np.sum((R[2, :] * size[:3]) ** 2)))
+        if geom_type in (int(mujoco.mjtGeom.mjGEOM_CYLINDER), int(mujoco.mjtGeom.mjGEOM_CAPSULE)):
             r, hl = float(size[0]), float(size[1])
-            # Cylinder/capsule axis is local-Z.  World-Z component of local-Z:
-            axis_dot_z = abs(float(R[2, 2]))
-            perp = np.sqrt(max(0.0, 1.0 - axis_dot_z ** 2))
-            z_ext = hl * axis_dot_z + r * perp
+            # Axis is local Z: the end disc/cap contributes hl·|cos| and the rim r·|sin|.
+            axis_dot_z = float(rz[2])
+            perp = float(np.sqrt(max(0.0, 1.0 - axis_dot_z ** 2)))
             if geom_type == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
-                z_ext += r  # hemisphere at each end adds another radius
-            return z_cen - z_ext
+                return z_cen - (hl * axis_dot_z + r)
+            return z_cen - (hl * axis_dot_z + r * perp)
+        if geom_type == int(mujoco.mjtGeom.mjGEOM_MESH):
+            mesh_id = int(model.geom_dataid[i])
+            if mesh_id >= 0:
+                adr, num = int(model.mesh_vertadr[mesh_id]), int(model.mesh_vertnum[mesh_id])
+                if num > 0:
+                    verts = model.mesh_vert[adr:adr + num]   # geom frame
+                    return z_cen + float(np.min(verts @ R[2, :]))
+        # Height fields / anything else: bounding sphere.
+        rbound = float(model.geom_rbound[i])
+        return z_cen - (rbound if rbound > 0.0 else float(np.max(np.abs(size[:3]))))
 
-        else:
-            # Mesh or unrecognised primitive: use MuJoCo's precomputed bounding-
-            # sphere radius (geom_rbound).  This handles arbitrary mesh geometry
-            # correctly, unlike max(size) which is 0 for meshes.
-            rbound = float(model.geom_rbound[i])
-            return z_cen - (rbound if rbound > 0.0 else float(np.max(np.abs(size[:3]))))
+    def _robot_min_z(self) -> float:
+        """Lowest world-Z over the robot's collision geoms (inf if none).
 
-    def _auto_lift_above_floor(self, clearance: float = 0.002) -> None:
+        Visual-only geoms (contype = conaffinity = 0, e.g. a track envelope
+        whose rollers carry the contact) cannot touch the floor, so they do
+        not decide the spawn height — unless nothing collides at all.
         """
-        Translate the free-floating root body upward so that the robot's lowest
-        geom (at the zero-pose) is `clearance` metres above the floor (z=0).
+        model = self.model
+        robot = [i for i in range(model.ngeom)
+                 if int(model.geom_bodyid[i]) != 0
+                 and int(model.geom_type[i]) != int(self.mujoco.mjtGeom.mjGEOM_PLANE)]
+        solid = [i for i in robot if int(model.geom_contype[i]) or int(model.geom_conaffinity[i])]
+        return min((self._geom_min_z(i) for i in (solid or robot)), default=float("inf"))
 
-        MuJoCo's freejoint qpos layout: [tx, ty, tz, qw, qx, qy, qz].
+    def _spawn_on_floor(self, free_base: bool, clearance: float = SPAWN_CLEARANCE) -> None:
         """
-        mujoco = self.mujoco
+        Place the robot so its lowest collision point is `clearance` above the
+        floor (z=0) in the zero pose.
 
-        # Forward kinematics at the current (zero) pose so geom_xpos is valid.
-        mujoco.mj_kinematics(self.model, self.data)
-
-        floor_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
-        )
-        plane_type = int(mujoco.mjtGeom.mjGEOM_PLANE)
-
-        # Find the lowest world-Z point of every non-floor geom using
-        # rotation-aware bounds (see _geom_min_z).
-        min_z = float("inf")
-        for i in range(self.model.ngeom):
-            if int(self.model.geom_bodyid[i]) == 0:
-                continue
-            if i == floor_id:
-                continue
-            if int(self.model.geom_type[i]) == plane_type:
-                continue
-            min_z = min(min_z, self._geom_min_z(i))
-
-        if min_z == float("inf") or min_z >= clearance:
-            return   # already above floor
-
-        shift = clearance - min_z
-
-        # Find the freejoint and move its z component.
-        for i in range(self.model.njnt):
-            if int(self.model.jnt_type[i]) == int(mujoco.mjtJoint.mjJNT_FREE):
-                adr = int(self.model.jnt_qposadr[i])
-                self.data.qpos[adr + 2] += shift
-                break
-
-        # Recompute kinematics so the rest of load_urdf sees consistent state.
-        mujoco.mj_kinematics(self.model, self.data)
-
-    def _auto_lift_fixed_base(self, clearance: float = 0.02) -> None:
-        """
-        For fixed-base robots: shift the root body's model position upward so
-        the robot's lowest geom (at the zero-pose) is `clearance` metres above
-        the floor (z=0).
-
-        Unlike the free-base case, there is no freejoint to move, so we
-        directly modify model.body_pos for the root body.  This is a model-
-        level edit and therefore persists through mj_resetData — no need to
-        re-apply on reset.
+        Free base: move the freejoint's z (qpos [tx, ty, tz, qw, qx, qy, qz])
+        up OR down, so the robot neither drops nor starts in the floor.
+        Fixed base: lift the root body's model position only if the robot
+        would start inside the floor; model.body_pos persists through
+        mj_resetData, so resets need no re-probe.
         """
         mujoco = self.mujoco
-
-        # Forward kinematics at the current (zero) pose so geom_xpos is valid.
         mujoco.mj_kinematics(self.model, self.data)
-
-        floor_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
-        )
-        plane_type = int(mujoco.mjtGeom.mjGEOM_PLANE)
-
-        # Find the lowest world-Z point of every non-floor geom using
-        # rotation-aware bounds (see _geom_min_z).
-        min_z = float("inf")
-        for i in range(self.model.ngeom):
-            if int(self.model.geom_bodyid[i]) == 0:
-                continue
-            if i == floor_id:
-                continue
-            if int(self.model.geom_type[i]) == plane_type:
-                continue
-            min_z = min(min_z, self._geom_min_z(i))
-
-        if min_z == float("inf") or min_z >= clearance:
-            return  # already above floor — nothing to do
-
-        shift = clearance - min_z
-
-        # Find the root body: the first non-world body whose parent is the world
-        # (body 0).  Modifying its model.body_pos shifts the whole robot.
-        root_body_id = -1
-        for i in range(1, self.model.nbody):
-            if int(self.model.body_parentid[i]) == 0:
-                root_body_id = i
-                break
-
-        if root_body_id < 0:
+        min_z = self._robot_min_z()
+        if min_z == float("inf"):
             return
-
-        self.model.body_pos[root_body_id, 2] += shift
-
+        shift = clearance - min_z
+        if free_base:
+            if abs(shift) < 1e-9:
+                return
+            for i in range(self.model.njnt):
+                if int(self.model.jnt_type[i]) == int(mujoco.mjtJoint.mjJNT_FREE):
+                    self.data.qpos[int(self.model.jnt_qposadr[i]) + 2] += shift
+                    break
+        else:
+            if shift <= 0:
+                return
+            root = next((b for b in range(1, self.model.nbody)
+                         if int(self.model.body_parentid[b]) == 0), -1)
+            if root < 0:
+                return
+            self.model.body_pos[root, 2] += shift
         # Recompute kinematics so the rest of load_urdf sees consistent state.
         mujoco.mj_kinematics(self.model, self.data)
 
@@ -314,13 +248,13 @@ class MuJoCoSimulator:
                 self.data.ctrl[:] = self._initial_ctrl
             self.mujoco.mj_forward(self.model, self.data)
         else:
-            # Fallback: re-apply the spawn-height lift (free-base only).
+            # Fallback: re-apply the spawn placement (free-base only).
             has_free = any(
                 int(self.model.jnt_type[i]) == int(self.mujoco.mjtJoint.mjJNT_FREE)
                 for i in range(self.model.njnt)
             )
             if has_free:
-                self._auto_lift_above_floor()
+                self._spawn_on_floor(True)
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -430,31 +364,6 @@ class MuJoCoSimulator:
             state["potential_j"] = pe
         except Exception:
             pass
-
-        # ── End-effector 6-DOF poses (world frame, explicit units) ────────────
-        ee_poses: List[Dict[str, Any]] = []
-        try:
-            for i in range(self.model.nbody):
-                bname = self.mujoco.mj_id2name(
-                    self.model, self.mujoco.mjtObj.mjOBJ_BODY, i
-                ) or ""
-                if not _name_has_keyword(bname, _EE_KEYWORDS):
-                    continue
-                pos_m = [float(x) for x in self.data.xpos[i]]   # metres, world frame
-                quat_wxyz = [float(x) for x in self.data.xquat[i]]  # [w,x,y,z]
-                # cvel[i] = [ang_vel(3), lin_vel(3)] in world frame
-                ang_vel_rps = [float(x) for x in self.data.cvel[i, :3]]
-                lin_vel_mps = [float(x) for x in self.data.cvel[i, 3:6]]
-                ee_poses.append({
-                    "name": bname,
-                    "pos_m": pos_m,
-                    "quat_wxyz": quat_wxyz,
-                    "lin_vel_mps": lin_vel_mps,
-                    "ang_vel_rps": ang_vel_rps,
-                })
-        except Exception:
-            pass
-        state["ee_poses"] = ee_poses
 
         return state
 

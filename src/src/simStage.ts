@@ -207,7 +207,9 @@ export function initSimStage(deps: SimStageDeps): SimStageApi {
   function setTerrain(config: SimTerrainConfig) {
     clearTerrainVisuals()
     const terrainType = config?.type ?? 'flat'
-    setReferenceVisible(terrainType === 'flat')
+    // Rough terrain replaces the floor; the stairs stand on it (MJCF adds a
+    // flat floor under them), so it has to stay visible.
+    setReferenceVisible(terrainType !== 'rough')
     originTick.visible = true
     if (terrainType === 'rough') addRoughTerrain(config)
     else if (terrainType === 'stairs') addStairTerrain(config)

@@ -9,13 +9,8 @@ import os
 from lxml import etree
 import numpy as np
 
-try:
-    from presets import get_component as _get_preset_component
-except Exception:  # pragma: no cover - depends on import entrypoint
-    try:
-        from core.presets import get_component as _get_preset_component
-    except Exception:  # pragma: no cover
-        _get_preset_component = None
+from core.presets import actuator_rating, resolve_component_bounds_m
+from core.presets.identity import PartIdentity
 
 # Resolve package:// URIs emitted by the frontend URDF builder.
 # This file lives at <repo_root>/core/sim/urdf_to_mjcf.py, so the repo root
@@ -262,11 +257,11 @@ def _extract_geometry(geom_elem: etree._Element, urdf_dir: str) -> Optional[Dict
 
 
 def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
-    """Convert app/URDF roll-pitch-yaw to quaternion [w, x, y, z].
+    """Convert URDF roll-pitch-yaw to quaternion [w, x, y, z].
 
-    The frontend assembler uses Three.js Euler order XYZ for all URDF RPY
-    reads/writes. Keep the sim converter on that same convention so mirrored
-    generated poses compile to the same transforms in MuJoCo.
+    URDF convention: fixed-axis X, then Y, then Z — R = Rz(yaw)·Ry(pitch)·Rx(roll),
+    the same matrix as `_rotation_matrix_rpy` below and the frontend's
+    rotationIO (three.js Euler order 'ZYX').
     """
     cy = np.cos(yaw * 0.5)
     sy = np.sin(yaw * 0.5)
@@ -275,73 +270,94 @@ def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> List[float]:
     cr = np.cos(roll * 0.5)
     sr = np.sin(roll * 0.5)
 
-    w = cr * cp * cy - sr * sp * sy
-    x = sr * cp * cy + cr * sp * sy
-    y = cr * sp * cy - sr * cp * sy
-    z = cr * cp * sy + sr * sp * cy
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
 
     return [w, x, y, z]
 
 
 # ── Contact / material helpers ────────────────────────────────────────────────
 
-# Link-name keywords that identify contact surface categories.
-_FOOT_KEYWORDS    = frozenset(("foot", "toe", "pad", "paw", "tip", "sole"))
-_GRIPPER_KEYWORDS = frozenset(("gripper", "finger", "claw", "thumb", "palm", "grasp"))
-_IMU_KEYWORDS     = frozenset(("imu",))
+# Contact role -> MJCF default class. The role comes from the catalog
+# (sim_metadata.contact_class via PartIdentity), never from link names:
+# 'sole' used to match 'console' and a vacuum pad array got foot friction.
+_CONTACT_GEOM_CLASS = {
+    "foot": "foot",
+    "wheel": "wheel",
+    "caster": "caster",
+    "gripper": "gripper",
+    "suction": "suction",
+}
+
+# Contact classes: (sliding, torsional, rolling) friction on nominal ground,
+# condim, solimp. Robot geoms carry priority 1 so MuJoCo uses THEIR friction
+# for robot/terrain contacts (with equal priorities it takes the element-wise
+# max, and the grippy default terrain overrode every class). The terrain
+# slider scales the sliding coefficient; see _friction_attr.
+_CONTACT_CLASS_PARAMS = {
+    #            sliding torsion rolling   condim  solimp
+    "default": ((1.0, 0.05, 0.001), 4, "0.9 0.95 0.001"),
+    "foot":    ((3.0, 0.3, 0.03), 6, "0.95 0.99 0.001"),     # rubber pads: no pirouette
+    "wheel":   ((1.2, 0.002, 0.0001), 6, "0.9 0.95 0.001"),  # grips laterally, rolls freely
+    "caster":  ((0.05, 0.001, 0.0001), 3, "0.9 0.95 0.001"), # ball transfer: slides any way
+    "gripper": ((2.0, 0.2, 0.02), 6, "0.9 0.95 0.001"),      # secure grasps
+    "suction": ((1.0, 0.05, 0.005), 6, "0.9 0.95 0.001"),    # rubber cup lip
+}
+
+# Terrain friction the class coefficients are tuned for (the UI default).
+NOMINAL_TERRAIN_FRICTION = 3.0
+
 _EE_KEYWORDS_MJCF = frozenset(("ee", "end_effector", "end-effector", "tool", "tcp"))
+_IMU_KEYWORDS     = frozenset(("imu",))
 
 import re as _re
 _TOKEN_SPLIT = _re.compile(r"[_\-\s]+")
-_COMPONENT_INSTANCE_SUFFIX = _re.compile(r"^(.+)_\d+$")
-_PRESET_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
 
 
 def _name_tokens(name: str) -> set:
     return {t for t in _TOKEN_SPLIT.split(name.lower()) if t}
 
 
-def _is_imu_link(link_name: str) -> bool:
+def _is_imu_link(link_name: str, ident: PartIdentity) -> bool:
+    """An IMU: a catalog part with an accelerometer sensor type; links with no
+    catalog identity (hand-written URDFs) fall back to an `imu` name token."""
+    comp = ident.component(link_name)
+    if comp is not None:
+        return "accelerometer" in str((comp.get("sim_metadata") or {}).get("mjcf_sensor_type", ""))
     return bool(_name_tokens(link_name) & _IMU_KEYWORDS)
 
 
-def _is_ee_link(link_name: str) -> bool:
+def _is_ee_link(link_name: str, ident: PartIdentity) -> bool:
+    """An end effector: a catalog part from the end_effectors category; links
+    with no catalog identity fall back to ee/tool/tcp name tokens."""
+    comp = ident.component(link_name)
+    if comp is not None:
+        return comp["id"] in _END_EFFECTOR_IDS
     tokens = _name_tokens(link_name)
     return any(kw in tokens for kw in _EE_KEYWORDS_MJCF)
 
 
-def _is_foot_link(link_name: str) -> bool:
-    """Heuristic: does this link name suggest a foot / ground-contact surface?"""
-    lower = link_name.lower()
-    return any(kw in lower for kw in _FOOT_KEYWORDS)
+def _end_effector_ids() -> frozenset:
+    try:
+        from core.presets import get_category
+        return frozenset(c["id"] for c in get_category("end_effectors")["components"])
+    except Exception:
+        return frozenset()
 
 
-def _component_id_from_link_name(link_name: str) -> str:
-    """Strip the UI's trailing instance suffix from preset-backed link names."""
-    match = _COMPONENT_INSTANCE_SUFFIX.match(link_name)
-    return match.group(1) if match else link_name
+_END_EFFECTOR_IDS = _end_effector_ids()
 
 
-def _preset_for_link(link_name: str) -> Optional[Dict[str, Any]]:
-    if _get_preset_component is None:
-        return None
-    for component_id in (_component_id_from_link_name(link_name), link_name):
-        if component_id not in _PRESET_CACHE:
-            _PRESET_CACHE[component_id] = _get_preset_component(component_id)
-        preset = _PRESET_CACHE[component_id]
-        if preset:
-            return preset
-    return None
+def _friction_attr(contact_class: str, terrain_friction: float) -> str:
+    """Friction triple for a robot geom class on terrain of the given grip."""
+    (slide, torsion, roll), _, _ = _CONTACT_CLASS_PARAMS[contact_class]
+    scale = terrain_friction / NOMINAL_TERRAIN_FRICTION
+    return f"{slide * scale:.6g} {torsion:.6g} {roll:.6g}"
 
 
-def _contact_class_for_link(link_name: str) -> str:
-    preset = _preset_for_link(link_name)
-    sim_metadata = preset.get("sim_metadata", {}) if preset else {}
-    contact_class = sim_metadata.get("contact_class")
-    return contact_class if isinstance(contact_class, str) else ""
-
-
-def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
+def _sim_wheel_cylinder_collision(component: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
     Return the intended MuJoCo wheel cylinder collision for preset-backed wheels.
 
@@ -349,18 +365,14 @@ def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
     but rolling contact is much more stable as a primitive cylinder.  Presets
     opt into that with sim_metadata.mjcf_geom_type="cylinder".
     """
-    preset = _preset_for_link(link_name)
-    if not preset:
+    if not component:
         return None
-    sim_metadata = preset.get("sim_metadata", {})
-    if sim_metadata.get("mjcf_geom_type") != "cylinder":
+    if (component.get("sim_metadata") or {}).get("mjcf_geom_type") != "cylinder":
         return None
-    # Phase 3: route through resolver instead
-    # of reading raw preset bbox — keeps wheel cylinder dims consistent with
-    # the same envelope the placement compiler sees.
-    from core.presets import resolve_component_bounds_m
+    # Route through the resolver instead of reading the raw preset bbox —
+    # keeps wheel cylinder dims consistent with the placement envelope.
     try:
-        x_m, y_m, z_m = resolve_component_bounds_m(preset)
+        x_m, y_m, z_m = resolve_component_bounds_m(component)
     except (TypeError, ValueError):
         return None
     radius = max(x_m, y_m) / 2.0
@@ -376,20 +388,6 @@ def _sim_wheel_cylinder_collision(link_name: str) -> Optional[Dict[str, Any]]:
         "origin_xyz": [0.0, 0.0, 0.0],
         "origin_rpy": [0.0, 0.0, 0.0],
     }
-
-
-def _is_gripper_link(link_name: str) -> bool:
-    """Heuristic: does this link name suggest a gripper / finger contact?"""
-    lower = link_name.lower()
-    return any(kw in lower for kw in _GRIPPER_KEYWORDS)
-
-
-def _link_has_cylinder_collision(link_data: Dict[str, Any]) -> bool:
-    """Return True if the link's primary collision geometry is a cylinder."""
-    for coll in link_data.get("collision_list", []):
-        if coll["geometry"].get("type") == "cylinder":
-            return True
-    return False
 
 
 # ── Inertia helpers ───────────────────────────────────────────────────────────
@@ -579,12 +577,16 @@ def _create_body_element(
     joint_elem: Optional[etree._Element] = None,
     parent_elem: Optional[etree._Element] = None,
     mesh_assets: Optional[Dict[str, str]] = None,
-    is_foot: bool = False,
-    is_wheel: bool = False,
-    is_gripper: bool = False,
+    contact_class: str = "none",
+    component: Optional[Dict[str, Any]] = None,
     is_imu: bool = False,
 ) -> etree._Element:
-    """Create a MuJoCo body element for a URDF link."""
+    """Create a MuJoCo body element for a URDF link.
+
+    contact_class is the link's catalog contact role (see PartIdentity);
+    component is its catalog entry (None for custom bodies).
+    """
+    is_wheel = contact_class == "wheel"
 
     body = etree.Element("body")
     body.set("name", link_data["name"])
@@ -617,20 +619,15 @@ def _create_body_element(
     visual_mesh_files = link_data.get("visual_mesh_files", [])
     mass = link_data["mass"]
     explicit_inertia = link_data.get("explicit_inertia")
-    mass_auto_estimated = False
 
     # Auto-estimate mass from geometry volume if not given in the URDF.
-    # Tag the link so the model-info warning can be surfaced in the UI.
     if mass < 1e-6 and collision_list:
         total_vol = sum(_primitive_volume(c["geometry"]) for c in collision_list)
         mass = max(total_vol * _PLASTIC_DENSITY, 0.001)  # floor at 1 g
-        mass_auto_estimated = True
 
     if mass > 1e-6:
         inertial = etree.SubElement(body, "inertial")
         inertial.set("mass", f"{mass:.6g}")
-        if mass_auto_estimated:
-            inertial.set("user", "1")  # sentinel for post-processing / UI warning
 
         if explicit_inertia is not None:
             # URDF provided a precise tensor (e.g. from CAD export) — use it as-is
@@ -701,7 +698,7 @@ def _create_body_element(
                 if tire_coll is None or g.get("radius", 0) > tire_coll["geometry"].get("radius", 0):
                     tire_coll = c
         if tire_coll is None:
-            tire_coll = _sim_wheel_cylinder_collision(link_data["name"])
+            tire_coll = _sim_wheel_cylinder_collision(component)
         if tire_coll:
             collision_list = [{
                 "geometry": tire_coll["geometry"],
@@ -719,17 +716,14 @@ def _create_body_element(
         geom_type = geom.get("type", "box")
         geom_elem.set("type", geom_type)
         geom_elem.set("material", "MatGray")
-        # Assign contact class based on link role for appropriate friction parameters.
-        # Role geoms (foot/wheel/gripper) collide with terrain only (CT_ROBOT_ROLE ↔ CT_WORLD).
+        # Contact class from the catalog role sets the friction parameters.
+        # Role geoms (foot/wheel/gripper/...) collide with terrain only (CT_ROBOT_ROLE ↔ CT_WORLD).
         # Structural geoms collide with terrain only (CT_STRUCTURAL ↔ CT_WORLD) — no
         # structural-vs-structural pairs, avoiding the constraint-arena explosion that
         # occurs with 40+ link assemblies at t=0.
-        if is_foot:
-            geom_elem.set("class", "foot")
-        elif is_wheel:
-            geom_elem.set("class", "wheel")
-        elif is_gripper:
-            geom_elem.set("class", "gripper")
+        geom_class = _CONTACT_GEOM_CLASS.get(contact_class)
+        if geom_class:
+            geom_elem.set("class", geom_class)
         else:
             geom_elem.set("contype", str(CT_STRUCTURAL))
             geom_elem.set("conaffinity", str(CT_WORLD))
@@ -771,6 +765,91 @@ def _create_body_element(
     return body
 
 
+
+def _add_track_rollers(body_elem: etree._Element, link_name: str,
+                       incoming_joint: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Make a rigid track module drivable.
+
+    A tracked module is one rigid link in the URDF, so MuJoCo had nothing to
+    turn and tanks could not move. Model the belt as a row of rollers along the
+    module's long axis, ganged by equality constraints and driven through one
+    velocity-controlled joint (``<track joint>_drive``). The box stays as the
+    visual/structural envelope but no longer touches the ground; the rollers do.
+    """
+    box = next((g for g in body_elem.findall("geom") if g.get("type") == "box"), None)
+    if box is None:
+        return None
+    try:
+        hx, hy, hz = (float(v) for v in box.get("size", "").split())
+    except ValueError:
+        return None
+    cx, cy, cz = (float(v) for v in (box.get("pos") or "0 0 0").split())
+    if box.get("quat"):
+        return None  # rotated envelope: leave it rigid rather than guess axes
+    long_ax = 0 if hx >= hy else 1
+    half_len, half_w = (hx, hy) if long_ax == 0 else (hy, hx)
+    r = hz
+    n = max(3, int(round((2 * half_len - 2 * r) / (1.2 * r))) + 1)
+    box.set("contype", "0")
+    box.set("conaffinity", "0")
+    base = (incoming_joint["name"] if incoming_joint else link_name)
+    base = base[:-6] if base.endswith("_joint") else base
+    drive = f"{base}_drive"
+    names = []
+    for k in range(n):
+        u = -half_len + r + k * (2 * half_len - 2 * r) / max(n - 1, 1)
+        pos = [cx, cy, cz]
+        pos[long_ax] += u
+        rb = etree.SubElement(body_elem, "body")
+        rb.set("name", f"{link_name}_roller{k}")
+        rb.set("pos", " ".join(f"{v:.6g}" for v in pos))
+        jn = drive if k == 0 else f"{drive}_idler{k}"
+        names.append(jn)
+        j = etree.SubElement(rb, "joint")
+        j.set("name", jn)
+        j.set("type", "hinge")
+        j.set("axis", "0 1 0" if long_ax == 0 else "1 0 0")
+        j.set("damping", "0.01")
+        j.set("armature", "0.0005")
+        g = etree.SubElement(rb, "geom")
+        g.set("type", "cylinder")
+        g.set("class", "wheel")
+        g.set("material", "MatGray")
+        g.set("rgba", "0 0 0 0")
+        g.set("mass", "0.02")
+        # cylinder axis (local Z) along the roller axle
+        g.set("quat", "0.707107 0.707107 0 0" if long_ax == 0 else "0.707107 0 0.707107 0")
+        g.set("size", f"{r:.6g} {half_w:.6g}")
+    return {"drive": drive, "joints": names, "link": link_name}
+
+# Actuator defaults when neither the URDF nor the catalog rates a joint.
+DEFAULT_EFFORT = 10.0            # N·m (revolute) / N (prismatic)
+DEFAULT_VELOCITY_RAD_S = 10.0    # continuous joints without a speed rating
+DEFAULT_TRACK_TORQUE_NM = 6.0
+# Position-servo error at which the rated effort is reached (sets kp).
+SERVO_SATURATION_RAD = 0.1       # ~6°
+SERVO_SATURATION_M = 0.005       # 5 mm
+
+
+def _joint_rating(joint: Dict[str, Any], ident: PartIdentity) -> Tuple[float, float]:
+    """(effort, velocity) for a joint: the URDF <limit> when it states them,
+    else the catalog rating of the actuator driving it (the joint's parent
+    link, by the designer's convention), else the defaults. velocity 0 means
+    "unrated"."""
+    limits = joint.get("limits") or {}
+    effort = limits.get("effort")
+    velocity = float(limits.get("velocity") or 0.0)
+    if effort is None or velocity <= 0:
+        rating = actuator_rating(ident.component(joint["parent"]))
+        want = "linear" if joint["type"] == "prismatic" else "rotary"
+        if rating and rating[0] == want:
+            if effort is None:
+                effort = rating[1]
+            if velocity <= 0:
+                velocity = rating[2]
+    return (DEFAULT_EFFORT if effort is None else float(effort)), velocity
+
+
 def _terrain_float(config: Dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
     try:
         value = float(config.get(key, default))
@@ -803,8 +882,17 @@ def normalize_terrain_config(terrain_config: Optional[Dict[str, Any]]) -> Dict[s
 
 
 def _set_terrain_friction(geom: etree._Element, friction: float) -> None:
-    geom.set("friction", f"{friction:.6g} {friction / 10.0:.6g} {friction / 100.0:.6g}")
+    # Robot geoms have priority 1 and terrain the default 0, so MuJoCo takes a
+    # robot/terrain contact's friction from the ROBOT geom (its contact class,
+    # already scaled by this terrain setting — see _friction_attr). With equal
+    # priorities it would take the element-wise max, and this grippy terrain
+    # overrode every class (wheels at 3.0 instead of 1.2; a floor rolling
+    # coefficient once braked every wheel). The value here only matters for
+    # contacts with other priority-0 geoms.
+    geom.set("friction", f"{friction:.6g} 0.005 0.0001")
     geom.set("condim", "6")
+    # Explicit: terrain geoms would otherwise inherit the robot default's priority 1.
+    geom.set("priority", "0")
 
 
 def _add_flat_floor(worldbody: etree._Element, friction: float, rgba: str = "0.5 0.5 0.5 1") -> etree._Element:
@@ -926,6 +1014,11 @@ def urdf_to_mjcf(
     """
     urdf_root = _load_urdf_xml(urdf_path)
     urdf_dir = os.path.dirname(os.path.abspath(urdf_path))
+    # Which catalog part each link is (explicit vector:parts map, or the
+    # <component_id>_<N> naming convention for catalog ids only).
+    with open(urdf_path, encoding="utf-8", errors="replace") as f:
+        ident = PartIdentity(f.read())
+    terrain = normalize_terrain_config(terrain_config)
 
     # Extract basic info
     robot_name = urdf_root.get("name", "robot")
@@ -969,7 +1062,8 @@ def urdf_to_mjcf(
             try:
                 lower = float(limit_elem.get("lower", "-3.14159"))
                 upper = float(limit_elem.get("upper", "3.14159"))
-                effort = float(limit_elem.get("effort", "10.0"))
+                # None = not in the URDF: rated from the driving actuator below.
+                effort = float(limit_elem.get("effort")) if limit_elem.get("effort") is not None else None
                 velocity = float(limit_elem.get("velocity", "0.0"))
                 limits = {
                     "lower": lower,
@@ -996,7 +1090,7 @@ def urdf_to_mjcf(
             except (ValueError, TypeError):
                 pass
 
-        joints.append({
+        joint = {
             "name": joint_name,
             "type": joint_type,
             "parent": parent_link,
@@ -1005,7 +1099,9 @@ def urdf_to_mjcf(
             "elem": joint_elem,
             "limits": limits,
             "dynamics": dynamics,
-        })
+        }
+        joint["effort"], joint["velocity"] = _joint_rating(joint, ident)
+        joints.append(joint)
 
     # Find root link (link with no parent)
     child_links = {j["child"] for j in joints}
@@ -1024,6 +1120,12 @@ def urdf_to_mjcf(
     # Build MJCF
     mjcf_root = etree.Element("mujoco")
     mjcf_root.set("model", robot_name)
+
+    # URDF angles are radians. MJCF defaults to degrees for joint ranges, so
+    # without this every revolute limit (e.g. -0.87..0.79 rad) became a ±1°
+    # clamp and legs/arms could barely move.
+    compiler = etree.SubElement(mjcf_root, "compiler")
+    compiler.set("angle", "radian")
 
     # Add option
     # timestep=0.001: tighter than default (0.002) — needed for stiff actuators.
@@ -1053,45 +1155,31 @@ def urdf_to_mjcf(
     size_elem.set("memory", "64M")
 
     # Add contact/solver defaults
-    # condim=4: tangential + torsional friction (good for most links, avoids sliding)
-    # solref/solimp: slightly soft contacts reduce bounce without penetration
+    # Every robot geom has priority 1 (terrain 0), so robot/terrain contacts
+    # use the robot geom's own class friction, scaled by the terrain grip
+    # setting — see _CONTACT_CLASS_PARAMS. solref/solimp: slightly soft
+    # contacts reduce bounce without penetration.
+    terrain_friction = terrain["friction"]
     default_block = etree.SubElement(mjcf_root, "default")
     default_geom = etree.SubElement(default_block, "geom")
-    default_geom.set("friction", "1.0 0.05 0.001")
-    default_geom.set("condim", "4")
+    _, condim, solimp = _CONTACT_CLASS_PARAMS["default"]
+    default_geom.set("friction", _friction_attr("default", terrain_friction))
+    default_geom.set("condim", str(condim))
     default_geom.set("solref", "0.005 1")
-    default_geom.set("solimp", "0.9 0.95 0.001")
-    # Foot sub-class: full 6D friction (torsional + rolling) so feet don't pirouette
-    foot_cls = etree.SubElement(default_block, "default")
-    foot_cls.set("class", "foot")
-    foot_geom = etree.SubElement(foot_cls, "geom")
-    foot_geom.set("friction", "3.0 0.3 0.03")
-    foot_geom.set("condim", "6")
-    foot_geom.set("solref", "0.005 1")
-    foot_geom.set("solimp", "0.95 0.99 0.001")
-    foot_geom.set("contype", str(CT_ROBOT_ROLE))
-    foot_geom.set("conaffinity", str(CT_WORLD))
-    # Wheel sub-class: high lateral friction, low torsional/rolling — prevents
-    # lateral slip but allows rolling with minimal resistance.
-    wheel_cls = etree.SubElement(default_block, "default")
-    wheel_cls.set("class", "wheel")
-    wheel_geom = etree.SubElement(wheel_cls, "geom")
-    wheel_geom.set("friction", "1.2 0.002 0.0001")
-    wheel_geom.set("condim", "6")
-    wheel_geom.set("solref", "0.005 1")
-    wheel_geom.set("solimp", "0.9 0.95 0.001")
-    wheel_geom.set("contype", str(CT_ROBOT_ROLE))
-    wheel_geom.set("conaffinity", str(CT_WORLD))
-    # Gripper/finger sub-class: high friction in all directions for secure grasping.
-    gripper_cls = etree.SubElement(default_block, "default")
-    gripper_cls.set("class", "gripper")
-    gripper_geom = etree.SubElement(gripper_cls, "geom")
-    gripper_geom.set("friction", "2.0 0.2 0.02")
-    gripper_geom.set("condim", "6")
-    gripper_geom.set("solref", "0.005 1")
-    gripper_geom.set("solimp", "0.9 0.95 0.001")
-    gripper_geom.set("contype", str(CT_ROBOT_ROLE))
-    gripper_geom.set("conaffinity", str(CT_WORLD))
+    default_geom.set("solimp", solimp)
+    default_geom.set("priority", "1")
+    # Role sub-classes (foot / wheel / caster / gripper / suction).
+    for cls_name in sorted(set(_CONTACT_GEOM_CLASS.values())):
+        _, condim, solimp = _CONTACT_CLASS_PARAMS[cls_name]
+        cls_elem = etree.SubElement(default_block, "default")
+        cls_elem.set("class", cls_name)
+        cls_geom = etree.SubElement(cls_elem, "geom")
+        cls_geom.set("friction", _friction_attr(cls_name, terrain_friction))
+        cls_geom.set("condim", str(condim))
+        cls_geom.set("solref", "0.005 1")
+        cls_geom.set("solimp", solimp)
+        cls_geom.set("contype", str(CT_ROBOT_ROLE))
+        cls_geom.set("conaffinity", str(CT_WORLD))
 
     # Add visual settings
     visual = etree.SubElement(mjcf_root, "visual")
@@ -1110,12 +1198,14 @@ def urdf_to_mjcf(
 
     # Terrain lives in the world body so physics and contact reporting see the
     # same landscape the UI asks for. The default is the old flat floor.
-    _add_terrain(asset, worldbody, terrain_config)
+    _add_terrain(asset, worldbody, terrain)
 
     # Track mesh assets that need declarations in <asset>: name → (file, [sx, sy, sz])
     mesh_assets: Dict[str, Tuple[str, List[float]]] = {}
 
     # Recursively add bodies
+    track_drives: List[Dict[str, Any]] = []
+
     def add_body_recursive(parent_body_elem: etree._Element, link_name: str, visited: set):
         """Recursively add body elements for a link and its children."""
         if link_name in visited:
@@ -1134,25 +1224,24 @@ def urdf_to_mjcf(
                 incoming_joint = joint
                 break
 
-        # Classify contact role: foot > wheel > gripper > default.
-        # Wheel/tire contact is data-driven by preset sim_metadata.contact_class.
-        contact_class = _contact_class_for_link(link_name)
-        is_foot = _is_foot_link(link_name)
-        is_wheel = contact_class == "wheel"
-        is_gripper = _is_gripper_link(link_name)
-        is_imu = _is_imu_link(link_name)
+        # Contact role from the catalog (sim_metadata.contact_class).
+        contact_class = ident.contact_class(link_name)
+        is_imu = _is_imu_link(link_name, ident)
 
         # Create body element (mesh_assets dict accumulates mesh file declarations)
         body_elem = _create_body_element(
             link_data,
             incoming_joint["elem"] if incoming_joint else None,
             mesh_assets=mesh_assets,
-            is_foot=is_foot,
-            is_wheel=is_wheel and not is_foot,
-            is_gripper=is_gripper and not is_foot and not is_wheel,
+            contact_class=contact_class,
+            component=ident.component(link_name),
             is_imu=is_imu,
         )
         parent_body_elem.append(body_elem)
+        if contact_class == "track":
+            track = _add_track_rollers(body_elem, link_name, incoming_joint)
+            if track:
+                track_drives.append(track)
 
         # Add joint element if incoming joint exists and is not fixed
         if incoming_joint and incoming_joint["type"] != "fixed":
@@ -1178,12 +1267,13 @@ def urdf_to_mjcf(
                 limits = incoming_joint["limits"]
                 joint_elem.set("range", f"{limits['lower']} {limits['upper']}")
                 if limits.get("velocity", 0.0) > 0:
-                    joint_elem.set("actuatorfrcrange", f"-{limits['effort']} {limits['effort']}")
+                    eff = incoming_joint["effort"]
+                    joint_elem.set("actuatorfrcrange", f"-{eff} {eff}")
 
             # ── Joint dynamics ────────────────────────────────────────────────
             dyn = incoming_joint.get("dynamics", {})
             is_prismatic = urdf_joint_type == "prismatic"
-            effort = incoming_joint["limits"]["effort"] if incoming_joint["limits"] else 10.0
+            effort = max(incoming_joint["effort"], 0.01)
 
             # Damping (viscous friction). Use URDF value when provided; otherwise
             # scale with sqrt(effort) so heavier joints settle at a similar rate
@@ -1264,39 +1354,78 @@ def urdf_to_mjcf(
 
     # Add actuators for all non-fixed joints.
     # Revolute and prismatic joints use position actuators (servo-like PD control).
-    # Continuous joints have no angle limits so fall back to raw torque motors.
+    # Continuous joints have no angle limits, so they get velocity servos.
     for joint in joints:
         if joint["type"] in ("fixed",):
             continue
 
-        effort = 10.0
-        if joint["limits"]:
-            effort = max(joint["limits"].get("effort", 10.0), 0.01)
+        if joint["effort"] <= 0.0:
+            continue  # effort="0": a passive pivot (rocker, bogie, free hinge)
+        effort = max(joint["effort"], 0.01)
 
         if joint["type"] == "continuous":
-            # Unbounded rotation — no position target makes sense, use torque motor
-            motor = etree.SubElement(actuators, "motor")
-            motor.set("name", f"{joint['name']}_motor")
-            motor.set("joint", joint["name"])
-            motor.set("ctrllimited", "true")
-            motor.set("ctrlrange", f"{-effort} {effort}")
-            motor.set("forcerange", f"{-effort} {effort}")
+            # Unbounded rotation (wheels, rollers): a velocity servo, like a real
+            # motor driver in speed mode. The command is a target speed in rad/s,
+            # capped at the rated / URDF velocity; torque is capped at the effort.
+            # Raw torque control made every wheeled robot slip and bounce unless
+            # the script hand-tuned throttles.
+            vmax = joint["velocity"] if joint["velocity"] > 0 else DEFAULT_VELOCITY_RAD_S
+            # Full torque at ~15% speed error: stiff enough to hold speed under
+            # load, soft enough not to chatter against ground contact.
+            kv = max(effort / (0.15 * vmax), 1e-3)
+            vel = etree.SubElement(actuators, "velocity")
+            vel.set("name", f"{joint['name']}_vel")
+            vel.set("joint", joint["name"])
+            vel.set("kv", f"{kv:.6g}")
+            vel.set("ctrllimited", "true")
+            vel.set("ctrlrange", f"{-vmax:.6g} {vmax:.6g}")
+            vel.set("forcelimited", "true")
+            vel.set("forcerange", f"{-effort:.6g} {effort:.6g}")
         else:
-            # Revolute / prismatic — position-controlled servo
-            # kp: position stiffness gain. Scaled with effort so a 10 Nm servo → kp=100.
-            # kv: velocity (damping) gain. ~0.1×kp gives reasonable settling without oscillation.
+            # Revolute / prismatic — position servo. A real servo saturates at
+            # its rated torque a few degrees (or millimetres) off target, so
+            # kp = effort / saturation error: a 0.18 N·m micro servo and a
+            # 28 N·m one both reach full torque at the same error instead of
+            # the micro servo being a bang-bang switch (the old kp floor of 50
+            # saturated it 0.2° off target). Damping is critical (dampratio=1)
+            # against the joint's reflected inertia, which MuJoCo computes at
+            # compile time — no guessed kv.
             lower = joint["limits"]["lower"] if joint["limits"] else -3.14159
             upper = joint["limits"]["upper"] if joint["limits"] else 3.14159
-            kp = max(effort * 10.0, 50.0)
-            kv = max(effort * 1.0, 2.0)
+            sat = SERVO_SATURATION_M if joint["type"] == "prismatic" else SERVO_SATURATION_RAD
+            kp = effort / sat
             pos_act = etree.SubElement(actuators, "position")
             pos_act.set("name", f"{joint['name']}_pos")
             pos_act.set("joint", joint["name"])
-            pos_act.set("kp", f"{kp:.4f}")
-            pos_act.set("kv", f"{kv:.4f}")
+            pos_act.set("kp", f"{kp:.6g}")
+            pos_act.set("dampratio", "1")
             pos_act.set("ctrllimited", "true")
             pos_act.set("ctrlrange", f"{lower:.6f} {upper:.6f}")
-            pos_act.set("forcerange", f"{-effort:.4f} {effort:.4f}")
+            pos_act.set("forcelimited", "true")
+            pos_act.set("forcerange", f"{-effort:.6g} {effort:.6g}")
+
+    # Track modules: gang each track's rollers to its drive joint and drive it
+    # like a wheel (velocity servo). Belt speed limit ~0.6 m/s.
+    if track_drives:
+        equality = etree.SubElement(mjcf_root, "equality")
+        for tr in track_drives:
+            for jn in tr["joints"][1:]:
+                eq = etree.SubElement(equality, "joint")
+                eq.set("joint1", jn)
+                eq.set("joint2", tr["drive"])
+                eq.set("polycoef", "0 1 0 0 0")
+            # A track module carries its own drive when the catalog rates one.
+            rating = actuator_rating(ident.component(tr["link"]))
+            effort = rating[1] if rating and rating[0] == "rotary" else DEFAULT_TRACK_TORQUE_NM
+            vmax = 15.0
+            vel = etree.SubElement(actuators, "velocity")
+            vel.set("name", f"{tr['drive']}_vel")
+            vel.set("joint", tr["drive"])
+            vel.set("kv", f"{effort / (0.15 * vmax):.6g}")
+            vel.set("ctrllimited", "true")
+            vel.set("ctrlrange", f"{-vmax:.6g} {vmax:.6g}")
+            vel.set("forcelimited", "true")
+            vel.set("forcerange", f"{-effort:.6g} {effort:.6g}")
 
     # Add sensor section — jointpos/jointvel/jointactuatorfrc per non-fixed joint,
     # plus end-effector pose sensors for any link tagged <vector:ee> or named *ee*/*end*.
@@ -1317,7 +1446,7 @@ def urdf_to_mjcf(
 
     # End-effector sensors: token-aware match so 'knee' doesn't match 'ee'.
     for link_name in links:
-        if _is_ee_link(link_name):
+        if _is_ee_link(link_name, ident):
             fp = etree.SubElement(sensor_section, "framepos")
             fp.set("name", f"{link_name}_pos_sens")
             fp.set("objtype", "body")
@@ -1330,7 +1459,7 @@ def urdf_to_mjcf(
     # IMU sensors: a <site> with the link name was emitted into each imu* body
     # by _create_body_element above, so the site reference here resolves.
     for link_name in links:
-        if _is_imu_link(link_name):
+        if _is_imu_link(link_name, ident):
             acc = etree.SubElement(sensor_section, "accelerometer")
             acc.set("name", f"{link_name}_acc_sens")
             acc.set("site", link_name)

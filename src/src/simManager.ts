@@ -3,6 +3,7 @@
 import * as THREE from 'three'
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { ParsedRobot } from './urdfParser'
 import type { ValResult } from './validation'
 import { urdfVecToSceneVec } from './coordinates.ts'
@@ -91,7 +92,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   let simCoreRunning = false
   let simAtResetMode = true
   let simRafId: number | null = null       // requestAnimationFrame handle
-  let simModelDt = 0.002
+  let simModelDt = 0.001   // replaced by the loaded model's timestep (the converter emits 0.001)
   let simWallStart = 0                     // wall clock when sim started (ms)
   let simTimeAtStart = 0                   // simTime when sim started
   let simSpeedMult = 1.0                   // user-controlled speed multiplier
@@ -373,9 +374,9 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
           heatmapOriginalEmissive.set(obj.uuid, mat.emissive.clone())
         }
 
-        // Look for position actuator first (_pos), fall back to torque motor (_motor).
+        // Position servo (_pos), speed servo for wheels/tracks (_vel), legacy torque motor (_motor).
         const actName = forces
-          ? (`${jointName}_pos` in forces ? `${jointName}_pos` : `${jointName}_motor`)
+          ? ([`${jointName}_pos`, `${jointName}_vel`, `${jointName}_motor`].find(n => n in forces) ?? '')
           : ''
         const force = (forces && actName) ? Math.abs(forces[actName] ?? 0) : 0
         const effort = simJointLimits.get(jointName)?.effort ?? 10
@@ -457,6 +458,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (scriptClearBtn) scriptClearBtn.disabled = !editable || !activeScriptCode
     if (aiPromptEl) aiPromptEl.disabled = !editable
     if (aiGenBtn) aiGenBtn.disabled = !editable || aiGenerating
+    if (aiQuickBtn) aiQuickBtn.disabled = !editable || aiGenerating
     if (modifyBtn) modifyBtn.disabled = !editable || aiGenerating || !activeScriptCode
     if (aiApplyBtn) aiApplyBtn.disabled = !editable || aiGenerating || !pendingAiCode
     if (aiDiscardBtn) aiDiscardBtn.disabled = !editable || aiGenerating || !pendingAiCode
@@ -530,6 +532,8 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
 
   const aiPromptEl = document.getElementById('sim-ai-prompt') as HTMLTextAreaElement | null
   const aiGenBtn = document.getElementById('sim-ai-generate') as HTMLButtonElement | null
+  const aiQuickBtn = document.getElementById('sim-ai-quick') as HTMLButtonElement | null
+  const aiSummaryEl = document.getElementById('sim-ai-summary') as HTMLElement | null
   const modifyBtn = document.getElementById('sim-ai-modify') as HTMLButtonElement | null
   const aiStatusEl = document.getElementById('sim-ai-status')
   const aiPreviewEl = document.getElementById('sim-ai-preview') as HTMLPreElement | null
@@ -651,7 +655,15 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (massInfoEl) { massInfoEl.style.display = 'none'; massInfoEl.innerHTML = '' }
   }
 
-  async function runGenerate(modify: boolean) {
+  function setAiSummary(text: string) {
+    if (!aiSummaryEl) return
+    aiSummaryEl.textContent = text
+    aiSummaryEl.hidden = !text
+  }
+
+  /** Quick: instant controller measured from the robot, no AI. Otherwise the
+   *  controller agent writes, tests in MuJoCo and revises (streams progress). */
+  async function runGenerate(modify: boolean, quick = false) {
     if (aiGenerating) return
     if (!requireSimResetMode('generating a controller')) return
     const prompt = aiPromptEl?.value.trim() ?? ''
@@ -659,33 +671,44 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     if (!urdf.trim()) { deps.showToast('Load a URDF first', 'warning'); return }
     aiGenerating = true
     const requestToken = ++aiRequestToken
-    setAiStatus('Generating…', 'idle')
+    setAiStatus(quick ? 'Measuring robot…' : 'Starting…', 'idle')
+    setAiSummary('')
     if (aiGenBtn) aiGenBtn.disabled = true
+    if (aiQuickBtn) aiQuickBtn.disabled = true
     if (modifyBtn) modifyBtn.disabled = true
+    let unlisten: (() => void) | null = null
     try {
-      const result = await invoke<{ status: string; code?: string; message?: string }>(
+      if (!quick) {
+        unlisten = await listen<{ stage: string; text: string }>('ai_progress', (event) => {
+          if (requestToken === aiRequestToken && event.payload?.text) setAiStatus(event.payload.text, 'idle')
+        })
+      }
+      const result = await invoke<{ status: string; code?: string; message?: string; summary?: string }>(
         'ai_gen_sim_script',
         {
           prompt,
           urdfContent: urdf,
           currentScript: modify ? activeScriptCode : '',
           terrainConfig: activeTerrainConfig,
+          quick,
         }
       )
       if (requestToken !== aiRequestToken || !simActive) return
       if (result.status !== 'ok' || !result.code) {
         setAiStatus(`Error: ${result.message ?? 'unknown'}`, 'error')
         if (result.code) showAiPreview(result.code)   // show rejected code for debugging
-        deps.showToast(`AI generation failed: ${result.message ?? 'unknown'}`, 'error')
+        deps.showToast(`Controller generation failed: ${result.message ?? 'unknown'}`, 'error')
       } else {
-        setAiStatus('Ready — review & apply', 'active')
+        setAiStatus('Tested — review & apply', 'active')
+        setAiSummary(result.summary ?? '')
         showAiPreview(result.code)
       }
     } catch (e) {
       if (requestToken !== aiRequestToken || !simActive) return
       setAiStatus(`Failed: ${e}`, 'error')
-      deps.showToast(`AI request failed: ${e}`, 'error')
+      deps.showToast(`Controller request failed: ${e}`, 'error')
     } finally {
+      unlisten?.()
       if (requestToken === aiRequestToken && simActive) {
         aiGenerating = false
         updateSimConfigLock()
@@ -694,6 +717,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   }
 
   aiGenBtn?.addEventListener('click', () => runGenerate(false))
+  aiQuickBtn?.addEventListener('click', () => runGenerate(false, true))
   modifyBtn?.addEventListener('click', () => runGenerate(true))
 
   aiPromptEl?.addEventListener('keydown', (e) => {
@@ -730,6 +754,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
   aiDiscardBtn?.addEventListener('click', () => {
     if (!requireSimResetMode('discarding generated controller code')) return
     hideAiPreview()
+    setAiSummary('')
     setAiStatus('Discarded', 'idle')
   })
 
@@ -1315,6 +1340,61 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     })
   }
 
+  // ── Keyboard teleop ───────────────────────────────────────────────────────
+  // WASD / arrows set the operator command controllers read as state['cmd'].
+  // The first key press hands control to the operator; releasing all keys then
+  // means "stop", until the sim is reset (which returns to the scripted default).
+  const TELEOP_VX = 0.3        // m/s
+  const TELEOP_YAW = 1.0       // rad/s
+  const teleopKeys = new Set<string>()
+  let teleopActive = false
+  let teleopSent = ''
+
+  function teleopTargetIsTyping(e: KeyboardEvent): boolean {
+    const el = e.target as HTMLElement | null
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
+      || !!el.closest?.('.monaco-editor'))
+  }
+
+  function sendTeleop() {
+    const k = (a: string, b: string) => teleopKeys.has(a) || teleopKeys.has(b)
+    const boost = teleopKeys.has('shift') ? 2 : 1
+    const vx = ((k('w', 'arrowup') ? 1 : 0) - (k('s', 'arrowdown') ? 1 : 0)) * TELEOP_VX * boost
+    const yawRate = ((k('a', 'arrowleft') ? 1 : 0) - (k('d', 'arrowright') ? 1 : 0)) * TELEOP_YAW * boost
+    const key = `${teleopActive}|${vx}|${yawRate}`
+    if (key === teleopSent) return
+    teleopSent = key
+    invoke('sim_set_command', { active: teleopActive, vx, vy: 0, yawRate }).catch(() => { /* core busy */ })
+  }
+
+  function resetTeleop() {
+    teleopKeys.clear()
+    teleopActive = false
+    teleopSent = ''
+    invoke('sim_set_command', { active: false, vx: 0, vy: 0, yawRate: 0 }).catch(() => { /* no model */ })
+  }
+
+  const TELEOP_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'])
+  // Capture phase on window, ahead of the viewport's WASD camera pan (a
+  // document-level listener): while the sim runs, these keys drive the robot.
+  window.addEventListener('keydown', (e) => {
+    if (!simActive || !simRunning || teleopTargetIsTyping(e) || e.ctrlKey || e.metaKey || e.altKey) return
+    const key = e.key.toLowerCase()
+    if (!TELEOP_KEYS.has(key)) return
+    e.preventDefault()
+    e.stopPropagation()
+    teleopKeys.add(key)
+    if (key !== 'shift') teleopActive = true
+    sendTeleop()
+  }, true)
+  window.addEventListener('keyup', (e) => {
+    const key = e.key.toLowerCase()
+    if (!teleopKeys.delete(key)) return
+    e.stopPropagation()
+    if (simActive) sendTeleop()
+  }, true)
+  window.addEventListener('blur', () => { if (teleopKeys.size) { teleopKeys.clear(); if (simActive) sendTeleop() } })
+
   function startSimLoop() {
     if (simRafId !== null) cancelAnimationFrame(simRafId)
     // Anchor wall clock to current simTime so we step exactly the deficit.
@@ -1359,6 +1439,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     stopSimLoop()
     try {
       await invoke('sim_reset')
+      resetTeleop()
       const state = normalizeMuJoCoState(await invoke('sim_get_state'))
       const parsedRobot = deps.getParsedRobot()
       for (const [jointName, jointInfo] of parsedRobot.joints) {
@@ -1412,6 +1493,7 @@ export function initSimManager(deps: SimManagerDeps): SimManagerApi {
     stopSimLoop()
     try {
       await invoke('sim_reset')
+      resetTeleop()
       const state = normalizeMuJoCoState(await invoke('sim_get_state'))
       updateRobotFromSimState(state)
       simTime = 0
