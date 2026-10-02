@@ -128,12 +128,12 @@ function generate3FingerAdaptive(_id: string, dims: ComponentVisualDims): THREE.
   const base = new THREE.Mesh(nurbsCylinder(baseR, baseH, chamfer, 36), catMetal(0.4))
   g.add(base)
 
-  // Mounting flange on top
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flange = flangePlate(baseR * 0.9, h * 0.06, 6, baseR * 0.65, baseR * 0.05)
-  flange.position.y = baseH * 0.5 + h * 0.03
+  flange.position.y = -baseH * 0.5 - h * 0.03
   g.add(flange)
 
-  // 3 finger assemblies at 120-degree spacing
+  // 3 finger assemblies at 120-degree spacing, reaching +Y (catalog +Z gripper_open)
   const fingerW = w * 0.1
   const fingerH = h * 0.48
   const fingerD = d * 0.12
@@ -148,7 +148,7 @@ function generate3FingerAdaptive(_id: string, dims: ComponentVisualDims): THREE.
       nurbsFilletBox(fingerW, fingerH, fingerD, chamfer * 0.3, 16),
       catMetal(0.25),
     )
-    finger.position.set(fx, -baseH * 0.5 - fingerH * 0.5 + fingerH * 0.05, fz)
+    finger.position.set(fx, baseH * 0.5 + fingerH * 0.5 - fingerH * 0.05, fz)
     finger.rotation.y = -angle
     g.add(finger)
 
@@ -158,7 +158,7 @@ function generate3FingerAdaptive(_id: string, dims: ComponentVisualDims): THREE.
     const tip = knurledRing(tipR, tipH, 12)
     tip.position.set(
       Math.cos(angle) * fingerRadius,
-      -baseH * 0.5 - fingerH + tipR * 0.6,
+      baseH * 0.5 + fingerH - tipR * 0.6,
       Math.sin(angle) * fingerRadius,
     )
     tip.rotation.y = -angle
@@ -216,22 +216,25 @@ function generateSuctionCup(_id: string, dims: ComponentVisualDims): THREE.Group
 
   const cupGeom = new THREE.LatheGeometry(pts, 48)
   const cup = new THREE.Mesh(cupGeom, getMaterial('rubber_black'))
+  // Profile is drawn tube-up; turn it so the bell opens toward +Y
+  // (catalog +Z suction_face) and the tube meets the mount at -Y.
+  cup.rotation.x = Math.PI
   g.add(cup)
 
-  // Air fitting on top (small brushed steel cylinder)
+  // Air fitting behind the cup (small brushed steel cylinder)
   const fittingR = tubeR * 0.6
   const fittingH = h * 0.1
   const fitting = new THREE.Mesh(
     nurbsCylinder(fittingR, fittingH, fittingR * 0.15, 16),
     getMaterial('brushed_steel'),
   )
-  fitting.position.y = totalH * 0.5 + fittingH * 0.5
+  fitting.position.y = -totalH * 0.5 - fittingH * 0.5
   g.add(fitting)
 
-  // Mounting flange
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flangeR = tubeR * 2.2
   const flange = flangePlate(flangeR, h * 0.05, 4, flangeR * 0.7, flangeR * 0.06)
-  flange.position.y = totalH * 0.5 + fittingH + h * 0.025
+  flange.position.y = -totalH * 0.5 - fittingH - h * 0.025
   g.add(flange)
 
   return g
@@ -249,7 +252,7 @@ function generateVacuumPadArray(_id: string, dims: ComponentVisualDims): THREE.G
   const plate = new THREE.Mesh(nurbsFilletBox(w * 0.85, plateH, d * 0.85, chamfer, 16), catMetal(0.3))
   g.add(plate)
 
-  // 6 suction pad cylinders (3x2 grid)
+  // 6 suction pad cylinders (3x2 grid) on the working face (+Y -> catalog +Z)
   const padR = Math.min(w, d) * 0.1
   const padH = h * 0.3
   const cols = 3, rows = 2
@@ -263,7 +266,7 @@ function generateVacuumPadArray(_id: string, dims: ComponentVisualDims): THREE.G
         nurbsCylinder(padR, padH, padR * 0.15, 20),
         getMaterial('rubber_black'),
       )
-      pad.position.set(px, -plateH * 0.5 - padH * 0.5, pz)
+      pad.position.set(px, plateH * 0.5 + padH * 0.5, -pz)
       g.add(pad)
     }
   }
@@ -275,12 +278,12 @@ function generateVacuumPadArray(_id: string, dims: ComponentVisualDims): THREE.G
     getMaterial('brushed_steel'),
   )
   manifold.rotation.z = Math.PI / 2
-  manifold.position.y = plateH * 0.5 + manifoldR
+  manifold.position.y = -plateH * 0.5 - manifoldR
   g.add(manifold)
 
-  // Mounting flange
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flange = flangePlate(Math.min(w, d) * 0.2, h * 0.06, 4, Math.min(w, d) * 0.14, Math.min(w, d) * 0.02)
-  flange.position.y = plateH * 0.5 + manifoldR * 3
+  flange.position.y = -plateH * 0.5 - manifoldR * 3
   g.add(flange)
 
   return g
@@ -299,14 +302,14 @@ function generateMagneticTool(_id: string, dims: ComponentVisualDims): THREE.Gro
   const body = new THREE.Mesh(nurbsCylinder(bodyR, bodyH, chamfer, 32), catMetal(0.35))
   g.add(body)
 
-  // Pole face disc at bottom
+  // Pole face disc on the working end (+Y -> catalog +Z tool_face)
   const poleR = bodyR * 1.05
   const poleH = h * 0.06
   const pole = new THREE.Mesh(
     nurbsCylinder(poleR, poleH, poleH * 0.15, 32),
     getMaterial('dark_chrome'),
   )
-  pole.position.y = -bodyH * 0.5 - poleH * 0.5
+  pole.position.y = bodyH * 0.5 + poleH * 0.5
   g.add(pole)
 
   // Accent ring
@@ -315,27 +318,27 @@ function generateMagneticTool(_id: string, dims: ComponentVisualDims): THREE.Gro
     getMaterial('copper_trace'),
   )
   ring.rotation.x = Math.PI / 2
-  ring.position.y = -bodyH * 0.5
+  ring.position.y = bodyH * 0.5
   g.add(ring)
 
-  // Cable exit (top)
+  // Cable exit (back)
   const cableR = bodyR * 0.15
   const cableH = h * 0.15
   const cable = new THREE.Mesh(
     nurbsCylinder(cableR, cableH, cableR * 0.2, 12),
     getMaterial('matte_plastic'),
   )
-  cable.position.y = bodyH * 0.5 + cableH * 0.5
+  cable.position.y = -bodyH * 0.5 - cableH * 0.5
   g.add(cable)
 
-  // Mounting flange
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flange = flangePlate(bodyR * 0.9, h * 0.06, 4, bodyR * 0.65, bodyR * 0.05)
-  flange.position.y = bodyH * 0.5 + cableH + h * 0.03
+  flange.position.y = -bodyH * 0.5 - cableH - h * 0.03
   g.add(flange)
 
   // Label
   const label = labelRecess(bodyR * 1.2, bodyH * 0.3, chamfer * 0.3)
-  label.position.set(0, 0, bodyR * 0.92)
+  label.position.set(0, 0, -bodyR * 0.92)
   g.add(label)
 
   return g
@@ -354,14 +357,14 @@ function generateToolChanger(_id: string, dims: ComponentVisualDims): THREE.Grou
   const plate = new THREE.Mesh(nurbsCylinder(plateR, plateH, chamfer, 48), catMetal(0.35))
   g.add(plate)
 
-  // Center pilot — raised chamferedCylinder
+  // Center pilot on the tool side (+Y -> catalog +Z tool_face)
   const pilotR = plateR * 0.35
   const pilotH = h * 0.22
   const pilot = new THREE.Mesh(
     nurbsCylinder(pilotR, pilotH, chamfer * 0.5, 32),
     getMaterial('brushed_steel'),
   )
-  pilot.position.y = -plateH * 0.5 - pilotH * 0.5
+  pilot.position.y = plateH * 0.5 + pilotH * 0.5
   g.add(pilot)
 
   // 3 locating pin cylinders at 120 degrees
@@ -376,19 +379,19 @@ function generateToolChanger(_id: string, dims: ComponentVisualDims): THREE.Grou
     )
     pin.position.set(
       Math.cos(angle) * pinCircleR,
-      -plateH * 0.5 - pinH * 0.5,
-      Math.sin(angle) * pinCircleR,
+      plateH * 0.5 + pinH * 0.5,
+      -Math.sin(angle) * pinCircleR,
     )
     g.add(pin)
   }
 
-  // Bolt circle on top face
+  // Bolt circle through the plate
   const bolts = boltCircle(plateR * 0.75, plateR * 0.04, 6, plateH * 1.05)
   g.add(bolts)
 
-  // Mounting flange on top
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flange = flangePlate(plateR * 0.85, h * 0.07, 6, plateR * 0.6, plateR * 0.04)
-  flange.position.y = plateH * 0.5 + h * 0.035
+  flange.position.y = -plateH * 0.5 - h * 0.035
   g.add(flange)
 
   // Electrical connector block
@@ -412,20 +415,20 @@ function generateSoftGripper(_id: string, dims: ComponentVisualDims): THREE.Grou
   const base = new THREE.Mesh(nurbsCylinder(baseR, baseH, chamfer, 32), catMetal(0.35))
   g.add(base)
 
-  // 4 tapered soft fingers at 90-degree spacing
+  // 4 tapered soft fingers at 90-degree spacing, reaching +Y (catalog +Z gripper_open)
   // Each finger is 3 stacked chamferedCylinders getting narrower (rubber_black)
   const fingerCount = 4
   const fingerCircleR = baseR * 0.82
   for (let i = 0; i < fingerCount; i++) {
     const angle = (i / fingerCount) * Math.PI * 2
     const fx = Math.cos(angle) * fingerCircleR
-    const fz = Math.sin(angle) * fingerCircleR
+    const fz = -Math.sin(angle) * fingerCircleR
 
     // Segment radii (taper down)
     const segCount = 3
     const baseSegR = Math.min(w, d) * 0.08
     const segH = h * 0.18
-    let currentY = -baseH * 0.5
+    let currentY = baseH * 0.5
     for (let s = 0; s < segCount; s++) {
       const taper = 1.0 - s * 0.25  // 1.0, 0.75, 0.5
       const segR = baseSegR * taper
@@ -433,20 +436,20 @@ function generateSoftGripper(_id: string, dims: ComponentVisualDims): THREE.Grou
         nurbsCylinder(segR, segH, segR * 0.12, 16),
         getMaterial('rubber_black'),
       )
-      seg.position.set(fx, currentY - segH * 0.5, fz)
+      seg.position.set(fx, currentY + segH * 0.5, fz)
       g.add(seg)
-      currentY -= segH * 0.92  // slight overlap
+      currentY += segH * 0.92  // slight overlap
     }
   }
 
-  // Mounting flange on top
+  // Mounting flange (back, -Y -> catalog -Z mount_back)
   const flange = flangePlate(baseR * 0.85, h * 0.06, 4, baseR * 0.6, baseR * 0.05)
-  flange.position.y = baseH * 0.5 + h * 0.03
+  flange.position.y = -baseH * 0.5 - h * 0.03
   g.add(flange)
 
   // Cable port on side
   const cp = cablePort(Math.min(w, d) * 0.035, Math.min(w, d) * 0.01)
-  cp.position.set(baseR * 0.9, baseH * 0.1, 0)
+  cp.position.set(baseR * 0.9, -baseH * 0.1, 0)
   cp.rotation.z = Math.PI / 2
   g.add(cp)
 
@@ -467,7 +470,7 @@ function generateToolHolder(id: string, dims: ComponentVisualDims): THREE.Group 
     nurbsCylinder(ringR, ringH, chamfer * 0.5, 32),
     catMetal(0.3),
   )
-  ring.position.y = -h * 0.08
+  ring.position.y = h * 0.08
   g.add(ring)
 
   // Body tube — chamferedCylinder
@@ -477,12 +480,12 @@ function generateToolHolder(id: string, dims: ComponentVisualDims): THREE.Group 
     nurbsCylinder(tubeR, tubeH, chamfer * 0.4, 28),
     catMetal(0.35),
   )
-  tube.position.y = h * 0.1
+  tube.position.y = -h * 0.1
   g.add(tube)
 
   // Clamping screw on clamp ring
   const screw = screwHead(ringR * 0.12, ringH * 0.4)
-  screw.position.set(ringR * 0.95, -h * 0.08, 0)
+  screw.position.set(ringR * 0.95, h * 0.08, 0)
   screw.rotation.z = Math.PI / 2
   g.add(screw)
 
@@ -492,12 +495,13 @@ function generateToolHolder(id: string, dims: ComponentVisualDims): THREE.Group 
     nurbsCylinder(boreR, tubeH * 0.3, boreR * 0.1, 16),
     getMaterial('dark_chrome'),
   )
-  bore.position.y = -h * 0.15
+  bore.position.y = h * 0.15
   g.add(bore)
 
-  // Mounting flange on top
+  // Mounting flange (back, -Y -> catalog -Z mount_back); the clamp ring
+  // and bore sit at the tip end (+Y -> catalog +Z tip)
   const flange = flangePlate(ringR * 0.9, h * 0.07, 4, ringR * 0.65, ringR * 0.05)
-  flange.position.y = h * 0.1 + tubeH * 0.5 + h * 0.035
+  flange.position.y = -h * 0.1 - tubeH * 0.5 - h * 0.035
   g.add(flange)
 
   // Cable exit (only for welding torch)
@@ -508,13 +512,13 @@ function generateToolHolder(id: string, dims: ComponentVisualDims): THREE.Group 
       getMaterial('matte_plastic'),
     )
     cable.rotation.z = Math.PI / 2
-    cable.position.set(tubeR * 0.8, h * 0.2, 0)
+    cable.position.set(tubeR * 0.8, -h * 0.2, 0)
     g.add(cable)
   }
 
   // Label
   const label = labelRecess(ringR * 1.0, ringH * 0.6, chamfer * 0.3)
-  label.position.set(0, -h * 0.08, ringR * 0.93)
+  label.position.set(0, h * 0.08, -ringR * 0.93)
   g.add(label)
 
   return g

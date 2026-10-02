@@ -116,7 +116,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.18,
+            "rated_speed": 6.283185
+          }
         },
         {
           "id": "actuator_servo_standard",
@@ -203,7 +208,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 1.5,
+            "rated_speed": 5.235988
+          }
         },
         {
           "id": "actuator_servo_high_torque",
@@ -292,7 +302,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 10.6,
+            "rated_speed": 4.817109
+          }
         },
         {
           "id": "actuator_servo_heavy_duty",
@@ -380,7 +395,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 28.0,
+            "rated_speed": 3.141593
+          }
         },
         {
           "id": "actuator_bldc_small",
@@ -469,7 +489,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 9.0,
+            "rated_speed": 33.510322
+          }
         },
         {
           "id": "actuator_bldc_large",
@@ -558,7 +583,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 18.0,
+            "rated_speed": 21.991149
+          }
         },
         {
           "id": "actuator_stepper_nema17",
@@ -646,7 +676,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.44,
+            "rated_speed": 12.566371,
+            "speed_assumed": true
+          }
         },
         {
           "id": "actuator_stepper_nema23",
@@ -734,7 +770,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 1.26,
+            "rated_speed": 12.566371,
+            "speed_assumed": true
+          }
         },
         {
           "id": "actuator_linear_small",
@@ -748,8 +790,7 @@
               130
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "actuator_linear_small_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "max_force_n": 50,
@@ -818,7 +859,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "linear",
+            "rated_effort": 50.0,
+            "rated_speed": 0.015,
+            "stroke_mm": 50.0
+          }
         },
         {
           "id": "actuator_linear_heavy",
@@ -832,8 +879,7 @@
               350
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "actuator_linear_heavy_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "max_force_n": 750,
@@ -902,7 +948,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "linear",
+            "rated_effort": 750.0,
+            "rated_speed": 0.008,
+            "stroke_mm": 200.0
+          }
         },
         {
           "id": "actuator_micro_linear_servo",
@@ -986,7 +1038,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "linear",
+            "rated_effort": 8.0,
+            "rated_speed": 0.02,
+            "stroke_mm": 10.0
+          }
         },
         {
           "id": "actuator_continuous_rotation_servo",
@@ -1072,7 +1130,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 1.2,
+            "rated_speed": 6.283185
+          }
         },
         {
           "id": "actuator_high_speed_mini_servo",
@@ -1159,7 +1222,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.35,
+            "rated_speed": 15.707963
+          }
         }
       ]
     },
@@ -1173,9 +1241,9 @@
           "physical": {
             "mass_kg": 0.03,
             "bounding_box_mm": [
-              39.0,
-              21.0,
-              18.0
+              21,
+              18,
+              39
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -1214,7 +1282,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                9.0
+                19.5
               ],
               "axis_xyz": [
                 0,
@@ -1231,7 +1299,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                9.0
+                19.5
               ],
               "axis_xyz": [
                 0,
@@ -1245,7 +1313,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -9.0
+                -19.5
               ],
               "axis_xyz": [
                 0,
@@ -1254,7 +1322,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.03,
+            "rated_speed": 942.477796
+          }
         },
         {
           "id": "motor_dc_medium_540",
@@ -1344,7 +1417,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.2,
+            "rated_speed": 753.982237
+          }
         },
         {
           "id": "motor_dc_large_775",
@@ -1435,7 +1513,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.6,
+            "rated_speed": 575.958653
+          }
         },
         {
           "id": "motor_gear_small_n20",
@@ -1449,8 +1532,7 @@
               49.0
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "motor_gear_small_n20_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "type": "dc_gearmotor",
@@ -1525,7 +1607,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.1,
+            "rated_speed": 10.471976
+          }
         },
         {
           "id": "motor_gear_medium_37mm",
@@ -1615,7 +1702,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 2.5,
+            "rated_speed": 8.37758
+          }
         },
         {
           "id": "motor_gear_heavy_50mm",
@@ -1705,7 +1797,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 10.0,
+            "rated_speed": 5.235988
+          }
         },
         {
           "id": "motor_coreless_dc",
@@ -1795,7 +1892,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.003,
+            "rated_speed": 2617.993878
+          }
         },
         {
           "id": "motor_worm_gear",
@@ -1804,9 +1906,9 @@
           "physical": {
             "mass_kg": 0.25,
             "bounding_box_mm": [
-              40,
               32,
-              65
+              80,
+              40
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -1845,8 +1947,8 @@
               "id": "shaft_out",
               "origin_xyz_mm": [
                 0,
-                0,
-                32.5
+                -27,
+                20
               ],
               "axis_xyz": [
                 0,
@@ -1863,7 +1965,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                32.5
+                20
               ],
               "axis_xyz": [
                 0,
@@ -1877,7 +1979,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -32.5
+                -20
               ],
               "axis_xyz": [
                 0,
@@ -1886,7 +1988,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 5.0,
+            "rated_speed": 1.570796
+          }
         },
         {
           "id": "motor_hub_80mm",
@@ -1984,7 +2091,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 2.0,
+            "rated_speed": 26.179939
+          }
         },
         {
           "id": "motor_hub_120mm",
@@ -2083,7 +2195,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 8.0,
+            "rated_speed": 36.651914
+          }
         },
         {
           "id": "motor_harmonic_drive_compact",
@@ -2130,6 +2247,22 @@
           },
           "connectors": [
             {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                22.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
+            },
+            {
               "id": "top",
               "origin_xyz_mm": [
                 0,
@@ -2159,7 +2292,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 25.0,
+            "rated_speed": 2.617994
+          }
         },
         {
           "id": "motor_harmonic_drive_large",
@@ -2206,6 +2344,22 @@
           },
           "connectors": [
             {
+              "id": "shaft_out",
+              "origin_xyz_mm": [
+                0,
+                0,
+                32.5
+              ],
+              "axis_xyz": [
+                0,
+                0,
+                1
+              ],
+              "type": "cylindrical",
+              "cls": "shaft",
+              "single": true
+            },
+            {
               "id": "top",
               "origin_xyz_mm": [
                 0,
@@ -2235,7 +2389,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 80.0,
+            "rated_speed": 1.570796
+          }
         },
         {
           "id": "motor_pancake_dc",
@@ -2323,7 +2482,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.15,
+            "rated_speed": 418.87902
+          }
         },
         {
           "id": "motor_brushless_inrunner_micro",
@@ -2411,7 +2575,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.033215,
+            "rated_speed": 2670.353756
+          }
         },
         {
           "id": "motor_brushless_inrunner_medium",
@@ -2499,7 +2668,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 0.190986,
+            "rated_speed": 2324.778564
+          }
         }
       ]
     },
@@ -2513,8 +2687,8 @@
           "physical": {
             "mass_kg": 0.072,
             "bounding_box_mm": [
-              90,
               25,
+              90,
               25
             ],
             "inertia_primitive": "box",
@@ -2555,7 +2729,7 @@
             {
               "id": "mount_back",
               "origin_xyz_mm": [
-                -45,
+                -12.5,
                 0,
                 0
               ],
@@ -2569,7 +2743,7 @@
             {
               "id": "optical_front",
               "origin_xyz_mm": [
-                45,
+                12.5,
                 0,
                 0
               ],
@@ -2589,8 +2763,8 @@
           "physical": {
             "mass_kg": 0.1,
             "bounding_box_mm": [
-              124,
               29,
+              124,
               26
             ],
             "inertia_primitive": "box",
@@ -2631,7 +2805,7 @@
             {
               "id": "mount_back",
               "origin_xyz_mm": [
-                -62,
+                -14.5,
                 0,
                 0
               ],
@@ -2645,7 +2819,7 @@
             {
               "id": "optical_front",
               "origin_xyz_mm": [
-                62,
+                14.5,
                 0,
                 0
               ],
@@ -2733,9 +2907,9 @@
           "physical": {
             "mass_kg": 0.83,
             "bounding_box_mm": [
-              149.0,
-              73.0,
-              104.0
+              148.0,
+              104.0,
+              72.0
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -2774,7 +2948,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -52.0
+                -36.0
               ],
               "axis_xyz": [
                 0,
@@ -2788,7 +2962,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                52.0
+                36.0
               ],
               "axis_xyz": [
                 0,
@@ -2939,9 +3113,9 @@
           "physical": {
             "mass_kg": 0.008,
             "bounding_box_mm": [
-              46.0,
-              27.0,
-              19.0
+              46,
+              27,
+              19
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -2973,28 +3147,28 @@
             {
               "id": "mount_back",
               "origin_xyz_mm": [
-                -23.0,
                 0,
-                0
+                0,
+                -9.5
               ],
               "axis_xyz": [
-                -1,
                 0,
-                0
+                0,
+                -1
               ],
               "type": "planar"
             },
             {
               "id": "sensing_face",
               "origin_xyz_mm": [
-                23.0,
                 0,
-                0
+                0,
+                9.5
               ],
               "axis_xyz": [
-                1,
                 0,
-                0
+                0,
+                1
               ],
               "type": "planar"
             }
@@ -3149,8 +3323,7 @@
               10
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true,
-            "collision_mesh": "sensor_joint_encoder_absolute_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "resolution_bits": 14,
@@ -3738,12 +3911,12 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                1.5
+                -1.5
               ],
               "axis_xyz": [
                 0,
                 0,
-                1
+                -1
               ],
               "type": "planar"
             },
@@ -3752,12 +3925,12 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -1.5
+                1.5
               ],
               "axis_xyz": [
                 0,
                 0,
-                -1
+                1
               ],
               "type": "planar"
             }
@@ -4200,8 +4373,7 @@
               10
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "compute_fpga_dev_board_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "logic_cells": 25000,
@@ -4917,8 +5089,7 @@
               15
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "power_distribution_unit_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "input_channels": 1,
@@ -5458,7 +5629,11 @@
             "inner_diameter_mm": 10,
             "inertia_primitive": "cylinder",
             "material": "carbon_fiber_pultruded",
-            "density_kg_per_m3": 1600
+            "density_kg_per_m3": 1600,
+            "cross_section_mm": [
+              12,
+              12
+            ]
           },
           "mechanical_electrical": {
             "tensile_strength_mpa": 1500,
@@ -5515,7 +5690,7 @@
         {
           "id": "structural_bracket_l",
           "name": "L-Bracket (90-degree)",
-          "description": "Generic aluminum L-bracket for right-angle structural joints. 3.2mm thick plate (8% of bracket size). Geometry: plate in XY plane with top face at Z=+1.6mm, wall on the -X side rising to Z=+38.4mm. Authors three planar connectors that disambiguate the two distinct mounting surfaces \u2014 the legacy default top at +Z/Z=+20 is geometrically invalid (no plate face lives there; bbox corner is empty air), so attach_face:\"top\" routed via the bbox path historically caused P1 rotation errors (camera / component mounted via 'top' landed with its normal along wrong axis). The authored plate_top / wall_inner / wall_outer give exact pose targets: plate_top for components sitting on the horizontal plate, wall_inner for components facing into the L concave side, wall_outer for components facing out from the back of the wall.",
+          "description": "Generic aluminum L-bracket for right-angle structural joints. 3.2mm thick. Geometry fills its 40mm bounding box: the plate lies along the bottom (-Z face, top surface at Z=-16.8) and the wall rises along the -X face (inner surface at X=-16.8). Connectors: plate_top for parts sitting on the plate, wall_inner for parts facing into the L, wall_outer for the back of the wall.",
           "physical": {
             "mass_kg": 0.035,
             "bounding_box_mm": [
@@ -5525,8 +5700,7 @@
             ],
             "inertia_primitive": "box",
             "material": "aluminum_6061_t6",
-            "legacy_override": true,
-            "collision_mesh": "structural_bracket_l_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "thickness_mm": 3,
@@ -5548,9 +5722,9 @@
             {
               "id": "plate_top",
               "origin_xyz_mm": [
+                1.6,
                 0,
-                0,
-                1.6
+                -16.8
               ],
               "axis_xyz": [
                 0,
@@ -5564,7 +5738,7 @@
               "origin_xyz_mm": [
                 -16.8,
                 0,
-                18.4
+                1.6
               ],
               "axis_xyz": [
                 1,
@@ -5578,7 +5752,7 @@
               "origin_xyz_mm": [
                 -20,
                 0,
-                18.4
+                0
               ],
               "axis_xyz": [
                 -1,
@@ -6404,7 +6578,11 @@
             "diameter_mm": 10,
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6",
-            "density_kg_per_m3": 2700
+            "density_kg_per_m3": 2700,
+            "cross_section_mm": [
+              10,
+              10
+            ]
           },
           "mechanical_electrical": {
             "diameter_mm": 10,
@@ -6434,7 +6612,11 @@
             "diameter_mm": 12,
             "inertia_primitive": "cylinder",
             "material": "steel_1045",
-            "density_kg_per_m3": 7850
+            "density_kg_per_m3": 7850,
+            "cross_section_mm": [
+              12,
+              12
+            ]
           },
           "mechanical_electrical": {
             "diameter_mm": 12,
@@ -6464,7 +6646,11 @@
             "diameter_mm": 8,
             "inertia_primitive": "cylinder",
             "material": "steel_grade_4.8",
-            "density_kg_per_m3": 7850
+            "density_kg_per_m3": 7850,
+            "cross_section_mm": [
+              8,
+              8
+            ]
           },
           "mechanical_electrical": {
             "thread_pitch_mm": 1.25,
@@ -6494,7 +6680,11 @@
             "diameter_mm": 12,
             "inertia_primitive": "cylinder",
             "material": "steel_grade_4.8",
-            "density_kg_per_m3": 7850
+            "density_kg_per_m3": 7850,
+            "cross_section_mm": [
+              12,
+              12
+            ]
           },
           "mechanical_electrical": {
             "thread_pitch_mm": 1.75,
@@ -6524,7 +6714,13 @@
             "thickness_mm": 1,
             "inertia_primitive": "box",
             "material": "aluminum_5052_h32",
-            "density_kg_per_m3": 2680
+            "density_kg_per_m3": 2680,
+            "bounding_box_mm": [
+              100,
+              100,
+              1
+            ],
+            "mass_kg": 0.027
           },
           "mechanical_electrical": {
             "thickness_mm": 1,
@@ -6544,7 +6740,8 @@
               "height_m",
               "0.001"
             ]
-          }
+          },
+          "connectors": []
         },
         {
           "id": "structural_sheet_steel_1_5mm",
@@ -6555,7 +6752,13 @@
             "thickness_mm": 1.5,
             "inertia_primitive": "box",
             "material": "steel_cold_rolled_1008",
-            "density_kg_per_m3": 7850
+            "density_kg_per_m3": 7850,
+            "bounding_box_mm": [
+              100,
+              100,
+              1.5
+            ],
+            "mass_kg": 0.118
           },
           "mechanical_electrical": {
             "thickness_mm": 1.5,
@@ -6575,7 +6778,8 @@
               "height_m",
               "0.0015"
             ]
-          }
+          },
+          "connectors": []
         },
         {
           "id": "structural_standoff_m3",
@@ -7033,9 +7237,9 @@
           "physical": {
             "mass_kg": 0.045,
             "bounding_box_mm": [
-              30,
-              22,
-              25
+              13,
+              55,
+              28
             ],
             "inertia_primitive": "box",
             "material": "zinc_alloy_with_steel_bearing"
@@ -7061,9 +7265,9 @@
             {
               "id": "shaft_hole",
               "origin_xyz_mm": [
-                15,
+                6.5,
                 0,
-                0
+                1
               ],
               "axis_xyz": [
                 1,
@@ -7080,7 +7284,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                12.5
+                14
               ],
               "axis_xyz": [
                 0,
@@ -7094,7 +7298,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -12.5
+                -14
               ],
               "axis_xyz": [
                 0,
@@ -7118,8 +7322,7 @@
             ],
             "inertia_primitive": "cylinder",
             "material": "aluminum_6061_t6",
-            "legacy_override": true,
-            "collision_mesh": "structural_shaft_collar_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "bore_mm": 8,
@@ -7326,7 +7529,10 @@
             "mass_kg_per_100mm": 0.032,
             "diameter_mm": 8,
             "inertia_primitive": "cylinder",
-            "collision_mesh": "transmission_leadscrew_collision.obj"
+            "cross_section_mm": [
+              8,
+              8
+            ]
           },
           "mechanical_electrical": {
             "lead_mm": 2,
@@ -7356,7 +7562,11 @@
           "physical": {
             "mass_kg_per_100mm": 0.068,
             "diameter_mm": 12,
-            "inertia_primitive": "cylinder"
+            "inertia_primitive": "cylinder",
+            "cross_section_mm": [
+              12,
+              12
+            ]
           },
           "mechanical_electrical": {
             "lead_mm": 5,
@@ -8146,9 +8356,9 @@
           "physical": {
             "mass_kg": 0.015,
             "bounding_box_mm": [
-              25.0,
-              21.0,
-              21.0
+              21,
+              21,
+              25
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -8178,7 +8388,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -10.5
+                -12.5
               ],
               "axis_xyz": [
                 0,
@@ -8195,7 +8405,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                10.5
+                12.5
               ],
               "axis_xyz": [
                 0,
@@ -8212,7 +8422,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                10.5
+                12.5
               ],
               "axis_xyz": [
                 0,
@@ -8226,7 +8436,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -10.5
+                -12.5
               ],
               "axis_xyz": [
                 0,
@@ -8455,8 +8665,7 @@
               40
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "effector_parallel_gripper_small_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "grip_force_n": 20,
@@ -8481,7 +8690,8 @@
             "mjcf_actuator_type": "position",
             "joint_type": "slide",
             "contact_friction": 0.8,
-            "damping": 0.5
+            "damping": 0.5,
+            "contact_class": "gripper"
           },
           "connectors": [
             {
@@ -8512,7 +8722,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "linear",
+            "rated_effort": 20.0,
+            "rated_speed": 0.066667,
+            "stroke_mm": 20.0
+          }
         },
         {
           "id": "effector_parallel_gripper_large",
@@ -8526,8 +8742,7 @@
               55
             ],
             "inertia_primitive": "box",
-            "legacy_override": true,
-            "collision_mesh": "effector_parallel_gripper_large_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "grip_force_n": 100,
@@ -8552,7 +8767,8 @@
             "mjcf_actuator_type": "position",
             "joint_type": "slide",
             "contact_friction": 0.8,
-            "damping": 1
+            "damping": 1,
+            "contact_class": "gripper"
           },
           "connectors": [
             {
@@ -8583,7 +8799,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "linear",
+            "rated_effort": 100.0,
+            "rated_speed": 0.085,
+            "stroke_mm": 42.5
+          }
         },
         {
           "id": "effector_3finger_adaptive",
@@ -8592,9 +8814,9 @@
           "physical": {
             "mass_kg": 0.8,
             "bounding_box_mm": [
-              234.0,
-              212.0,
-              131.0
+              131,
+              234,
+              212
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -8628,7 +8850,8 @@
             "joint_type": "hinge",
             "num_joints": 9,
             "contact_friction": 1,
-            "damping": 0.5
+            "damping": 0.5,
+            "contact_class": "gripper"
           },
           "connectors": [
             {
@@ -8636,7 +8859,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -65.5
+                -106
               ],
               "axis_xyz": [
                 0,
@@ -8650,7 +8873,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                65.5
+                106
               ],
               "axis_xyz": [
                 0,
@@ -8669,8 +8892,8 @@
             "mass_kg": 0.06,
             "bounding_box_mm": [
               23.0,
-              16.0,
-              23.0
+              23.0,
+              16.0
             ],
             "inertia_primitive": "cylinder",
             "legacy_override": true,
@@ -8692,7 +8915,8 @@
           "sim_metadata": {
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 40,
-            "contact_required": true
+            "contact_required": true,
+            "contact_class": "suction"
           },
           "connectors": [
             {
@@ -8700,7 +8924,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -11.5
+                -8.0
               ],
               "axis_xyz": [
                 0,
@@ -8714,7 +8938,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                11.5
+                8.0
               ],
               "axis_xyz": [
                 0,
@@ -8753,7 +8977,8 @@
           "sim_metadata": {
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 80,
-            "contact_required": true
+            "contact_required": true,
+            "contact_class": "suction"
           },
           "connectors": [
             {
@@ -8883,7 +9108,8 @@
             "joint_type": "hinge",
             "contact_friction": 1.2,
             "damping": 2,
-            "soft_contact": true
+            "soft_contact": true,
+            "contact_class": "gripper"
           },
           "connectors": [
             {
@@ -8945,7 +9171,8 @@
           "sim_metadata": {
             "mjcf_actuator_type": "adhesion",
             "adhesion_force": 160,
-            "contact_required": true
+            "contact_required": true,
+            "contact_class": "suction"
           },
           "connectors": [
             {
@@ -9100,7 +9327,12 @@
               ],
               "type": "point"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 2.0,
+            "rated_speed": 52.359878
+          }
         }
       ]
     },
@@ -9216,9 +9448,9 @@
           "physical": {
             "mass_kg": 0.08,
             "bounding_box_mm": [
-              68.0,
-              102.0,
-              78.0
+              52,
+              59,
+              78
             ],
             "inertia_primitive": "box",
             "legacy_override": true,
@@ -9249,7 +9481,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                39.0
+                39
               ],
               "axis_xyz": [
                 0,
@@ -9263,7 +9495,7 @@
               "origin_xyz_mm": [
                 0,
                 0,
-                -39.0
+                -39
               ],
               "axis_xyz": [
                 0,
@@ -9513,7 +9745,8 @@
             "contact_solref": [
               0.02,
               1
-            ]
+            ],
+            "contact_class": "track"
           },
           "connectors": [
             {
@@ -9587,7 +9820,8 @@
               0.7,
               0.005,
               0.0001
-            ]
+            ],
+            "contact_class": "wheel"
           },
           "connectors": [
             {
@@ -9618,7 +9852,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 2.0,
+            "rated_speed": 10.471976
+          }
         },
         {
           "id": "mobility_ball_transfer_unit",
@@ -9651,7 +9890,8 @@
               0.05,
               0.005,
               0.0001
-            ]
+            ],
+            "contact_class": "caster"
           },
           "connectors": [
             {
@@ -9696,8 +9936,7 @@
               15
             ],
             "inertia_primitive": "cylinder",
-            "legacy_override": true,
-            "collision_mesh": "mobility_rubber_foot_pad_collision.obj"
+            "legacy_override": true
           },
           "mechanical_electrical": {
             "diameter_mm": 25,
@@ -9722,7 +9961,8 @@
             "contact_solref": [
               0.05,
               1
-            ]
+            ],
+            "contact_class": "foot"
           },
           "connectors": [
             {
@@ -9836,7 +10076,13 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 3.5,
+            "rated_speed": 12.566371,
+            "speed_assumed": true
+          }
         },
         {
           "id": "drivetrain_geared_dc_with_coupler",
@@ -9913,7 +10159,12 @@
               ],
               "type": "planar"
             }
-          ]
+          ],
+          "actuation": {
+            "kind": "rotary",
+            "rated_effort": 4.0,
+            "rated_speed": 20.943951
+          }
         },
         {
           "id": "drivetrain_stub_axle_passive",

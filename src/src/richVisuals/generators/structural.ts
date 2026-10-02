@@ -795,7 +795,7 @@ export function generateRichStructural(id: string, dims: ComponentVisualDims, co
     return generateCFTubeSquare(id, dims)
   if (id.includes('flat_bar') || id.includes('round_bar') || id.includes('threaded_rod'))
     return generateBar(id, dims)
-  if (id.includes('sheet_metal'))
+  if (id.includes('sheet_metal') || id.startsWith('structural_sheet_'))
     return generateSheetMetal(id, dims)
   if (id.includes('hex_standoff') || id.includes('standoff'))
     return generateHexStandoff(id, dims)

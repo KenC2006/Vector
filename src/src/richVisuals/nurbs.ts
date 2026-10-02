@@ -170,21 +170,25 @@ export function nurbsRevolved(
 
   for (let i = 0; i < circleCP; i++) {
     controlPoints[i] = []
-    // Angle for this circle control point
-    const angles = [0, 0, Math.PI / 2, Math.PI / 2, Math.PI, Math.PI, 3 * Math.PI / 2, 3 * Math.PI / 2, 2 * Math.PI]
-    const weights = [1, w1, 1, w1, 1, w1, 1, w1, 1]
-    const a = angles[i]
-    const cw = weights[i]
+    // Standard 9-point rational circle: on-circle points at 0°, 90°, … and
+    // the weighted corner points of the circumscribed square at 45°, 135°, …
+    // (distance r·√2). Placing the corners at the same angle/radius as their
+    // neighbours (as this used to) pinched every revolved part into a pillow.
+    const a = (i * Math.PI) / 4
+    const corner = i % 2 === 1
+    const cw = corner ? w1 : 1
+    const rs = corner ? Math.SQRT2 : 1
 
     for (let j = 0; j < cpCount; j++) {
       const [radius, height, pw] = profilePoints[j]
       const totalW = (pw ?? 1) * cw
-      // Control point in homogeneous coordinates
-      // x = radius * cos(a), y = height, z = radius * sin(a)
+      // Cartesian point + weight: three's NURBSSurface applies the weight
+      // itself (x·w, y·w, z·w), so pre-multiplying here double-weighted every
+      // rational point and pinched revolved parts.
       controlPoints[i][j] = new THREE.Vector4(
-        radius * Math.cos(a) * totalW,
-        height * totalW,
-        radius * Math.sin(a) * totalW,
+        radius * rs * Math.cos(a),
+        height,
+        radius * rs * Math.sin(a),
         totalW,
       )
     }
@@ -243,43 +247,15 @@ export function nurbsCylinder(
 
 // ── NURBS Disc / Flange ──────────────────────────────────────────────────────
 
-/**
- * A flat disc with filleted edges.
- */
-export function nurbsDisc(
-  radius: number,
-  thickness: number,
-  fillet = 0,
-  segments = 64,
-): THREE.BufferGeometry {
-  return nurbsCylinder(radius, thickness, fillet || thickness * 0.2, segments)
-}
-
-// ── NURBS Dome ───────────────────────────────────────────────────────────────
-
-/**
- * A hemisphere dome (half sphere) on top of a cylinder.
- */
-export function nurbsDome(
-  radius: number,
-  domeHeight: number,
-  segments = 48,
-): THREE.BufferGeometry {
-  const w = Math.SQRT1_2
-  const profile: Array<[number, number, number?]> = [
-    [0, 0, 1],                              // center bottom
-    [radius, 0, 1],                         // base edge
-    [radius, domeHeight, w],                // dome curve control
-    [0, domeHeight, 1],                     // dome peak
-  ]
-  return nurbsRevolved(profile, 2, segments)
-}
-
 // ── NURBS Torus Section ──────────────────────────────────────────────────────
 
 /**
  * A torus (donut) ring using NURBS. Produces smoother results than
- * Three.js TorusGeometry at the same vertex count.
+ * Three.js TorusGeometry at the same vertex count, and uses the same frame:
+ * the ring lies in the XY plane around the Z axis, so callers orient it
+ * exactly as they would a TorusGeometry. (It used to come out in XZ, the
+ * revolve plane, so every caller's TorusGeometry-style Rx(pi/2) stood the
+ * ring on edge.)
  */
 export function nurbsTorus(
   majorR: number,
@@ -301,7 +277,7 @@ export function nurbsTorus(
     [majorR + minorR, 0, 1],
   ]
 
-  return nurbsRevolved(profile, 2, segments)
+  return nurbsRevolved(profile, 2, segments).rotateX(Math.PI / 2)
 }
 
 // ── Servo-Specific NURBS Parts ───────────────────────────────────────────────

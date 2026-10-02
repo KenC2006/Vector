@@ -11,6 +11,7 @@ import { generateRichStructural } from './structural'
 import { generateRichTransmission } from './transmission'
 import { generateRichEndEffector } from './endEffectors'
 import { generateRichMobility } from './mobility'
+import { findHardwareGenerator } from './hardware'
 
 export interface ComponentVisualDims {
   x: number  // width in meters
@@ -56,7 +57,9 @@ function centeredWrapper(child: THREE.Group): THREE.Group {
 function adaptLegacyZUpGenerator(generator: LegacyZUpRichGenerator): RichGenerator {
   return (id, dims, color) => {
     const child = generator(id, dims, color)
-    child.rotation.x = Math.PI / 2
+    // Z-up -> the registry's Y-up convention (the resolver wraps Y back to
+    // Z). +PI/2 here sent +Z to -Y, i.e. every board came out upside down.
+    child.rotation.x = -Math.PI / 2
     return centeredWrapper(child)
   }
 }
@@ -98,6 +101,8 @@ const registry: RegistryEntry[] = [
  * Returns null if no generator matches (link keeps its URDF primitives).
  */
 export function findRichGenerator(componentId: string): RichGenerator | null {
+  const hardware = findHardwareGenerator(componentId)
+  if (hardware) return hardware
   for (const entry of registry) {
     if (entry.pattern.test(componentId)) {
       return entry.generator

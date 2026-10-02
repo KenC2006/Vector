@@ -5,7 +5,6 @@ import { getMeshVisualMetadata, getRotationOverride, getShaftOverlay } from './m
 
 export interface PreparedMeshVisual {
   group: THREE.Group
-  renderedBodySize: THREE.Vector3 | null
   shaftOverlayMesh?: THREE.Mesh
 }
 
@@ -30,7 +29,6 @@ export function prepareMeshVisualGroup(
   meshBox.getSize(meshSize)
   const maxMeshDim = Math.max(meshSize.x, meshSize.y, meshSize.z)
   const maxExpectedDim = Math.max(dims.x, dims.y, dims.z)
-  let renderedBodySize: THREE.Vector3 | null = null
 
   if (maxMeshDim > 0.0001) {
     if (maxMeshDim > maxExpectedDim * 10) {
@@ -81,17 +79,10 @@ export function prepareMeshVisualGroup(
     if (shaftOverlay) {
       meshGroup.position.z -= shaftLenM / 2
     }
-
-    const finalBox = new THREE.Box3().setFromObject(meshGroup)
-    const finalSize = new THREE.Vector3()
-    finalBox.getSize(finalSize)
-    if (finalSize.x > 0.001 || finalSize.y > 0.001 || finalSize.z > 0.001) {
-      renderedBodySize = finalSize
-    }
   }
 
   const shaftOverlayMesh = opts.includeShaftOverlay ? makeShaftOverlayMesh(compId, dims, opts.linkName, castShadow, receiveShadow) : undefined
-  return { group: meshGroup, renderedBodySize, shaftOverlayMesh }
+  return { group: meshGroup, shaftOverlayMesh }
 }
 
 function applyMeshMaterials(

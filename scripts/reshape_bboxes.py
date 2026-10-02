@@ -3,9 +3,9 @@ reshape_bboxes.py — One-shot migration that aligns preset bboxes to the
 runtime-effective GLB mesh extent for single-mesh single-preset components.
 
 Skips:
-  - Components whose GLB is shared across multiple presets (per MESH_OVERRIDES).
-  - Components in PROCEDURAL_VISUAL_ONLY (already routed to bbox primitive).
-  - Components blacklisted from rendering.
+  - Components whose GLB is shared across multiple presets (per meshOverrides).
+  - Components without a mesh override (procedural visuals, incl. rejected
+    meshes listed under proceduralVisualOnly).
 
 For each in-scope component:
   1. Compute new_bbox = round(runtime_extent, nearest 1mm), with a small +1mm
@@ -20,45 +20,13 @@ Usage:
 import argparse
 import json
 import math
-import re
 from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PRESETS_PATH = ROOT / "core" / "presets" / "generic_presets.json"
-EXTENTS_PATH = ROOT / "src" / "public" / "meshExtents.generated.json"
-OVERRIDES_PATH = ROOT / "src" / "src" / "richVisuals" / "meshOverrides.ts"
-
-
-def parse_ts_string_map(ts: str, name: str) -> dict[str, str]:
-    m = re.search(rf"export const {name}[^{{]*\{{(.*?)^\}}", ts, re.DOTALL | re.MULTILINE)
-    if not m:
-        return {}
-    return dict(re.findall(r"['\"]([\w_]+)['\"]\s*:\s*['\"]([^'\"]+)['\"]", m.group(1)))
-
-
-def parse_ts_set(ts: str, name: str) -> set[str]:
-    m = re.search(rf"export const {name}[^=]*=\s*new Set\(\[(.*?)\]\)", ts, re.DOTALL)
-    if not m:
-        return set()
-    return set(re.findall(r"['\"]([\w_]+)['\"]", m.group(1)))
-
-
-def parse_rotations(ts: str) -> dict[str, list[float]]:
-    m = re.search(r"export const ROTATION_OVERRIDES[^{]*\{(.*?)^\}", ts, re.DOTALL | re.MULTILINE)
-    if not m:
-        return {}
-    out = {}
-    for em in re.finditer(r"['\"]([\w_]+)['\"]\s*:\s*\[([^\]]+)\]", m.group(1)):
-        cid = em.group(1)
-        vals = []
-        for v in em.group(2).split(","):
-            vstr = v.replace("Math.PI", str(math.pi)).strip()
-            if not re.fullmatch(r"[\d\.\s+\-*/()]+", vstr):
-                continue
-            vals.append(float(eval(vstr)))  # noqa: S307
-        out[cid] = vals
-    return out
+EXTENTS_PATH = ROOT / "scripts" / "mesh-extents.generated.json"
+OVERRIDES_PATH = ROOT / "src" / "src" / "richVisuals" / "visualOverrides.json"
 
 
 def apply_rotation(extent, rpy):
@@ -68,10 +36,11 @@ def apply_rotation(extent, rpy):
     cx, sx = math.cos(rx), math.sin(rx)
     cy, sy = math.cos(ry), math.sin(ry)
     cz, sz = math.cos(rz), math.sin(rz)
+    # three.js Euler 'XYZ' (what meshVisual.ts applies): R = Rx * Ry * Rz.
     R = [
-        [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
-        [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
-        [-sy, sx * cy, cx * cy],
+        [cy * cz, -cy * sz, sy],
+        [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
     ]
     return [
         abs(R[i][0]) * extent[0] + abs(R[i][1]) * extent[1] + abs(R[i][2]) * extent[2]
@@ -108,7 +77,7 @@ def main():
     # Components whose bbox was authored to a real-world spec (named size,
     # standard form factor, or product line). For these the spec is
     # authoritative and a mesh mismatch should be handled by replacing the GLB
-    # (or routing to PROCEDURAL_VISUAL_ONLY), not by inflating the bbox.
+    # (or listing it under proceduralVisualOnly), not by inflating the bbox.
     SKIP_SPEC_AUTHORITATIVE = {
         # NEMA standard form factors — width is fixed by the standard.
         "actuator_stepper_nema17",  # 42.3mm NEMA17 face
@@ -121,12 +90,10 @@ def main():
 
     presets = json.loads(PRESETS_PATH.read_text())
     extents = json.loads(EXTENTS_PATH.read_text())["components"]
-    ts = OVERRIDES_PATH.read_text(encoding="utf-8")
+    overrides = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
 
-    mesh_for = parse_ts_string_map(ts, "MESH_OVERRIDES")
-    procedural = parse_ts_set(ts, "PROCEDURAL_VISUAL_ONLY")
-    blacklisted = parse_ts_set(ts, "SLOW_MESH_BLACKLIST")
-    rotations = parse_rotations(ts)
+    mesh_for: dict[str, str] = overrides["meshOverrides"]
+    rotations = {cid: e["rpy"] for cid, e in overrides["rotationOverrides"].items()}
 
     # Find which GLBs are shared across multiple presets
     glb_users: dict[str, list[str]] = defaultdict(list)
@@ -138,8 +105,6 @@ def main():
     for cat in presets["categories"].values():
         for comp in cat.get("components", []):
             cid = comp["id"]
-            if cid in procedural or cid in blacklisted:
-                continue
             if cid in SKIP_SPEC_AUTHORITATIVE:
                 continue
             mesh = mesh_for.get(cid)

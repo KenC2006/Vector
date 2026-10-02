@@ -57,21 +57,6 @@ export function lShape(legA: number, legB: number, thickness: number): THREE.Sha
   return shape
 }
 
-/** U-channel profile. */
-export function uShape(w: number, h: number, thickness: number): THREE.Shape {
-  const shape = new THREE.Shape()
-  shape.moveTo(0, 0)
-  shape.lineTo(w, 0)
-  shape.lineTo(w, h)
-  shape.lineTo(w - thickness, h)
-  shape.lineTo(w - thickness, thickness)
-  shape.lineTo(thickness, thickness)
-  shape.lineTo(thickness, h)
-  shape.lineTo(0, h)
-  shape.closePath()
-  return shape
-}
-
 /** I-beam profile. */
 export function iBeamShape(flangeW: number, totalH: number, webT: number, flangeT: number): THREE.Shape {
   const shape = new THREE.Shape()
@@ -265,17 +250,6 @@ export function bearingOuterProfile(outerR: number, innerR: number, width: numbe
   pts.push(new THREE.Vector2(outerR - c, -hw))
 
   return pts
-}
-
-/** Gear tooth profile for a single tooth (to be arrayed around circumference). */
-export function gearToothProfile(rootR: number, tipR: number, toothWidth: number): THREE.Vector2[] {
-  const hw = toothWidth / 2
-  return [
-    new THREE.Vector2(rootR, -hw * 1.2),
-    new THREE.Vector2(tipR, -hw * 0.7),
-    new THREE.Vector2(tipR, hw * 0.7),
-    new THREE.Vector2(rootR, hw * 1.2),
-  ]
 }
 
 // ── Geometry Builders ────────────────────────────────────────────────────────

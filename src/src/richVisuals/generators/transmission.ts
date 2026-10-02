@@ -594,6 +594,7 @@ function generateSlewingRing(_id: string, dims: ComponentVisualDims): THREE.Grou
     nurbsTorus(trackR, h * 0.15, 48, 8),
     getMaterial('dark_chrome'),
   )
+  track.rotation.x = Math.PI / 2  // around the rings' Y axis
   g.add(track)
 
   // Bore
@@ -632,7 +633,7 @@ export function generateRichTransmission(id: string, dims: ComponentVisualDims, 
     return generateChainSprocket(id, dims)
   if (id.includes('universal_joint'))
     return generateUniversalJoint(id, dims)
-  if (id.includes('flexible_coupling') || id.includes('rigid_coupling'))
+  if (id.includes('flexible_coupling') || id.includes('rigid_coupling') || id.includes('rigid_shaft_coupling'))
     return generateCoupling(id, dims)
   if (id.includes('rack_pinion'))
     return generateRackPinion(id, dims)

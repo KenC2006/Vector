@@ -43,7 +43,8 @@ function centeredWrapper(child: THREE.Group): THREE.Group {
 }
 
 function wrapLegacyZUpSensor(child: THREE.Group): THREE.Group {
-  child.rotation.x = Math.PI / 2
+  // Z-up -> Y-up (the resolver wraps Y back to Z); +PI/2 flipped the board.
+  child.rotation.x = -Math.PI / 2
   return centeredWrapper(child)
 }
 
@@ -1075,16 +1076,18 @@ function generateColorLight(id: string, dims: GeneratorDims): THREE.Group {
   const { x: w, y: h, z: d } = dims
   void id
 
-  // Tiny PCB
+  // Tiny PCB. Like every board: mount_back on -Z, the sensing side (optics,
+  // LEDs, IC) on +Z.
   const pcb = pcbBoard(w, h, d * 0.3, catPcb())
   g.add(pcb)
 
-  // Lens dome (half sphere)
+  // Lens dome (half sphere; the SphereGeometry cap is +Y, turn it to +Z)
   const domeR = Math.min(w, h) * 0.2
   const dome = new THREE.Mesh(
     new THREE.SphereGeometry(domeR, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
     getMaterial('glossy_plastic', 0xccccdd),
   )
+  dome.rotation.x = Math.PI / 2
   dome.position.set(0, 0, d * 0.2)
   g.add(dome)
 
@@ -1140,6 +1143,7 @@ function generateBarometer(id: string, dims: GeneratorDims): THREE.Group {
     new THREE.SphereGeometry(domeR, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
     getMaterial('matte_plastic', 0x555555),
   )
+  dome.rotation.x = Math.PI / 2  // SphereGeometry cap is +Y; face it +Z
   dome.position.set(0, 0, d * 0.2)
   g.add(dome)
 

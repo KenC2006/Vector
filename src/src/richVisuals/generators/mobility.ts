@@ -465,17 +465,17 @@ function generateBallTransfer(_id: string, dims: ComponentVisualDims): THREE.Gro
     nurbsCylinder(housingR, housingH, chamfer, 28),
     catMetal(0.35),
   )
-  housing.position.y = -h * 0.1
+  housing.position.y = h * 0.1
   g.add(housing)
 
-  // Lip ring at top
+  // Lip ring on the ball side (-Y -> catalog -Z contact_bottom)
   const lipR = housingR * 1.1
   const lipH = housingH * 0.12
   const lip = new THREE.Mesh(
     nurbsCylinder(lipR, lipH, chamfer * 0.3, 28),
     catMetal(0.25),
   )
-  lip.position.y = housingH * 0.35
+  lip.position.y = -housingH * 0.35
   g.add(lip)
 
   // Ball — sphere with glossy_plastic
@@ -484,12 +484,12 @@ function generateBallTransfer(_id: string, dims: ComponentVisualDims): THREE.Gro
     new THREE.SphereGeometry(ballR, 24, 24),
     getMaterial('glossy_plastic', 0x999999),
   )
-  ball.position.y = housingH * 0.4 + ballR * 0.5
+  ball.position.y = -housingH * 0.4 - ballR * 0.5
   g.add(ball)
 
-  // Mounting flange at bottom
+  // Mounting flange on top (+Y -> catalog +Z mount_top)
   const flange = flangePlate(housingR * 1.2, h * 0.06, 4, housingR * 0.9, housingR * 0.06)
-  flange.position.y = -h * 0.1 - housingH * 0.5 - h * 0.03
+  flange.position.y = h * 0.1 + housingH * 0.5 + h * 0.03
   g.add(flange)
 
   // Inner race ring
@@ -498,7 +498,7 @@ function generateBallTransfer(_id: string, dims: ComponentVisualDims): THREE.Gro
     getMaterial('brushed_steel'),
   )
   raceRing.rotation.x = Math.PI / 2
-  raceRing.position.y = housingH * 0.42
+  raceRing.position.y = -housingH * 0.42
   g.add(raceRing)
 
   return g

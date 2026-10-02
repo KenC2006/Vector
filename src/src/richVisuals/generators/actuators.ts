@@ -14,7 +14,10 @@ import {
   cablePort, knurledRing,
 } from '../primitives'
 import { nurbsFilletBox, nurbsCylinder, nurbsServoHorn, nurbsMotorHousing, nurbsTorus } from '../nurbs'
-import { SERVO_HORN_ORIGIN_Z_RATIO } from '../../componentMeshes'
+
+/** Height of the servo horn origin above the body center, as a fraction of
+ *  the bbox height. */
+const SERVO_HORN_ORIGIN_Z_RATIO = 0.44
 
 const DEFAULT_COLOR: [number, number, number] = [0.90, 0.49, 0.13]  // orange
 let CAT_COLOR: [number, number, number] = DEFAULT_COLOR
@@ -173,9 +176,6 @@ function generateServoOutput(id: string, dims: ComponentVisualDims): THREE.Group
 
 function generateServo(id: string, dims: ComponentVisualDims): SplitVisual {
   const { z: h } = dims
-  // Match the URDF emitter (`addComponentCore` uses SERVO_HORN_ORIGIN_Z_RATIO
-  // for the revolute joint origin). Without this, the carry preview's horn
-  // sat ~h*0.02 below where the placed component's horn link rendered.
   return {
     body: generateServoBody(id, dims),
     horn: generateServoOutput(id, dims),
@@ -493,13 +493,4 @@ export function generateRichActuator(id: string, dims: ComponentVisualDims, colo
   if (id.includes('linear')) return generateLinearActuator(id, dims)
   // Default: servo — combine body+horn for carry-mode preview and non-physics rendering
   return combineSplitVisual(generateServo(id, dims))
-}
-
-/** Split version of generateRichActuator for callers that need body and horn separately. */
-export function generateRichActuatorSplit(id: string, dims: ComponentVisualDims, color?: [number, number, number]): SplitVisual | null {
-  CAT_COLOR = color ?? DEFAULT_COLOR
-  if (!id.includes('bldc') && !id.includes('stepper') && !id.includes('nema') && !id.includes('linear')) {
-    return generateServo(id, dims)
-  }
-  return null
 }

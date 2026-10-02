@@ -1,0 +1,470 @@
+{
+  "$comment": [
+    "Per-component visual overrides for catalog parts. Read by src/src/richVisuals/meshOverrides.ts",
+    "and by the build scripts (measure-mesh-extents, generate-collision-meshes, add-collision-mesh-fields,",
+    "component-visual-diagnostics, reshape_bboxes.py, divergence_report.py). Edit here, not in code.",
+    "meshOverrides: component id -> source CAD file (kept in assets/step/). The runtime loads the",
+    "  pre-converted /meshes/glb/<basename>.glb. Parts not listed render through their procedural",
+    "  rich generator (src/src/richVisuals/generators).",
+    "proceduralVisualOnly: parts whose authored mesh was rejected, kept for the record; never loaded.",
+    "rotationOverrides: Euler XYZ radians applied to the loaded mesh before scaling, mapping the CAD",
+    "  axes onto the catalog frame (bounding_box_mm / connectors).",
+    "scalePolicy: overrides the default per-axis fit of the mesh into the catalog bbox.",
+    "shaftOverlays: body-only GLBs get a procedural output shaft (mm) above the scaled body."
+  ],
+  "meshOverrides": {
+    "actuator_servo_micro": "servo_small.step",
+    "actuator_servo_standard": "servo_standard.step",
+    "actuator_servo_high_torque": "servo_high_torque.stp",
+    "actuator_servo_heavy_duty": "servo_high_torque.stp",
+    "actuator_continuous_rotation_servo": "servo_standard.step",
+    "actuator_high_speed_mini_servo": "servo_small.step",
+    "actuator_stepper_nema17": "stepper_nema17.step",
+    "actuator_stepper_nema23": "stepper_nema23.stp",
+    "actuator_micro_linear_servo": "linear_actuator.stp",
+    "motor_dc_small_130": "motor_dc_small.stp",
+    "motor_dc_medium_540": "motor_dc_medium.stp",
+    "motor_dc_large_775": "motor_dc_large.step",
+    "motor_gear_medium_37mm": "motor_gear_medium.step",
+    "motor_gear_heavy_50mm": "motor_gear_heavy.step",
+    "motor_coreless_dc": "motor_coreless.step",
+    "motor_worm_gear": "motor_worm_gear.step",
+    "sensor_depth_camera_small": "depth_camera.step",
+    "sensor_depth_camera_wide": "depth_camera.step",
+    "sensor_lidar_2d": "lidar_2d.step",
+    "sensor_lidar_3d": "lidar_3d.stp",
+    "sensor_imu_6dof": "imu_board.step",
+    "sensor_imu_9dof": "imu_board.step",
+    "sensor_ultrasonic": "sensor_ultrasonic.stp",
+    "sensor_tof": "sensor_tof.stp",
+    "sensor_force_torque_6axis": "sensor_force_torque.step",
+    "sensor_thermal_ir_camera": "sensor_thermal_camera.step",
+    "sensor_contact_bumper": "sensor_limit_switch.step",
+    "sensor_limit_switch": "sensor_limit_switch.step",
+    "sensor_load_cell": "sensor_load_cell.step",
+    "compute_mcu_small": "compute_mcu.step",
+    "compute_sbc_small": "sbc_small.step",
+    "compute_motor_driver_dual": "compute_motor_driver.stp",
+    "compute_can_transceiver": "compute_can_transceiver.step",
+    "compute_gps_gnss": "compute_gps.step",
+    "power_lipo_3s_2200": "battery_lipo.step",
+    "power_lipo_4s_5000": "battery_lipo.step",
+    "power_lipo_6s_10000": "battery_lipo.step",
+    "power_buck_converter_5v": "power_buck_converter.step",
+    "power_buck_converter_12v": "power_buck_converter.step",
+    "power_18650_cell_holder_1s": "power_cell_holder.step",
+    "power_usbc_pd_trigger": "power_usb_c_pd.step",
+    "power_estop_switch": "power_estop.stp",
+    "structural_extrusion_2020": "extrusion_2020.step",
+    "structural_extrusion_4040": "extrusion_4040.step",
+    "structural_bracket_u": "structural_bracket_u.step",
+    "structural_servo_coupler_disc": "servo_coupler_disc.step",
+    "structural_hip_housing_2dof": "hip_housing_2dof.stp",
+    "structural_standoff_m3": "structural_standoff.step",
+    "structural_standoff_m4": "structural_standoff.step",
+    "structural_linear_rail_mgn12": "structural_linear_rail.step",
+    "structural_pillow_block_mount": "structural_pillow_block.step",
+    "structural_din_rail_35mm": "structural_din_rail.step",
+    "transmission_bearing_deep_groove": "bearing_small.stp",
+    "transmission_bearing_large": "bearing_large.step",
+    "transmission_planetary_gearbox": "transmission_planetary_gearbox.step",
+    "transmission_flexible_coupling_jaw": "transmission_coupling.step",
+    "transmission_rigid_shaft_coupling": "transmission_rigid_coupling.step",
+    "effector_3finger_adaptive": "effector_3finger.step",
+    "effector_suction_cup": "effector_suction_cup.step",
+    "mobility_wheel_driven": "wheel_driven.step",
+    "mobility_caster_wheel": "wheel_caster.step",
+    "mobility_mecanum_wheel": "wheel_mecanum.stp",
+    "mobility_omni_wheel": "wheel_omni.step"
+  },
+  "proceduralVisualOnly": {
+    "mobility_rubber_foot_pad": {
+      "mesh": "mobility_rubber_foot.step",
+      "why": "GLB models the full foot + M6 stud (~33x33x50) while the preset is pad-only (25x25x15)."
+    },
+    "effector_parallel_gripper_small": {
+      "mesh": "gripper_parallel.step",
+      "why": "GLB is a flat 11mm plate pair; fitting it into the 65x65x40 bbox rendered a paper-thin 25x4mm gripper. The procedural two-finger generator fills the real envelope."
+    },
+    "effector_parallel_gripper_large": {
+      "mesh": "gripper_parallel.step",
+      "why": "Same flat plate-pair GLB as the small gripper (100x100x55 bbox)."
+    },
+    "structural_shaft_collar": {
+      "mesh": "structural_shaft_collar.step",
+      "why": "bbox 18x18x9 vs mesh 60x60x25 (3.37x off): the GLB models a different part."
+    },
+    "structural_bracket_l": {
+      "mesh": "structural_bracket_l.step",
+      "why": "bbox 40mm cube vs mesh 146x72x90 L-bracket (3.65x off)."
+    },
+    "sensor_joint_encoder_absolute": {
+      "mesh": "sensor_encoder.step",
+      "why": "bbox 22x22x10 vs mesh 56x38x53 (3.80x off)."
+    },
+    "power_distribution_unit": {
+      "mesh": "power_pdu.step",
+      "why": "bbox 65x45x15 vs mesh 36x36x4 round PCB (3.66x off)."
+    },
+    "compute_fpga_dev_board": {
+      "mesh": "compute_fpga.stp",
+      "why": "Spec is a small 50x35x10 dev board; the mesh is a 112x87x20 Xilinx-class board (2.47x off)."
+    },
+    "actuator_linear_small": {
+      "mesh": "linear_actuator.stp",
+      "why": "One small linear-servo GLB stretched to 130mm rendered as a thin pole; procedural body + rod instead."
+    },
+    "actuator_linear_heavy": {
+      "mesh": "linear_actuator.stp",
+      "why": "Same small linear-servo GLB stretched to 350mm."
+    },
+    "motor_harmonic_drive_compact": {
+      "mesh": "motor_harmonic_drive.stp",
+      "why": "The STEP is a disc servo, not a harmonic drive; procedural strain-wave actuator instead. Never converted to GLB."
+    },
+    "motor_harmonic_drive_large": {
+      "mesh": "motor_harmonic_drive.stp",
+      "why": "Same mislabeled STEP as the compact drive."
+    },
+    "motor_gear_small_n20": {
+      "mesh": "motor_gear_small.stp",
+      "why": "Mesh has a right-angle stub instead of an axial D-shaft."
+    },
+    "power_supercapacitor_module": {
+      "mesh": "power_supercapacitor.stp",
+      "why": "A single 21mm supercap stretched into a 70mm puck; procedural bank instead."
+    },
+    "power_18650_4s2p_pack": {
+      "mesh": "power_cell_holder.step",
+      "why": "The 1-cell holder stretched 2x to stand in for an 8-cell pack."
+    },
+    "transmission_leadscrew_8mm": {
+      "mesh": "transmission_leadscrew.step",
+      "why": "The \"leadscrew\" GLB is only the flanged nut; the part is a cut-to-length screw."
+    }
+  },
+  "rotationOverrides": {
+    "sensor_lidar_3d": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB is Y-up (spin axis along GLB Y); Rx(pi/2) stands it upright on the preset +Z."
+    },
+    "effector_suction_cup": {
+      "rpy": [
+        -1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB is Y-up; Rx(-pi/2) puts the cup (suction_face) at +Z and the mount at -Z."
+    },
+    "structural_servo_coupler_disc": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Disc thickness is on GLB Y, preset puts it on Z. preset [32,32,8] vs GLB [31.96,8,31.98]."
+    },
+    "transmission_bearing_deep_groove": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "Bearing axis is on GLB X, preset puts it on Z. preset [22,22,7] vs GLB [7,22,22]."
+    },
+    "transmission_bearing_large": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "Bearing axis is on GLB X, preset puts it on Z. preset [52,52,15] vs GLB [15,53,53]."
+    },
+    "compute_sbc_small": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Board thickness is on GLB Y (20mm), preset puts it on Z (17mm). preset [85,56,17] vs GLB [89,20,58]."
+    },
+    "compute_motor_driver_dual": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Board thickness is on GLB Y; without this per-axis scaling renders a wide-but-thin sliver. preset [43,43,15] vs GLB [43,28,43]."
+    },
+    "mobility_mecanum_wheel": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Wheel axle is on GLB Y, preset puts it on Z. preset [100,100,48] vs GLB [100,50,110]."
+    },
+    "sensor_lidar_2d": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Housing height is on GLB Y, preset puts it on Z. preset [70,70,41] vs GLB [75.64,41.3,75.7]."
+    },
+    "sensor_depth_camera_small": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "GLB is long on X with the lens on its -Y face; Rz(pi/2) turns the lens to +X (optical_front) and the length onto Y."
+    },
+    "sensor_depth_camera_wide": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "Same GLB as the small depth camera."
+    },
+    "mobility_caster_wheel": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Caster mounting plate faces GLB +Y; Rx(pi/2) puts it on top (+Z, mount_top)."
+    },
+    "structural_standoff_m3": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Standoff runs along GLB Y; Rx(pi/2) stands it along the preset Z length."
+    },
+    "structural_standoff_m4": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Same GLB as the M3 standoff."
+    },
+    "structural_pillow_block_mount": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "KP08 pillow block bore runs along GLB Y; Rz(pi/2) puts it on X (shaft_hole)."
+    },
+    "motor_worm_gear": {
+      "rpy": [
+        -1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Output shaft leaves the gearbox along GLB -Y, at right angles to the can; Rx(-pi/2) points it at +Z (shaft_out), can along +Y."
+    },
+    "transmission_rigid_shaft_coupling": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "Coupling bore runs along GLB X; Ry(pi/2) puts it on Z (shaft_in/shaft_out)."
+    },
+    "effector_3finger_adaptive": {
+      "rpy": [
+        1.5707963267948966,
+        -1.5707963267948966,
+        0
+      ],
+      "why": "GLB has its bolt-circle mount on +X and fingers reaching -X; Rx(pi/2)*Ry(-pi/2) puts the mount at -Z (mount_back) and aims the fingers at +Z (gripper_open)."
+    },
+    "power_lipo_3s_2200": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "LiPo GLB (pack with XT60 + balance lead) has its ~103mm length on Z and a ~24x23mm section; Ry(pi/2) maps GLB Z to X (length). Per-axis scale then widens the section to the preset footprint. preset [105,34,24] vs GLB [24,23,103]."
+    },
+    "power_lipo_4s_5000": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "Same LiPo GLB; preset [137,42,30]."
+    },
+    "power_lipo_6s_10000": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "Same LiPo GLB; preset [165,65,42] (up to 2.7x stretch across the section)."
+    },
+    "structural_hip_housing_2dof": {
+      "rpy": [
+        0,
+        0,
+        0
+      ],
+      "why": "Authored GLB axes already match the preset envelope exactly: preset [66,58,40] vs GLB [66,58,40]."
+    },
+    "actuator_servo_standard": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "Servo GLBs have the body length on Y; the preset puts it on X with the shaft on +Z. preset [40,20,37] vs GLB [28.5,46.5,41]."
+    },
+    "actuator_continuous_rotation_servo": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "Same GLB as the standard servo."
+    },
+    "actuator_servo_heavy_duty": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "preset [54,42,54] vs GLB [33.5,58.5,54.3]: Rz(pi/2) maps GLB Y to X."
+    },
+    "actuator_servo_high_torque": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "Same GLB as heavy_duty; keeps the horn on +Z (shaft_out)."
+    },
+    "actuator_high_speed_mini_servo": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "preset [32,16,30] vs GLB [29,46.5,38.3]: Rz(pi/2) maps GLB Y to X."
+    },
+    "actuator_servo_micro": {
+      "rpy": [
+        0,
+        0,
+        1.5707963267948966
+      ],
+      "why": "Same GLB as high_speed_mini; keeps the horn on +Z (shaft_out)."
+    },
+    "motor_dc_medium_540": {
+      "rpy": [
+        -1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB [37,75,37] is long on Y; Rx(-pi/2) maps Y to Z with the shaft end (GLB -Y) at +Z (shaft_out)."
+    },
+    "motor_dc_small_130": {
+      "rpy": [
+        -1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB [20,38,17] is long on Y with the shaft at -Y; Rx(-pi/2) puts the shaft at +Z (shaft_out)."
+    },
+    "motor_gear_heavy_50mm": {
+      "rpy": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "why": "GLB [157,45,44] is long on X; Ry(pi/2) maps X to Z."
+    },
+    "power_buck_converter_5v": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB [43,14,21] is thinnest on Y; Rx(pi/2) puts the board thickness on Z."
+    },
+    "power_buck_converter_12v": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Same GLB as the 5V converter."
+    },
+    "sensor_tof": {
+      "rpy": [
+        1.5707963267948966,
+        1.5707963267948966,
+        0
+      ],
+      "why": "GLB [25,4,11] is thin on Y, preset [12,26,5] thin on Z. Rx(pi/2)*Ry(pi/2) maps GLB X to Y (length), Y to Z (thickness), Z to X (width)."
+    },
+    "actuator_micro_linear_servo": {
+      "rpy": [
+        1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "Linear-servo GLB [27,80,15] is long on Y; Rx(pi/2) maps Y to Z (rod axis)."
+    },
+    "actuator_stepper_nema17": {
+      "rpy": [
+        -1.5707963267948966,
+        0,
+        0
+      ],
+      "why": "GLB [47,72,42] is long on Y; Rx(-pi/2) maps Y to Z with the shaft end (GLB -Y) at +Z (shaft_out)."
+    }
+  },
+  "scalePolicy": {
+    "mobility_mecanum_wheel": {
+      "policy": "uniform",
+      "why": "Rotated GLB [100.2,109.8,50] vs bbox [100,100,48]: uniform 0.952 keeps the rollers round (4.6% gap)."
+    },
+    "mobility_caster_wheel": {
+      "policy": "uniform",
+      "why": "GLB is a 100mm-tall caster, the preset is the 78mm size; uniform keeps the plate square and the wheel round."
+    },
+    "sensor_lidar_2d": {
+      "policy": "uniform",
+      "why": "Rotated GLB [75.6,75.7,41.3] vs bbox [70,70,41]: uniform 0.957 keeps the puck round (3.5% gap)."
+    },
+    "effector_3finger_adaptive": {
+      "policy": "uniform",
+      "why": "Rotated GLB [130.2,233.3,211.5] matches bbox [131,234,212] to 1%; uniform keeps the finger linkage proportions."
+    },
+    "effector_suction_cup": {
+      "policy": "uniform",
+      "why": "Rotated GLB [21.6,21.6,15] vs bbox [23,23,16]: uniform keeps the cup round (6% gap)."
+    }
+  },
+  "shaftOverlays": {
+    "actuator_servo_high_torque": {
+      "shaft_length_mm": 5,
+      "shaft_radius_mm": 4,
+      "why": "servo_high_torque.glb is one continuous primitive with no separate shaft; overlay sized to the shaft_out connector diameter. 5mm covers a Dynamixel XM-class horn protrusion."
+    },
+    "actuator_servo_heavy_duty": {
+      "shaft_length_mm": 5,
+      "shaft_radius_mm": 6,
+      "why": "Same single-primitive GLB as high_torque; larger shaft_out diameter."
+    }
+  }
+}

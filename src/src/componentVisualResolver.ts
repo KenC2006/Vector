@@ -1,116 +1,48 @@
+/**
+ * Component visual resolver: the one place that decides what a catalog part
+ * looks like. Returns a preview group sized to the part's bbox, authored in
+ * the catalog (URDF Z-up) frame: the part's GLB when one is mapped and
+ * cached, else its procedural rich generator. Used by the renderer
+ * (richVisuals.applyRichVisuals) and the assembly editor's placement ghost.
+ */
 import * as THREE from 'three'
-import type { AttachmentNodeDef } from './componentSpec'
-import {
-  generateVisuals,
-  SERVO_HORN_ORIGIN_Z_RATIO,
-  servoBodyShape,
-  servoHornShape,
-  servoSideYokeShape,
-  servoHornBeamAdapterShape,
-} from './componentMeshes'
-import type { UrdfVisualDesc } from './componentMeshes'
-import { resolveComponent, resolveComponentBboxMm } from './componentResolver.ts'
-import { getMeasuredCollisionExtentMm, getMeasuredVisualExtentMm, getMeasuredMeshEntry } from './meshExtents.ts'
-import type { MateConnector } from './mateConnectors'
-import { getMeshVisualMetadata, PROCEDURAL_VISUAL_ONLY } from './richVisuals/meshOverrides'
+import { hasMeshOverride } from './richVisuals/meshOverrides'
 import { findRichGenerator } from './richVisuals/generators'
 import { getComponentColor } from './richVisuals/materials'
 import { getCachedMeshGroup, isMeshLoadInProgress } from './richVisuals/meshCache'
 import { prepareMeshVisualGroup } from './richVisuals/meshVisual'
-import { buildVisualsFromLinkGeometry, hasLinkGeometry } from './linkGeometry'
 
+/** 'urdf_primitives': no preview; the caller keeps its own box/primitives. */
 export type ComponentVisualSource = 'mesh' | 'rich' | 'urdf_primitives'
-export type ComponentVisualStatus = 'ready' | 'loading' | 'fallback' | 'missing'
-export type ComponentVisualScalePolicy = 'none' | 'uniform' | 'per-axis'
-export type ComponentCollisionSource = 'authored_mesh' | 'urdf_primitives' | 'preset_bbox'
-/** Coordinate convention the resolver's `previewGroup` is authored in.
- * Carry and render paths use this to compute the per-target world rotation
- * through `componentVisualWorldQuat` — making both paths identical by
- * construction. Rich generators emit Y-up; meshes (after rotation overrides)
- * and URDF primitives are already URDF Z-up. */
+/** 'loading' / 'fallback': the part has a GLB that is loading / not cached;
+ *  the rich generator stands in meanwhile. */
+export type ComponentVisualStatus = 'ready' | 'loading' | 'fallback'
+/** Frame the previewGroup is authored in. Every source is Z-up authored;
+ *  componentVisualWorldQuat maps it into the caller's target frame. */
 export type ComponentVisualAuthoredFrame = 'y_up' | 'z_up'
 
 export interface ComponentVisualPresetLike {
   id: string
   physical: {
-    mass_kg?: number
-    mass_kg_per_100mm?: number
     bbox_mm?: number[]
     bounding_box_mm?: number[]
-    parametric?: {
-      axis?: unknown
-      cross_section_mm?: unknown
-    }
-    cross_section_mm?: number[]
-    inertia_primitive?: string
-    collision_mesh?: string
   }
-  mechanical_electrical: Record<string, unknown>
-  mounting_logic?: Record<string, unknown>
-  connectors?: MateConnector[]
-}
-
-export interface ComponentVisualInstanceLike {
-  length_mm?: number
-  // Authored primitive composition: when present, replaces the preset's
-  // rendered visuals with a free-form union of authored boxes/cylinders/spheres.
-  // See linkGeometry.ts for the wire format. Bounds / collision / connectors
-  // all derive from the primitives.
-  link_geometry?: unknown[]
-}
-
-export interface ComponentVisualBounds {
-  hx: number
-  hy: number
-  hz: number
-  cx: number
-  cy: number
-  cz: number
-  shape: 'box' | 'cylinder'
+  mechanical_electrical?: Record<string, unknown>
 }
 
 export interface ResolvedComponentVisual {
   componentId: string
   source: ComponentVisualSource
-  boundsSource: 'mesh_target_bbox' | 'urdf_primitives' | 'preset_bbox'
   status: ComponentVisualStatus
   frame: 'urdf-z-up'
   authoredFrame: ComponentVisualAuthoredFrame
-  scalePolicy: ComponentVisualScalePolicy
   previewGroup?: THREE.Group
-  visuals: UrdfVisualDesc[]
-  bounds: ComponentVisualBounds
-  visualBounds: ComponentVisualBounds | null
-  collision: {
-    source: ComponentCollisionSource
-    bounds: ComponentVisualBounds
-    meshFile?: string
-    /** Per-primitive collision shapes (meters) for authored link_geometry
-     * bodies. When present, the URDF emitter writes one <collision> per
-     * entry instead of a single AABB box. */
-    descriptors?: UrdfVisualDesc[]
-  }
-  connectors: MateConnector[]
-  ports: AttachmentNodeDef[]
-  warnings: string[]
-  renderedBodySize?: THREE.Vector3 | null
-  fallbackReason?: string
-}
-
-export interface ResolvedSplitServoVisual {
-  componentId: string
-  frame: 'urdf-z-up'
-  hornOriginZ: number
-  bodyVisuals: UrdfVisualDesc[]
-  hornVisuals: UrdfVisualDesc[]
-  bodyCollision: ResolvedComponentVisual['collision']
-  hornCollision: ResolvedComponentVisual['collision']
 }
 
 export interface ResolveComponentVisualArgs {
   preset: ComponentVisualPresetLike
-  category: string
-  instance?: ComponentVisualInstanceLike
+  /** Catalog category; kept for callers, the visual is chosen by id. */
+  category?: string
   linkName?: string
   materialCache?: Map<string, THREE.MeshStandardMaterial>
   castShadow?: boolean
@@ -118,311 +50,40 @@ export interface ResolveComponentVisualArgs {
 }
 
 export function resolveComponentVisual(args: ResolveComponentVisualArgs): ResolvedComponentVisual {
-  const preset = buildVisualPreset(args.preset, args.instance)
-
-  // Novel-mode primitive composition: when an AssemblyComponent declares a
-  // `link_geometry` array, bypass the preset's GLB/rich/primitive pipeline and
-  // render the authored primitives directly. All downstream resolution
-  // (bounds, collision, connectors) derives from the AABB of those primitives,
-  // so the rest of the assembly pipeline treats the resulting link
-  // identically to any catalog component — placement, mate connectors,
-  // inertia, all work without further specialization.
-  const customGeometry = args.instance && hasLinkGeometry(args.instance as { link_geometry?: unknown })
-    ? buildVisualsFromLinkGeometry(((args.instance as { link_geometry?: unknown }).link_geometry as Parameters<typeof buildVisualsFromLinkGeometry>[0]) || [])
-    : null
-
-  const visuals = customGeometry && customGeometry.length > 0
-    ? customGeometry
-    : generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
-  const visualBounds = visualBoundsFromDescriptors(visuals)
-  const boundsResult = customGeometry && customGeometry.length > 0 && visualBounds
-    ? { bounds: visualBounds, boundsSource: 'urdf_primitives' as const, scalePolicy: 'none' as const }
-    : resolveCurrentBounds(preset, visuals)
-  const meshMetadata = getMeshVisualMetadata(preset.id)
-  // Authored body shells collide per-primitive (the visuals ARE the collision
-  // geometry); everything else keeps the Phase-5b single-AABB envelope.
-  const collision = customGeometry && customGeometry.length > 0 && visualBounds
-    ? {
-        source: 'urdf_primitives' as const,
-        bounds: visualBounds,
-        descriptors: customGeometry,
-      }
-    : resolveCollisionEnvelope(preset, visuals, boundsResult.bounds, visualBounds)
-  const resolvedLogical = resolveComponent({ spec: preset, instance: args.instance, category: args.category })
-  // When custom link_geometry is in play, suppress GLB/rich-visual paths so
-  // the authored primitives are what gets rendered (otherwise the preset's
-  // mesh override would re-take the slot we just filled).
-  const proceduralOnly = PROCEDURAL_VISUAL_ONLY.has(preset.id) || (!!customGeometry && customGeometry.length > 0)
-  const meshOverride = !!meshMetadata && !proceduralOnly
-  const meshUsable = !!meshMetadata && !meshMetadata.blacklisted && !proceduralOnly
-  const meshPreview = meshUsable ? buildCachedMeshPreviewGroup(preset, {
-    linkName: args.linkName,
-    materialCache: args.materialCache,
-    castShadow: args.castShadow,
-    receiveShadow: args.receiveShadow,
-  }) : undefined
-  const previewGroup = meshPreview?.group ?? buildRichPreviewGroup(preset, {
-    linkName: args.linkName,
-    castShadow: args.castShadow,
-    receiveShadow: args.receiveShadow,
-  })
-  const status: ComponentVisualStatus = meshPreview
+  const { preset } = args
+  const meshOverride = hasMeshOverride(preset.id)
+  const meshPreview = meshOverride ? buildCachedMeshPreviewGroup(preset, args) : undefined
+  const previewGroup = meshPreview ?? buildRichPreviewGroup(preset, args)
+  const status: ComponentVisualStatus = meshPreview || !meshOverride
     ? 'ready'
-    : (meshUsable && isMeshLoadInProgress(preset.id) ? 'loading' : (meshOverride ? 'fallback' : 'ready'))
-
-  const source: ComponentVisualSource = meshPreview ? 'mesh' : (previewGroup ? 'rich' : 'urdf_primitives')
+    : (isMeshLoadInProgress(preset.id) ? 'loading' : 'fallback')
   return {
     componentId: preset.id,
-    source,
-    boundsSource: boundsResult.boundsSource,
+    source: meshPreview ? 'mesh' : (previewGroup ? 'rich' : 'urdf_primitives'),
     status,
     frame: 'urdf-z-up',
-    // Authored-frame unification: previewGroups are now Z-up regardless of
-    // source — rich output is wrapped at construction time in
-    // buildRichPreviewGroup, GLBs are Z-up natively. The dual-frame branch
-    // that used to live here was the root of the carry-vs-placed rotation
-    // mismatch when the live render swapped sources mid-flight.
     authoredFrame: 'z_up',
-    scalePolicy: boundsResult.scalePolicy,
     previewGroup,
-    visuals,
-    bounds: boundsResult.bounds,
-    visualBounds,
-    collision,
-    connectors: resolvedLogical.connectors,
-    ports: resolvedLogical.ports,
-    warnings: [
-      ...resolvedLogical.warnings,
-      ...buildResolverWarnings(meshOverride, meshUsable, meshPreview !== undefined),
-      ...buildMeshDivergenceWarnings(preset.id, boundsResult.scalePolicy),
-    ],
-    renderedBodySize: meshPreview?.renderedBodySize ?? null,
-    fallbackReason: meshOverride && !meshPreview
-      ? (meshUsable ? 'mesh override is not cached yet' : 'mesh override is blacklisted')
-      : undefined,
   }
 }
 
-export function resolveSplitServoVisual(args: {
-  preset: ComponentVisualPresetLike
-  category: string
-  includeSideYoke?: boolean
-  instance?: ComponentVisualInstanceLike
-}): ResolvedSplitServoVisual {
-  const preset = buildVisualPreset(args.preset, args.instance)
-  const bb = presetBboxMm(preset)
-  const w = bb[0] / 1000
-  const d = bb[1] / 1000
-  const h = bb[2] / 1000
-  // Classic hobby-servo silhouette only for the servo family. Other split
-  // rotary actuators (BLDC drums, stepper blocks, gearmotor cans — split via
-  // their authored `cls: 'shaft'` connector, see componentCapabilities.ts)
-  // keep their own generated body shape; the horn disc marks the output.
-  const classicServoLook = preset.id.startsWith('actuator_servo')
-    || preset.id.startsWith('actuator_continuous_rotation_servo')
-    || preset.id.startsWith('actuator_high_speed')
-  const bodyBase = classicServoLook
-    ? servoBodyShape(w, h, d, args.category)
-    : generateVisuals(preset as unknown as Parameters<typeof generateVisuals>[0], args.category)
-  // Body box uses the canonical servoBodyShape dimensions (h*0.76 along Z),
-  // which sits under the horn at h*SERVO_HORN_ORIGIN_Z_RATIO. Earlier we
-  // replaced this with the measured collision OBJ extent, but that coupled
-  // the visual to the OBJ's authored axes — and after measure-mesh-extents
-  // started applying the rotation override, the collision OBJ's longest axis
-  // (e.g. 46.5mm for high_torque) flipped into the URDF Z slot, producing a
-  // body box taller than the horn origin and swallowing the horn. The
-  // collision envelope is now the spec bbox (componentResolver bbox-as-truth),
-  // so the canonical servoBodyShape already matches collision by construction.
-  const hornBase = servoHornShape(w, h, d, args.category)
-  const bodyVisuals = args.includeSideYoke
-    ? [...bodyBase, ...servoSideYokeShape(w, h, d, args.category)]
-    : bodyBase
-  const hornVisuals = args.includeSideYoke
-    ? [...hornBase, ...servoHornBeamAdapterShape(w, h, d, args.category)]
-    : hornBase
-
-  const bodyBounds = visualBoundsFromDescriptors(bodyVisuals) ?? boundsFromBboxMm(bb)
-  const hornBounds = visualBoundsFromDescriptors(hornVisuals) ?? boundsFromBboxMm(bb)
-  const bodyCollision: ResolvedComponentVisual['collision'] = preset.physical.collision_mesh
-    ? {
-      source: 'authored_mesh',
-      bounds: bodyBounds,
-      meshFile: preset.physical.collision_mesh,
-    }
-    : {
-      source: 'urdf_primitives',
-      bounds: bodyBounds,
-    }
-
-  // Output origin: the authored `cls: 'shaft'` connector when the preset
-  // declares one — same source the placement compiler uses for the revolute
-  // joint origin (placementCompiler/index.ts), so the visual horn sits exactly
-  // on the joint. Ratio fallback for presets without capability data.
-  const _conns = (preset as { connectors?: Array<{ cls?: string; single?: boolean; origin_xyz_mm?: number[] }> }).connectors ?? []
-  const _shaftConns = _conns.filter(c => c?.cls === 'shaft')
-  const _shaft = _shaftConns.find(c => c.single === true) ?? _shaftConns[0] ?? null
-  const hornOriginZ = (_shaft && Array.isArray(_shaft.origin_xyz_mm))
-    ? (Number(_shaft.origin_xyz_mm[2]) || 0) / 1000
-    : h * SERVO_HORN_ORIGIN_Z_RATIO
-
-  return {
-    componentId: preset.id,
-    frame: 'urdf-z-up',
-    hornOriginZ,
-    bodyVisuals,
-    hornVisuals,
-    bodyCollision,
-    hornCollision: {
-      source: 'urdf_primitives',
-      bounds: hornBounds,
-    },
-  }
+/**
+ * True when a catalog part renders as something better than a plain box: an
+ * authored mesh or a procedural rich generator. Every catalog category has a
+ * generator, so this holds for the whole catalog; ids outside it fall back to
+ * a box.
+ */
+export function hasVisual(id: string): boolean {
+  return hasMeshOverride(id) || findRichGenerator(id) !== null
 }
 
-function resolveCollisionEnvelope(
-  preset: ComponentVisualPresetLike,
-  visuals: UrdfVisualDesc[],
-  bounds: ComponentVisualBounds,
-  visualBounds: ComponentVisualBounds | null,
-): ResolvedComponentVisual['collision'] {
-  if (preset.physical.collision_mesh) {
-    // Bbox-as-source-of-truth: collision bounds use the spec bbox (centered at
-    // origin), not the OBJ-measured AABB. The previous behavior trusted the
-    // OBJ extent + center — but collision OBJs ship at fixed sizes (ignoring
-    // per-instance length_mm), and several authors placed the OBJ origin at
-    // a corner/face rather than the centroid (e.g. extrusion_2020.obj has
-    // center_mm=[0,0,250] because the part runs z=0..500). Both errors caused
-    // children to attach at the wrong distance and the collision shape to
-    // float relative to the visual. Anchoring collision to the bbox keeps
-    // placement, visual, and connector positions consistent by construction.
-    // The OBJ stays as a build-time measurement for divergence reporting.
-    const collisionShape: 'box' | 'cylinder' =
-      preset.physical.inertia_primitive === 'cylinder' ? 'cylinder' : 'box'
-    return {
-      source: 'authored_mesh',
-      bounds: { ...bounds, shape: collisionShape },
-      meshFile: preset.physical.collision_mesh,
-    }
-  }
-  if (visuals.length > 0) {
-    return {
-      source: 'urdf_primitives',
-      bounds: visualBounds ?? bounds,
-    }
-  }
-  return {
-    source: 'preset_bbox',
-    bounds,
-  }
-}
-
-// Phase 5 step 4: visual divergence is meaningful only when the GLB renders at
-// its native size (scalePolicy === 'none'). 'per-axis' and 'uniform' scale the
-// mesh into the bbox by design, so divergence there is expected, not a bug.
-// The collision side has no such scaling, so it gates unconditionally.
-const COLLISION_DIVERGENCE_LIMIT = 0.15
-const VISUAL_DIVERGENCE_LIMIT = 0.05
-
-export function computeMeshDivergence(
-  componentId: string,
-  scalePolicy: ComponentVisualScalePolicy,
-): { visualWorst: number; collisionWorst: number; errors: string[] } {
-  const entry = getMeasuredMeshEntry(componentId)
-  if (!entry) return { visualWorst: 0, collisionWorst: 0, errors: [] }
-  const declared = entry.declared_bbox_mm
-  const errors: string[] = []
-  let visualWorst = 0
-  let collisionWorst = 0
-  if (declared) {
-    if (scalePolicy === 'none') {
-      const visualMeasured = getMeasuredVisualExtentMm(componentId)
-      if (visualMeasured) {
-        for (let i = 0; i < 3; i++) {
-          if (declared[i] === 0) continue
-          const d = Math.abs(visualMeasured[i] - declared[i]) / declared[i]
-          if (d > visualWorst) visualWorst = d
-        }
-        if (visualWorst > VISUAL_DIVERGENCE_LIMIT) {
-          errors.push(
-            `${componentId}: visual mesh extent diverges from declared bbox by ${(visualWorst * 100).toFixed(1)}% (limit ${VISUAL_DIVERGENCE_LIMIT * 100}%, scalePolicy=none)`,
-          )
-        }
-      }
-    }
-    const collisionMeasured = getMeasuredCollisionExtentMm(componentId)
-    if (collisionMeasured) {
-      for (let i = 0; i < 3; i++) {
-        if (declared[i] === 0) continue
-        const d = Math.abs(collisionMeasured[i] - declared[i]) / declared[i]
-        if (d > collisionWorst) collisionWorst = d
-      }
-      if (collisionWorst > COLLISION_DIVERGENCE_LIMIT) {
-        errors.push(
-          `${componentId}: collision mesh extent diverges from declared bbox by ${(collisionWorst * 100).toFixed(1)}% (limit ${COLLISION_DIVERGENCE_LIMIT * 100}%)`,
-        )
-      }
-    }
-  }
-  return { visualWorst, collisionWorst, errors }
-}
-
-function buildMeshDivergenceWarnings(
-  componentId: string,
-  scalePolicy: ComponentVisualScalePolicy,
-): string[] {
-  return computeMeshDivergence(componentId, scalePolicy).errors
-}
-
-function buildResolverWarnings(
-  hasMeshOverride: boolean,
-  meshUsable: boolean,
-  meshReady: boolean,
-): string[] {
-  const warnings: string[] = []
-  if (hasMeshOverride && !meshUsable) {
-    warnings.push('mesh override is blacklisted; using fallback visual source')
-  } else if (hasMeshOverride && !meshReady) {
-    warnings.push('mesh override is not cached yet; placement-relevant fields remain deterministic')
-  }
-  return warnings
-}
-
-export function buildVisualPreset<T extends ComponentVisualPresetLike>(
-  preset: T,
-  instance?: ComponentVisualInstanceLike,
-): T {
-  const phys = preset.physical
-  const bb = resolveComponentBboxMm(preset, instance)
-  if (
-    phys.bounding_box_mm?.[0] === bb[0]
-    && phys.bounding_box_mm?.[1] === bb[1]
-    && phys.bounding_box_mm?.[2] === bb[2]
-  ) {
-    return preset
-  }
-  return {
-    ...preset,
-    physical: {
-      ...phys,
-      bounding_box_mm: bb,
-    },
-  }
-}
-
-function presetBboxMm(preset: ComponentVisualPresetLike): [number, number, number] {
-  return resolveComponentBboxMm(preset)
-}
-
-function boundsFromBboxMm(bb: [number, number, number]): ComponentVisualBounds {
-  return {
-    hx: bb[0] / 2000,
-    hy: bb[1] / 2000,
-    hz: bb[2] / 2000,
-    cx: 0,
-    cy: 0,
-    cz: 0,
-    shape: 'box',
-  }
+/** Part envelope in meters: the preset's bbox (callers pass the instance
+ *  size for cut-to-length parts). */
+function bboxMeters(preset: ComponentVisualPresetLike): { x: number; y: number; z: number } {
+  const bb = [preset.physical.bbox_mm, preset.physical.bounding_box_mm]
+    .find(v => Array.isArray(v) && v.length === 3 && v.every(n => Number.isFinite(n) && n > 0))
+    ?? [40, 40, 40]
+  return { x: bb[0] / 1000, y: bb[1] / 1000, z: bb[2] / 1000 }
 }
 
 function buildCachedMeshPreviewGroup(
@@ -433,12 +94,11 @@ function buildCachedMeshPreviewGroup(
     castShadow?: boolean
     receiveShadow?: boolean
   } = {},
-): { group: THREE.Group; renderedBodySize: THREE.Vector3 | null } | undefined {
+): THREE.Group | undefined {
   const cached = getCachedMeshGroup(preset.id)
   if (!cached) return undefined
   try {
-    const bb = presetBboxMm(preset)
-    const dims = { x: (bb[0] ?? 40) / 1000, y: (bb[1] ?? 40) / 1000, z: (bb[2] ?? 40) / 1000 }
+    const dims = bboxMeters(preset)
     const clone = cached.clone(true)
     const prepared = prepareMeshVisualGroup(clone, dims, preset.id, {
       linkName: opts.linkName,
@@ -450,7 +110,7 @@ function buildCachedMeshPreviewGroup(
     const group = new THREE.Group()
     group.add(prepared.group)
     if (prepared.shaftOverlayMesh) group.add(prepared.shaftOverlayMesh)
-    return { group, renderedBodySize: prepared.renderedBodySize }
+    return group
   } catch (e) {
     console.warn(`[componentVisualResolver] Cached mesh preview failed for ${preset.id}:`, e)
     return undefined
@@ -468,8 +128,7 @@ function buildRichPreviewGroup(
   const generator = findRichGenerator(preset.id)
   if (!generator) return undefined
   try {
-    const bb = presetBboxMm(preset)
-    const dims = { x: (bb[0] ?? 40) / 1000, y: (bb[1] ?? 40) / 1000, z: (bb[2] ?? 40) / 1000 }
+    const dims = bboxMeters(preset)
     const compColor = getComponentColor(preset.id)
     const group = generator(preset.id, dims, compColor.tint)
     const castShadow = opts.castShadow ?? false
@@ -481,112 +140,64 @@ function buildRichPreviewGroup(
         if (opts.linkName) (child.userData as Record<string, unknown>).urdfLinkName = opts.linkName
       }
     })
-    // Authored-frame unification: rich generators are written Y-up internally,
-    // GLBs are authored Z-up. Wrap the rich output in +90° X here so the
-    // returned previewGroup is Z-up authored regardless of source. Single
-    // outer group lets the carry/render adapter set its quaternion without
-    // disturbing the wrap. See authored-frame
-    // section.
+    // Rich generators are written Y-up internally, GLBs are authored Z-up.
+    // Wrap the rich output in +90° X so every previewGroup is Z-up authored;
+    // the outer group lets callers set their own quaternion on top.
     const wrapper = new THREE.Group()
     group.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ'))
     wrapper.add(group)
-    return wrapper
+    return alignAxesToBbox(wrapper, [dims.x, dims.y, dims.z])
   } catch (e) {
     console.warn(`[componentVisualResolver] Rich preview failed for ${preset.id}:`, e)
     return undefined
   }
 }
 
-export function visualBoundsFromDescriptors(visuals: UrdfVisualDesc[]): ComponentVisualBounds | null {
-  const box = new THREE.Box3()
-  const tempBox = new THREE.Box3()
-  const tempMatrix = new THREE.Matrix4()
-  let hasGeom = false
-  let allCylinders = visuals.length > 0
-
-  for (const vis of visuals) {
-    const g = vis.geometry
-    if (g.type === 'box') {
-      tempBox.set(
-        new THREE.Vector3(-g.size[0] / 2, -g.size[1] / 2, -g.size[2] / 2),
-        new THREE.Vector3( g.size[0] / 2,  g.size[1] / 2,  g.size[2] / 2),
-      )
-      allCylinders = false
-    } else if (g.type === 'cylinder') {
-      tempBox.set(
-        new THREE.Vector3(-g.radius, -g.radius, -g.length / 2),
-        new THREE.Vector3( g.radius,  g.radius,  g.length / 2),
-      )
-    } else {
-      tempBox.set(
-        new THREE.Vector3(-g.radius, -g.radius, -g.radius),
-        new THREE.Vector3( g.radius,  g.radius,  g.radius),
-      )
-      allCylinders = false
+/**
+ * Generators disagree on whether their long axis runs along Y or Z, and some
+ * read the wrong dimension as height, so parts came out lying along the wrong
+ * axis (beams, tubes) or 2x too tall (motors). The catalog bbox is what
+ * placement and connectors use, so conform the built visual to it:
+ * first rotate when its extents are an axis permutation of the bbox, then
+ * rescale any axis still more than 25% off.
+ */
+function alignAxesToBbox(visual: THREE.Group, target: [number, number, number]): THREE.Group {
+  let box = new THREE.Box3().setFromObject(visual)
+  if (box.isEmpty()) return visual
+  let s = box.getSize(new THREE.Vector3()).toArray()
+  const cost = (perm: number[]) =>
+    perm.reduce((acc, src, dst) => acc + Math.abs(Math.log(Math.max(s[src], 1e-6) / Math.max(target[dst], 1e-6))), 0)
+  const perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+  let best = perms[0]
+  for (const p of perms) if (cost(p) < cost(best)) best = p
+  let out = visual
+  // Only re-orient on a clear misorientation; near-cubic parts stay put.
+  if (best !== perms[0] && cost(perms[0]) - cost(best) >= 0.5) {
+    // Rotation taking rendered axis best[i] onto catalog axis i (det +1).
+    const cols = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
+    for (let dst = 0; dst < 3; dst++) cols[best[dst]].setComponent(dst, 1)
+    const m = new THREE.Matrix4().makeBasis(cols[0], cols[1], cols[2])
+    if (m.determinant() < 0) {
+      cols[best[0]].negate()
+      m.makeBasis(cols[0], cols[1], cols[2])
     }
-
-    const [ox, oy, oz] = vis.origin_xyz
-    tempMatrix.makeRotationFromEuler(new THREE.Euler(...vis.origin_rpy, 'XYZ'))
-    tempMatrix.setPosition(ox, oy, oz)
-    box.union(tempBox.clone().applyMatrix4(tempMatrix))
-    hasGeom = true
+    visual.quaternion.setFromRotationMatrix(m)
+    out = new THREE.Group()
+    out.add(visual)
+    box = new THREE.Box3().setFromObject(out)
+    s = box.getSize(new THREE.Vector3()).toArray()
   }
-
-  if (!hasGeom || box.isEmpty()) return null
-  const center = box.getCenter(new THREE.Vector3())
-  const size = box.getSize(new THREE.Vector3())
-  return {
-    hx: size.x / 2,
-    hy: size.y / 2,
-    hz: size.z / 2,
-    cx: center.x,
-    cy: center.y,
-    cz: center.z,
-    shape: allCylinders ? 'cylinder' : 'box',
+  const ratio = target.map((t, i) => t / Math.max(s[i], 1e-6))
+  if (ratio.some(r => r < 0.8 || r > 1.25)) {
+    const scaled = new THREE.Group()
+    const c = box.getCenter(new THREE.Vector3())
+    const inner = new THREE.Group()
+    inner.position.copy(c).negate()
+    inner.add(out)
+    scaled.scale.set(ratio[0], ratio[1], ratio[2])
+    scaled.add(inner)
+    out = new THREE.Group()
+    out.add(scaled)
   }
-}
-
-function resolveCurrentBounds(
-  preset: ComponentVisualPresetLike,
-  visuals: UrdfVisualDesc[],
-): {
-  bounds: ComponentVisualBounds
-  boundsSource: ResolvedComponentVisual['boundsSource']
-  scalePolicy: ComponentVisualScalePolicy
-} {
-  const meshMetadata = getMeshVisualMetadata(preset.id)
-  // Both 'per-axis' and 'uniform' scale the GLB to fit the bbox envelope —
-  // 'uniform' may leave a small gap on non-binding axes, but the bbox still
-  // describes the carry footprint and joint geometry, so bounds derive from it.
-  const glbScalesToBbox = !!meshMetadata
-    && !meshMetadata.blacklisted
-    && (meshMetadata.scalePolicy === 'per-axis' || meshMetadata.scalePolicy === 'uniform')
-  if (glbScalesToBbox) {
-    const bb = presetBboxMm(preset)
-    const shaftOverlay = meshMetadata.shaftOverlay
-    const zMm = shaftOverlay ? Math.max(1, (bb[2] ?? 40) - shaftOverlay.shaft_length_mm) : (bb[2] ?? 40)
-    return {
-      bounds: {
-        hx: (bb[0] ?? 40) / 2000,
-        hy: (bb[1] ?? 40) / 2000,
-        hz: zMm / 2000,
-        cx: 0, cy: 0, cz: 0,
-        shape: 'box',
-      },
-      boundsSource: 'mesh_target_bbox',
-      scalePolicy: meshMetadata.scalePolicy,
-    }
-  }
-
-  const primitive = visualBoundsFromDescriptors(visuals)
-  if (primitive) {
-    return { bounds: primitive, boundsSource: 'urdf_primitives', scalePolicy: 'none' }
-  }
-
-  const bb = presetBboxMm(preset)
-  return {
-    bounds: boundsFromBboxMm(bb),
-    boundsSource: 'preset_bbox',
-    scalePolicy: 'none',
-  }
+  return out
 }

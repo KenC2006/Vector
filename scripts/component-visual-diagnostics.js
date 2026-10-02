@@ -12,7 +12,6 @@
  *
  * The report compares:
  * - preset bounding_box_mm / cross_section_mm
- * - generated URDF primitive bounds from componentMeshes.generateVisuals()
  * - rich visual generator bounds
  * - mesh override asset presence
  * - raw GLB bounds and post-rotation bounds
@@ -33,7 +32,8 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const SRC_ROOT = path.join(REPO_ROOT, 'src')
 const PRESET_JSON = path.join(REPO_ROOT, 'core', 'presets', 'generic_presets.json')
 const PUBLIC_PRESET_JSON = path.join(SRC_ROOT, 'public', 'generic_presets.json')
-const COMPONENT_DIR = path.join(SRC_ROOT, 'public', 'meshes', 'components')
+// Source CAD (STEP/STP) lives outside public/: only the converted GLBs ship.
+const STEP_DIR = path.join(REPO_ROOT, 'assets', 'step')
 const GLB_DIR = path.join(SRC_ROOT, 'public', 'meshes', 'glb')
 
 const AXIS_NAMES = ['x', 'y', 'z']
@@ -50,13 +50,12 @@ const STRICT = args.has('--strict')
 registerTypeScriptRequire()
 
 const THREE = require(path.join(SRC_ROOT, 'node_modules', 'three'))
-const { generateVisuals } = require(path.join(SRC_ROOT, 'src', 'componentMeshes.ts'))
 const { findRichGenerator } = require(path.join(SRC_ROOT, 'src', 'richVisuals', 'generators', 'index.ts'))
 const { getComponentColor } = require(path.join(SRC_ROOT, 'src', 'richVisuals', 'materials.ts'))
 const {
   MESH_OVERRIDES,
   ROTATION_OVERRIDES,
-  SLOW_MESH_BLACKLIST,
+  getMeshVisualMetadata,
   getRotationOverride,
   getShaftOverlay,
 } = require(path.join(SRC_ROOT, 'src', 'richVisuals', 'meshOverrides.ts'))
@@ -79,7 +78,7 @@ function registerTypeScriptRequire() {
 function main() {
   if (!fs.existsSync(PRESET_JSON)) fail(`missing preset JSON: ${PRESET_JSON}`)
   if (!fs.existsSync(GLB_DIR)) fail(`missing GLB dir: ${GLB_DIR}`)
-  if (!fs.existsSync(COMPONENT_DIR)) fail(`missing component mesh dir: ${COMPONENT_DIR}`)
+  if (!fs.existsSync(STEP_DIR)) fail(`missing source STEP dir: ${STEP_DIR}`)
 
   const presets = loadPresets(PRESET_JSON)
   const publicMirrorMatches = comparePresetMirrors()
@@ -121,17 +120,15 @@ function analyzePreset({ category, component }) {
   const bboxMm = effectiveBboxMm(component)
   const meshFilename = MESH_OVERRIDES[id] || null
   const glbPath = meshFilename ? glbPathForMesh(meshFilename) : null
-  const stepPath = meshFilename ? path.join(COMPONENT_DIR, meshFilename) : null
+  const stepPath = meshFilename ? path.join(STEP_DIR, meshFilename) : null
   const glbExists = !!glbPath && fs.existsSync(glbPath)
   const stepExists = !!stepPath && fs.existsSync(stepPath)
-  const blacklisted = SLOW_MESH_BLACKLIST.has(id)
   const rotation = getRotationOverride(id)
   const shaftOverlay = getShaftOverlay(id)
-  const perAxisBlacklisted = ['gripper', 'effector', 'claw', 'suction'].some(k => id.includes(k))
+  const scalePolicy = getMeshVisualMetadata(id)?.scalePolicy ?? 'per-axis'
   const collisionMesh = component.physical?.collision_mesh || null
-  const collisionSource = collisionMesh ? 'authored_mesh' : 'urdf_primitives'
+  const collisionSource = collisionMesh ? 'authored_mesh' : 'bbox'
 
-  const urdfBoundsMm = measureUrdfVisualBoundsMm(component, category)
   const rich = measureRichBoundsMm(id, bboxMm)
 
   let glb = null
@@ -142,15 +139,14 @@ function analyzePreset({ category, component }) {
       const rotatedSizeMm = rotation ? rotateAabbSize(rawSizeMm, rotation) : rawSizeMm.slice()
       const targetForScale = bboxMm.slice()
       if (shaftOverlay) targetForScale[2] = Math.max(1, targetForScale[2] - shaftOverlay.shaft_length_mm)
-      const scaleFactors = perAxisBlacklisted
-        ? [1, 1, 1]
-        : targetForScale.map((v, i) => rotatedSizeMm[i] > 0.0001 ? v / rotatedSizeMm[i] : 1)
+      const perAxis = targetForScale.map((v, i) => rotatedSizeMm[i] > 0.0001 ? v / rotatedSizeMm[i] : 1)
+      const scaleFactors = scalePolicy === 'uniform' ? perAxis.map(() => Math.min(...perAxis)) : perAxis
       glb = {
         rawBoundsMm: rawSizeMm,
         postRotationBoundsMm: rotatedSizeMm,
         units: raw.units,
         rotation,
-        scalePolicy: blacklisted ? 'not-used-blacklisted' : (perAxisBlacklisted ? 'unit-normalize-only' : 'per-axis'),
+        scalePolicy,
         scaleFactors,
         nonUniformRatio: ratio(scaleFactors),
       }
@@ -159,24 +155,21 @@ function analyzePreset({ category, component }) {
     }
   }
 
-  const source = resolveCurrentSource({ meshFilename, glbExists, stepExists, blacklisted, rich })
+  const source = resolveCurrentSource({ meshFilename, glbExists, rich })
   const resolvedBoundsMm =
-    source === 'mesh' && glb && !glb.error && !perAxisBlacklisted ? bboxMm :
-    source === 'mesh' && glb && !glb.error ? glb.postRotationBoundsMm :
+    source === 'mesh' && glb && !glb.error ? glb.scaleFactors.map((f, i) => glb.postRotationBoundsMm[i] * f) :
     source === 'rich' && rich.boundsMm ? rich.boundsMm :
-    urdfBoundsMm
+    bboxMm
 
   const row = {
     id,
     category,
     presetBoundsMm: bboxMm,
-    urdfPrimitiveBoundsMm: urdfBoundsMm,
     richGeneratorBoundsMm: rich.boundsMm,
     richGeneratorError: rich.error,
     meshOverride: meshFilename,
     glbExists,
     stepExists,
-    blacklisted,
     collisionSource,
     collisionMesh,
     currentSource: source,
@@ -194,46 +187,10 @@ function effectiveBboxMm(component) {
   return [bb[0] || 40, bb[1] || 40, bb[2] || 40]
 }
 
-function resolveCurrentSource({ meshFilename, glbExists, stepExists, blacklisted, rich }) {
-  if (meshFilename && !blacklisted && (glbExists || stepExists)) return 'mesh'
+function resolveCurrentSource({ meshFilename, glbExists, rich }) {
+  if (meshFilename && glbExists) return 'mesh'
   if (rich.boundsMm) return 'rich'
-  return 'urdf_primitives'
-}
-
-function measureUrdfVisualBoundsMm(component, category) {
-  let visuals
-  try {
-    visuals = generateVisuals(component, category)
-  } catch {
-    return null
-  }
-  if (!Array.isArray(visuals) || visuals.length === 0) return null
-
-  const bounds = emptyBounds()
-  for (const visual of visuals) {
-    const local = primitiveLocalBounds(visual)
-    if (!local) continue
-    const matrix = rpyMatrix(visual.origin_rpy || [0, 0, 0])
-    matrix.setPosition(...(visual.origin_xyz || [0, 0, 0]))
-    expandBounds(bounds, transformAabbByThreeMatrix(local, matrix))
-  }
-  if (!Number.isFinite(bounds.min[0])) return null
-  return sizeOfBounds(bounds).map(m => m * 1000)
-}
-
-function primitiveLocalBounds(visual) {
-  const g = visual.geometry || {}
-  if (g.type === 'box') {
-    const [x, y, z] = g.size
-    return { min: [-x / 2, -y / 2, -z / 2], max: [x / 2, y / 2, z / 2] }
-  }
-  if (g.type === 'cylinder') {
-    return { min: [-g.radius, -g.radius, -g.length / 2], max: [g.radius, g.radius, g.length / 2] }
-  }
-  if (g.type === 'sphere') {
-    return { min: [-g.radius, -g.radius, -g.radius], max: [g.radius, g.radius, g.radius] }
-  }
-  return null
+  return 'box'
 }
 
 function measureRichBoundsMm(id, bboxMm) {
@@ -388,7 +345,6 @@ function findIssues(row) {
     if (!row.glbExists) issues.push({ code: 'MISSING_GLB', detail: row.meshOverride.replace(/\.(step|stp)$/i, '.glb') })
     if (!row.stepExists) issues.push({ code: 'MISSING_SOURCE_STEP', detail: row.meshOverride })
     if (!ROTATION_OVERRIDES[row.id]) issues.push({ code: 'NO_ROTATION_METADATA', detail: 'mesh override has no explicit rotation entry' })
-    if (row.blacklisted) issues.push({ code: 'MESH_BLACKLISTED', detail: 'runtime uses fallback visual' })
   }
   if (row.richGeneratorError) issues.push({ code: 'RICH_GENERATOR_ERROR', detail: row.richGeneratorError })
   if (row.glb?.error) issues.push({ code: 'GLB_READ_ERROR', detail: row.glb.error })
@@ -401,7 +357,6 @@ function findIssues(row) {
       issues.push({ code: 'LARGE_SCALE_FACTOR', detail: `scale=[${fmtList(sf)}]` })
     }
   }
-  addBoundsIssue(issues, 'URDF_VS_PRESET_BOUNDS', row.urdfPrimitiveBoundsMm, row.presetBoundsMm)
   addBoundsIssue(issues, 'RICH_VS_PRESET_BOUNDS', row.richGeneratorBoundsMm, row.presetBoundsMm)
   if (row.glb && !row.glb.error) addBoundsIssue(issues, 'GLB_POST_ROTATION_VS_PRESET_BOUNDS', row.glb.postRotationBoundsMm, row.presetBoundsMm)
   return issues
@@ -435,7 +390,6 @@ function summarize(rows, findings, publicMirrorMatches) {
     meshOverrides: rows.filter(r => r.meshOverride).length,
     glbPresent: rows.filter(r => r.glbExists).length,
     sourceStepPresent: rows.filter(r => r.stepExists).length,
-    blacklisted: rows.filter(r => r.blacklisted).length,
     collisionSources: countBy(rows, r => r.collisionSource),
     publicPresetMirrorMatches: publicMirrorMatches,
     findings: byCode,
@@ -459,9 +413,8 @@ function printTextReport(rows, findings, publicMirrorMatches) {
   console.log(`mesh overrides:             ${summary.meshOverrides}`)
   console.log(`GLB files present:          ${summary.glbPresent}`)
   console.log(`source STEP/STP present:    ${summary.sourceStepPresent}`)
-  console.log(`blacklisted mesh overrides: ${summary.blacklisted}`)
   console.log(`collision authored meshes:  ${summary.collisionSources.authored_mesh || 0}`)
-  console.log(`collision primitive fallback:${summary.collisionSources.urdf_primitives || 0}`)
+  console.log(`no collision mesh (bbox):     ${summary.collisionSources.bbox || 0}`)
   console.log(`preset mirror matches:      ${summary.publicPresetMirrorMatches ? 'yes' : 'no'}`)
   console.log(`bounds tolerance:           ${BOUNDS_TOLERANCE_MM}mm`)
   console.log(`non-uniform warn ratio:     ${NON_UNIFORM_WARN_RATIO}`)

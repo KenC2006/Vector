@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..')
 const PRESETS_PATH = path.join(repoRoot, 'core', 'presets', 'generic_presets.json')
-const MESH_EXTENTS_PATH = path.join(repoRoot, 'src', 'public', 'meshExtents.generated.json')
+const MESH_EXTENTS_PATH = path.join(repoRoot, 'scripts', 'mesh-extents.generated.json')
 const BASELINE_PATH = path.join(repoRoot, 'scripts', 'mesh-extent-baseline.json')
 
 const COLLISION_LIMIT = 0.15

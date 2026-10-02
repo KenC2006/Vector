@@ -318,13 +318,3 @@ export function getComponentColor(componentId: string): ComponentColorDef {
   // 5. Generic fallback
   return { material: 'anodized_aluminum', tint: [0.53, 0.57, 0.60], strength: 0.3 }
 }
-
-/**
- * Dispose all cached materials (call on app shutdown or full scene reset).
- */
-export function disposeAllMaterials(): void {
-  for (const mat of _cache.values()) {
-    mat.dispose()
-  }
-  _cache.clear()
-}
