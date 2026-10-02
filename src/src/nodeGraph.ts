@@ -14,6 +14,8 @@ export function initNodeGraph(deps: {
   kinematicGraph: () => Record<string, KinematicLink>
   kinematicJoints: () => Record<string, KinematicJoint>
   parsedRobot: () => ParsedRobot
+  /** Clicking a node selects that part for editing. */
+  onSelectLink?: (linkName: string) => void
 }): {
   buildNodeGraph: () => void
   clearHighlight: () => void
@@ -30,42 +32,45 @@ export function initNodeGraph(deps: {
   let graphContainer: HTMLDivElement | null = null
   let graphEventsAttached = false
   let graphNodes: GraphNode[] = []
-  let currentHighlightedMeshes: THREE.Mesh[] = []
+
+  // Highlight by swapping in a tinted clone of each mesh's material, so parts
+  // that share a material (same component colour) don't light up with it.
+  let highlighted: Array<{ mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }> = []
 
   function highlightMesh(linkName: string) {
-    // Clear previous highlights
-    for (const mesh of currentHighlightedMeshes) {
-      const mat = mesh.material as THREE.MeshStandardMaterial
-      if (mat && mat.emissive) mat.emissive.setHex(0x000000)
-    }
-    currentHighlightedMeshes = []
-
-    // Apply new highlight
-    const linkGroup = deps.parsedRobot().linkGroups.get(linkName)
-    if (linkGroup) {
-      linkGroup.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          const mat = child.material as THREE.MeshStandardMaterial
-          if (mat && mat.emissive) {
-            mat.emissive.setHex(0x334400)
-            currentHighlightedMeshes.push(child)
-          }
-        }
-      })
-    }
+    clearHighlight()
+    const geometry = deps.parsedRobot().linkGroups.get(linkName)?.children[0]
+    geometry?.traverse((child) => {
+      if (!(child instanceof THREE.Mesh) || Array.isArray(child.material)) return
+      const mat = child.material as THREE.MeshStandardMaterial
+      if (!mat.emissive) return
+      const tint = mat.clone()
+      tint.emissive.setHex(0x334400)
+      highlighted.push({ mesh: child, material: mat })
+      child.material = tint
+    })
   }
 
   function clearHighlight() {
-    for (const mesh of currentHighlightedMeshes) {
-      const mat = mesh.material as THREE.MeshStandardMaterial
-      if (mat && mat.emissive) mat.emissive.setHex(0x000000)
+    for (const { mesh, material } of highlighted) {
+      ;(mesh.material as THREE.Material).dispose()
+      mesh.material = material
     }
-    currentHighlightedMeshes = []
+    highlighted = []
   }
 
   function buildNodeGraph() {
     const kinematicGraph = deps.kinematicGraph()
     const kinematicJoints = deps.kinematicJoints()
+
+    // Root is the parent-less link — derived, NOT hardcoded 'base_link'.
+    // Generated robots root on the chassis/torso ('chassis', 'base', a
+    // link_geometry hull, ...), so assuming 'base_link' walked from a node
+    // that doesn't exist and rendered a single phantom node with no tree.
+    const rootLink =
+      Object.values(kinematicGraph).find((l) => !l.parent)?.name ??
+      Object.keys(kinematicGraph)[0]
+    if (!rootLink) return
 
     const dpr = window.devicePixelRatio || 1
     const viewWidth = viewportPanel.clientWidth
@@ -89,7 +94,7 @@ export function initNodeGraph(deps: {
         }
       }
     }
-    calcDepth('base_link', 0)
+    calcDepth(rootLink, 0)
 
     const contentHeight = Math.max(viewHeight, paddingTop + (maxDepth + 1) * levelHeight + paddingBottom)
 
@@ -148,7 +153,7 @@ export function initNodeGraph(deps: {
         }
       }
     }
-    countLevels('base_link', 0)
+    countLevels(rootLink, 0)
 
     const levelIndexes: Record<number, number> = {}
 
@@ -184,7 +189,7 @@ export function initNodeGraph(deps: {
       }
     }
 
-    walkLayout('base_link', 0)
+    walkLayout(rootLink, 0)
 
     // Render graph
     if (graphCtx) {
@@ -303,6 +308,7 @@ export function initNodeGraph(deps: {
             my <= node.y + node.height
           ) {
             highlightMesh(node.linkName)
+            deps.onSelectLink?.(node.linkName)
             break
           }
         }

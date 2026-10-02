@@ -1,6 +1,5 @@
 import * as monaco from 'monaco-editor'
 import type { KinematicLink, KinematicJoint } from './urdfParser'
-import type { StructuredDiagnostic } from './topologyValidation'
 
 export interface ValResult {
   name: string
@@ -23,7 +22,7 @@ const PARSE_BLOCKERS = new Set(['XML Parse Error', 'Invalid root element', 'No l
  *  overlaps), so its results replace the client-side equivalents. Structural
  *  and Assembly always stay client-side: they're line-accurate and need no
  *  round-trip. */
-const BACKEND_CATEGORIES = new Set(['Physics', 'Actuators', 'Mesh', 'Spatial'])
+const BACKEND_CATEGORIES = new Set(['Physics', 'Actuators', 'Mesh', 'Spatial', 'Design'])
 
 /** 1-based line of the first `name="<name>"` occurrence in `content`, or
  *  undefined. Anchors a finding to its URDF source so Monaco markers and
@@ -203,14 +202,13 @@ export function initValidation(deps: {
   /** Assembly-soundness findings (codes + suggested repairs) for the current
    *  in-memory graph — the same diagnostics the AI self-correction loop acts on.
    *  Empty when nothing has been assembled (e.g. a hand-loaded demo). */
-  getAssemblyDiagnostics: () => StructuredDiagnostic[]
   showToast: (msg: string, type?: 'success' | 'warning' | 'error' | 'info') => void
 }): {
   runLocalValidation: () => void
   runValidation: () => Promise<void>
   setValidationMarkers: (results: ValResult[]) => void
 } {
-  const { invoke, monacoEditor, getKinematicGraph, getKinematicJoints, getAssemblyDiagnostics } = deps
+  const { invoke, monacoEditor, getKinematicGraph, getKinematicJoints } = deps
 
   // ── DOM elements ──
   const validationResults = document.getElementById('validation-results') as HTMLDivElement
@@ -345,31 +343,17 @@ export function initValidation(deps: {
     }
   }
 
-  // ── Assembly soundness (topology validator) ──
-  // The structured findings — stable code + message + suggested_repair — that
-  // drive the AI self-correction loop, rendered so a human sees the same signal.
-  function assemblyResults(content: string): ValResult[] {
-    let diags: StructuredDiagnostic[] = []
-    try { diags = getAssemblyDiagnostics() } catch { diags = [] }
-    return diags.map(d => ({
-      name: d.code,
-      severity: d.severity === 'error' ? 'error' : 'warn',
-      message: d.message,
-      category: 'Assembly',
-      line: lineOfName(content, d.link_name),
-      repair: d.suggested_repair,
-    }))
-  }
-
   // ── Client-side validation (no backend round-trip) ──
-  // Structural (line-accurate XML) + Assembly soundness + per-link completeness.
+  // Structural (line-accurate XML) + per-link completeness. Assembly soundness
+  // (floating/clipping parts, ground contact, tipping, actuator load) comes
+  // from the backend's design critic.
   // This is what auto-run uses, so it never blocks the AI completion mutex.
   function clientResults(content: string): ValResult[] {
     const structural = validateXMLStructure(content)
     if (structural.some(r => r.severity === 'error' && PARSE_BLOCKERS.has(r.name))) {
       return structural
     }
-    return [...structural, ...assemblyResults(content), ...validateURDFPerLink(content)]
+    return [...structural, ...validateURDFPerLink(content)]
   }
 
   function finish(results: ValResult[]) {

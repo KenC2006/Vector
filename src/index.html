@@ -91,8 +91,8 @@
             </div>
             <div class="build-empty" id="build-empty">
               <div class="be-icon">⊕</div>
-              <div class="be-label">Select a URDF link, then use the Components panel to add parts</div>
-              <button type="button" class="ba-btn" id="btn-load-example" style="margin-top:10px">Focus Base Link</button>
+              <div class="be-label">Pick a part in the Components panel and point at the robot to place it</div>
+              <button type="button" class="ba-btn" id="btn-focus-base" style="margin-top:10px">Focus Base Link</button>
             </div>
             <div id="build-tree" class="build-tree"></div>
             <div class="build-actions">
@@ -199,9 +199,12 @@
                   <div class="sim-card-title">Generate From Model</div>
                   <div id="sim-ai-status" class="sim-script-status">Ready</div>
                 </div>
-                <textarea id="sim-ai-prompt" class="sim-ai-prompt" placeholder="Optional: describe what the controller should do, or add context for editing…" rows="3"></textarea>
+                <textarea id="sim-ai-prompt" class="sim-ai-prompt" placeholder="Optional: what should it do? e.g. &quot;trot forward fast&quot;, &quot;drive a figure 8&quot;, &quot;pick and place&quot;" rows="3"></textarea>
                 <div class="sim-action-row sim-ai-actions">
-                  <button class="sim-secondary-btn" id="sim-ai-generate" title="Generate a Python controller from the loaded URDF">
+                  <button class="sim-secondary-btn" id="sim-ai-quick" title="Instant controller built from measuring the robot (no AI)">
+                    Quick
+                  </button>
+                  <button class="sim-secondary-btn" id="sim-ai-generate" title="AI writes a controller, tests it in the simulator and revises it until it works (1-3 min)">
                     Generate
                   </button>
                   <button class="sim-secondary-btn" id="sim-ai-modify" disabled
@@ -223,10 +226,12 @@
                   <pre id="sim-ai-preview" class="sim-ai-preview" hidden></pre>
                   <div class="sim-preview-empty">Generated controller appears here before it is applied.</div>
                 </div>
+                <div id="sim-ai-summary" class="sim-ai-summary" hidden></div>
                 <div class="sim-action-row" id="sim-ai-apply-row" hidden>
                   <button class="sim-secondary-btn" id="sim-ai-apply">Apply</button>
                   <button class="sim-secondary-btn" id="sim-ai-discard">Discard</button>
                 </div>
+                <div class="sim-teleop-hint">While running: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys drive the robot (controllers read <code>state['cmd']</code>).</div>
               </div>
 
               <!-- Pose -->

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 
 import { rpyToQuat } from './rotationIO.ts'
-import { rotatedHalfExtents } from './rotatedAabb.ts'
+import { rpyToMatrix } from './design/math.ts'
 import { urdfFrameToScene, sceneFrameToUrdf } from './coordinates.ts'
 
 type Case = {
@@ -63,10 +63,8 @@ console.log(`\nrotation-parity (TS): ${corpus.cases.length - failed}/${corpus.ca
 
 // ── Phase 0 helper checks ────────────────────────────────────────────────
 //
-// These don't share the frozen corpus: they verify the two new helpers
-// (`rotatedHalfExtents` and the `coordinates.ts` adapter) against
-// closed-form expectations. Failing here means the placement-rewrite
-// foundation is broken before we touch any hot path.
+// The design editor's rotation math against the frozen corpus, and the
+// `coordinates.ts` Z-up/Y-up adapter against closed-form expectations.
 
 let helperFailed = 0
 const TOL = 1e-9
@@ -82,34 +80,11 @@ function approxVec(name: string, got: readonly number[], exp: readonly number[])
   }
 }
 
-// rotatedHalfExtents — identity rotation preserves the input.
-approxVec('rotatedHalfExtents identity', rotatedHalfExtents([10, 20, 30], [0, 0, 0]), [10, 20, 30])
-
-// 90° about Z permutes (x,y) — the AABB half-extents become (y,x,z).
-approxVec(
-  'rotatedHalfExtents 90deg Z',
-  rotatedHalfExtents([10, 20, 30], [0, 0, Math.PI / 2]),
-  [20, 10, 30],
-)
-
-// 90° about Y permutes (x,z) → (z, y, x).
-approxVec(
-  'rotatedHalfExtents 90deg Y',
-  rotatedHalfExtents([10, 20, 30], [0, Math.PI / 2, 0]),
-  [30, 20, 10],
-)
-
-// 45° about Z: half-extents = ((|cos|+|sin|)*max_xy_half, same, z).
-{
-  const c = Math.cos(Math.PI / 4)
-  const s = Math.sin(Math.PI / 4)
-  const ex = c * 10 + s * 20
-  const ey = s * 10 + c * 20
-  approxVec(
-    'rotatedHalfExtents 45deg Z',
-    rotatedHalfExtents([10, 20, 30], [0, 0, Math.PI / 4]),
-    [ex, ey, 30],
-  )
+// design/math.ts rpyToMatrix (the placement editor's port of the Python
+// compiler) must reproduce the frozen corpus matrices exactly.
+for (const c of corpus.cases) {
+  const R = rpyToMatrix(c.rpy[0], c.rpy[1], c.rpy[2])
+  approxVec(`design rpyToMatrix ${c.name}`, R.flat(), c.matrix_row_major.flat())
 }
 
 // coordinates round-trip — a representative pose must survive

@@ -8,12 +8,10 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { invoke } from '@tauri-apps/api/core'
-import { initUrdfAssembly, type UrdfAssemblyApi } from './urdfAssembly'
+import { initAssemblyEditor, type AssemblyEditorApi } from './assemblyEditor'
 import { applyRichVisuals, preloadMeshCache } from './richVisuals'
-import {
-  refreshConnectorOverlay,
-  toggleConnectorOverlay,
-} from './connectorInspector'
+import { componentIdForLink, setIdentitySource } from './design/identity'
+import { getComponent, loadCatalog, presetBoundingBoxMm } from './design/catalog'
 import { SAMPLE_URDF } from './sampleUrdf'
 import { processXacro } from './xacro'
 import { registerThemes, initSettings, VIEWPORT_BG, type ThemeId } from './settings'
@@ -85,7 +83,7 @@ function computeLowestRenderedMeshY(robotGroup: THREE.Group): number | null {
  * Lift the assembly so its lowest mesh sits at or above Y=0. Only ever
  * RAISES — never lowers — so it's safe to call on every reparse without the
  * "jumps every edit" behavior that motivated keeping `groundRobot` reserved
- * for initial load. Mirrors MuJoCo's `_auto_lift_above_floor` so editor and
+ * for initial load. Mirrors the simulator's `_spawn_on_floor` so editor and
  * sim agree on what "on the floor" means.
  *
  * Why this exists: wheels render upright (after the carry/render parity fix)
@@ -110,7 +108,7 @@ function liftAboveFloor(robotGroup: THREE.Group) {
   if (Math.abs(worldFloorY) < 0.001) return
   robotGroup.position.y -= worldFloorY
   robotGroup.updateMatrixWorld(true)
-  urdfAssemblyApi?.refreshMountNodeTransforms()
+  urdfAssemblyApi?.refreshOverlay()
   _liftAppliedSinceLastReground = true
 }
 
@@ -129,7 +127,7 @@ function reconcilePostMeshLoadFloor(robotGroup: THREE.Group) {
   if (worldFloorY > 0.001) {
     robotGroup.position.y -= worldFloorY
     robotGroup.updateMatrixWorld(true)
-    urdfAssemblyApi?.refreshMountNodeTransforms()
+    urdfAssemblyApi?.refreshOverlay()
   }
   _liftAppliedSinceLastReground = false
 }
@@ -184,7 +182,7 @@ function groundRobot(robotGroup: THREE.Group) {
   // their cached world positions from rebuildMountNodes() become stale after this
   // shift — AI-generated robots showed attachment nodes buried under the floor.
   robotGroup.updateMatrixWorld(true)
-  urdfAssemblyApi?.refreshMountNodeTransforms()
+  urdfAssemblyApi?.refreshOverlay()
 }
 
 /**
@@ -582,14 +580,6 @@ function switchToFile(filename: string) {
     const savedState = viewStates[filename]
     if (savedState) monacoEditor.restoreViewState(savedState)
   }
-
-  // Re-bind the in-memory AssemblyGraph to the new file. Without this the
-  // graph from whatever was loaded at module init lingers, so bake/edit
-  // operate on the wrong robot's topology after a file switch or checkpoint
-  // open. MUST run after the Monaco model swap so the reverse-parse fallback
-  // reads the new file's URDF text, not the previous tab's. No-op if
-  // urdfAssemblyApi hasn't initialized yet.
-  urdfAssemblyApi?.refreshAssemblyGraphForActiveFile()
 
   renderTabs()
   renderExplorer()
@@ -1281,6 +1271,8 @@ controls.panSpeed = 0.8
 controls.zoomSpeed = 1.2
 controls.enablePan = true
 controls.screenSpacePanning = true  // pan moves in screen plane (more intuitive)
+// Dev-only handle for scripted camera moves (generation review, demo capture).
+if (import.meta.env.DEV) (window as any).__vectorView = { THREE, scene, camera, controls }
 controls.mouseButtons = {
   LEFT: THREE.MOUSE.ROTATE,
   MIDDLE: THREE.MOUSE.PAN,
@@ -1441,9 +1433,6 @@ function makeOnMeshLoaded(robotEpoch: typeof parsedRobot) {
       // measurement (first-of-type carry, GLB not yet cached).
       try { reconcilePostMeshLoadFloor(robot) }
       catch (e) { console.warn('[reconcile] post-mesh-load floor pass failed:', e) }
-      try { urdfAssemblyApi?.reconcileNodePlacement() }
-      catch (e) { console.warn('[reconcile] post-mesh-load pass failed:', e) }
-      urdfAssemblyApi?.rebuildMountNodes()
       // STEP/GLB meshes load async — re-run edges so late arrivals get the
       // feature-edge overlay too. addEdgeLines is idempotent per-mesh.
       addEdgeLines(parsedRobot)
@@ -1460,25 +1449,23 @@ worldGroup.name = 'urdf_world'
 worldGroup.rotation.x = -Math.PI / 2
 robot.add(worldGroup)
 
-// Forward-declare urdfAssemblyApi so the rich-visuals callback below can close over
-// it before initUrdfAssembly runs. Reassigned at the canonical init site (~L2549).
-let urdfAssemblyApi: UrdfAssemblyApi | null = null
+// Forward-declared so callbacks below can close over it before the editor
+// is initialised further down.
+let urdfAssemblyApi: AssemblyEditorApi | null = null
 
-// Resolve preset bbox via urdfAssemblyApi when initialized; null on first-render
-// (sample URDF) is fine — measureLinkDims is correct for that simple model.
-const getPresetBboxMm = (compId: string) => urdfAssemblyApi?.getPresetBoundingBoxMm(compId) ?? null
+// Catalog bbox for renderers; null for cut-to-length parts (their size is the
+// instance's URDF geometry) and before the catalog has loaded.
+const getPresetBboxMm = (compId: string) => presetBoundingBoxMm(compId)
 
-// Links with authored link_geometry shells keep their URDF primitives — the
-// rich pass replacing them with the donor preset's stock visual is what made
-// sculpted bodies render as plain baseplates.
-const hasCustomGeometryLink = (linkName: string) =>
-  urdfAssemblyApi?.getCustomGeometryLinkNames().has(linkName) ?? false
-
+setIdentitySource(SAMPLE_URDF)
+void loadCatalog()
+// The old placement engine kept its AssemblyGraphs here; nothing reads them now
+// (the design travels inside the URDF).
+try { localStorage.removeItem('vector_assembly_graphs') } catch { /* storage unavailable */ }
 let parsedRobot = parseURDFToScene(SAMPLE_URDF)
 worldGroup.add(parsedRobot.group)
 robot.updateMatrixWorld(true)
-applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
-refreshConnectorOverlay(parsedRobot)
+applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
 addEdgeLines(parsedRobot)
 groundRobot(robot)
 
@@ -1634,17 +1621,9 @@ let showCollision = false
 let collisionVisualBuildId = 0
 const HIDDEN_BY_COLLISION_VIEW = '__hiddenByCollisionView'
 
-function componentIdFromLinkName(linkName: string): string {
-  const match = linkName.match(/^(.+)_(\d+)$/)
-  return match ? match[1] : linkName
-}
-
 function isWheelCollisionLink(linkName: string): boolean {
-  const componentId = componentIdFromLinkName(linkName).toLowerCase()
-  return (
-    (componentId.startsWith('mobility_') && componentId.includes('wheel')) ||
-    /(^|[_\-\s])(wheel|tire)([_\-\s]|$)/.test(componentId)
-  )
+  const comp = getComponent(componentIdForLink(linkName))
+  return String((comp?.sim_metadata as Record<string, unknown> | undefined)?.contact_class ?? '') === 'wheel'
 }
 
 function collisionCylinderRadius(collisionEl: Element): number {
@@ -1789,7 +1768,8 @@ function rebuildCollisionVisuals(urdfText: string) {
       let syntheticCyl = false
 
       if (meshEl && wheelCollision) {
-        const bbox = getPresetBboxMm(componentIdFromLinkName(linkName))
+        const compId = componentIdForLink(linkName)
+        const bbox = compId ? getPresetBboxMm(compId) : null
         if (bbox) {
           const r = Math.max(bbox[0] || 0, bbox[1] || 0) / 2000
           const h = (bbox[2] || 0) / 1000
@@ -1942,7 +1922,7 @@ simApi = initSimManager({
     // stale. Force matrix recomputation then resync node meshes so they
     // line up with the restored build-mode link poses.
     robot.updateMatrixWorld(true)
-    urdfAssemblyApi?.refreshMountNodeTransforms()
+    urdfAssemblyApi?.refreshOverlay()
   },
 })
 
@@ -2112,75 +2092,12 @@ document.addEventListener('mouseup', () => {
 // Generates a structured text summary of the robot's kinematic structure
 // to send to Claude for better context-aware edits
 
-function buildKinematicContext(): string {
-  // Extract robot name from URDF
-  const urdf = monacoEditor.getModel()?.getValue() || ''
-  const nameMatch = urdf.match(/<robot\s+name="([^"]*)"/)
-  const robotName = nameMatch?.[1] || 'robot'
-  const links = Object.values(kinematicGraph)
-  const joints = Object.values(kinematicJoints)
-
-  let context = `Robot: ${robotName}\n`
-  context += `Links (${links.length}): `
-
-  // List all links with mass
-  const linkSummary = links.map((l) => {
-    const geometry = parsedRobot.linkGroups.get(l.name)
-    let geomType = 'unknown'
-    if (geometry) {
-      geometry.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          const geom = child.geometry
-          if (geom instanceof THREE.BoxGeometry) geomType = 'box'
-          else if (geom instanceof THREE.CylinderGeometry) geomType = 'cylinder'
-          else if (geom instanceof THREE.SphereGeometry) geomType = 'sphere'
-        }
-      })
-    }
-    return `${l.name} (${l.mass}kg, ${geomType})`
-  }).join(', ')
-  context += linkSummary + '\n'
-
-  context += `Joints (${joints.length}): `
-
-  // List all joints with type and axis
-  const jointSummary = joints.map((j) => {
-    return `${j.name} [${j.type}, axis ${j.axis}, ${j.parentLink}→${j.childLink}]`
-  }).join(', ')
-  context += jointSummary + '\n'
-
-  // Build kinematic chain
-  context += 'Chain: '
-  const rootLink = links.find((l) => !l.parent) || links[0]
-
-  function buildChain(linkName: string): string {
-    const link = kinematicGraph[linkName]
-    if (!link || link.children.length === 0) return linkName
-
-    let result = linkName
-    for (const childName of link.children) {
-      // Find joint connecting to this child
-      const joint = Object.values(kinematicJoints).find(
-        (j) => j.parentLink === linkName && j.childLink === childName
-      )
-      if (joint) {
-        result += ` → [${joint.name}] → ${buildChain(childName)}`
-      }
-    }
-    return result
-  }
-
-  context += buildChain(rootLink?.name || 'base_link') + '\n'
-
-  return context
-}
-
 
 // ── Live URDF re-parsing ────────────────────────────────────────────────────
 
 let reparseTimeout: number | null = null
-// urdfAssemblyApi declared near applyRichVisuals call site to avoid TDZ on the
-// preset-bbox callback closure (initialized at the initUrdfAssembly site below).
+// urdfAssemblyApi is declared near the first applyRichVisuals call (TDZ) and
+// initialised at the initAssemblyEditor site below.
 
 function rebuildJointAxisVisuals() {
   axisVisuals.length = 0
@@ -2230,6 +2147,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
         // Discard result if a newer reparse was issued or the user switched files.
         if (xacroGeneration !== myGeneration || activeFile !== capturedFile) return
         try {
+          setIdentitySource(processed)
           const newParsed = parseURDFToScene(processed)
           const newKinematicData = buildKinematicGraphFromURDF(processed)
           worldGroup.remove(parsedRobot.group)
@@ -2240,10 +2158,8 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
           kinematicJoints = newKinematicData.kinematicJoints
           worldGroup.add(parsedRobot.group)
           robot.updateMatrixWorld(true) // ensure world matrices are fresh before rich visuals measure dims
-          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
-          refreshConnectorOverlay(parsedRobot)
-          // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
-          const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+          applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+          const skipHeavy = false
           if (!skipHeavy) addEdgeLines(parsedRobot)
           rebuildJointAxisVisuals()
           updateComMarker()
@@ -2253,7 +2169,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
           if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
           else if (!opts?.skipGround) liftAboveFloor(robot)
           robot.updateMatrixWorld(true)
-          urdfAssemblyApi?.refreshMountNodeTransforms()
+          urdfAssemblyApi?.refreshOverlay()
           // Wireframes must rebuild AFTER groundRobot so world-space capture
           // reflects the final robot position. Also skipped during bulk
           // assembly — the final reparse after the loop runs it once.
@@ -2272,6 +2188,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
       return // async — will reparse when done
     }
 
+    setIdentitySource(urdfContent)
     const newParsed = parseURDFToScene(urdfContent)
     const newKinematicData = buildKinematicGraphFromURDF(urdfContent)
 
@@ -2287,10 +2204,8 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
 
     worldGroup.add(parsedRobot.group)
     robot.updateMatrixWorld(true)
-    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm, hasCustomGeometryLink)
-    refreshConnectorOverlay(parsedRobot)
-    // skipHeavy: defer per-mesh passes during bulk assembly; final reparse runs them.
-    const skipHeavy = urdfAssemblyApi?.isBulkAssemblyMode() === true
+    applyRichVisuals(parsedRobot, makeOnMeshLoaded(parsedRobot), getPresetBboxMm)
+    const skipHeavy = false
     if (!skipHeavy) addEdgeLines(parsedRobot)
 
     rebuildJointAxisVisuals()
@@ -2309,7 +2224,7 @@ function reparseURDF(xmlOverride?: string, opts?: { skipGround?: boolean; ground
     if (opts?.ground === true && !opts?.skipGround) groundRobot(robot)
     else if (!opts?.skipGround) liftAboveFloor(robot)
     robot.updateMatrixWorld(true)
-    urdfAssemblyApi?.refreshMountNodeTransforms()
+    urdfAssemblyApi?.refreshOverlay()
 
     // Wireframes must rebuild AFTER groundRobot so world-space capture
     // reflects the final robot position. Skipped during bulk assembly —
@@ -2333,7 +2248,6 @@ const { runLocalValidation } = initValidation({
   monacoEditor,
   getKinematicGraph: () => kinematicGraph,
   getKinematicJoints: () => kinematicJoints,
-  getAssemblyDiagnostics: () => urdfAssemblyApi?.getLastAssemblyDiagnostics() ?? [],
   showToast,
 })
 
@@ -2344,6 +2258,7 @@ const nodeGraph = initNodeGraph({
   kinematicGraph: () => kinematicGraph,
   kinematicJoints: () => kinematicJoints,
   parsedRobot: () => parsedRobot,
+  onSelectLink: (link) => urdfAssemblyApi?.setSelectedLink(link),
 })
 
 
@@ -2475,12 +2390,7 @@ document.addEventListener('keydown', (e) => {
       if (e.shiftKey) document.getElementById('toggle-axes')?.click()
       break
     case 'c':
-      if (e.shiftKey) {
-        const on = toggleConnectorOverlay(parsedRobot)
-        showToast(`Mate-connector overlay ${on ? 'on' : 'off'}`, 'info')
-      } else {
-        document.getElementById('toggle-com')?.click()
-      }
+      if (!e.shiftKey) document.getElementById('toggle-com')?.click()
       break
     case 'w':
       if (e.shiftKey) document.getElementById('toggle-wireframe')?.click()
@@ -2763,7 +2673,7 @@ document.querySelectorAll('.sb-header').forEach(header => {
 const { createCheckpoint } = initSettings({
   monacoEditor,
   showToast,
-  urdfAssemblyApi,
+  getEditorApi: () => urdfAssemblyApi,
   renderer,
 })
 // Wire up deferred checkpoint callback for inlineDiff
@@ -2922,7 +2832,6 @@ setTimeout(() => {
   if (!activeFile) return
   showToast(`Loaded ${activeFile.split(/[\\/]/).pop() || activeFile} — ${parsedRobot.linkCount} links, ${parsedRobot.jointCount} joints`, 'success')
 }, 500)
-setTimeout(() => showToast('Validation: 5 passed, 1 warning (CoM near edge)', 'warning'), 1200)
 
 // ── Auto-start Python core ──────────────────────────────────────────────────
 // @ts-ignore — used for future feature gating
@@ -2964,7 +2873,6 @@ inlineDiffApi = initInlineDiff({
 viewportChatApi = initViewportChat({
   getEditorValue: () => monacoEditor.getModel()?.getValue() || '',
   createNewFile: (name, content, path) => createNewFile(name ?? 'robot.urdf', content ?? '', path ?? null),
-  buildKinematicContext,
   getCurrentChatId: () => chatApi.getCurrentChatId(),
   getCurrentChatMessages: () => chatApi.getCurrentChatMessages(),
   recordChatMessage: (role, content) => chatApi.recordChatMessage(role, content),
@@ -2977,18 +2885,7 @@ viewportChatApi = initViewportChat({
   setActiveChatActionsId: (id) => inlineDiffApi.setActiveChatActionsId(id),
   acceptInlineDiff: () => inlineDiffApi.acceptInlineDiff(),
   dismissInlineDiff: () => inlineDiffApi.dismissInlineDiff(),
-  reparseURDF,
-  runLocalValidation,
-  createCheckpoint: (l, u, a) => _createCheckpoint(l, u, a),
-  scene,
-  robot,
-  camera,
-  renderer,
-  groundRobot: () => groundRobot(robot),
   autoFrameRobot: () => autoFrameRobot(robot, camera, controls),
-  exportForBackend: (chatId) => chatApi.exportForBackend(chatId),
-  getUrdfAssemblyApi: () => urdfAssemblyApi,
-  getCoreAvailable: () => coreAvailable,
   showToast,
   SAMPLE_URDF,
   keysViewportPan,
@@ -3202,7 +3099,7 @@ if (openFiles.length === 0) {
   showWelcomeState()
 }
 
-urdfAssemblyApi = initUrdfAssembly({
+urdfAssemblyApi = initAssemblyEditor({
   scene,
   camera,
   canvas,
@@ -3246,12 +3143,6 @@ urdfAssemblyApi = initUrdfAssembly({
   reparseUrdf: (xml?: string, opts?: { skipGround?: boolean; ground?: boolean }) => reparseURDF(xml, opts),
   getParsedRobot: () => parsedRobot,
   getKinematicGraph: () => kinematicGraph,
-  getKinematicJoints: () => kinematicJoints,
-  getActiveFileName: () => {
-    if (!activeFile) return 'robot.urdf'
-    if (activeFile.startsWith('untitled:')) return `untitled_${untitledDisplayN(activeFile)}.urdf`
-    return activeFile.split(/[\\/]/).pop() || 'robot.urdf'
-  },
   isViewport3D: () => viewportChatApi?.isViewport3D() ?? true,
   getInteractionMode: () => viewportInteractionMode,
   isSimActive: () => simApi.isSimActive(),

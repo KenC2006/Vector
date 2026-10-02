@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { invoke } from '@tauri-apps/api/core'
 import { rpyToQuat } from './rotationIO'
 import { shouldCastShadow } from './richVisuals/meshOverrides'
+import { componentIdForLink } from './design/identity'
 
 // ── Loaders ──────────────────────────────────────────────────────────────────
 
@@ -78,12 +79,6 @@ function axisLabelFromVector(xyz: [number, number, number]): string {
 function parseRpyAttr(value: string | null): [number, number, number] {
   const parts = (value || '0 0 0').split(/\s+/).map(Number)
   return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
-}
-
-function rotateAxisByRpy(axis: [number, number, number], rpy: [number, number, number]): [number, number, number] {
-  const rot = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rpy[0], rpy[1], rpy[2], 'XYZ'))
-  const v = new THREE.Vector3(axis[0], axis[1], axis[2]).transformDirection(rot)
-  return [v.x, v.y, v.z]
 }
 
 // ── Path resolver callback type ──────────────────────────────────────────────
@@ -242,7 +237,7 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
       if (matName && colorEl) {
         const rgba = (colorEl.getAttribute('rgba') || '0.5 0.5 0.5 1').split(/\s+/).map(parseFloat)
         namedMaterials.set(matName, new THREE.MeshStandardMaterial({
-          color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
+          color: new THREE.Color().setRGB(rgba[0], rgba[1], rgba[2], THREE.SRGBColorSpace),
           roughness: 0.4,
           metalness: 0.3,
         }))
@@ -286,7 +281,7 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
         const colorEl = matEl.querySelector('color')
         if (colorEl) {
           const rgba = (colorEl.getAttribute('rgba') || '0.5 0.5 0.5 1').split(/\s+/).map(parseFloat)
-          const color = new THREE.Color(rgba[0], rgba[1], rgba[2])
+          const color = new THREE.Color().setRGB(rgba[0], rgba[1], rgba[2], THREE.SRGBColorSpace)
           mat = new THREE.MeshStandardMaterial({
             color,
             roughness: 0.4,
@@ -363,9 +358,27 @@ export function parseURDFToScene(urdfXml: string): ParsedRobot {
       geometryGroup.add(visualGroup)
     }
 
+    // Primitives of one body often share a face exactly (a nose cylinder
+    // capped flush with a chassis side). Give each later primitive a slightly
+    // stronger depth bias so coplanar faces resolve the same way every frame
+    // instead of z-fighting; the geometry itself stays exact.
+    if (geometryGroup.children.length > 1) {
+      geometryGroup.children.forEach((visual, k) => {
+        if (k === 0) return
+        visual.traverse(child => {
+          if (!(child instanceof THREE.Mesh)) return
+          const m = (child.material as THREE.Material).clone()
+          m.polygonOffset = true
+          m.polygonOffsetFactor = -k
+          m.polygonOffsetUnits = -k
+          child.material = m
+        })
+      })
+    }
+
     // Add shadow properties and tag with link name for raycasting.
     // See first call site above for why grippers opt out of casting.
-    const castGeo = shouldCastShadow(linkName)
+    const castGeo = shouldCastShadow(componentIdForLink(linkName))
     geometryGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = castGeo
@@ -566,59 +579,7 @@ export function buildKinematicGraphFromURDF(urdfXml: string): {
     }
   }
 
-  // Reconstitute split servo pairs: merge X_body + X_horn back into X
-  for (const [mountJointName, mountJoint] of Object.entries(kinematicJoints)) {
-    if (mountJoint.type !== 'fixed' || !mountJointName.endsWith('_mount')) continue
 
-    const bodyLinkName = mountJoint.childLink
-    if (!bodyLinkName.endsWith('_body')) continue
-
-    const baseLinkName = bodyLinkName.slice(0, -'_body'.length)
-    const hornLinkName = baseLinkName + '_horn'
-    const baseJointName = mountJointName.slice(0, -'_mount'.length)
-    const revolute = kinematicJoints[baseJointName]
-
-    if (!revolute || revolute.type === 'fixed' || revolute.childLink !== hornLinkName) continue
-
-    const bodyLink = kinematicGraph[bodyLinkName]
-    const hornLink = kinematicGraph[hornLinkName]
-    if (!bodyLink || !hornLink) continue
-
-    // Create merged servo node
-    kinematicGraph[baseLinkName] = {
-      name: baseLinkName,
-      mass: bodyLink.mass + hornLink.mass,
-      parent: mountJoint.parentLink,
-      children: [...hornLink.children],
-    }
-
-    // Reparent: replace _body in the parent's children list with baseLinkName
-    const parentNode = kinematicGraph[mountJoint.parentLink]
-    if (parentNode) {
-      parentNode.children = parentNode.children.map(c => c === bodyLinkName ? baseLinkName : c)
-    }
-
-    // Update downstream children to point at baseLinkName
-    for (const childName of hornLink.children) {
-      const childNode = kinematicGraph[childName]
-      if (childNode) childNode.parent = baseLinkName
-    }
-
-    // Remove phantom links
-    delete kinematicGraph[bodyLinkName]
-    delete kinematicGraph[hornLinkName]
-
-    // Remove mount joint; update revolute to span real parent → baseLinkName
-    delete kinematicJoints[mountJointName]
-    revolute.parentLink = mountJoint.parentLink
-    revolute.childLink = baseLinkName
-    if (revolute.axisVector && mountJoint.originRpy) {
-      const logicalAxis = rotateAxisByRpy(revolute.axisVector, mountJoint.originRpy)
-      revolute.axisVector = logicalAxis
-      revolute.axis = axisLabelFromVector(logicalAxis)
-      revolute.originRpy = mountJoint.originRpy
-    }
-  }
 
   return { kinematicGraph, kinematicJoints }
 }

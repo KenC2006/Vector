@@ -1109,6 +1109,31 @@ body:has(#sim-toggle.running) #vi-faces { display: none; }
   white-space: pre;
 }
 
+.sim-ai-summary {
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text, #ccc);
+  background: rgba(78, 201, 176, 0.08);
+  border-left: 2px solid #4ec9b0;
+  border-radius: 2px;
+}
+.sim-teleop-hint {
+  font-size: 10.5px;
+  color: var(--text-muted, #858585);
+}
+.sim-teleop-hint kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 3px;
+  margin-right: 2px;
+  font-family: inherit;
+  font-size: 10px;
+  text-align: center;
+  border: 1px solid var(--border, #3c3c3c);
+  border-radius: 3px;
+}
+
 .sim-script-error {
   margin: 0 12px 6px;
   padding: 6px 8px;
@@ -2942,3 +2967,21 @@ body.ai-busy::after {
   color: #f85149;
   border-color: #f85149;
 }
+
+/* Design inspector (assemblyEditor.ts): editable part fields */
+.insp-row > .insp-input,
+.insp-row > .insp-select {
+  flex: 1 1 0; min-width: 0; max-width: 150px;
+  padding: 3px 6px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text); font-size: 11px; font-family: var(--font);
+}
+.insp-row > .insp-select + .insp-select { margin-left: 4px; }
+.insp-row > .insp-input:focus,
+.insp-row > .insp-select:focus { outline: none; border-color: rgba(0,122,204,0.4); }
+.insp-row > .insp-input:disabled { opacity: 0.6; }
+.joint-limits-row { padding: 0 14px; }
+.joint-limits-row .joint-lim-input { flex: 1 1 0; min-width: 0; width: auto; }
+.insp-note { padding: 4px 14px; font-size: 11px; color: var(--text-dimmer); line-height: 1.4; }
+.insp-note.warn { color: #e5c07b; }
+.bi-section > .bi-action-btn { margin: 6px 12px 0; flex-direction: row; justify-content: center; }
+.bt-mirror { color: var(--text-dimmer); font-size: 10px; }
